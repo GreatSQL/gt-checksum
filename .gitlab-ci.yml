@@ -16,5 +16,5 @@ gt_checkout_build:
     - /bin/bash build.sh
   artifacts:
     paths:
-      - *.tar.gz
+      - binary/
     expire_in: 30 days
