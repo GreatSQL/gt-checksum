@@ -13,7 +13,22 @@ gt_checkout_build:
   tags:
     - gt-tools-builder-x86
   script:
-    - /bin/bash build.sh
+    - /bin/bash build-x86.sh
+  artifacts:
+    paths:
+      - binary/
+    expire_in: 30 days
+
+gt_checkout_build:
+  stage: build
+  retry: 2
+  only:
+    - schedules
+    - master
+  tags:
+    - gt-tools-builder-arm
+  script:
+    - /bin/bash build-arm.sh
   artifacts:
     paths:
       - binary/
