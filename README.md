@@ -30,7 +30,7 @@
 
     shell> ./gt-checkOut -v
     -- GreatdbCheck init os Args files --
-    gt-checkOut version 1.1.71
+    gt-checkOut version 1.1.7
 
     shell> ./gt-checkOut -h
     -- GreatdbCheck init configuration files --
