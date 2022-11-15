@@ -1,1 +1,20 @@
-sh ./build.sh
+stages:
+  - build
+
+variables:
+  GIT_SUBMODULE_STRATEGY: recursive
+
+gt_checkout_build:
+  stage: build
+  retry: 2
+  only:
+    - schedules
+    - master
+  tags:
+    - gt-tools-builder-x86
+  script:
+    - /bin/bash build.sh
+  artifacts:
+    paths:
+      - *.tar.gz
+    expire_in: 30 days
