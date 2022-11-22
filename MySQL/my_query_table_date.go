@@ -115,12 +115,13 @@ func (my *QueryTableDate) TmpTableRowsCount(db *sql.DB) (int, error) {
 /*
 	按照分页查询表的索引列数据
 */
-func (my *QueryTableDate) TmpTableIndexColumnDataDispos(db *sql.DB, threadId int, selectColumnString, lengthTrim string, columnLengthAs, columnName []string, beginSeq, rowDataCh int64) ([]string, error) {
+func (my *QueryTableDate) TmpTableIndexColumnDataDispos(db *sql.DB, threadId int, selectColumnString, lengthTrim string, columnLengthAs, columnName []string, beginSeq string, rowDataCh int64) ([]string, error) {
 	var (
 		strsql string
 		err    error
 	)
-	strsql = fmt.Sprintf("select %s,%s from `%s`.`%s` group by %s limit %d,%d;", selectColumnString, lengthTrim, my.Schema, my.Table, selectColumnString, beginSeq, rowDataCh)
+	bens, _ := strconv.Atoi(strings.Split(beginSeq, ",")[0])
+	strsql = fmt.Sprintf("select %s,%s from `%s`.`%s` group by %s limit %d,%d;", selectColumnString, lengthTrim, my.Schema, my.Table, selectColumnString, bens, rowDataCh)
 	rows, err := db.Query(strsql)
 	if err != nil {
 		global.Wlog.Error("[check table index column data] (", threadId, ") exec mysql sql fail. sql info: ", strsql, "error info: ", err)
@@ -297,5 +298,6 @@ func (my *QueryTableDate) GeneratingQuerySql() string {
 		columnNameSeq = append(columnNameSeq, tmpcolumnName)
 	}
 	queryColumn := strings.Join(columnNameSeq, ",")
+	//fmt.Println(fmt.Sprintf("select %s from `%s`.`%s` where %s", queryColumn, my.Schema, my.Table, my.Sqlwhere))
 	return fmt.Sprintf("select %s from `%s`.`%s` where %s", queryColumn, my.Schema, my.Table, my.Sqlwhere)
 }

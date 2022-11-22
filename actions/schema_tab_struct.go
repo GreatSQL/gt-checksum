@@ -62,6 +62,7 @@ func (stcls *schemaTable) tableList(dbNameList []string) []string {
 	} else {
 		opt = strings.Split(stcls.table, ",")
 	}
+
 	if len(opt) > 0 {
 		var tmpM = make(map[string]int)
 		for _, op := range opt {
@@ -70,11 +71,17 @@ func (stcls *schemaTable) tableList(dbNameList []string) []string {
 				tbName := strings.Split(op, ".")[1]
 				tc := dbExec.TableColumnNameStruct{Schema: dbName, Table: tbName, Drive: stcls.sourceDrive, Db: stcls.sourceDB}
 				squeryData, _ := tc.Query().TableNameList(stcls.sourceDB)
+
 				tc.Drive = stcls.destDrive
 				tc.Db = stcls.destDB
 				dqueryData, _ := tc.Query().TableNameList(stcls.destDB)
+
 				for _, i := range squeryData {
-					a := fmt.Sprintf("%s.%s", i["databaseName"].(string), i["tableName"].(string))
+					var a string
+					a = fmt.Sprintf("%s.%s", i["databaseName"].(string), i["tableName"].(string))
+					if stcls.lowerCaseTableNames == "no" {
+						a = strings.ToUpper(fmt.Sprintf("%s.%s", i["databaseName"].(string), i["tableName"].(string)))
+					}
 					if _, ok := tmpIgnoreMap[a]; ok {
 						continue
 					} else {
@@ -82,7 +89,11 @@ func (stcls *schemaTable) tableList(dbNameList []string) []string {
 					}
 				}
 				for _, i := range dqueryData {
-					a := fmt.Sprintf("%s.%s", i["databaseName"].(string), i["tableName"].(string))
+					var a string
+					a = fmt.Sprintf("%s.%s", i["databaseName"].(string), i["tableName"].(string))
+					if stcls.lowerCaseTableNames == "no" {
+						a = strings.ToUpper(fmt.Sprintf("%s.%s", i["databaseName"].(string), i["tableName"].(string)))
+					}
 					if _, ok := tmpIgnoreMap[a]; ok {
 						continue
 					} else {
@@ -91,6 +102,7 @@ func (stcls *schemaTable) tableList(dbNameList []string) []string {
 				}
 			}
 		}
+
 		for k, _ := range tmpM {
 			tnS = append(tnS, k)
 		}
@@ -161,227 +173,6 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string) ([]strin
 }
 
 /*
-   检查表索引列信息
-*/
-func (stcls *schemaTable) indexColumnList(queryData []map[string]interface{}) map[string][]string {
-	global.Wlog.Debug("actions init db Example.")
-	var indexType = make(map[string][]string)
-	nultiseriateIndexColumnMap := make(map[string][]string)
-	multiseriateIndexColumnMap := make(map[string][]string)
-	breakIndexColumnType := []string{"INT", "CHAR", "YEAR", "DATE", "TIME"}
-	var PriIndexCol, uniIndexCol, mulIndexCol []string
-	var indexName string
-
-	if len(queryData) == 0 {
-		return indexType
-	}
-	//索引列处理，联合索引进行列合并
-	//去除主键索引列、唯一索引列、普通索引列的所有列明
-	for v := range queryData {
-		if queryData[v]["nonUnique"].(string) == "0" {
-			if queryData[v]["indexName"] == "PRIMARY" {
-				if queryData[v]["indexName"].(string) != indexName {
-					indexName = queryData[v]["indexName"].(string)
-				}
-				PriIndexCol = append(PriIndexCol, fmt.Sprintf("%s", queryData[v]["columnName"]))
-			} else {
-				if queryData[v]["indexName"].(string) != indexName {
-					indexName = queryData[v]["indexName"].(string)
-					nultiseriateIndexColumnMap[indexName] = append(uniIndexCol, fmt.Sprintf("%s /*actions Column Type*/ %s", queryData[v]["columnName"], queryData[v]["columnType"]))
-				} else {
-					nultiseriateIndexColumnMap[indexName] = append(nultiseriateIndexColumnMap[indexName], fmt.Sprintf("%s /*actions Column Type*/ %s", queryData[v]["columnName"], queryData[v]["columnType"]))
-				}
-			}
-		} else {
-			if queryData[v]["indexName"].(string) != indexName {
-				indexName = queryData[v]["indexName"].(string)
-				multiseriateIndexColumnMap[indexName] = append(mulIndexCol, fmt.Sprintf("%s /*actions Column Type*/ %s", queryData[v]["columnName"], queryData[v]["columnType"]))
-			} else {
-				multiseriateIndexColumnMap[indexName] = append(multiseriateIndexColumnMap[indexName], fmt.Sprintf("%s /*actions Column Type*/ %s", queryData[v]["columnName"], queryData[v]["columnType"]))
-			}
-		}
-	}
-
-	//处理主键索引列
-	//判断是否存在主键索引,每个表的索引只有一个
-	infoStr := fmt.Sprintf("Greatdbcheck Checks whether table %s.%s has a primary key index", stcls.schema, stcls.table)
-	global.Wlog.Info(infoStr)
-	if len(PriIndexCol) == 1 { //单列主键索引
-		indexType["pri_single"] = PriIndexCol
-	} else if len(PriIndexCol) > 1 { //联合主键索引
-		indexType["pri_multiseriate"] = PriIndexCol
-	}
-
-	// ----- 处理唯一索引列，根据选择规则选择一个单列索引，（选择次序：int<--char<--year<--date<-time<-其他）
-	infoStr = fmt.Sprintf("Greatdbcheck Checks whether table %s.%s has a unique key index", stcls.schema, stcls.table)
-	global.Wlog.Info(infoStr)
-	var tmpSliceNum = 1
-	var tmpSliceNumMap = make(map[string]int)
-	//先找出联合索引数量最多的
-	for _, i := range nultiseriateIndexColumnMap {
-		if len(i) > tmpSliceNum {
-			tmpSliceNum = len(i)
-		}
-	}
-	//针对多个最长的联合索引列进行map匹配
-	for k, i := range nultiseriateIndexColumnMap {
-		if len(i) == tmpSliceNum {
-			tmpSliceNumMap[k] = tmpSliceNum
-		}
-	}
-
-	//唯一索引判断选择
-	indexName = ""
-	//单列唯一索引
-	if len(nultiseriateIndexColumnMap) > 0 {
-		//处理单列索引，找出合适的索引列（选择次序：int<--char<--year<--date<-time）
-		for i := range nultiseriateIndexColumnMap {
-			if len(nultiseriateIndexColumnMap[i]) > 1 {
-				continue
-			}
-			tmpa := strings.Split(strings.Join(nultiseriateIndexColumnMap[i], ""), " /*actions Column Type*/ ")
-			indexColType := tmpa[1]
-			var tmpaa []string
-			breakStatus := false
-			for v := range breakIndexColumnType {
-				if strings.Contains(strings.ToUpper(indexColType), breakIndexColumnType[v]) {
-					indexType["uni_single"] = append(tmpaa, tmpa[0])
-					breakStatus = true
-					break
-				}
-			}
-			if breakStatus {
-				break
-			}
-			indexType["uni_single"] = append(tmpaa, tmpa[0])
-		}
-		//处理多列索引
-		var tmpa, tmpc = make(map[string][]string), make(map[string]int)
-		for k, i := range nultiseriateIndexColumnMap {
-			if len(i) <= 1 {
-				continue
-			}
-			//如果是多列索引，择选找出当给列最多的
-			var nultIndexColumnSlice, nultIndexColumnTypeSlice []string
-			for v := range i {
-				tmpiv := strings.ReplaceAll(i[v], " /*actions Column Type*/ ", ",")
-				tmpaa := strings.Split(tmpiv, ",")
-				nultIndexColumnSlice = append(nultIndexColumnSlice, tmpaa[0])
-				nultIndexColumnTypeSlice = append(nultIndexColumnTypeSlice, tmpaa[1])
-			}
-			tmpIntCount := strings.Count(strings.ToUpper(strings.Join(nultIndexColumnTypeSlice, ",")), "INT")
-			tmpCharCount := strings.Count(strings.ToUpper(strings.Join(nultIndexColumnTypeSlice, ",")), "CHAR")
-			if tmpIntCount >= tmpCharCount && tmpIntCount != 0 {
-				tmpc[k] = tmpIntCount
-			} else if tmpIntCount < tmpCharCount && tmpCharCount != 0 {
-				tmpc[k] = tmpCharCount
-			} else {
-				tmpc[k] = 0
-			}
-			tmpa[k] = nultIndexColumnSlice
-		}
-		var intCharMax int
-		for k, v := range tmpc {
-			if v > intCharMax {
-				intCharMax = v
-				indexType["nui_multiseriate"] = tmpa[k]
-			} else {
-				if v == 0 {
-					indexType["nui_multiseriate"] = tmpa[k]
-				}
-			}
-		}
-	}
-
-	// ----- 判断是否存在普通索引,选出索引列，优先选择多列索引，如果没有，则按优先级选择。
-	infoStr = fmt.Sprintf("Greatdbcheck Checks whether table %s.%s has a key index", stcls.schema, stcls.table)
-	global.Wlog.Info(infoStr)
-	//先找出联合索引数量最多的
-	tmpSliceNum = 1
-	for i := range multiseriateIndexColumnMap {
-		if len(multiseriateIndexColumnMap[i]) > tmpSliceNum {
-			tmpSliceNum = len(multiseriateIndexColumnMap[i])
-		}
-	}
-	if len(multiseriateIndexColumnMap) > 0 {
-		//处理单列索引，找出合适的索引列（选择次序：int<--char<--year<--date<-time）
-		for i := range multiseriateIndexColumnMap {
-			if len(multiseriateIndexColumnMap[i]) > 1 { //单列索引
-				continue
-			}
-			tmpa := strings.Split(strings.Join(multiseriateIndexColumnMap[i], ""), " /*actions Column Type*/ ")
-			indexColType := tmpa[1]
-			var tmpaa []string
-			breakStatus := false
-			for v := range breakIndexColumnType {
-				if strings.Contains(strings.ToUpper(indexColType), breakIndexColumnType[v]) {
-					indexType["mui_single"] = append(tmpaa, tmpa[0])
-					breakStatus = true
-					break
-				}
-			}
-			if breakStatus {
-				break
-			}
-			indexType["mui_single"] = append(tmpaa, tmpa[0])
-		}
-		//处理多列索引
-		var tmpa, tmpc = make(map[string][]string), make(map[string]int)
-		for k, i := range multiseriateIndexColumnMap {
-			if len(i) <= 1 {
-				continue
-			}
-			//多列索引选择
-			var multIndexColumnSlice, multIndexColumnTypeSlice []string
-			for v := range i {
-				tmpiv := strings.ReplaceAll(i[v], " /*actions Column Type*/ ", ",")
-				tmpaa := strings.Split(tmpiv, ",")
-				multIndexColumnSlice = append(multIndexColumnSlice, tmpaa[0])
-				multIndexColumnTypeSlice = append(multIndexColumnTypeSlice, tmpaa[1])
-			}
-			tmpIntCount := strings.Count(strings.ToUpper(strings.Join(multIndexColumnTypeSlice, ",")), "INT")
-			tmpCharCount := strings.Count(strings.ToUpper(strings.Join(multIndexColumnTypeSlice, ",")), "CHAR")
-			if tmpIntCount >= tmpCharCount && tmpIntCount != 0 {
-				tmpc[k] = tmpIntCount
-			} else if tmpIntCount < tmpCharCount && tmpCharCount != 0 {
-				tmpc[k] = tmpCharCount
-			} else {
-				tmpc[k] = 0
-			}
-			tmpa[k] = multIndexColumnSlice
-		}
-		var intCharMax int
-		for k, v := range tmpc {
-			if v > intCharMax {
-				intCharMax = v
-				indexType["mui_multiseriate"] = tmpa[k]
-			} else {
-				if v == 0 {
-					indexType["mui_multiseriate"] = tmpa[k]
-				}
-			}
-		}
-		//if len(i) == tmpSliceNum { //加入最多的有多个
-		//	tmpIntCount := strings.Count(strings.ToUpper(strings.Join(multIndexColumnTypeSlice, ",")), "INT")
-		//	tmpCharCount := strings.Count(strings.ToUpper(strings.Join(multIndexColumnTypeSlice, ",")), "CHAR")
-		//	if tmpIntCount >= tmpCharCount {
-		//		indexType["mui_multiseriate"] = multIndexColumnSlice
-		//		break
-		//	} else if tmpCharCount >= tmpIntCount {
-		//		indexType["mui_multiseriate"] = multIndexColumnSlice
-		//		break
-		//	} else {
-		//		indexType["mui_multiseriate"] = multIndexColumnSlice
-		//		break
-		//	}
-		//}
-		//}
-	}
-	//}
-	return indexType
-}
-
-/*
  该函数用于获取MySQL的表的索引信息,判断表是否存在索引，加入存在，获取索引的类型，以主键索引、唯一索引、普通索引及无索引，主键索引或唯一索引以自增id为优先
   缺少索引列为空或null的处理
 */
@@ -392,40 +183,29 @@ func (stcls *schemaTable) tableIndexAlgorithm(indexType map[string][]string) (st
 			return "pri_single", indexType["pri_single"]
 		}
 		//假如没有单列主键索引，有多列主键索引，且有单列唯一索引，则选择单列唯一索引
-		if len(indexType["pri_multiseriate"]) > 1 && len(indexType["uni_single"]) == 1 {
+		if len(indexType["uni_single"]) > 0 {
 			return "uni_single", indexType["uni_single"]
 		}
 
 		//假如没有单列主键索引，有多列主键索引，没有单列唯一索引，则选择多列主键索引
-		if len(indexType["pri_multiseriate"]) > 1 && len(indexType["uni_single"]) < 1 {
+		if len(indexType["pri_multiseriate"]) > 0 {
 			return "pri_multiseriate", indexType["pri_multiseriate"]
 		}
 
 		//假如没有单列主键索引，有多列主键索引，没有单列唯一索引，有多列唯一索引， 则选择多列主键索引
-		if len(indexType["pri_multiseriate"]) > 1 && len(indexType["nui_multiseriate"]) > 1 {
-			return "pri_multiseriate", indexType["pri_multiseriate"]
+		if len(indexType["uni_multiseriate"]) > 0 {
+			return "uni_multiseriate", indexType["uni_multiseriate"]
 		}
 
-		//假如没有主键索引，有多列唯一索引和单列唯一索引，则选择单列唯一索引
-		if len(indexType["nui_multiseriate"]) > 1 && len(indexType["uni_single"]) > 0 {
-			return "uni_single", indexType["uni_single"]
-		}
-
-		//假如没有主键索引，有多列唯一索引和普通索引，则选择多列唯一索引
-		if len(indexType["nui_multiseriate"]) > 1 && len(indexType["uni_single"]) < 1 {
-			return "nui_multiseriate", indexType["nui_multiseriate"]
-		}
-
-		//只有单列普通索引
-		if len(indexType["mui_single"]) == 1 && len(indexType["mui_multiseriate"]) < 1 {
+		//有单列索引存在
+		if len(indexType["mui_single"]) >= 1 {
 			return "mui_single", indexType["mui_single"]
 		}
 
 		//有无单列普通索引，和多列普通索引，选择多列普通索引
-		if len(indexType["mui_single"]) <= 1 && len(indexType["mui_multiseriate"]) > 1 {
+		if len(indexType["mui_multiseriate"]) > 1 {
 			return "mui_multiseriate", indexType["mui_multiseriate"]
 		}
-
 	} else {
 		var err = errors.New("Missing indexes")
 		global.Wlog.Error("[check table index choose]GreatdbCheck Check table ", stcls.schema, ".", stcls.table, ", no indexed columns, checksum terminated", err)
@@ -450,8 +230,10 @@ func (stcls *schemaTable) SchemaTableFilter() []string {
 			os.Exit(1)
 		}
 	}
+
 	//处理表校验
 	tableList := stcls.tableList(dbNameList)
+
 	//newTableList, _ := stcls.TableColumnNameCheck(tableList)
 	if len(tableList) == 0 {
 		global.Wlog.Error("[check Table] check table is emty, will exit!")
@@ -510,7 +292,8 @@ func (stcls *schemaTable) TableIndexColumn(dtabS []string) map[string][]string {
 		stcls.table = strings.Split(i, ".")[1]
 		idxc := dbExec.IndexColumnStruct{Schema: stcls.schema, Table: stcls.table, Drivce: stcls.sourceDrive}
 		queryData, _ := idxc.TableIndexColumn().QueryTableIndexColumnInfo(stcls.sourceDB)
-		indexType := stcls.indexColumnList(queryData)
+		tc := dbExec.TableColumnNameStruct{Schema: stcls.schema, Table: stcls.table, Drive: stcls.sourceDrive, Db: stcls.sourceDB}
+		indexType := tc.Query().TableIndexChoice(queryData)
 		if len(indexType) == 0 { //针对于表没有索引的，进行处理
 			key := fmt.Sprintf("%s/*greatdbSchemaTable*/%s", stcls.schema, stcls.table)
 			tableIndexColumnMap[key] = []string{}
@@ -531,77 +314,114 @@ func (stcls *schemaTable) TableIndexColumn(dtabS []string) map[string][]string {
 	校验触发器
 */
 func (stcls *schemaTable) Trigger(dtabS []string) {
-	var createTrigger = func(data []map[string]interface{}) map[string]string {
-		var tmpMap, createTriggerSql = make(map[string]string), make(map[string]string)
-		for _, v := range data {
-			if _, ok := v["TRIGGER_NAME"]; ok {
-				tmpMap["TRIGGER_NAME"] = fmt.Sprintf("%s", v["TRIGGER_NAME"])
-			}
-			if _, ok := v["ACTION_TIMING"]; ok {
-				tmpMap["ACTION_TIMING"] = fmt.Sprintf("%s", v["ACTION_TIMING"])
-			}
-			if _, ok := v["EVENT_MANIPULATION"]; ok {
-				tmpMap["EVENT_MANIPULATION"] = fmt.Sprintf("%s", v["EVENT_MANIPULATION"])
-			}
-			if _, ok := v["EVENT_OBJECT_SCHEMA"]; ok {
-				tmpMap["EVENT_OBJECT_SCHEMA"] = fmt.Sprintf("%s", v["EVENT_OBJECT_SCHEMA"])
-			}
-			if _, ok := v["EVENT_OBJECT_TABLE"]; ok {
-				tmpMap["EVENT_OBJECT_TABLE"] = fmt.Sprintf("%s", v["EVENT_OBJECT_TABLE"])
-			}
-			if _, ok := v["ACTION_ORIENTATION"]; ok {
-				tmpMap["ACTION_ORIENTATION"] = fmt.Sprintf("%s", v["ACTION_ORIENTATION"])
-			}
-			if _, ok := v["ACTION_STATEMENT"]; ok {
-				tmpMap["ACTION_STATEMENT"] = fmt.Sprintf("%s", v["ACTION_STATEMENT"])
-			}
-			if _, ok := v["DEFINER"]; ok {
-				tmpMap["DEFINER"] = fmt.Sprintf("%s", v["DEFINER"])
-			}
-		}
-		createTriggerSql["triggerSql"] = fmt.Sprintf("DELIMITER $ \nCREATE TRIGGER %s.%s %s %s ON %s.%s FOR EACH %s %s $\nDELIMITER ;", tmpMap["EVENT_OBJECT_SCHEMA"], tmpMap["TRIGGER_NAME"], tmpMap["ACTION_TIMING"], tmpMap["EVENT_MANIPULATION"], tmpMap["EVENT_OBJECT_SCHEMA"], tmpMap["EVENT_OBJECT_TABLE"], tmpMap["ACTION_ORIENTATION"], strings.ReplaceAll(tmpMap["ACTION_STATEMENT"], "\n", ""))
-		createTriggerSql["triggerName"] = tmpMap["TRIGGER_NAME"]
-		createTriggerSql["definer"] = tmpMap["DEFINER"]
-		return createTriggerSql
-	}
+	//var createTrigger = func(data []map[string]interface{}) map[string]string {
+	//	var tmpMap, createTriggerSql = make(map[string]string), make(map[string]string)
+	//	for _, v := range data {
+	//		if _, ok := v["TRIGGER_NAME"]; ok {
+	//			tmpMap["TRIGGER_NAME"] = fmt.Sprintf("%s", v["TRIGGER_NAME"])
+	//		}
+	//		if _, ok := v["ACTION_TIMING"]; ok {
+	//			tmpMap["ACTION_TIMING"] = fmt.Sprintf("%s", v["ACTION_TIMING"])
+	//		}
+	//		if _, ok := v["EVENT_MANIPULATION"]; ok {
+	//			tmpMap["EVENT_MANIPULATION"] = fmt.Sprintf("%s", v["EVENT_MANIPULATION"])
+	//		}
+	//		if _, ok := v["EVENT_OBJECT_SCHEMA"]; ok {
+	//			tmpMap["EVENT_OBJECT_SCHEMA"] = fmt.Sprintf("%s", v["EVENT_OBJECT_SCHEMA"])
+	//		}
+	//		if _, ok := v["EVENT_OBJECT_TABLE"]; ok {
+	//			tmpMap["EVENT_OBJECT_TABLE"] = fmt.Sprintf("%s", v["EVENT_OBJECT_TABLE"])
+	//		}
+	//		if _, ok := v["ACTION_ORIENTATION"]; ok {
+	//			tmpMap["ACTION_ORIENTATION"] = fmt.Sprintf("%s", v["ACTION_ORIENTATION"])
+	//		}
+	//		if _, ok := v["ACTION_STATEMENT"]; ok {
+	//			tmpMap["ACTION_STATEMENT"] = fmt.Sprintf("%s", v["ACTION_STATEMENT"])
+	//		}
+	//		if _, ok := v["DEFINER"]; ok {
+	//			tmpMap["DEFINER"] = fmt.Sprintf("%s", v["DEFINER"])
+	//		}
+	//	}
+	//	createTriggerSql["triggerSql"] = fmt.Sprintf("DELIMITER $ \nCREATE TRIGGER %s.%s %s %s ON %s.%s FOR EACH %s %s $\nDELIMITER ;", tmpMap["EVENT_OBJECT_SCHEMA"], tmpMap["TRIGGER_NAME"], tmpMap["ACTION_TIMING"], tmpMap["EVENT_MANIPULATION"], tmpMap["EVENT_OBJECT_SCHEMA"], tmpMap["EVENT_OBJECT_TABLE"], tmpMap["ACTION_ORIENTATION"], strings.ReplaceAll(tmpMap["ACTION_STATEMENT"], "\n", ""))
+	//	createTriggerSql["triggerName"] = tmpMap["TRIGGER_NAME"]
+	//	createTriggerSql["definer"] = tmpMap["DEFINER"]
+	//	return createTriggerSql
+	//}
 	//var schemaMap = make(map[string]int)
+	//var pods = Pod{
+	//	Datafix:     "no",
+	//	CheckObject: "trigger",
+	//}
+	//for _, sa := range dtabS {
+	//	schema := strings.Split(sa, ".")[0]
+	//	table := strings.Split(sa, ".")[1]
+	//	pods.Schema = schema
+	//	pods.Table = table
+	//	tc := dbExec.TableColumnNameStruct{Schema: schema, Table: table, Drive: stcls.sourceDrive}
+	//	sourceTrigger, err := tc.Query().Trigger(stcls.sourceDB)
+	//	if err != nil {
+	//		fmt.Println(err)
+	//	}
+	//	tc.Drive = stcls.destDrive
+	//	destTrigger, err := tc.Query().Trigger(stcls.destDB)
+	//	if err != nil {
+	//		fmt.Println(err)
+	//	}
+	//	sct := createTrigger(sourceTrigger)
+	//	dct := createTrigger(destTrigger)
+	//	if sct["definer"] == "" && dct["definer"] == "" {
+	//		continue
+	//	}
+	//	if sct["triggerSql"] != dct["triggerSql"] {
+	//		if sct["triggerName"] == "" {
+	//			pods.Definer = dct["definer"]
+	//			pods.TriggerName = dct["triggerName"]
+	//		} else {
+	//			pods.Definer = sct["definer"]
+	//			pods.TriggerName = sct["triggerName"]
+	//		}
+	//		pods.Differences = "yes"
+	//	} else {
+	//		pods.Definer = sct["definer"]
+	//		pods.TriggerName = sct["triggerName"]
+	//		pods.Differences = "no"
+	//	}
+	//	measuredDataPods = append(measuredDataPods, pods)
+	//}
+
 	var pods = Pod{
 		Datafix:     "no",
 		CheckObject: "trigger",
 	}
-	for _, sa := range dtabS {
-		schema := strings.Split(sa, ".")[0]
-		table := strings.Split(sa, ".")[1]
-		pods.Schema = schema
-		pods.Table = table
-		tc := dbExec.TableColumnNameStruct{Schema: schema, Table: table, Drive: stcls.sourceDrive}
+	//校验外键
+	for _, i := range dtabS {
+		stcls.schema = strings.Split(i, ".")[0]
+		stcls.table = strings.Split(i, ".")[1]
+		pods.Schema = stcls.schema
+		pods.Table = stcls.table
+		tc := dbExec.TableColumnNameStruct{Schema: stcls.schema, Table: stcls.table, Drive: stcls.sourceDrive}
 		sourceTrigger, err := tc.Query().Trigger(stcls.sourceDB)
-		if err != nil {
-			fmt.Println(err)
-		}
 		tc.Drive = stcls.destDrive
 		destTrigger, err := tc.Query().Trigger(stcls.destDB)
 		if err != nil {
 			fmt.Println(err)
 		}
-		sct := createTrigger(sourceTrigger)
-		dct := createTrigger(destTrigger)
-		if sct["definer"] == "" && dct["definer"] == "" {
+		if len(sourceTrigger) == 0 && len(destTrigger) == 0 {
 			continue
 		}
-		if sct["triggerSql"] != dct["triggerSql"] {
-			if sct["triggerName"] == "" {
-				pods.Definer = dct["definer"]
-				pods.TriggerName = dct["triggerName"]
+		var tmpM = make(map[string]int)
+		for k, _ := range sourceTrigger {
+			tmpM[k]++
+		}
+		for k, _ := range destTrigger {
+			tmpM[k]++
+		}
+		for k, _ := range tmpM {
+			if sourceTrigger[k] != destTrigger[k] {
+				pods.Differences = "yes"
 			} else {
-				pods.Definer = sct["definer"]
-				pods.TriggerName = sct["triggerName"]
+				pods.Differences = "no"
 			}
-			pods.Differences = "yes"
-		} else {
-			pods.Definer = sct["definer"]
-			pods.TriggerName = sct["triggerName"]
-			pods.Differences = "no"
 		}
 		measuredDataPods = append(measuredDataPods, pods)
 	}

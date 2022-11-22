@@ -157,17 +157,10 @@ func (rc *readConf) getConfig(configName string, q *ConfigParameter) {
 	//校验库表设置
 	q.LowerCaseTableNames = do.Key("lowerCaseTableNames").In("no", []string{"yes", "no"})
 	q.CheckNoIndexTable = do.Key("checkNoIndexTable").In("no", []string{"yes", "no"})
-	if q.LowerCaseTableNames == "yes" {
-		q.Schema = strings.TrimSpace(do.Key("schema").String())
-		q.Table = strings.TrimSpace(do.Key("table").String())
-		q.Igschema = strings.TrimSpace(do.Key("ignoreSchema").String())
-		q.Igtable = strings.TrimSpace(do.Key("ignoreTable").String())
-	} else {
-		q.Schema = strings.ToUpper(strings.TrimSpace(do.Key("schema").String()))
-		q.Table = strings.ToUpper(strings.TrimSpace(do.Key("table").String()))
-		q.Igschema = strings.ToUpper(strings.TrimSpace(do.Key("ignoreSchema").String()))
-		q.Igtable = strings.ToUpper(strings.TrimSpace(do.Key("ignoreTable").String()))
-	}
+	q.Schema = strings.TrimSpace(do.Key("schema").String())
+	q.Table = strings.TrimSpace(do.Key("table").String())
+	q.Igschema = strings.TrimSpace(do.Key("ignoreSchema").String())
+	q.Igtable = strings.TrimSpace(do.Key("ignoreTable").String())
 
 	//Log Setting 获取相关参数
 	q.LogPath = ls.Key("logPath").String()
@@ -188,7 +181,7 @@ func (rc *readConf) getConfig(configName string, q *ConfigParameter) {
 		rc.getErr("Failed to convert queueDepth parameter to int", err1)
 	}
 	q.CheckMode = cr.Key("checkMode").In("rows", []string{"count", "rows", "sample"})
-	q.CheckObject = cr.Key("checkObject").In("data", []string{"data", "struct", "trigger", "func", "proc"})
+	q.CheckObject = cr.Key("checkObject").In("data", []string{"data", "struct", "index", "partitions", "foreign", "trigger", "func", "proc"})
 
 	//q.IncCheckSwitch = idc.Key("incSwitch").In("no", []string{"yes", "no"})
 	if q.Ratio, err1 = cr.Key("ratio").Int(); err1 != nil {

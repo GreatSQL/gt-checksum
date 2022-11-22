@@ -21,14 +21,14 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 	table.RightAlign(20)
 
 	if m.CheckObject == "struct" {
-		table.AddRow("Schema", "Table ", " checkObject ", "Differences", "Datafix")
+		table.AddRow("Schema", "Table ", " CheckObject ", "Differences", "Datafix")
 		for _, pod := range measuredDataPods {
 			table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.CheckObject), color.GreenString(pod.Differences), color.YellowString(pod.Datafix))
 		}
 		fmt.Println(table)
 	}
 	if m.CheckObject == "index" {
-		table.AddRow("Schema", "Table ", "checkObject ", "IndexCol ", "Differences", "Datafix")
+		table.AddRow("Schema", "Table ", "CheckObject ", "IndexCol ", "Differences", "Datafix")
 		for _, pod := range measuredDataPods {
 			table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.CheckObject), color.YellowString(pod.IndexCol), color.GreenString(pod.Differences), color.YellowString(pod.Datafix))
 		}

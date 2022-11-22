@@ -28,6 +28,7 @@ func main() {
 	//获取待校验表信息
 	fmt.Println("-- GreatdbCheck init check table -- ")
 	tableList := actions.SchemaTableInit(m).SchemaTableFilter()
+
 	if m.CheckObject != "data" {
 		switch m.CheckObject {
 		case "struct":

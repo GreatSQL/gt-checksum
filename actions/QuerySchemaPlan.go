@@ -111,7 +111,7 @@ func (wttds *writeTmpTableDataStruct) DoBatch(ma chan string, out1 []map[string]
 /*
 	计算源目标段表的最大行数
 */
-func (wttds writeTmpTableDataStruct) LimiterSeq(limitPag chan int64, limitPagDone chan bool) { //定义变量
+func (wttds writeTmpTableDataStruct) LimiterSeq(limitPag chan string, limitPagDone chan bool) { //定义变量
 	var (
 		schema                           = wttds.schema
 		table                            = wttds.table
@@ -157,7 +157,9 @@ func (wttds writeTmpTableDataStruct) LimiterSeq(limitPag chan int64, limitPagDon
 			newMaxTableCount = maxTableCount
 			if maxTableCount > chanrowCount {
 				newMaxTableCount = maxTableCount * wttds.ratio / 100
-				chanrowCount = chanrowCount / wttds.concurrency
+				if chanrowCount > wttds.concurrency {
+					chanrowCount = chanrowCount / wttds.concurrency
+				}
 			}
 			if newMaxTableCount%chanrowCount != 0 {
 				schedulePlanCount = newMaxTableCount/chanrowCount + 1
@@ -171,7 +173,7 @@ func (wttds writeTmpTableDataStruct) LimiterSeq(limitPag chan int64, limitPagDon
 				if newMaxTableCount > chanrowCount {
 					beginSeq = rand.Int63n(int64(maxTableCount))
 				}
-				limitPag <- beginSeq
+				limitPag <- fmt.Sprintf("%d,%d", beginSeq, newMaxTableCount)
 				beginSeq = beginSeq + int64(chanrowCount)
 			}
 			pods.Rows = fmt.Sprintf("%d,%d", maxTableCount, newMaxTableCount)
@@ -185,7 +187,7 @@ func (wttds writeTmpTableDataStruct) LimiterSeq(limitPag chan int64, limitPagDon
 		}
 		var beginSeq int64 = 0
 		for i := 0; i < schedulePlanCount; i++ {
-			limitPag <- beginSeq
+			limitPag <- fmt.Sprintf("%d,%d", beginSeq, maxTableCount)
 			beginSeq = beginSeq + int64(chanrowCount)
 		}
 		pods.Rows = fmt.Sprintf("%d,%d", maxTableCount, maxTableCount)
@@ -195,7 +197,7 @@ func (wttds writeTmpTableDataStruct) LimiterSeq(limitPag chan int64, limitPagDon
 	close(limitPag)
 }
 
-func (wttds writeTmpTableDataStruct) indexColUniq(il, pag int64, selectColumnString string, lengthTrim string, columnLengthAs []string) []string {
+func (wttds writeTmpTableDataStruct) indexColUniq(il string, pag int64, selectColumnString map[string]string, lengthTrim map[string]string, columnLengthAs map[string][]string) []string {
 	threadId := 1
 	sdb := wttds.sdbPool.Get()
 	ddb := wttds.ddbPool.Get()
@@ -204,31 +206,36 @@ func (wttds writeTmpTableDataStruct) indexColUniq(il, pag int64, selectColumnStr
 	global.Wlog.Info("[check table ", wttds.schema, ".", wttds.table, " index column] index column select where limit seq: ", fmt.Sprintf("%d,%d", il, pag))
 	global.Wlog.Info("[check table ", wttds.schema, ".", wttds.table, " index column] source DB index column query limit seq [", fmt.Sprintf("%d,%d", il, pag), "] index data")
 	idxc := dbExec.IndexColumnStruct{Schema: wttds.schema, Table: wttds.table, ColumnName: wttds.columnName, ChanrowCount: wttds.chanrowCount, Drivce: wttds.sdrive}
-	sourceTmpTableData, err := idxc.TableIndexColumn().TmpTableIndexColumnDataDispos(sdb, threadId, selectColumnString, lengthTrim, columnLengthAs, wttds.columnName, il, pag)
+	sourceTmpTableData, err := idxc.TableIndexColumn().TmpTableIndexColumnDataDispos(sdb, threadId, selectColumnString[wttds.sdrive], lengthTrim[wttds.sdrive], columnLengthAs[wttds.sdrive], wttds.columnName, il, pag)
 	if err != nil {
 		wttds.getErr(fmt.Sprintf("source: query table %s.%s index column data error.", wttds.schema, wttds.table), err)
 	}
 	global.Wlog.Info("[check table ", wttds.schema, ".", wttds.table, " index column] dest DB index column query limit seq [", fmt.Sprintf("%d,%d", il, pag), "] index data")
 	idxc.Drivce = wttds.ddrive
-	destTmpTableData, err := idxc.TableIndexColumn().TmpTableIndexColumnDataDispos(ddb, threadId, selectColumnString, lengthTrim, columnLengthAs, wttds.columnName, il, pag)
+	destTmpTableData, err := idxc.TableIndexColumn().TmpTableIndexColumnDataDispos(ddb, threadId, selectColumnString[wttds.ddrive], lengthTrim[wttds.ddrive], columnLengthAs[wttds.ddrive], wttds.columnName, il, pag)
 	if err != nil {
 		wttds.getErr(fmt.Sprintf("dest: query table %s.%s index column data error.", wttds.schema, wttds.table), err)
 	}
 	wttds.sdbPool.Put(sdb)
 	wttds.ddbPool.Put(ddb)
-	for _, ii := range sourceTmpTableData {
-		lock.Lock()
-		tmpmap[ii] = ""
-		lock.Unlock()
-	}
-	for _, ii := range destTmpTableData {
-		lock.Lock()
-		if _, ok := tmpmap[ii]; !ok {
+	if len(sourceTmpTableData) != 0 && len(destTmpTableData) != 0 {
+		for _, ii := range sourceTmpTableData {
+			lock.Lock()
 			tmpmap[ii] = ""
+			lock.Unlock()
 		}
-		lock.Unlock()
+		for _, ii := range destTmpTableData {
+			lock.Lock()
+			if _, ok := tmpmap[ii]; !ok {
+				tmpmap[ii] = ""
+			}
+			lock.Unlock()
+		}
 	}
 	for k, _ := range tmpmap {
+		//if k == "<nil>" {
+		//	continue
+		//}
 		tmpsl = append(tmpsl, k)
 	}
 	return tmpsl
@@ -239,7 +246,7 @@ func (wttds writeTmpTableDataStruct) indexColUniq(il, pag int64, selectColumnStr
    并发读取原、目标端 单表的索引列数据，根据表的数量按照单次校验的数据块行数进行切割，
    并发写入管道中，同时会有监听管道进行读取数据
 */
-func (wttds writeTmpTableDataStruct) indexColUniqProduct(ma <-chan int64, indexColData chan<- []string, done <-chan bool, differDone chan<- bool, selectColumnString string, lengthTrim string, columnLengthAs []string, goroutineNum int) { //定义变量
+func (wttds writeTmpTableDataStruct) indexColUniqProduct(ma <-chan string, indexColData chan<- []string, done <-chan bool, differDone chan<- bool, selectColumnString, lengthTrim map[string]string, columnLengthAs map[string][]string, goroutineNum int) { //定义变量
 	var (
 		workLimiter = make(chan struct{}, goroutineNum)
 		breakDone   = make(chan bool, 1)
@@ -280,7 +287,7 @@ func (wttds writeTmpTableDataStruct) indexColUniqProduct(ma <-chan int64, indexC
 					select {
 					case workLimiter <- struct{}{}:
 						//wg.Add(1)
-						go func(i, g int64) {
+						go func(i string, g int64) {
 							defer func() {
 								<-workLimiter
 								//defer wg.Done()
@@ -414,7 +421,7 @@ func (wttds writeTmpTableDataStruct) TableSelectWhere(columnName, indexColumnDat
 			nullString = fmt.Sprintf(" %s", strings.Join(tmpColumnWhereSlice, "and"))
 			duoColumnSlisp = append(duoColumnSlisp, nullString)
 		}
-		nullSt := fmt.Sprintf("( %s );", strings.Join(duoColumnSlisp, ") or ("))
+		nullSt := fmt.Sprintf("( %s )", strings.Join(duoColumnSlisp, ") or ("))
 		chanData[chankey] = nullSt
 		global.Wlog.Debug("[query table ", wttds.schema, ".", wttds.table, " sql where] ", "Conform to the index sql info: ", nullSt)
 		duoColumnSlisp = []string{}
@@ -452,6 +459,15 @@ func (wttds writeTmpTableDataStruct) AbnormalDataDispos(schema, table string, sq
 	if err != nil {
 		wttds.getErr(fmt.Sprintf("dest: query table %s.%s row data chan error.", wttds.schema, wttds.table), err)
 	}
+	//对不同数据库的的null处理
+	if aa.CheckMd5(stt) != aa.CheckMd5(dtt) {
+		if strings.Contains(stt, "/*go actions columnData*//*") {
+			stt = strings.ReplaceAll(stt, "/*go actions columnData*//*", "/*go actions columnData*/<nil>/*")
+		}
+		if strings.Contains(dtt, "/*go actions columnData*//*") {
+			dtt = strings.ReplaceAll(dtt, "/*go actions columnData*//*", "/*go actions columnData*/<nil>/*")
+		}
+	}
 	if aa.CheckMd5(stt) != aa.CheckMd5(dtt) {
 		add, del := aa.Arrcmp(strings.Split(stt, "/*go actions rowData*/"), strings.Split(dtt, "/*go actions rowData*/"))
 		if len(del) > 0 || len(add) > 0 {
@@ -460,26 +476,26 @@ func (wttds writeTmpTableDataStruct) AbnormalDataDispos(schema, table string, sq
 			lock.Unlock()
 			if len(del) > 0 {
 				for _, i := range del {
-					sqlstr, err = dbExec.DataFix().DataAbnormalFix(schema, table, i, colData.DColumnInfo, sqlwhere[wttds.ddrive], wttds.ddrive, indexColumnType).FixDeleteSqlExec(ddb)
+					sqlstr, err = dbExec.DataFix().DataAbnormalFix(schema, table, i, colData.DColumnInfo, sqlwhere[wttds.ddrive], wttds.ddrive, indexColumnType).FixDeleteSqlExec(ddb, wttds.sdrive)
 					if err != nil {
 						wttds.getErr(fmt.Sprintf("dest: checkSum table %s.%s generate delete sql error.", schema, table), err)
 					}
 					strsqlSliect = append(strsqlSliect, sqlstr)
 				}
-				if len(add) > 0 {
-					for _, i := range add {
-						sqlstr, err = dbExec.DataFix().DataAbnormalFix(schema, table, i, colData.DColumnInfo, sqlwhere[wttds.ddrive], wttds.ddrive, indexColumnType).FixInsertSqlExec(ddb)
-						if err != nil {
-							wttds.getErr(fmt.Sprintf("dest: checkSum table %s.%s generate insert sql error.", schema, table), err)
-						}
-						strsqlSliect = append(strsqlSliect, sqlstr)
+			}
+			if len(add) > 0 {
+				for _, i := range add {
+					sqlstr, err = dbExec.DataFix().DataAbnormalFix(schema, table, i, colData.DColumnInfo, sqlwhere[wttds.ddrive], wttds.ddrive, indexColumnType).FixInsertSqlExec(ddb, wttds.sdrive)
+					if err != nil {
+						wttds.getErr(fmt.Sprintf("dest: checkSum table %s.%s generate insert sql error.", schema, table), err)
 					}
+					strsqlSliect = append(strsqlSliect, sqlstr)
 				}
 			}
 		}
-		wttds.sdbPool.Put(sdb)
-		wttds.ddbPool.Put(ddb)
 	}
+	wttds.sdbPool.Put(sdb)
+	wttds.ddbPool.Put(ddb)
 	return strsqlSliect
 }
 
@@ -503,7 +519,6 @@ func (wttds writeTmpTableDataStruct) queryTableSql(ma map[string]string, cc1 map
 	var sqlwhereMap = make(map[string]string)
 	for k, sqlwhere := range ma {
 		var schema, table string
-		//var tableColInfo []map[string]string
 		if !strings.Contains(k, "/*actionSchema*/") || !strings.Contains(k, "/*actionTable*/") {
 			continue
 		}
@@ -903,17 +918,23 @@ func (wttds writeTmpTableDataStruct) doIndexDataCheck() {
 		dataFix                                                        = make(chan []string, queueDepth)
 		differdone, done, IndexColumnDone, sqlwhereDone, queryDataDone = make(chan bool, 1), make(chan bool, 1), make(chan bool, 1), make(chan bool, 1), make(chan bool, 1)
 		dataFixdone, limitPagDone                                      = make(chan bool, 1), make(chan bool, 1)
-		limitPag                                                       = make(chan int64, queueDepth)
+		limitPag                                                       = make(chan string, queueDepth)
 	)
 	/*
 		获取校验表的索引列数据、索引列长度,校验表的所有列信息
 	*/
 	//获取索引列数据长度，处理索引列数据中有null或空字符串的问题
+	var selectColumnStringM = make(map[string]string)
+	var lengthTrimM = make(map[string]string)
+	var columnLengthAsM = make(map[string][]string)
 	idxc := dbExec.IndexColumnStruct{Schema: wttds.schema, Table: wttds.table, ColumnName: wttds.columnName, ChanrowCount: wttds.chanrowCount, Drivce: wttds.sdrive}
-	selectColumnString, columnLengthAs, lengthTrim := idxc.TableIndexColumn().TmpTableIndexColumnDataLength()
+	selectColumnStringM[wttds.sdrive], columnLengthAsM[wttds.sdrive], lengthTrimM[wttds.sdrive] = idxc.TableIndexColumn().TmpTableIndexColumnDataLength()
+	idxc.Drivce = wttds.ddrive
+	selectColumnStringM[wttds.ddrive], columnLengthAsM[wttds.ddrive], lengthTrimM[wttds.ddrive] = idxc.TableIndexColumn().TmpTableIndexColumnDataLength()
+
 	//查询表的所有列及列的序号，为生成修复语句使用（生成delete语句）
 	go wttds.LimiterSeq(limitPag, limitPagDone)
-	go wttds.indexColUniqProduct(limitPag, indexColData, limitPagDone, IndexColumnDone, selectColumnString, lengthTrim, columnLengthAs, wttds.concurrency)
+	go wttds.indexColUniqProduct(limitPag, indexColData, limitPagDone, IndexColumnDone, selectColumnStringM, lengthTrimM, columnLengthAsM, wttds.concurrency)
 	go wttds.IndexColumnProduct(indexColData, selectWhere, IndexColumnDone, sqlwhereDone, wttds.concurrency)
 	go wttds.SqlwhereProduct(selectWhere, sqlWhere, sqlwhereDone, queryDataDone, wttds.tableAllCol, wttds.concurrency)
 	go wttds.QueryTableDataProduct(sqlWhere, differencesData, queryDataDone, differdone, wttds.tableAllCol, wttds.concurrency)
@@ -1018,7 +1039,7 @@ func (wttds writeTmpTableDataStruct) doNoIndexDataCheck(noIndexC chan struct{}) 
 	for k, v := range tmpAnDateMap {
 		indexColumnType := "mui"
 		if v == "delete" {
-			sqlstr, err = dbExec.DataFix().DataAbnormalFix(wttds.schema, wttds.table, k, colData.DColumnInfo, "", wttds.ddrive, indexColumnType).FixDeleteSqlExec(ddb)
+			sqlstr, err = dbExec.DataFix().DataAbnormalFix(wttds.schema, wttds.table, k, colData.DColumnInfo, "", wttds.ddrive, indexColumnType).FixDeleteSqlExec(ddb, wttds.sdrive)
 			if err != nil {
 				wttds.getErr(fmt.Sprintf("dest: checkSum table %s.%s generate delete sql error.", wttds.schema, wttds.table), err)
 			}
@@ -1028,7 +1049,7 @@ func (wttds writeTmpTableDataStruct) doNoIndexDataCheck(noIndexC chan struct{}) 
 			}
 		}
 		if v == "insert" {
-			sqlstr, err = dbExec.DataFix().DataAbnormalFix(wttds.schema, wttds.table, k, colData.DColumnInfo, "", wttds.ddrive, indexColumnType).FixInsertSqlExec(ddb)
+			sqlstr, err = dbExec.DataFix().DataAbnormalFix(wttds.schema, wttds.table, k, colData.DColumnInfo, "", wttds.ddrive, indexColumnType).FixInsertSqlExec(ddb, wttds.sdrive)
 			if err != nil {
 				wttds.getErr(fmt.Sprintf("dest: checkSum table %s.%s generate insert sql error.", wttds.schema, wttds.table), err)
 			}

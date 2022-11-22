@@ -122,15 +122,171 @@ func (my *QueryTable) TableAllColumn(db *sql.DB) ([]map[string]interface{}, erro
 	return rowDataDisposMap(sqlRows, "TableAllColumn")
 }
 
-func (my *QueryTable) Trigger(db *sql.DB) ([]map[string]interface{}, error) {
-	sqlStr := fmt.Sprintf("select DEFINER,TRIGGER_NAME,ACTION_TIMING,EVENT_MANIPULATION,EVENT_OBJECT_SCHEMA,EVENT_OBJECT_TABLE,ACTION_ORIENTATION,ACTION_STATEMENT from INFORMATION_SCHEMA.TRIGGERS where TRIGGER_SCHEMA in ('%s') and EVENT_OBJECT_TABLE in ('%s');", my.Schema, my.Table)
+//处理唯一索引索引（包含主键索引）
+func (my *QueryTable) keyChoiceDispos(IndexColumnMap map[string][]string, indexType string) map[string][]string {
+	breakIndexColumnType := []string{"INT", "CHAR", "VARCHAR", "YEAR", "DATE", "TIME"}
+	var a, c = make(map[string][]string), make(map[string][]int)
+	var indexChoice = make(map[string][]string)
+	// ----- 处理唯一索引列，根据选择规则选择一个单列索引，（选择次序：int<--char<--year<--date<-time<-其他）
+	infoStr := fmt.Sprintf("Greatdbcheck Checks whether table %s.%s has a unique key index", my.Schema, my.Table)
+	global.Wlog.Info(infoStr)
+	var tmpSliceNum = 100
+	var tmpSliceNumMap = make(map[string]int)
+	//先找出唯一联合索引数量最少的
+	var z string
+	for k, i := range IndexColumnMap {
+		if len(i) <= tmpSliceNum {
+			if len(i) < tmpSliceNum {
+				delete(tmpSliceNumMap, z)
+			}
+			tmpSliceNum = len(i)
+			tmpSliceNumMap[k] = len(i)
+			z = k
+		}
+	}
+
+	//单列唯一索引处理，选择最短的且最合适的索引列（选择次序：int<--char<--year<--date<-time）
+	var choseSeq int = 1000000
+	for k, v := range tmpSliceNumMap {
+		if v == 1 {
+			d := strings.Split(strings.Join(IndexColumnMap[k], ""), " /*actions Column Type*/ ")
+			indexColType := d[1]
+			var e []string
+			for kb, vb := range breakIndexColumnType {
+				if strings.Contains(strings.ToUpper(indexColType), vb) {
+					if kb < choseSeq {
+						indexChoice[fmt.Sprintf("%s_single", indexType)] = append(e, d[0])
+					}
+					choseSeq = kb
+				}
+			}
+		}
+
+		if v > 1 {
+			var nultIndexColumnSlice, nultIndexColumnTypeSlice []string
+			for _, vu := range IndexColumnMap[k] {
+				e := strings.Split(vu, " /*actions Column Type*/ ")
+				nultIndexColumnSlice = append(nultIndexColumnSlice, e[0])
+				nultIndexColumnTypeSlice = append(nultIndexColumnTypeSlice, e[1])
+			}
+			tmpIntCount := strings.Count(strings.ToUpper(strings.Join(nultIndexColumnTypeSlice, ",")), "INT")
+			tmpCharCount := strings.Count(strings.ToUpper(strings.Join(nultIndexColumnTypeSlice, ",")), "CHAR")
+			//处理索引列数量相同的情况，计算每个索引列中包含的int和char数量
+			c[k] = []int{tmpIntCount, tmpCharCount}
+			a[k] = nultIndexColumnSlice
+		}
+	}
+	var intCharMax int
+	var indexChoisName string
+	for k, v := range c {
+		if v[0] > intCharMax {
+			intCharMax = v[0]
+			indexChoisName = k
+		}
+		if indexChoisName == "" && intCharMax == 0 && v[1] > 0 {
+			intCharMax = v[0]
+			indexChoisName = k
+		}
+		if v[0] == 0 && v[1] == 0 {
+			indexChoisName = k
+			break
+		}
+	}
+	indexChoice[fmt.Sprintf("%s_multiseriate", indexType)] = a[indexChoisName]
+	return indexChoice
+}
+
+func (my *QueryTable) TableIndexChoice(queryData []map[string]interface{}) map[string][]string {
+	global.Wlog.Debug("actions init db Example.")
+	var indexChoice = make(map[string][]string)
+	nultiseriateIndexColumnMap := make(map[string][]string)
+	multiseriateIndexColumnMap := make(map[string][]string)
+	var PriIndexCol, uniIndexCol, mulIndexCol []string
+	var indexName string
+	if len(queryData) == 0 {
+		return nil
+	}
+	//索引列处理，联合索引进行列合并
+	//去除主键索引列、唯一索引列、普通索引列的所有列明
+	for _, v := range queryData {
+		if v["nonUnique"].(string) == "0" {
+			//处理主键索引
+			if strings.Contains(v["indexName"].(string), "PRIMARY") {
+				if v["indexName"].(string) != indexName {
+					indexName = v["indexName"].(string)
+				}
+				PriIndexCol = append(PriIndexCol, fmt.Sprintf("%s", v["columnName"]))
+			}
+			//处理唯一索引
+			if v["indexName"].(string) != indexName {
+				indexName = v["indexName"].(string)
+				nultiseriateIndexColumnMap[indexName] = append(uniIndexCol, fmt.Sprintf("%s /*actions Column Type*/ %s", v["columnName"], v["columnType"]))
+			} else {
+				nultiseriateIndexColumnMap[indexName] = append(nultiseriateIndexColumnMap[indexName], fmt.Sprintf("%s /*actions Column Type*/ %s", v["columnName"], v["columnType"]))
+			}
+		}
+		//处理普通索引
+		if v["nonUnique"].(string) == "1" {
+			if v["indexName"].(string) != indexName {
+				indexName = v["indexName"].(string)
+				multiseriateIndexColumnMap[indexName] = append(mulIndexCol, fmt.Sprintf("%s /*actions Column Type*/ %s", v["columnName"], v["columnType"]))
+			} else {
+				multiseriateIndexColumnMap[indexName] = append(multiseriateIndexColumnMap[indexName], fmt.Sprintf("%s /*actions Column Type*/ %s", v["columnName"], v["columnType"]))
+			}
+		}
+	}
+
+	//处理主键索引列
+	//判断是否存在主键索引,每个表的索引只有一个
+	infoStr := fmt.Sprintf("Greatdbcheck Checks whether table %s.%s has a primary key index", my.Schema, my.Table)
+	global.Wlog.Info(infoStr)
+	if len(PriIndexCol) == 1 { //单列主键索引
+		indexChoice["pri_single"] = PriIndexCol
+	} else if len(PriIndexCol) > 1 { //联合主键索引
+		indexChoice["pri_multiseriate"] = PriIndexCol
+	}
+
+	g := my.keyChoiceDispos(nultiseriateIndexColumnMap, "uni")
+	for k, v := range g {
+		if len(v) > 0 {
+			indexChoice[k] = v
+		}
+	}
+	f := my.keyChoiceDispos(multiseriateIndexColumnMap, "mui")
+	for k, v := range f {
+		if len(v) > 0 {
+			indexChoice[k] = v
+		}
+	}
+	return indexChoice
+}
+func (my *QueryTable) Trigger(db *sql.DB) (map[string]string, error) {
+	var tmpb = make(map[string]string)
+	sqlStr := fmt.Sprintf("select TRIGGER_NAME as TRIGGER_NAME from INFORMATION_SCHEMA.TRIGGERS where TRIGGER_SCHEMA in ('%s') and EVENT_OBJECT_TABLE in ('%s');", my.Schema, my.Table)
 	global.Wlog.Info("[check Trigger] exec mysql sql info: ", sqlStr)
 	sqlRows, err := db.Query(sqlStr)
 	if err != nil {
 		global.Wlog.Error("[check Trigger] exec mysql sql fail. sql info: ", sqlStr, "Error Info: ", err)
 		return nil, err
 	}
-	return rowDataDisposMap(sqlRows, "Trigger")
+	triggerName, err := rowDataDisposMap(sqlRows, "Trigger")
+	for _, v := range triggerName {
+		sqlStr = fmt.Sprintf("show create trigger %s.%s", my.Schema, v["TRIGGER_NAME"])
+		global.Wlog.Info("[check Proc] exec oracle sql info: ", sqlStr)
+		sqlRows, err = db.Query(sqlStr)
+		if err != nil {
+			return tmpb, err
+		}
+		createTrigger, err1 := rowDataDisposMap(sqlRows, "TRIGGER")
+		if err1 != nil {
+			fmt.Println(err1)
+		}
+		for _, b := range createTrigger {
+			//tmpb[fmt.Sprintf("%s", v["TRIGGER_NAME"])] = fmt.Sprintf("%s/*proc*/delimiter $\n%s$\ndelimiter ;\n", v["DEFINER"], b["Create Function"])
+			tmpb[fmt.Sprintf("%s", b["Trigger"])] = strings.ReplaceAll(fmt.Sprintf("%s", b["SQL Original Statement"]), "\n", "")
+		}
+	}
+	return tmpb, nil
 }
 
 var procP = func(inout []map[string]interface{}, event string) map[string]string {

@@ -18,7 +18,8 @@ type QueryTableColumnNameInterface interface {
 	DatabaseNameList(ignschema string) []string
 	TableNameList(db *sql.DB) ([]map[string]interface{}, error)
 	TableAllColumn(db *sql.DB) ([]map[string]interface{}, error)
-	Trigger(db *sql.DB) ([]map[string]interface{}, error)
+	TableIndexChoice(queryData []map[string]interface{}) map[string][]string
+	Trigger(db *sql.DB) (map[string]string, error)
 	Proc(db *sql.DB) (map[string]string, error)
 	Func(db *sql.DB) (map[string]string, error)
 	Struct(db *sql.DB) (map[string]string, error)

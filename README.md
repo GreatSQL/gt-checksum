@@ -21,8 +21,26 @@
 
 -----
 ## Usage  ##
+&emsp;&emsp;假如需要校验oracle数据库，则需要下载oracle相应版本的驱动，例如：待校验的数据库为11-2则需要去下载11-2的驱动,并生效,否则连接Oracle会报错
 
-   工具使用说明
+###   安装Oracle Instant Client 
+     从https://www.oracle.com/database/technologies/instant-client/downloads.html下载免费的Basic或Basic Light软件包。
+     #oracle basic client
+     instantclient-basic-linux.x64-11.2.0.4.0.zip
+     # oracle sqlplus
+     instantclient-sqlplus-linux.x64-11.2.0.4.0.zip
+     # oracle sdk
+     instantclient-sdk-linux.x64-11.2.0.4.0.zip
+
+###  配置oracle client并生效
+     shell> unzip instantclient-basic-linux.x64-11.2.0.4.0.zip
+     shell> unzip instantclient-sqlplus-linux.x64-11.2.0.4.0.zip
+     shell> unzip instantclient-sdk-linux.x64-11.2.0.4.0.zip
+     shell> mv instantclient_11_2 /usr/local
+     shell> echo "export LD_LIBRARY_PATH=/usr/local/instantclient_11_2:$LD_LIBRARY_PATH" >>/etc/profile
+     shell> source /etc/profile
+
+###   工具使用说明
 
     shell> ./gt-checkOut
     -- GreatdbCheck init os Args files --
@@ -77,11 +95,15 @@
     --help, -h                                     show help
     --version, -v                                  print the version
 
+--------
+## Examples ##
 
-
-    shell> ./gt-checkOut -S type=mysql,user=root,passwd=abc123,host=xxxx -D type=mysql,user=root,passwd=abc123,host=xxxx -s benchmarksql,sysbench,aaa -is benchmarksql -it sysbench.sbtest3 -nit yes
-    or
-    shell> ./gt-checkOut -f gc.conf
+     1）加载配置文件执行数据校验的命令
+     shell> ./gt-checkOut -f ./gc.conf
+     2）使用命令行传参执行数据校验命令
+     shell> ./gt-checkOut -S type=mysql,user=root,passwd=abc123,host=xxxx -D type=mysql,user=root,passwd=abc123,host=xxxx -s benchmarksql,sysbench,aaa -is benchmarksql -it sysbench.sbtest3 -nit yes
+     3）示例：
+     shell> ./gt-checkOut -f gc.conf
     -- GreatdbCheck init configuration files --
     -- GreatdbCheck init log files --
     -- GreatdbCheck init check table --
@@ -107,23 +129,14 @@
     
     ** GreatdbCheck Overview of verification results **
     Check time:  360.15s (Seconds)
-    Schema          Table   IndexCol        Rows    Differences     Datafix
-    sysbench        sbtest1 id              100000  yes             file
-    sysbench        sbtest4 noIndex         99994   yes             file
-    sysbench        sbtest2 id              100000  yes             file
-
---------
-## Examples ##
-
-     1) 加载配置文件执行数据校验的命令
-     shell> ./gt-checkOut -f ./gc.conf
-     2）使用命令行传参执行数据校验命令
-     shell> ./gt-checkOut -S type=mysql,user=root,passwd=abc123,host=xxxx -D type=mysql,user=root,passwd=abc123,host=xxxx -s benchmarksql,sysbench,aaa -is benchmarksql -it sysbench.sbtest3 -nit yes
-    
+    Schema          Table   IndexCol        Rows            Differences     Datafix
+    sysbench        sbtest1 id              100000,100000     yes             file
+    sysbench        sbtest4 noIndex         99994,99994       yes             file
+    sysbench        sbtest2 id              100000,100000     yes             file
 -------
 ## Building ##
 
-    mycheck needs go version > 1.12 for go mod
+    mycheck needs go version > 1.17 for go mod
 
     shell> git clone https://gitee.com/gt-tools/gt-check-out.git
     shell> go build -o gt-checkOut greatdbCheck.go
@@ -133,8 +146,14 @@
 -----
 ## Requirements ##
 
-    数据校验目前支持MySQL体系的静态数据校验
-
+    数据校验目前支持MySQL and oracle 体系的静态数据校验
+_____
+## doc ##
+    操作使用手册：
+    在线手册：
+            https://bbkv6krkep.feishu.cn/wiki/wikcn92c6R9Eh7hJ0mvw1NEwfld
+    离线手册：
+            /doc/GreatdbToolKit1.1.7.pdf
 -----
 ## Author ##
 

@@ -128,7 +128,86 @@ delete from account where acct_num = 300;
 select * from tmp_account
 
 
+//分区
+CREATE TABLE range_Partition_Table(
+                                      range_key_column DATETIME,
+                                      NAME VARCHAR(20),
+                                      ID INT
+) PARTITION BY RANGE(to_days(range_key_column))
+ (
+     PARTITION PART_202007 VALUES LESS THAN (to_days('2020-07-1')),
+     PARTITION PART_202008 VALUES LESS THAN (to_days('2020-08-1')),
+     PARTITION PART_202009 VALUES LESS THAN (to_days('2020-09-1'))
+);
+
+CREATE TABLE list_Partition_Table(
+                                     NAME VARCHAR(10),
+                                     DATA VARCHAR(20)
+)PARTITION BY LIST COLUMNS (NAME)
+(
+      PARTITION PART_01 VALUES IN ('ME','PE','QC','RD'),
+      PARTITION PART_02 VALUES IN ('SMT','SALE')
+);
 
 
 
+CREATE TABLE hash_Partition_Table(
+                                     hash_key_column INT(30),
+                                     DATA VARCHAR(20)
+) PARTITION BY HASH (hash_key_column)
+PARTITIONS 4;
 
+
+CREATE TABLE range_hash_Partition_Table (id INT, purchased DATE)
+    PARTITION BY RANGE( YEAR(purchased) )
+    SUBPARTITION BY HASH( TO_DAYS(purchased) )
+    SUBPARTITIONS 2 (
+        PARTITION p0 VALUES LESS THAN (1990),
+        PARTITION p1 VALUES LESS THAN (2000),
+        PARTITION p2 VALUES LESS THAN MAXVALUE
+    );
+
+
+CREATE TABLE tb_dept1 (
+  id INT(11) PRIMARY KEY,
+  name VARCHAR(22) NOT NULL,
+  location VARCHAR(50)
+);
+
+CREATE TABLE tb_emp6(
+    id INT(11) PRIMARY KEY,
+    name VARCHAR(25),
+    deptId INT(11),
+    salary FLOAT,
+    CONSTRAINT fk_emp_dept1
+    FOREIGN KEY(deptId) REFERENCES tb_dept1(id)
+);
+
+//存储函数
+DELIMITER $$
+CREATE FUNCTION FUN_getAgeStr(age int) RETURNS varchar(20)
+BEGIN
+	declare results varchar(20);
+	IF age<16 then
+		set results = '小屁孩';
+	ELSEIF age <22 THEN
+		set results = '小鲜肉';
+	ELSEIF age <30 THEN
+		set results = '小青年';
+ELSE
+		SET results = '大爷';
+END IF;
+RETURN results;
+end $$
+DELIMITER ;
+
+//触发器
+CREATE TABLE test1(a1 int);
+CREATE TABLE test2(a2 int);
+DELIMITER $
+CREATE TRIGGER tri_test
+    BEFORE INSERT ON test1
+    FOR EACH ROW BEGIN
+    INSERT INTO test2 SET a2=NEW.a1;
+    END$
+    DELIMITER ;
