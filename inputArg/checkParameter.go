@@ -261,6 +261,10 @@ func (rc *readConf) checkPar(cp *ConfigParameter) {
 			rc.getErr("The fix Path parameters error.", err2)
 		}
 	}
+	//oracle的where 条件中使用in 关联条件最大不能超过1000个，所以需要在此处进行限制单列索引的in数量，报错信息： dpiStmt_execute: ORA-01795: maximum number of expressions in a list is 1000
+	if cp.SingleIndexChanRowCount > 1000 && (cp.DestDrive == "godror" || cp.SourceDrive == "godror") {
+		cp.SingleIndexChanRowCount = 1000
+	}
 	fileExsit(rc, cp.FixPath, cp.FixFileName)
 	if cp.PoolMin/cp.Concurrency < 3 || (cp.PoolMin/cp.Concurrency == 3 && cp.PoolMin%cp.Concurrency == 0) {
 		rc.getErr("The poolMin parameter is at least three times the concurrency parameter.", errors.New("parameter error"))
@@ -268,7 +272,12 @@ func (rc *readConf) checkPar(cp *ConfigParameter) {
 	if cp.CheckMode == "count" {
 		cp.Datafix = "no"
 	}
-
+	if cp.LowerCaseTableNames == "no" {
+		cp.Schema = strings.ToUpper(strings.TrimSpace(cp.Schema))
+		cp.Table = strings.ToUpper(strings.TrimSpace(cp.Table))
+		cp.Igschema = strings.ToUpper(strings.TrimSpace(cp.Igschema))
+		cp.Igtable = strings.ToUpper(strings.TrimSpace(cp.Igtable))
+	}
 }
 
 func (rc *readConf) readConfigFile(config string, cp *ConfigParameter) {

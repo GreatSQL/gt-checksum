@@ -22,7 +22,7 @@ type IndexColumnStruct struct {
 type TableIndexColumner interface {
 	QueryTableIndexColumnInfo(db *sql.DB) ([]map[string]interface{}, error)
 	TmpTableRowsCount(db *sql.DB) (int, error)
-	TmpTableIndexColumnDataDispos(db *sql.DB, threadId int, selectColumnString, lengthTrim string, columnLengthAs, columnName []string, beginSeq, rowDataCh int64) ([]string, error)
+	TmpTableIndexColumnDataDispos(db *sql.DB, threadId int, selectColumnString, lengthTrim string, columnLengthAs, columnName []string, beginSeq string, rowDataCh int64) ([]string, error)
 	TmpTableIndexColumnDataLength() (string, []string, string)
 	NoIndexGeneratingQueryCriteria(db *sql.DB, beginSeq, chanrowCount int) (string, error)
 	GeneratingQuerySql() string

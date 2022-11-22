@@ -2,6 +2,7 @@ package actions
 
 import (
 	"bufio"
+	"context"
 	"database/sql"
 	"fmt"
 	"greatdbCheck/global"
@@ -31,31 +32,28 @@ func isFile(file string) *os.File {
 */
 func (rs rapirSqlStruct) execRapirSql(db *sql.DB, sqlstr, dbType string) error {
 	//执行sql语句不记录binlog
-	var (
-		stmat *sql.Stmt
-		err   error
-	)
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		global.Wlog.Error("[db conn] database create session connection fail. Error Info: ", err)
+		return err
+	}
+	defer conn.Close()
 	if dbType == "mysql" {
-		stmat, err = db.Prepare("set sql_log_bin=0")
-		if err != nil {
-			global.Wlog.Error("actions prepare dataFix SQL fail. sql is:", "\"set sql_log_bin=0\"", " error msg: ", err)
-			return err
-		}
-		if _, err = stmat.Exec(); err != nil {
-			global.Wlog.Error("actions Exec dataFix SQL fail. sql is:", "\"set sql_log_bin=0\"", " error msg: ", err)
-			return err
+		sql1 := "set session sql_log_bin=off"
+		if _, err1 := conn.ExecContext(ctx, sql1); err1 != nil {
+			global.Wlog.Error("actions prepare dataFix SQL fail. sql is:", "\"set session sql_log_bin=off\"", " error msg: ", err)
+			return err1
 		}
 	}
-	stmat, err = db.Prepare(sqlstr)
-	if err != nil {
+	if _, err = conn.ExecContext(ctx, sqlstr); err != nil {
 		global.Wlog.Error(fmt.Sprintf("prepare dataFix SQL fail. sql is: %s,  error msg: %s", sqlstr, err))
+		conn.ExecContext(ctx, "rollback")
 		return err
-	}
-	global.Wlog.Debug("GreatdbCheck prepare sql: \"", sqlstr, "\" at the MySQL")
-	_, err = stmat.Exec()
-	if err != nil {
-		global.Wlog.Error("actions exec sql fail. sql: ", sqlstr, "error info: ", err)
-		return err
+	} else {
+		if _, err = conn.ExecContext(ctx, "commit"); err == nil {
+			global.Wlog.Debug("GreatdbCheck exec sql: \"", sqlstr, "\" at the MySQL")
+		}
 	}
 	return nil
 }

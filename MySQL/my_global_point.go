@@ -62,7 +62,6 @@ func (my *GlobalCS) sessionRR() ([]*sql.DB, error) {
 		db1.SetMaxIdleConns(1000)
 		db1.SetMaxOpenConns(1000)
 		db1.SetConnMaxLifetime(-1)
-		//db1.SetConnMaxIdleTime(time.Second * 86400)
 		db1.SetConnMaxIdleTime(-1)
 		tx, err2 := db1.Begin()
 		if err2 != nil {
