@@ -15,6 +15,6 @@ export LD_LIBRARY_PATH=/usr/local/instantclient_11_2:$LD_LIBRARY_PATH
 go build -o gt-checkOut greatdbCheck.go
 mkdir gt-checkOut-${vs}-linux-arm-64
 cp -rpf gt-checkOut gc.conf gt-checkOut-${vs}-linux-arm-64
-tar zcf gt-checkOut-${vs}-linux-x86-64.tar.gz gt-checkOut-${vs}-linux-arm-64
+tar zcf gt-checkOut-${vs}-linux-arm-64.tar.gz gt-checkOut-${vs}-linux-arm-64
 mkdir binary
 mv gt-checkOut-${vs}-linux-arm-64.tar.gz binary
