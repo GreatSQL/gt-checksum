@@ -14,17 +14,19 @@ type TableColumnNameStruct struct {
 }
 
 type QueryTableColumnNameInterface interface {
-	TableColumnName(db *sql.DB) ([]map[string]interface{}, error)
-	DatabaseNameList(ignschema string) []string
-	TableNameList(db *sql.DB) ([]map[string]interface{}, error)
-	TableAllColumn(db *sql.DB) ([]map[string]interface{}, error)
-	TableIndexChoice(queryData []map[string]interface{}) map[string][]string
-	Trigger(db *sql.DB) (map[string]string, error)
-	Proc(db *sql.DB) (map[string]string, error)
-	Func(db *sql.DB) (map[string]string, error)
+	TableColumnName(db *sql.DB, logThreadSeq int64) ([]map[string]interface{}, error)
+	GlobalAccessPri(db *sql.DB, logThreadSeq int64) bool
+	TableAccessPriCheck(db *sql.DB, checkTableList []string, datefix string, logThreadSeq int64) (map[string]int, error)
+	DatabaseNameList(ignschema string, logThreadSeq int64) []string
+	TableNameList(db *sql.DB, logThreadSeq int64) ([]map[string]interface{}, error)
+	TableAllColumn(db *sql.DB, logThreadSeq int64) ([]map[string]interface{}, error)
+	TableIndexChoice(queryData []map[string]interface{}, logThreadSeq int64) map[string][]string
+	Trigger(db *sql.DB, logThreadSeq int64) (map[string]string, error)
+	Proc(db *sql.DB, logThreadSeq int64) (map[string]string, error)
+	Func(db *sql.DB, logThreadSeq int64) (map[string]string, error)
 	Struct(db *sql.DB) (map[string]string, error)
-	Foreign(db *sql.DB) (map[string]string, error)
-	Partitions(db *sql.DB) (map[string]string, error)
+	Foreign(db *sql.DB, logThreadSeq int64) (map[string]string, error)
+	Partitions(db *sql.DB, logThreadSeq int64) (map[string]string, error)
 }
 
 func (tcns *TableColumnNameStruct) Query() QueryTableColumnNameInterface {

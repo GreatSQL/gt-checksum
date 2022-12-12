@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"greatdbCheck/dbExec"
+	"greatdbCheck/global"
+	"greatdbCheck/go-log/log"
 	"os"
 	"regexp"
 	"runtime"
@@ -11,23 +13,24 @@ import (
 )
 
 type ConfigParameter struct {
-	config                                       string //配置文件信息
-	SourceJdbc, DestJdbc, SourceDrive, DestDrive string //源端的连接信息
-	PoolMin, PoolMax                             int    //数据库连接池最小值
-	Schema, Igschema                             string //待校验的库和忽略的库
-	Table, Igtable                               string //待校验的表和忽略的表
-	CheckNoIndexTable                            string //是否校验无索引表
-	LowerCaseTableNames                          string //是否忽略校验表的大小写
-	LogPath, LogFile, LogLevel                   string //关于日志输出信息配置
-	Concurrency                                  int    //查询并发度
-	SingleIndexChanRowCount                      int    //单索引列校验数据块长度
-	JointIndexChanRowCount                       int    //多列索引校验数据块长度
-	QueueDepth                                   int    //数据块长度
-	Datafix, FixPath, FixFileName                string //差异数据修复的方式及配置
-	IncCheckSwitch                               string //增量数据校验
-	CheckMode                                    string //校验的方式，可以为count(*)或者是校验row数据
-	CheckObject                                  string //校验的对象，可以是struct或者是data
-	Ratio                                        int    //配置数据抽检时配置的比例
+	config                                       string   //配置文件信息
+	SourceJdbc, DestJdbc, SourceDrive, DestDrive string   //源端的连接信息
+	PoolMin, PoolMax                             int      //数据库连接池最小值
+	Schema, Igschema                             string   //待校验的库和忽略的库
+	Table, Igtable                               string   //待校验的表和忽略的表
+	CheckNoIndexTable                            string   //是否校验无索引表
+	LowerCaseTableNames                          string   //是否忽略校验表的大小写
+	LogPath, LogFile, LogLevel                   string   //关于日志输出信息配置
+	Concurrency                                  int      //查询并发度
+	SingleIndexChanRowCount                      int      //单索引列校验数据块长度
+	JointIndexChanRowCount                       int      //多列索引校验数据块长度
+	QueueDepth                                   int      //数据块长度
+	Datafix, FixPath, FixFileName                string   //差异数据修复的方式及配置
+	IncCheckSwitch                               string   //增量数据校验
+	CheckMode                                    string   //校验的方式，可以为count(*)或者是校验row数据
+	CheckObject                                  string   //校验的对象，可以是struct或者是data
+	Ratio                                        int      //配置数据抽检时配置的比例
+	Sfile                                        *os.File //修复文件的文件句柄
 }
 
 var illegalParameterStatus = false
@@ -58,14 +61,14 @@ var rexPat = func(rl *readConf, rex *regexp.Regexp, rexStr string, illegalParame
 		rl.getErr("schema/table/ignoreSchema/ignoreTable Parameter setting error.", errors.New("parameter error"))
 	}
 }
-var fileExsit = func(rl *readConf, logpath, logfile string) {
-	sysType := runtime.GOOS
-	var logFile string
-	if sysType == "linux" {
-		logFile = fmt.Sprintf("%s/%s", logpath, logfile)
-	} else if sysType == "windows" {
-		logFile = fmt.Sprintf("%s\\%s", logpath, logfile)
-	}
+var fileExsit = func(rl *readConf, logFile string) {
+	//sysType := runtime.GOOS
+	//var logFile string
+	//if sysType == "linux" {
+	//	logFile = fmt.Sprintf("%s/%s", logpath, logfile)
+	//} else if sysType == "windows" {
+	//	logFile = fmt.Sprintf("%s\\%s", logpath, logfile)
+	//}
 	if _, err4 := os.Stat(logFile); err4 != nil {
 		if _, err5 := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666); err5 != nil {
 			rl.getErr("Failed to create a log file. Procedure.", err5)
@@ -128,6 +131,7 @@ func (rc *readConf) getErr(msg string, err error) {
 	校验输入参数是否合规
 */
 func (rc *readConf) checkPar(cp *ConfigParameter) {
+	var logThreadSeq int64
 	if cp.SourceDrive == "oracle" {
 		cp.SourceDrive = "godror"
 	}
@@ -137,26 +141,40 @@ func (rc *readConf) checkPar(cp *ConfigParameter) {
 	tmpDbc := dbExec.DBConnStruct{}
 	tmpDbc.DBDevice = cp.SourceDrive
 	tmpDbc.JDBC = cp.SourceJdbc
-	tmpDbc.OpenDB()
-
+	alog := fmt.Sprintf("(%d) source DB node connection message {%s}, start to check it...", logThreadSeq, cp.SourceJdbc)
+	global.Wlog.Info(alog)
+	if _, err := tmpDbc.OpenDB(); err != nil {
+		alog = fmt.Sprintf("(%d) source DB connection message error! ", logThreadSeq)
+		global.Wlog.Error(alog)
+		os.Exit(0)
+	}
+	blog := fmt.Sprintf("(%d) source DB node connection message oK!", logThreadSeq)
+	global.Wlog.Info(blog)
 	tmpDbc.DBDevice = cp.DestDrive
 	tmpDbc.JDBC = cp.DestJdbc
-	tmpDbc.OpenDB()
+	clog := fmt.Sprintf("(%d) dest DB node connection message {%s}, start to check it...", logThreadSeq, cp.DestJdbc)
+	global.Wlog.Info(clog)
+	if _, err := tmpDbc.OpenDB(); err != nil {
+		clog = fmt.Sprintf("(%d) dest DB connection message error! ", logThreadSeq)
+		global.Wlog.Error(clog)
+		os.Exit(0)
+	}
+	dlog := fmt.Sprintf("(%d) dest DB node connection message oK!", logThreadSeq)
+	global.Wlog.Info(dlog)
+	elog := fmt.Sprintf("(%d) Init database and table message {%s,%s}, start to check it...", logThreadSeq, cp.Schema, cp.Table)
+	global.Wlog.Info(elog)
 
-	if cp.PoolMax < int(1) {
-		rc.getErr("poolMax parameter must be greater than 0", errors.New("parameter error"))
-	}
-	if cp.PoolMin < int(1) {
-		rc.getErr("poolMin parameter must be greater than 0", errors.New("parameter error"))
-	}
-
-	if strings.ToUpper(cp.Table) == "ALL" || strings.ToUpper(cp.Table) == "ALL" || strings.ToUpper(cp.Table) == "ALL" { //不法参数
-		rc.getErr("table or ignoreTable Cannot be set to ALL.", errors.New("parameter error"))
-	}
+	//if strings.ToUpper(cp.Table) == "ALL" || strings.ToUpper(cp.Table) == "ALL" || strings.ToUpper(cp.Table) == "ALL" { //不法参数
+	//	rc.getErr("table or ignoreTable Cannot be set to ALL.", errors.New("parameter error"))
+	//}
+	flog := fmt.Sprintf("(%d) start check database Name and ignore database Name Legitimacy.", logThreadSeq)
+	global.Wlog.Info(flog)
 	schr, _ := regexp.Compile(`[0-9a-zA-Z!@_{}-]`)
 	rexPat(rc, schr, cp.Schema, illegalParameterStatus)
 	rexPat(rc, schr, cp.Igschema, illegalParameterStatus)
 	//表级别的正则匹配
+	glog := fmt.Sprintf("(%d) start check table Name and ignore table Name Legitimacy.", logThreadSeq)
+	global.Wlog.Info(glog)
 	tabr, _ := regexp.Compile(`[0-9a-zA-Z!@_{}-]\.[0-9a-zA-Z!@_{}-]`)
 	rexPat(rc, tabr, cp.Table, illegalParameterStatus)
 	rexPat(rc, tabr, cp.Igtable, illegalParameterStatus)
@@ -176,6 +194,7 @@ func (rc *readConf) checkPar(cp *ConfigParameter) {
 	if strings.ToUpper(cp.Igtable) == "NIL" {
 		cp.Igtable = ""
 	}
+
 	//判断校验库表参数
 	if cp.Schema == "" && cp.Table == "" { //库为空，表为空
 		rc.getErr("schema and  table cannot all be set to nil ", errors.New("parameter error"))
@@ -187,7 +206,6 @@ func (rc *readConf) checkPar(cp *ConfigParameter) {
 
 	//判断忽略库表参数
 	cp.Igschema = schemaTableFilter(cp.Igschema, cp.Igtable)
-
 	if cp.Schema == cp.Igschema {
 		cp.Schema = ""
 		cp.Igschema = ""
@@ -216,73 +234,142 @@ func (rc *readConf) checkPar(cp *ConfigParameter) {
 		cp.Schema = strings.Join(e, ",")
 		cp.Igschema = strings.Join(f, ",")
 	}
-	cp.CheckObject = strings.ToLower(cp.CheckObject)
-	cp.CheckMode = strings.ToLower(cp.CheckMode)
-	cp.CheckNoIndexTable = strings.ToLower(cp.CheckNoIndexTable)
-	cp.LowerCaseTableNames = strings.ToLower(cp.LowerCaseTableNames)
-	//判断日志输入参数
-	if cp.LogPath == "" {
-		rc.getErr("Failed to get logPath parameters", errors.New("parameter error"))
-	} else {
-		if exit, err2 := rc.pathExists(cp.LogPath); !exit {
-			rc.getErr("The log Path parameters error.", err2)
-		}
-	}
-	fileExsit(rc, cp.LogPath, cp.LogFile)
-
-	if cp.Concurrency < int(1) {
-		rc.getErr("concurrency parameter must be greater than 0", errors.New("parameter error"))
-	}
-	if cp.SingleIndexChanRowCount < int(1) {
-		rc.getErr("singleIndexChanRowCount parameter must be greater than 0", errors.New("parameter error"))
-	}
-	if cp.JointIndexChanRowCount < int(1) {
-		rc.getErr("jointIndexChanRowCount parameter must be greater than 0", errors.New("parameter error"))
-	}
-	if cp.QueueDepth < int(1) {
-		rc.getErr("QueueDepth parameter must be greater than 0", errors.New("parameter error"))
-	}
-	//if cp.SingleIndexChanRowCount/cp.Concurrency > 5 {
-	//	cp.SingleIndexChanRowCount = cp.SingleIndexChanRowCount / cp.Concurrency
-	//}
-	//if cp.JointIndexChanRowCount/cp.Concurrency > 5 {
-	//	cp.JointIndexChanRowCount = cp.JointIndexChanRowCount / cp.Concurrency
-	//}
-	if cp.Ratio < 1 && cp.Ratio > 100 {
-		rc.getErr("Failed to get Ratio parameters", errors.New("parameter error"))
-	}
-	if cp.FixFileName == "" {
-		cp.FixFileName = "greatdbCheckDataFix.sql"
-	}
-	if cp.FixPath == "" {
-		rc.getErr("Failed to get fixPath parameters", errors.New("parameter error"))
-	} else {
-		if exit, err2 := rc.pathExists(cp.FixPath); !exit {
-			rc.getErr("The fix Path parameters error.", err2)
-		}
-	}
-	//oracle的where 条件中使用in 关联条件最大不能超过1000个，所以需要在此处进行限制单列索引的in数量，报错信息： dpiStmt_execute: ORA-01795: maximum number of expressions in a list is 1000
-	if cp.SingleIndexChanRowCount > 1000 && (cp.DestDrive == "godror" || cp.SourceDrive == "godror") {
-		cp.SingleIndexChanRowCount = 1000
-	}
-	fileExsit(rc, cp.FixPath, cp.FixFileName)
-	if cp.PoolMin/cp.Concurrency < 3 || (cp.PoolMin/cp.Concurrency == 3 && cp.PoolMin%cp.Concurrency == 0) {
-		rc.getErr("The poolMin parameter is at least three times the concurrency parameter.", errors.New("parameter error"))
-	}
-	if cp.CheckMode == "count" {
-		cp.Datafix = "no"
-	}
 	if cp.LowerCaseTableNames == "no" {
 		cp.Schema = strings.ToUpper(strings.TrimSpace(cp.Schema))
 		cp.Table = strings.ToUpper(strings.TrimSpace(cp.Table))
 		cp.Igschema = strings.ToUpper(strings.TrimSpace(cp.Igschema))
 		cp.Igtable = strings.ToUpper(strings.TrimSpace(cp.Igtable))
 	}
+	hlog := fmt.Sprintf("(%d) check schema and table parameter message is {database: %s table: %s ignore database: %s ignore table: %s}", logThreadSeq, cp.Schema, cp.Table, cp.Igschema, cp.Igtable)
+	global.Wlog.Info(hlog)
+
+	ilog := fmt.Sprintf("(%d) start init check object values.", logThreadSeq)
+	global.Wlog.Info(ilog)
+	cp.CheckObject = strings.ToLower(cp.CheckObject)
+	jlog := fmt.Sprintf("(%d) check object parameter message is {%s}.", logThreadSeq, cp.CheckObject)
+	global.Wlog.Info(jlog)
+
+	klog := fmt.Sprintf("(%d) start init check mode values.", logThreadSeq)
+	global.Wlog.Info(klog)
+	cp.CheckMode = strings.ToLower(cp.CheckMode)
+	llog := fmt.Sprintf("(%d) check mode parameter message is {%s}.", logThreadSeq, cp.CheckMode)
+	global.Wlog.Info(llog)
+
+	mlog := fmt.Sprintf("(%d) start init no index table values.", logThreadSeq)
+	global.Wlog.Info(mlog)
+	cp.CheckNoIndexTable = strings.ToLower(cp.CheckNoIndexTable)
+	nlog := fmt.Sprintf("(%d) check no index table parameter message is {%s}.", logThreadSeq, cp.CheckNoIndexTable)
+	global.Wlog.Info(nlog)
+
+	olog := fmt.Sprintf("(%d) start init lower case table name values.", logThreadSeq)
+	global.Wlog.Info(olog)
+	cp.LowerCaseTableNames = strings.ToLower(cp.LowerCaseTableNames)
+	plog := fmt.Sprintf("(%d) check lower case table name parameter message is {%s}.", logThreadSeq, cp.LowerCaseTableNames)
+	global.Wlog.Info(plog)
+
+	qlog := fmt.Sprintf("(%d) start init log out values.", logThreadSeq)
+	global.Wlog.Info(qlog)
+	//判断日志输入参数
+	if cp.LogFile == "" {
+		cp.LogFile = "./gt-checksum.log"
+	} else {
+		if exit, err2 := rc.pathExists(cp.LogFile); !exit {
+			rc.getErr("The log Path parameters error.", err2)
+		}
+	}
+	fileExsit(rc, cp.LogFile)
+	rlog := fmt.Sprintf("(%d) check log out parameter message is {%s}.", logThreadSeq, cp.LogFile)
+	global.Wlog.Info(rlog)
+
+	slog := fmt.Sprintf("(%d) start init data fix file values.", logThreadSeq)
+	global.Wlog.Info(slog)
+	if cp.FixFileName == "" {
+		cp.FixFileName = "./greatdbCheckDataFix.sql"
+	} else {
+		if exit, err2 := rc.pathExists(cp.FixPath); !exit {
+			rc.getErr("The fix Path parameters error.", err2)
+		}
+	}
+
+	tlog := fmt.Sprintf("(%d) Open repair file {%s} handle.", logThreadSeq, cp.FixFileName)
+	global.Wlog.Info(tlog)
+	if _, err := os.Stat(cp.FixFileName); err == nil {
+		os.Remove(cp.FixFileName)
+	}
+	sfile, err := os.OpenFile(cp.FixFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err != nil {
+		ulog := fmt.Sprintf("(%d) Repair the file {%s} handle opening failure, the failure information is {%s}.", logThreadSeq, cp.FixFileName, err)
+		global.Wlog.Error(ulog)
+		os.Exit(1)
+	}
+	cp.Sfile = sfile
+
+	fileExsit(rc, cp.FixFileName)
+	ulog := fmt.Sprintf("(%d) check data fix file parameter message is {%s}.", logThreadSeq, cp.FixFileName)
+	global.Wlog.Info(ulog)
+
+	vlog := fmt.Sprintf("(%d) start init parallel-thds values.", logThreadSeq)
+	global.Wlog.Info(vlog)
+	if cp.Concurrency < int(1) {
+		rc.getErr("parallel-thds parameter must be greater than 0", errors.New("parameter error"))
+	}
+	wlog := fmt.Sprintf("(%d) check parallel-thds parameter message is {%s}.", logThreadSeq, cp.Concurrency)
+	global.Wlog.Info(wlog)
+
+	xlog := fmt.Sprintf("(%d) start init SingleIndexChanRowCount values.", logThreadSeq)
+	global.Wlog.Info(xlog)
+	if cp.SingleIndexChanRowCount < int(1) {
+		rc.getErr("singleIndexChanRowCount parameter must be greater than 0", errors.New("parameter error"))
+	}
+	//oracle的where 条件中使用in 关联条件最大不能超过1000个，所以需要在此处进行限制单列索引的in数量，报错信息： dpiStmt_execute: ORA-01795: maximum number of expressions in a list is 1000
+	if cp.SingleIndexChanRowCount > 1000 && (cp.DestDrive == "godror" || cp.SourceDrive == "godror") {
+		cp.SingleIndexChanRowCount = 1000
+	}
+	ylog := fmt.Sprintf("(%d) check singleIndexChanRowCount parameter message is {%s}.", logThreadSeq, cp.SingleIndexChanRowCount)
+	global.Wlog.Info(ylog)
+
+	zlog := fmt.Sprintf("(%d) start init JointIndexChanRowCount values.", logThreadSeq)
+	global.Wlog.Info(zlog)
+	if cp.JointIndexChanRowCount < int(1) {
+		rc.getErr("jointIndexChanRowCount parameter must be greater than 0", errors.New("parameter error"))
+	}
+	a1log := fmt.Sprintf("(%d) check JointIndexChanRowCount parameter message is {%s}.", logThreadSeq, cp.JointIndexChanRowCount)
+	global.Wlog.Info(a1log)
+
+	b1log := fmt.Sprintf("(%d)  start init queue-size values.", logThreadSeq)
+	global.Wlog.Info(b1log)
+	if cp.QueueDepth < int(1) {
+		rc.getErr("queue-size parameter must be greater than 0", errors.New("parameter error"))
+	}
+	c1log := fmt.Sprintf("(%d) check queue-size parameter message is {%s}.", logThreadSeq, cp.QueueDepth)
+	global.Wlog.Info(c1log)
+
+	d1log := fmt.Sprintf("(%d) start init Ratio values.", logThreadSeq)
+	global.Wlog.Info(d1log)
+	if cp.Ratio < 1 && cp.Ratio > 100 {
+		rc.getErr("Failed to get Ratio parameters", errors.New("parameter error"))
+	}
+	e1log := fmt.Sprintf("(%d) check Ratio parameter message is {%s}.", logThreadSeq, cp.Ratio)
+	global.Wlog.Info(e1log)
+
+	f1log := fmt.Sprintf("(%d) start init check mode values.", logThreadSeq)
+	global.Wlog.Info(f1log)
+	if cp.CheckMode == "count" {
+		cp.Datafix = "no"
+	}
+	g1log := fmt.Sprintf("(%d) check check mode parameter message is {%s}.", logThreadSeq, cp.CheckMode)
+	global.Wlog.Info(g1log)
+
+	h1log := fmt.Sprintf("(%d) start init trx conn pool values.")
+	global.Wlog.Info(h1log)
+	cp.PoolMin = cp.Concurrency*3 + 10
+	cp.PoolMax = cp.PoolMin
+	i1log := fmt.Sprintf("(%d) check trx conn pool message is {%s}.", logThreadSeq, cp.PoolMin)
+	global.Wlog.Info(i1log)
 }
 
 func (rc *readConf) readConfigFile(config string, cp *ConfigParameter) {
 	//初始化传参
-
 	if cp.config != "" {
 		if !strings.Contains(config, "/") {
 			sysType := runtime.GOOS
@@ -300,8 +387,8 @@ func NewConfigInit() *ConfigParameter {
 		rc = readConf{}
 		cp = &ConfigParameter{}
 	)
-
 	cliHelp(cp)
+	fmt.Println("-- gt-checksum init configuration files -- ")
 	if cp.config != "" {
 		if !strings.Contains(cp.config, "/") {
 			sysType := runtime.GOOS
@@ -313,6 +400,12 @@ func NewConfigInit() *ConfigParameter {
 		}
 		rc.getConfig(cp.config, cp)
 	}
+	//初始化日志文件
+	fmt.Println("-- gt-checksum init log files -- ")
+	global.Wlog = log.NewWlog(cp.LogFile)
+
+	global.Wlog.Info("(0) Initializing gt-checksum parameter.")
+	fmt.Println("-- gt-checksum check parameter --")
 	rc.checkPar(cp)
 	return cp
 }

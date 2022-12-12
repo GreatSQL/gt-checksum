@@ -42,27 +42,26 @@
 
 ###   工具使用说明
 
-    shell> ./gt-checkOut
+    shell> ./gt-checksum
     -- GreatdbCheck init os Args files --
     No output configuration parameters, use --help or -h
 
-    shell> ./gt-checkOut -v
+    shell> ./gt-checksum -v
     -- GreatdbCheck init os Args files --
-    gt-checkOut version 1.1.7
+    gt-checkOut version 1.1.8
 
-    shell> ./gt-checkOut -h
-    -- GreatdbCheck init configuration files --
+    shell> ./gt-checksum -h
     NAME:
-    gt-checkOut - mysql Oracle table data verification
+    gt-checksum - mysql Oracle table data verification
 
     USAGE:
     greatdbCheck.exe [global options] command [command options] [arguments...]
 
     VERSION:
-    1.1.7
+    1.1.8
     
     AUTHOR:
-    lianghang <xing.liang@greatdb.com>
+    GreatSQL community <greatsql@greatdb.com>
     
     COMMANDS:
     help, h  Shows a list of commands or help for one command
@@ -99,11 +98,11 @@
 ## Examples ##
 
      1）加载配置文件执行数据校验的命令
-     shell> ./gt-checkOut -f ./gc.conf
+     shell> ./gt-checksum -f ./gc.conf
      2）使用命令行传参执行数据校验命令
-     shell> ./gt-checkOut -S type=mysql,user=root,passwd=abc123,host=xxxx -D type=mysql,user=root,passwd=abc123,host=xxxx -s benchmarksql,sysbench,aaa -is benchmarksql -it sysbench.sbtest3 -nit yes
+     shell> ./gt-checksum -S type=mysql,user=root,passwd=abc123,host=xxxx -D type=mysql,user=root,passwd=abc123,host=xxxx -s benchmarksql,sysbench,aaa -is benchmarksql -it sysbench.sbtest3 -nit yes
      3）示例：
-     shell> ./gt-checkOut -f gc.conf
+     shell> ./gt-checksum -f gc.conf
     -- GreatdbCheck init configuration files --
     -- GreatdbCheck init log files --
     -- GreatdbCheck init check table --
@@ -139,9 +138,9 @@
     mycheck needs go version > 1.17 for go mod
 
     shell> git clone https://gitee.com/gt-tools/gt-check-out.git
-    shell> go build -o gt-checkOut greatdbCheck.go
-    shell> chmod +x gt-checkOut
-    shell> mv gt-checkOut /usr/bin
+    shell> go build -o gt-checksum greatdbCheck.go
+    shell> chmod +x gt-checksum
+    shell> mv gt-checksum /usr/bin
 
 -----
 ## Requirements ##
@@ -153,9 +152,9 @@ _____
     在线手册：
             https://bbkv6krkep.feishu.cn/wiki/wikcn92c6R9Eh7hJ0mvw1NEwfld
     离线手册：
-            /doc/GreatdbToolKit1.1.7.pdf
+            /doc/GreatdbToolKit1.1.8.pdf
 -----
 ## Author ##
 
-    - name: lianghang
-    - mail: xing.liang@greatdb.com
+    - name: GreatSQL community
+    - mail: greatsql@greatdb.com

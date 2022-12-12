@@ -49,23 +49,23 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 		fmt.Println(table)
 	}
 	if m.CheckObject == "func" {
-		table.AddRow("Schema ", "definer ", "funcName ", "checkObject ", "Differences ", "Datafix ")
+		table.AddRow("Schema ", "funcName ", "checkObject ", "Differences ", "Datafix ")
 		for _, pod := range measuredDataPods {
-			table.AddRow(color.RedString(pod.Schema), color.GreenString(pod.Definer), color.WhiteString(pod.FuncName), color.RedString(pod.CheckObject), color.GreenString(pod.Differences), color.YellowString(pod.Datafix))
+			table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.FuncName), color.RedString(pod.CheckObject), color.GreenString(pod.Differences), color.YellowString(pod.Datafix))
 		}
 		fmt.Println(table)
 	}
 	if m.CheckObject == "proc" {
-		table.AddRow("Schema ", "definer ", "procName ", "checkObject ", "Differences ", "Datafix ")
+		table.AddRow("Schema ", "procName ", "checkObject ", "Differences ", "Datafix ")
 		for _, pod := range measuredDataPods {
-			table.AddRow(color.RedString(pod.Schema), color.GreenString(pod.Definer), color.WhiteString(pod.ProcName), color.RedString(pod.CheckObject), color.GreenString(pod.Differences), color.YellowString(pod.Datafix))
+			table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.ProcName), color.RedString(pod.CheckObject), color.GreenString(pod.Differences), color.YellowString(pod.Datafix))
 		}
 		fmt.Println(table)
 	}
 	if m.CheckObject == "trigger" {
-		table.AddRow("Schema ", "Table ", "definer ", "triggerName ", "checkObject ", "Differences ", "Datafix ")
+		table.AddRow("Schema ", "triggerName ", "checkObject ", "Differences ", "Datafix ")
 		for _, pod := range measuredDataPods {
-			table.AddRow(color.RedString(pod.Schema), color.GreenString(pod.Table), color.WhiteString(pod.Definer), color.GreenString(pod.TriggerName), color.RedString(pod.CheckObject), color.GreenString(pod.Differences), color.YellowString(pod.Datafix))
+			table.AddRow(color.RedString(pod.Schema), color.GreenString(pod.TriggerName), color.RedString(pod.CheckObject), color.GreenString(pod.Differences), color.YellowString(pod.Datafix))
 		}
 		fmt.Println(table)
 	}
