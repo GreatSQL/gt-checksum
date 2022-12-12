@@ -7,34 +7,42 @@ import (
 )
 
 type DataAbnormalFixStruct struct {
+	Schema          string
+	Table           string
+	RowData         string
+	SourceDevice    string
+	DestDevice      string
+	Sqlwhere        string
+	IndexColumnType string
+	ColData         []map[string]string
 }
 type DataAbnormalFixInterface interface {
-	FixInsertSqlExec(db *sql.DB, sourceDrive string) (string, error)
-	FixDeleteSqlExec(db *sql.DB, sourceDrive string) (string, error)
+	FixInsertSqlExec(db *sql.DB, sourceDrive string, logThreadSeq int64) (string, error)
+	FixDeleteSqlExec(db *sql.DB, sourceDrive string, logThreadSeq int64) (string, error)
 }
 
-func (dafs DataAbnormalFixStruct) DataAbnormalFix(dname, tname, rowdata string, coldata []map[string]string, sqlwhere, dbDevice, indexCt string) DataAbnormalFixInterface {
+func (dafs DataAbnormalFixStruct) DataAbnormalFix() DataAbnormalFixInterface {
 	var tqaci DataAbnormalFixInterface
-	if dbDevice == "mysql" {
+	if dafs.SourceDevice == "mysql" {
 		tqaci = &mysql.MysqlDataAbnormalFixStruct{
-			Schema:          dname,
-			Table:           tname,
-			Sqlwhere:        sqlwhere,
-			RowData:         rowdata,
-			SourceDevice:    dbDevice,
-			IndexColumnType: indexCt,
-			ColData:         coldata,
+			Schema:          dafs.Schema,
+			Table:           dafs.Table,
+			Sqlwhere:        dafs.Sqlwhere,
+			RowData:         dafs.RowData,
+			SourceDevice:    dafs.SourceDevice,
+			IndexColumnType: dafs.IndexColumnType,
+			ColData:         dafs.ColData,
 		}
 	}
-	if dbDevice == "godror" {
+	if dafs.SourceDevice == "godror" {
 		tqaci = &oracle.OracleDataAbnormalFixStruct{
-			Schema:          dname,
-			Table:           tname,
-			Sqlwhere:        sqlwhere,
-			RowData:         rowdata,
-			SourceDevice:    dbDevice,
-			IndexColumnType: indexCt,
-			ColData:         coldata,
+			Schema:          dafs.Schema,
+			Table:           dafs.Table,
+			Sqlwhere:        dafs.Sqlwhere,
+			RowData:         dafs.RowData,
+			SourceDevice:    dafs.SourceDevice,
+			IndexColumnType: dafs.IndexColumnType,
+			ColData:         dafs.ColData,
 		}
 	}
 	return tqaci

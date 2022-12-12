@@ -15,8 +15,8 @@ type GlobalSNStruct struct {
    全局一致性接口，初始化连接池、获取全局一致性位点
 */
 type DBGlobalCS interface {
-	GlobalCN() (map[string]string, error) //全局一致性位点
-	NewConnPool() (*global.Pool, bool)    //连接池
+	GlobalCN(logThreadSeq int) (map[string]string, error) //全局一致性位点
+	NewConnPool(logThreadSeq int) (*global.Pool, bool)    //连接池
 }
 
 func (gs GlobalSNStruct) GcnObject(poolMin, poolMax int, jdbc, dbDevice string) DBGlobalCS {

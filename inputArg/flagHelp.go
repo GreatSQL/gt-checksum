@@ -26,18 +26,25 @@ var jdbcDispos = func(jdbc string) (string, string) {
 			tmpc["PORT"] = "3306"
 		}
 		drivS = tmpc["TYPE"]
-		jdbcS = fmt.Sprintf("%s:%s@tcp(%s:%s)/information_schema?charset=%s", tmpc["USER"], tmpc["PASSWD"], tmpc["HOST"], tmpc["PORT"], tmpc["CHARSET"])
+		switch drivS {
+		case "mysql":
+			jdbcS = fmt.Sprintf("%s:%s@tcp(%s:%s)/information_schema?charset=%s", tmpc["USER"], tmpc["PASSWD"], tmpc["HOST"], tmpc["PORT"], tmpc["CHARSET"])
+		case "oracle":
+			jdbcS = fmt.Sprintf("%s/%s@%s:%s/%s", tmpc["USER"], tmpc["PASSWD"], tmpc["HOST"], tmpc["PORT"], tmpc["SID"])
+		default:
+			jdbcS = fmt.Sprintf("%s:%s@tcp(%s:%s)/information_schema?charset=%s", tmpc["USER"], tmpc["PASSWD"], tmpc["HOST"], tmpc["PORT"], tmpc["CHARSET"])
+		}
 	}
 	return drivS, jdbcS
 }
 
 func cliHelp(q *ConfigParameter) {
 	app := cli.NewApp()
-	app.Name = "gt-checkOut"                           //应用名称
+	app.Name = "gt-checksum"                           //应用名称
 	app.Usage = "mysql Oracle table data verification" //应用功能说明
-	app.Author = "lianghang"                           //作者
-	app.Email = "xing.liang@greatdb.com"               //邮箱
-	app.Version = "1.1.7"                              //版本
+	app.Author = "GreatSql community"                  //作者
+	app.Email = "greatsql@greatdb.com"                 //邮箱
+	app.Version = "1.1.8"                              //版本
 	app.Flags = []cli.Flag{
 		cli.StringFlag{
 			Name:        "config,f",                                                                      //命令名称
@@ -46,55 +53,55 @@ func cliHelp(q *ConfigParameter) {
 			Destination: &q.config,                                                                       //赋值
 		},
 		cli.StringFlag{
-			Name:        "sourceJdbc,S",
-			Usage:       "Configures source connection information. for example: -S type=mysql,user=root,passwd=abc123,host=127.0.0.1",
+			Name:        "srcDSN,S",
+			Usage:       "Configures source connection information. for example: -S type=oracle,user=root,passwd=abc123,host=127.0.0.1,port=1521,sid=helowin",
 			Value:       "",
 			Destination: &q.SourceJdbc,
 		},
 		cli.StringFlag{
-			Name:        "destJdbc,D",
+			Name:        "dstDSN,D",
 			Usage:       "Configures dest connection information. for example: -D type=mysql,user=root,passwd=abc123,host=127.0.0.1,port=3306,charset=jbk",
 			Value:       "",
 			Destination: &q.DestJdbc,
 		},
-		cli.IntFlag{
-			Name:        "poolMin,pi",
-			Usage:       "configure the min connection pool. for example: --poolMin 50",
-			Value:       50,
-			Destination: &q.PoolMin,
-		},
-		cli.IntFlag{
-			Name:        "poolMax,pa",
-			Usage:       "configure the max connection pool. for example: --poolMin 100",
-			Value:       100,
-			Destination: &q.PoolMax,
-		},
+		//cli.IntFlag{
+		//	Name:        "poolMin,pi",
+		//	Usage:       "configure the min connection pool. for example: --poolMin 50",
+		//	Value:       50,
+		//	Destination: &q.PoolMin,
+		//},
+		//cli.IntFlag{
+		//	Name:        "poolMax,pa",
+		//	Usage:       "configure the max connection pool. for example: --poolMin 100",
+		//	Value:       100,
+		//	Destination: &q.PoolMax,
+		//},
 		cli.StringFlag{
-			Name:        "schema,s",
-			Usage:       "configure the check schema. for example: --schema all or --schema sysbench,benchmarksql",
+			Name:        "databases,d",
+			Usage:       "configure the check schema. for example: --database all or --d sysbench,benchmarksql",
 			Value:       "nil",
 			Destination: &q.Schema,
-			EnvVar:      "nil,schema,...",
+			EnvVar:      "nil,aaa,bbb,...",
 		},
 		cli.StringFlag{
-			Name:        "igschema,is",
-			Usage:       "configure the ignore check schema. for example: --igschema cc,bb",
+			Name:        "ignore-databases,id",
+			Usage:       "configure the ignore check schema. for example: --id cc,bb",
 			Value:       "nil",
-			EnvVar:      "nil,schema,...",
+			EnvVar:      "nil,ccc,ddd,...",
 			Destination: &q.Igschema,
 		},
 		cli.StringFlag{
-			Name:        "table,t",
-			Usage:       "configure the check table. for example: --table nil",
+			Name:        "tables,t",
+			Usage:       "configure the check table. for example: --tables nil",
 			Value:       "nil",
 			EnvVar:      "nil,schema.table,...",
 			Destination: &q.Table,
 		},
 		cli.StringFlag{
-			Name:        "igtable,it",
-			Usage:       "configure the ignore check table. for example: --igtable nil",
+			Name:        "ignore-table,it",
+			Usage:       "configure the ignore check table. for example: -it nil",
 			Value:       "nil",
-			EnvVar:      "nil,schema.table,...",
+			EnvVar:      "nil,database.table,...",
 			Destination: &q.Igtable,
 		},
 		cli.StringFlag{
@@ -111,16 +118,16 @@ func cliHelp(q *ConfigParameter) {
 			EnvVar:      "yes,no",
 			Destination: &q.LowerCaseTableNames,
 		},
-		cli.StringFlag{
-			Name:        "logPath,lp",
-			Usage:       "configures the log output path. for example: --lp /tmp",
-			Value:       "./",
-			Destination: &q.LogPath,
-		},
+		//cli.StringFlag{
+		//	Name:        "logPath,lp",
+		//	Usage:       "configures the log output path. for example: --lp /tmp",
+		//	Value:       "./",
+		//	Destination: &q.LogPath,
+		//},
 		cli.StringFlag{
 			Name:        "logFile,lf",
-			Usage:       "configures the log output file. for example: --lf greatdb.log",
-			Value:       "gt-checkOut.log",
+			Usage:       "configures the log output file. for example: --lf /tmp/greatdb.log",
+			Value:       "gt-checksum.log",
 			Destination: &q.LogFile,
 		},
 		cli.StringFlag{
@@ -131,7 +138,7 @@ func cliHelp(q *ConfigParameter) {
 			Destination: &q.LogLevel,
 		},
 		cli.IntFlag{
-			Name:        "concurrency,cc",
+			Name:        "parallel-thds,cc",
 			Usage:       "configures the number of concurrent checks to check data blocks. for example: --cc 5",
 			Value:       5,
 			Destination: &q.Concurrency,
@@ -169,8 +176,8 @@ func cliHelp(q *ConfigParameter) {
 			Destination: &q.Ratio,
 		},
 		cli.IntFlag{
-			Name:        "queueDepth,qd",
-			Usage:       "configure queue depth. for example: --qd 100",
+			Name:        "queue-size,qs",
+			Usage:       "configure queue depth. for example: --qs 100",
 			Value:       100,
 			Destination: &q.QueueDepth,
 		},

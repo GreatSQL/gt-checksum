@@ -3,6 +3,7 @@ package mysql
 import (
 	"database/sql"
 	"fmt"
+	"greatdbCheck/global"
 	"strconv"
 	"strings"
 )
@@ -21,7 +22,7 @@ type MysqlDataAbnormalFixStruct struct {
 /*
   MySQL 生成insert修复语句
 */
-func (my *MysqlDataAbnormalFixStruct) FixInsertSqlExec(db *sql.DB, sourceDrive string) (string, error) {
+func (my *MysqlDataAbnormalFixStruct) FixInsertSqlExec(db *sql.DB, sourceDrive string, logThreadSeq int64) (string, error) {
 	//查询该表的列名和列信息
 	var insertSql string
 	var valuesNameSeq []string
@@ -61,7 +62,7 @@ func (my *MysqlDataAbnormalFixStruct) FixInsertSqlExec(db *sql.DB, sourceDrive s
 /*
   mysql 生成delete 修复语句
 */
-func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive string) (string, error) {
+func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive string, logThreadSeq int64) (string, error) {
 	var deleteSql, deleteSqlWhere string
 	var indexColName string
 	var indexColSeq string
@@ -75,8 +76,12 @@ func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive s
 			acc["double"] = i["columnName"]
 		}
 	}
+	alog := fmt.Sprintf("(%d)  MySQL DB check table %s.%s starts to generate delete repair statement.", logThreadSeq, my.Schema, my.Table)
+	global.Wlog.Info(alog)
 	//判断索引列是否是有唯一性
 	if strings.Contains(my.IndexColumnType, "mui") { //判断索引列没有唯一性
+		blog := fmt.Sprintf("(%d) MySQL DB check table %s.%s Generate delete repair statement based on common index.", logThreadSeq, my.Schema, my.Table)
+		global.Wlog.Info(blog)
 		var sqlwhereSlice []string
 		if strings.Contains(my.RowData, "/*go actions columnData*/") { //多行数据
 			for k, v := range strings.Split(my.RowData, "/*go actions columnData*/") {
@@ -106,6 +111,8 @@ func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive s
 		deleteSqlWhere = fmt.Sprintf(" %s ", strings.Join(sqlwhereSlice, " and "))
 	}
 	if !strings.Contains(my.IndexColumnType, "mui") { //索引列具有唯一性
+		clog := fmt.Sprintf("(%d) MySQL DB check table %s.%s Generate delete repair statement based on unique index.", logThreadSeq, my.Schema, my.Table)
+		global.Wlog.Info(clog)
 		if strings.Contains(my.Sqlwhere, " in (") {
 			aa := strings.ReplaceAll(my.Sqlwhere, "/* actions */ ", "")
 			indexColName = strings.Split(strings.Split(aa, " in (")[0], "where ")[1]

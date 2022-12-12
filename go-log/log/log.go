@@ -3,7 +3,6 @@ package log
 import (
 	"fmt"
 	"os"
-	"runtime"
 )
 
 var logger = NewDefault(newStdHandler())
@@ -137,27 +136,27 @@ func Warnln(args ...interface{}) {
 	logger.Output(2, LevelWarn, fmt.Sprintln(args...))
 }
 
-func NewWlog(logpath,logfile string) *Logger{
-	var logFile string
-	if runtime.GOOS == "windows"{
-		logFile = fmt.Sprintf("%s\\%s",logpath,logfile)
-	}
-	if runtime.GOOS == "linux"{
-		logFile = fmt.Sprintf("%s/%s",logpath,logfile)
-	}
-	_,err := os.Open(logFile)
-	if err != nil && os.IsNotExist(err){
-		_,err = os.OpenFile(logFile,os.O_WRONLY|os.O_CREATE,0666)
+func NewWlog(logfile string) *Logger {
+	//var logFile string
+	//if runtime.GOOS == "windows"{
+	//	logFile = fmt.Sprintf("%s\\%s",logpath,logfile)
+	//}
+	//if runtime.GOOS == "linux"{
+	//	logFile = fmt.Sprintf("%s/%s",logpath,logfile)
+	//}
+	_, err := os.Open(logfile)
+	if err != nil && os.IsNotExist(err) {
+		_, err = os.OpenFile(logfile, os.O_WRONLY|os.O_CREATE, 0666)
 		fmt.Println(err)
 	}
-	fp,err := os.OpenFile(logFile,os.O_RDWR|os.O_APPEND, 0666)
-	if err != nil{
-		fmt.Println("open log file or create log file fail. Errof info: ",err)
+	fp, err := os.OpenFile(logfile, os.O_RDWR|os.O_APPEND, 0666)
+	if err != nil {
+		fmt.Println("open log file or create log file fail. Errof info: ", err)
 		os.Exit(1)
 	}
-	h,err := NewStreamHandler(fp)
-	if err != nil{
-		Errorln("create log file StreamHandler fail. Errof info: ",err)
+	h, err := NewStreamHandler(fp)
+	if err != nil {
+		Errorln("create log file StreamHandler fail. Errof info: ", err)
 		os.Exit(1)
 	}
 	wlog := NewDefault(h)

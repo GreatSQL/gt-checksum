@@ -26,14 +26,12 @@ type DBConnStruct struct {
 func (dbs *DBConnStruct) openDb() (*sql.DB, error) {
 	db, err := sql.Open(dbs.DBDevice, dbs.JDBC)
 	if err != nil {
-		global.Wlog.Info(dbs.DBDevice, " database open fail. Error Info: ", err)
-		fmt.Println(dbs.DBDevice, "database open fail. Error Info: ", err)
+		global.Wlog.Info("(0) database open fail. Error Info: ", err)
 		return nil, err
 	}
-	if err = db.Ping(); err != nil {
-		fmt.Println(dbs.JDBC, " database connection fail. Error Info: ", err)
-		global.Wlog.Error(dbs.DBDevice, " database connection fail. Error Info: ", err)
 
+	if err = db.Ping(); err != nil {
+		global.Wlog.Error("(0) database connection fail. Error Info: ", err)
 		return nil, err
 	}
 	db.SetMaxIdleConns(dbs.MaxIdleConns)
@@ -46,7 +44,7 @@ func (dbs *DBConnStruct) openDb() (*sql.DB, error) {
 func (dbs *DBConnStruct) OpenDB() (*sql.DB, error) {
 	defer func() {
 		if err := recover(); err != nil {
-			fmt.Println("database create session connection fail, Check the database connection information. Error Info:", err)
+			fmt.Println("database create session connection fail, Check the database connection information.")
 			os.Exit(0)
 		}
 	}()

@@ -1,49 +1,52 @@
 //分区
 CREATE TABLE range_Partition_Table(
-                                      range_key_column DATE,
-                                      NAME VARCHAR2(20),
-                                      ID integer
-) PARTITION BY RANGE(range_key_column)
- (
-     PARTITION PART_202007 VALUES LESS THAN (TO_DATE('2020-07-1 00:00:00','yyyy-mm-dd hh24:mi:ss')),
-     PARTITION PART_202008 VALUES LESS THAN (TO_DATE('2020-08-1 00:00:00','yyyy-mm-dd hh24:mi:ss')),
-     PARTITION PART_202009 VALUES LESS THAN (TO_DATE('2020-09-1 00:00:00','yyyy-mm-dd hh24:mi:ss'))
+    range_key_column DATE,
+    NAME VARCHAR2(20),
+    ID integer
+) PARTITION BY RANGE(range_key_column)(
+    PARTITION PART_202007 VALUES LESS THAN (TO_DATE('2020-07-1 00:00:00','yyyy-mm-dd hh24:mi:ss')),
+    PARTITION PART_202008 VALUES LESS THAN (TO_DATE('2020-08-1 00:00:00','yyyy-mm-dd hh24:mi:ss')),
+    PARTITION PART_202009 VALUES LESS THAN (TO_DATE('2020-09-1 00:00:00','yyyy-mm-dd hh24:mi:ss'))
 );
 
-
+CREATE TABLE "PCMS"."CUSTOMER"(
+    CUSTOMER_ID NUMBER NOT NULL PRIMARY KEY,
+    FIRST_NAME  VARCHAR2(30) NOT NULL,
+    LAST_NAME   VARCHAR2(30) NOT NULL,
+    PHONE        VARCHAR2(15) NOT NULL,
+    EMAIL        VARCHAR2(80),
+    STATUS       CHAR(1)
+)PARTITION BY RANGE ("CUSTOMER_ID")(
+ PARTITION CUS_PART1 VALUES LESS THAN (100000),
+ PARTITION CUS_PART2 VALUES LESS THAN (200000)
+)
 
 CREATE TABLE list_Partition_Table(
-                                     NAME VARCHAR2(10),
-                                     DATA VARCHAR2(20)
-)PARTITION BY LIST(NAME)
-(
-      PARTITION PART_01 VALUES('ME','PE','QC','RD'),
-      PARTITION PART_02 VALUES('SMT','SALE')
+    NAME VARCHAR2(10),
+    DATA VARCHAR2(20)
+)PARTITION BY LIST(NAME)(
+    PARTITION PART_01 VALUES('ME','PE','QC','RD'),
+    PARTITION PART_02 VALUES('SMT','SALE')
 );
-
-
 
 CREATE TABLE hash_Partition_Table(
-                                     hash_key_column VARCHAR2(30),
-                                     DATA VARCHAR2(20)
-) PARTITION BY HASH(hash_key_column)
-(
-     PARTITION PART_0001,
-     PARTITION PART_0002,
-     PARTITION PART_0003,
-     PARTITION PART_0004,
-     PARTITION PART_0005
+    hash_key_column VARCHAR2(30),
+    DATA VARCHAR2(20)
+) PARTITION BY HASH(hash_key_column)(
+    PARTITION PART_0001,
+    PARTITION PART_0002,
+    PARTITION PART_0003,
+    PARTITION PART_0004,
+    PARTITION PART_0005
 );
 
-
 CREATE TABLE range_hash_Partition_Table(
-                                           range_column_key DATE,
-                                           hash_column_key INT,
-                                           DATA VARCHAR2(20)
-)
-    PARTITION BY RANGE(range_column_key)
-SUBPARTITION BY HASH(hash_column_key) SUBPARTITIONS 2
-(
+    range_column_key DATE,
+    hash_column_key INT,
+    DATA VARCHAR2(20)
+) PARTITION BY RANGE(range_column_key)
+    SUBPARTITION BY HASH(hash_column_key) SUBPARTITIONS 2
+    (
    PARTITION PART_202008 VALUES LESS THAN (TO_DATE('2020-08-01','yyyy-mm-dd'))(
       SUBPARTITION SUB_1,
       SUBPARTITION SUB_2,

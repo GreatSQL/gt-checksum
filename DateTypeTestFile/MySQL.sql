@@ -130,30 +130,51 @@ select * from tmp_account
 
 //分区
 CREATE TABLE range_Partition_Table(
-                                      range_key_column DATETIME,
-                                      NAME VARCHAR(20),
-                                      ID INT
-) PARTITION BY RANGE(to_days(range_key_column))
- (
-     PARTITION PART_202007 VALUES LESS THAN (to_days('2020-07-1')),
-     PARTITION PART_202008 VALUES LESS THAN (to_days('2020-08-1')),
-     PARTITION PART_202009 VALUES LESS THAN (to_days('2020-09-1'))
+    range_key_column DATETIME,
+    NAME VARCHAR(20),
+    ID INT
+) PARTITION BY RANGE(to_days(range_key_column))(
+    PARTITION PART_202007 VALUES LESS THAN (to_days('2020-07-1')),
+    PARTITION PART_202008 VALUES LESS THAN (to_days('2020-08-1')),
+    PARTITION PART_202009 VALUES LESS THAN (to_days('2020-09-1'))
 );
 
+CREATE TABLE PCMS.CUSTOMER(
+    CUSTOMER_ID INT NOT NULL PRIMARY KEY,
+    FIRST_NAME  VARCHAR(30) NOT NULL,
+    LAST_NAME   VARCHAR(30) NOT NULL,
+    PHONE        VARCHAR(15) NOT NULL,
+    EMAIL        VARCHAR(80),
+    STATUS       CHAR(1)
+)PARTITION BY RANGE (CUSTOMER_ID)(
+ PARTITION CUS_PART1 VALUES LESS THAN (100000),
+ PARTITION CUS_PART2 VALUES LESS THAN (200000)
+)
+CREATE TABLE PCMS.CUSTOMER1(
+    CUSTOMER_ID VARCHAR(30) NOT NULL,
+    FIRST_NAME  VARCHAR(30) NOT NULL,
+    LAST_NAME   VARCHAR(30) NOT NULL,
+    PHONE       VARCHAR(15) NOT NULL,
+    EMAIL       VARCHAR(80),
+    `STATUS`      CHAR(1)
+)PARTITION BY RANGE COLUMNS (CUSTOMER_ID)(
+ PARTITION CUS_PART1 VALUES LESS THAN ('100000'),
+ PARTITION CUS_PART2 VALUES LESS THAN ('200000')
+)
+
 CREATE TABLE list_Partition_Table(
-                                     NAME VARCHAR(10),
-                                     DATA VARCHAR(20)
-)PARTITION BY LIST COLUMNS (NAME)
-(
-      PARTITION PART_01 VALUES IN ('ME','PE','QC','RD'),
-      PARTITION PART_02 VALUES IN ('SMT','SALE')
+    NAME VARCHAR(10),
+    DATA VARCHAR(20)
+)PARTITION BY LIST COLUMNS (NAME)(
+    PARTITION PART_01 VALUES IN ('ME','PE','QC','RD'),
+    PARTITION PART_02 VALUES IN ('SMT','SALE')
 );
 
 
 
 CREATE TABLE hash_Partition_Table(
-                                     hash_key_column INT(30),
-                                     DATA VARCHAR(20)
+    hash_key_column INT(30),
+    DATA VARCHAR(20)
 ) PARTITION BY HASH (hash_key_column)
 PARTITIONS 4;
 
@@ -165,7 +186,7 @@ CREATE TABLE range_hash_Partition_Table (id INT, purchased DATE)
         PARTITION p0 VALUES LESS THAN (1990),
         PARTITION p1 VALUES LESS THAN (2000),
         PARTITION p2 VALUES LESS THAN MAXVALUE
-    );
+);
 
 
 CREATE TABLE tb_dept1 (

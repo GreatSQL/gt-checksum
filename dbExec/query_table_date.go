@@ -15,42 +15,58 @@ type IndexColumnStruct struct {
 	ChanrowCount     int
 	TableColumn      []map[string]string
 	//TableColumn global.TableAllColumnInfoS
-	Sqlwhere string
-	ColData  []map[string]string
+	Sqlwhere                       string
+	ColData                        []map[string]string
+	SelectColumnString, LengthTrim string
+	ColumnLengthAs                 []string
+	BeginSeq                       string
+	RowDataCh                      int64
 }
 
 type TableIndexColumner interface {
-	QueryTableIndexColumnInfo(db *sql.DB) ([]map[string]interface{}, error)
-	TmpTableRowsCount(db *sql.DB) (int, error)
-	TmpTableIndexColumnDataDispos(db *sql.DB, threadId int, selectColumnString, lengthTrim string, columnLengthAs, columnName []string, beginSeq string, rowDataCh int64) ([]string, error)
-	TmpTableIndexColumnDataLength() (string, []string, string)
-	NoIndexGeneratingQueryCriteria(db *sql.DB, beginSeq, chanrowCount int) (string, error)
-	GeneratingQuerySql() string
-	GeneratingQueryCriteria(db *sql.DB) (string, error)
+	QueryTableIndexColumnInfo(db *sql.DB, logThreadSeq int64) ([]map[string]interface{}, error)
+	IndexDisposF(queryData []map[string]interface{}, logThreadSeq int64) ([]string, map[string][]string, map[string][]string)
+	TmpTableRowsCount(db *sql.DB, logThreadSeq int64) (int, error)
+	TmpTableIndexColumnDataDispos(db *sql.DB, logThreadSeq int64) ([]string, error)
+	TmpTableIndexColumnDataLength(logThreadSeq int64) (string, []string, string)
+	NoIndexOrderBySingerColumn(orderCol []map[string]string) string
+	NoIndexGeneratingQueryCriteria(db *sql.DB, beginSeq, chanrowCount int, orderCol string, logThreadSeq int64) (string, error)
+	GeneratingQuerySql(logThreadSeq int64) string
+	GeneratingQueryCriteria(db *sql.DB, logThreadSeq int64) (string, error)
 }
 
 func (qticis *IndexColumnStruct) TableIndexColumn() TableIndexColumner {
 	var aa TableIndexColumner
 	if qticis.Drivce == "mysql" {
 		aa = &mysql.QueryTableDate{
-			Schema:       qticis.Schema,
-			Table:        qticis.Table,
-			ColumnName:   qticis.ColumnName,
-			ChanrowCount: qticis.ChanrowCount,
-			TableColumn:  qticis.TableColumn,
-			Sqlwhere:     qticis.Sqlwhere,
-			ColData:      qticis.ColData,
+			Schema:             qticis.Schema,
+			Table:              qticis.Table,
+			ColumnName:         qticis.ColumnName,
+			ChanrowCount:       qticis.ChanrowCount,
+			TableColumn:        qticis.TableColumn,
+			Sqlwhere:           qticis.Sqlwhere,
+			ColData:            qticis.ColData,
+			SelectColumnString: qticis.SelectColumnString,
+			LengthTrim:         qticis.LengthTrim,
+			ColumnLengthAs:     qticis.ColumnLengthAs,
+			BeginSeq:           qticis.BeginSeq,
+			RowDataCh:          qticis.RowDataCh,
 		}
 	}
 	if qticis.Drivce == "godror" {
 		aa = &oracle.QueryTableDate{
-			Schema:       qticis.Schema,
-			Table:        qticis.Table,
-			ColumnName:   qticis.ColumnName,
-			ChanrowCount: qticis.ChanrowCount,
-			TableColumn:  qticis.TableColumn,
-			Sqlwhere:     qticis.Sqlwhere,
-			ColData:      qticis.ColData,
+			Schema:             qticis.Schema,
+			Table:              qticis.Table,
+			ColumnName:         qticis.ColumnName,
+			ChanrowCount:       qticis.ChanrowCount,
+			TableColumn:        qticis.TableColumn,
+			Sqlwhere:           qticis.Sqlwhere,
+			ColData:            qticis.ColData,
+			SelectColumnString: qticis.SelectColumnString,
+			LengthTrim:         qticis.LengthTrim,
+			ColumnLengthAs:     qticis.ColumnLengthAs,
+			BeginSeq:           qticis.BeginSeq,
+			RowDataCh:          qticis.RowDataCh,
 		}
 	}
 	return aa

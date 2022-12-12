@@ -3,6 +3,7 @@ package oracle
 import (
 	"database/sql"
 	"fmt"
+	"greatdbCheck/global"
 	"strconv"
 	"strings"
 )
@@ -18,11 +19,13 @@ type OracleDataAbnormalFixStruct struct {
 	ColData         []map[string]string
 }
 
-func (or *OracleDataAbnormalFixStruct) FixInsertSqlExec(db *sql.DB, sourceDrive string) (string, error) {
+func (or *OracleDataAbnormalFixStruct) FixInsertSqlExec(db *sql.DB, sourceDrive string, logThreadSeq int64) (string, error) {
 	//查询该表的列名和列信息
 	var insertSql string
 	var valuesNameSeq []string
 	colData := or.ColData
+	alog := fmt.Sprintf("(%d)  Oracle DB check table %s.%s starts to generate insert repair statement.", logThreadSeq, or.Schema, or.Table)
+	global.Wlog.Info(alog)
 	//处理mysql查询时间列时数据带时区问题  2021-01-23 10:16:29 +0800 CST
 	for i := range or.ColData {
 		var tmpcolumnName string
@@ -53,7 +56,7 @@ func (or *OracleDataAbnormalFixStruct) FixInsertSqlExec(db *sql.DB, sourceDrive 
 	return insertSql, nil
 }
 
-func (or *OracleDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive string) (string, error) {
+func (or *OracleDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive string, logThreadSeq int64) (string, error) {
 	var deleteSql, deleteSqlWhere string
 	var indexColName string
 	var indexColSeq string
@@ -63,9 +66,12 @@ func (or *OracleDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive 
 		cls, _ := strconv.Atoi(fmt.Sprintf("%s", colData[i]["columnSeq"]))
 		ad[fmt.Sprintf("%s", colData[i]["columnName"])] = cls
 	}
-
+	alog := fmt.Sprintf("(%d)  Oracle DB check table %s.%s starts to generate delete repair statement.", logThreadSeq, or.Schema, or.Table)
+	global.Wlog.Info(alog)
 	//判断索引列没有唯一性
 	if strings.Contains(or.IndexColumnType, "mui") {
+		blog := fmt.Sprintf("(%d) Oracle DB check table %s.%s Generate delete repair statement based on common index.", logThreadSeq, or.Schema, or.Table)
+		global.Wlog.Info(blog)
 		var sqlwhereSlice []string
 		if strings.Contains(or.RowData, "/*go actions columnData*/") {
 			for k, v := range strings.Split(or.RowData, "/*go actions columnData*/") {
@@ -93,6 +99,8 @@ func (or *OracleDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive 
 
 	//索引列具有唯一性
 	if !strings.Contains(or.IndexColumnType, "mui") {
+		clog := fmt.Sprintf("(%d) Oracle DB check table %s.%s Generate delete repair statement based on unique index.", logThreadSeq, or.Schema, or.Table)
+		global.Wlog.Info(clog)
 		//单列索引处理方式
 		if strings.Contains(or.Sqlwhere, " in (") {
 			//获取索引列及列的序号
