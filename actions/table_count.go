@@ -242,7 +242,6 @@ func (sp *SchedulePlan) DoNoIndexDataCheck(noIndexC chan struct{}) {
 	var noIndexD = make(chan struct{}, sp.Concurrency)
 	rand.Seed(time.Now().UnixNano())
 	for k, v := range sp.tableIndexColumnMap {
-		noIndexC <- struct{}{}
 		time.Sleep(time.Nanosecond * 2)
 		logThreadSeq := rand.Int63()
 		var schema, table string
@@ -270,6 +269,7 @@ func (sp *SchedulePlan) DoNoIndexDataCheck(noIndexC chan struct{}) {
 		if len(v) != 0 {
 			continue
 		}
+		noIndexC <- struct{}{}
 		go sp.dataDisposCheck(schema, table, chanrowCount, noIndexC, noIndexD, logThreadSeq)
 	}
 	ylog := fmt.Sprintf("The data consistency check of the non-indexed table is completed.!!!")
