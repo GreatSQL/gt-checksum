@@ -203,7 +203,7 @@ func (stcls *schemaTable) GlobalAccessPriCheck(logThreadSeq, logThreadSeq2 int64
 	//var logThreadSeq int = 19
 	elog := fmt.Sprintf("(%d) Start to get the source and target Global Access Permissions information and check whether they are consistent", logThreadSeq)
 	global.Wlog.Info(elog)
-	tc := dbExec.TableColumnNameStruct{Schema: stcls.schema, Table: stcls.table, Drive: stcls.sourceDrive}
+	tc := dbExec.TableColumnNameStruct{Schema: stcls.schema, Table: stcls.table, Drive: stcls.sourceDrive, Datafix: stcls.datefix}
 	flog := fmt.Sprintf("(%d) Start to get the source Global Access Permissions information and check whether they are consistent", logThreadSeq)
 	global.Wlog.Info(flog)
 	StableList := tc.Query().GlobalAccessPri(stcls.sourceDB, logThreadSeq2)

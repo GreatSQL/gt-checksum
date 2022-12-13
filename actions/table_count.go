@@ -206,23 +206,28 @@ func (sp *SchedulePlan) dataDisposCheck(schema, table string, chanrowCount int, 
 	for ki, vi := range tmpAnDateMap {
 		noIndexD <- struct{}{}
 		indexColumnType := "mui"
-		if vi == "delete" {
-			dlog := fmt.Sprintf("(%d) Start to generate the delete statement of check table %s.%s.", logThreadSeq, schema, table)
-			global.Wlog.Info(dlog)
-			dbf.RowData = ki
-			dbf.IndexColumnType = indexColumnType
-			sqlstr, _ := dbf.DataAbnormalFix().FixDeleteSqlExec(ddb, sp.sdrive, logThreadSeq)
-			ApplyDataFix(sqlstr, ddb, sp.datafixType, sp.sfile, sp.ddrive, logThreadSeq)
-		}
-		if vi == "insert" {
-			dlog := fmt.Sprintf("(%d) Start to generate the insert statement of check table %s.%s.", logThreadSeq, schema, table)
-			global.Wlog.Info(dlog)
-			dbf.RowData = ki
-			dbf.IndexColumnType = indexColumnType
-			sqlstr, _ := dbf.DataAbnormalFix().FixDeleteSqlExec(ddb, sp.sdrive, logThreadSeq)
-			ApplyDataFix(sqlstr, ddb, sp.datafixType, sp.sfile, sp.ddrive, logThreadSeq)
-		}
-		<-noIndexD
+		go func() {
+			defer func() {
+				<-noIndexD
+			}()
+			if vi == "delete" {
+				dlog := fmt.Sprintf("(%d) Start to generate the delete statement of check table %s.%s.", logThreadSeq, schema, table)
+				global.Wlog.Info(dlog)
+				dbf.RowData = ki
+				dbf.IndexColumnType = indexColumnType
+				sqlstr, _ := dbf.DataAbnormalFix().FixDeleteSqlExec(ddb, sp.sdrive, logThreadSeq)
+				ApplyDataFix(sqlstr, ddb, sp.datafixType, sp.sfile, sp.ddrive, logThreadSeq)
+			}
+			if vi == "insert" {
+				dlog := fmt.Sprintf("(%d) Start to generate the insert statement of check table %s.%s.", logThreadSeq, schema, table)
+				global.Wlog.Info(dlog)
+				dbf.RowData = ki
+				dbf.IndexColumnType = indexColumnType
+				sqlstr, _ := dbf.DataAbnormalFix().FixDeleteSqlExec(ddb, sp.sdrive, logThreadSeq)
+				ApplyDataFix(sqlstr, ddb, sp.datafixType, sp.sfile, sp.ddrive, logThreadSeq)
+			}
+		}()
+
 	}
 	<-noIndexC
 	xlog := fmt.Sprintf("(%d) No index table %s.%s The data consistency check of the original target end is completed", logThreadSeq, schema, table)

@@ -18,7 +18,6 @@ func main() {
 
 	//获取配置文件
 	m := inputArg.NewConfigInit()
-
 	if !actions.SchemaTableInit(m).GlobalAccessPriCheck(1, 2) {
 		os.Exit(0)
 	}
@@ -58,6 +57,7 @@ func main() {
 		tableList, _ = actions.SchemaTableInit(m).TableColumnNameCheck(tableList, 9, 10)
 		//19、20
 		tableList, _ = actions.SchemaTableInit(m).TableAccessPriCheck(tableList, 19, 20)
+
 		if len(tableList) > 0 {
 			//根据要校验的表，获取该表的全部列信息
 			fmt.Println("-- GreatdbCheck init check table column --")
