@@ -4,7 +4,7 @@ stages:
 variables:
   GIT_SUBMODULE_STRATEGY: recursive
 
-gt_checkout_build:
+gt_checkout_build_x86:
   stage: build
   retry: 2
   only:
@@ -19,7 +19,7 @@ gt_checkout_build:
       - binary/
     expire_in: 30 days
 
-gt_checkout_build:
+gt_checkout_build_arm:
   stage: build
   retry: 2
   only:
