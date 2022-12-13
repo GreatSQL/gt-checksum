@@ -7,10 +7,11 @@ import (
 )
 
 type TableColumnNameStruct struct {
-	Schema string
-	Table  string
-	Drive  string
-	Db     *sql.DB
+	Schema  string
+	Table   string
+	Drive   string
+	Db      *sql.DB
+	Datafix string
 }
 
 type QueryTableColumnNameInterface interface {

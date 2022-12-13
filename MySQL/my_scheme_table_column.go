@@ -9,9 +9,10 @@ import (
 )
 
 type QueryTable struct {
-	Schema string
-	Table  string
-	Db     *sql.DB
+	Schema  string
+	Table   string
+	Db      *sql.DB
+	Datafix string
 }
 
 var rowDataDisposMap = func(sqlRows *sql.Rows, event string, seq int64) ([]map[string]interface{}, error) {

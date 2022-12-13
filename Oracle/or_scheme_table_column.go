@@ -8,9 +8,10 @@ import (
 )
 
 type QueryTable struct {
-	Schema string
-	Table  string
-	Db     *sql.DB
+	Schema  string
+	Table   string
+	Db      *sql.DB
+	Datafix string
 }
 
 var rowDataDisposMap = func(sqlRows *sql.Rows, event string, seq int64) ([]map[string]interface{}, error) {
@@ -163,7 +164,6 @@ func (or *QueryTable) GlobalAccessPri(db *sql.DB, logThreadSeq int64) bool {
 	globalDynamic := sqlQuery(logThreadSeq, strsql, "Global Dynamic Grants")
 	//权限缺失列表
 	if len(globalDynamic) == 0 {
-		//strsql = fmt.Sprintf("SELECT PRIVILEGE FROM ROLE_SYS_PRIVS WHERE PRIVILEGE IN ('SELECT ANY TABLE','INSERT ANY TABLE','DELETE ANY TABLE','SELECT ANY DICTIONARY') group by PRIVILEGE")
 		strsql = fmt.Sprintf("SELECT PRIVILEGE as \"privileges\" FROM ROLE_SYS_PRIVS WHERE PRIVILEGE IN ('%s') group by PRIVILEGE", strings.Join(globalPriS, "','"))
 		globalDynamic = sqlQuery(logThreadSeq, strsql, "Global Dynamic Grants")
 	}
@@ -333,8 +333,9 @@ func (or *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 			abPT[K]++
 		}
 	}
+	fmt.Println("111: ", or.Schema, or.Table)
 	if len(PT) == 0 {
-		olog := fmt.Sprintf("(%d) The current table %s.%s in Oracle DB lacks some rights restrictions, please check the rights related to the table %s {%s}", logThreadSeq, or.Schema, or.Table, or.Schema, or.Table, globalPri)
+		olog := fmt.Sprintf("(%d) The current table %s.%s in Oracle DB lacks some rights restrictions, please check the rights related to the table %s.%s {%v}", logThreadSeq, or.Schema, or.Table, or.Schema, or.Table, globalPri)
 		global.Wlog.Error(olog)
 	}
 	olog := fmt.Sprintf("(%d) The Oracle DB table information that needs to be verified to meet the permissions is {%v}, and the information that is not satisfied is {%v}...", logThreadSeq, PT, abPT)

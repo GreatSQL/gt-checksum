@@ -78,7 +78,8 @@ func (wttds writeTmpTableDataStruct) indexColUniqProduct(ma <-chan string, index
 			}
 		case <-breakDone:
 			global.Wlog.Info("[check table ", wttds.schema, ".", wttds.table, " index column]", "table Index Column Data done!")
-			fmt.Println("table Index Column Data done!", time1.Format("2006-01-02 15:04:11"))
+			time1.Second()
+			fmt.Println("table Index Column Data done!", time.Now().Format("2006-01-02 15:04:05"))
 			close(execStatus)
 			close(indexColData)
 			differDone <- true
@@ -149,7 +150,8 @@ func (wttds *writeTmpTableDataStruct) IndexColumnProduct(ma <-chan []string, out
 			}
 		case <-breakDone:
 			global.Wlog.Info("table QuerySql Where Data Generate done!")
-			fmt.Println("table QuerySql Where Data Generate done!", time1.Format("2006-01-02 15:04:11"))
+			time1.Second()
+			fmt.Println("table QuerySql Where Data Generate done!", time.Now().Format("2006-01-02 15:04:05"))
 			close(execStatus)
 			sqlwhereDone <- true
 			close(out1)
@@ -209,7 +211,8 @@ func (wttds *writeTmpTableDataStruct) SqlwhereProduct(ma chan map[string]string,
 				breakStatus = true
 			}
 		case <-breakDone:
-			fmt.Println("table query sql Product done!", time1.Format("2006-01-02 15:04:11"))
+			time1.Second()
+			fmt.Println("table query sql Product done!", time.Now().Format("2006-01-02 15:04:05"))
 			close(execStatus)
 			close(out2)
 			differDone <- true
@@ -271,7 +274,8 @@ func (wttds *writeTmpTableDataStruct) QueryTableDataProduct(ma chan map[string]s
 				breakStatus = true
 			}
 		case <-breakDone:
-			fmt.Println("table All Measured Data CheckSum done!", time1.Format("2006-01-02 15:04:11"))
+			time1.Second()
+			fmt.Println("table All Measured Data CheckSum done!", time.Now().Format("2006-01-02 15:04:05"))
 			close(execStatus)
 			close(out2)
 			differDone <- true
@@ -338,7 +342,8 @@ func (wttds *writeTmpTableDataStruct) AbnormalDataProduct(ma chan DifferencesDat
 				breakStatus = true
 			}
 		case <-breakDone:
-			fmt.Println("table Differences in Data CheckSum done!", time1.Format("2006-01-02 15:04:11"))
+			time1.Second()
+			fmt.Println("table Differences in Data CheckSum done!", time.Now().Format("2006-01-02 15:04:05"))
 			close(execStatus)
 			close(out1)
 			diffdone <- true
@@ -402,7 +407,8 @@ func (wttds *writeTmpTableDataStruct) DataFixDataProduct(ma chan []string, diffd
 				breakStatus = true
 			}
 		case <-breakDone:
-			fmt.Println("table Differences in Data fix done!!", time1.Format("2006-01-02 15:04:11"))
+			time1.Second()
+			fmt.Println("table Differences in Data fix done!!", time.Now().Format("2006-01-02 15:04:05"))
 			close(execStatus)
 			done <- true
 			return

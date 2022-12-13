@@ -313,7 +313,7 @@ func (rc *readConf) checkPar(cp *ConfigParameter) {
 	if cp.Concurrency < int(1) {
 		rc.getErr("parallel-thds parameter must be greater than 0", errors.New("parameter error"))
 	}
-	wlog := fmt.Sprintf("(%d) check parallel-thds parameter message is {%s}.", logThreadSeq, cp.Concurrency)
+	wlog := fmt.Sprintf("(%d) check parallel-thds parameter message is {%d}.", logThreadSeq, cp.Concurrency)
 	global.Wlog.Info(wlog)
 
 	xlog := fmt.Sprintf("(%d) start init SingleIndexChanRowCount values.", logThreadSeq)
@@ -325,7 +325,7 @@ func (rc *readConf) checkPar(cp *ConfigParameter) {
 	if cp.SingleIndexChanRowCount > 1000 && (cp.DestDrive == "godror" || cp.SourceDrive == "godror") {
 		cp.SingleIndexChanRowCount = 1000
 	}
-	ylog := fmt.Sprintf("(%d) check singleIndexChanRowCount parameter message is {%s}.", logThreadSeq, cp.SingleIndexChanRowCount)
+	ylog := fmt.Sprintf("(%d) check singleIndexChanRowCount parameter message is {%d}.", logThreadSeq, cp.SingleIndexChanRowCount)
 	global.Wlog.Info(ylog)
 
 	zlog := fmt.Sprintf("(%d) start init JointIndexChanRowCount values.", logThreadSeq)
@@ -333,7 +333,7 @@ func (rc *readConf) checkPar(cp *ConfigParameter) {
 	if cp.JointIndexChanRowCount < int(1) {
 		rc.getErr("jointIndexChanRowCount parameter must be greater than 0", errors.New("parameter error"))
 	}
-	a1log := fmt.Sprintf("(%d) check JointIndexChanRowCount parameter message is {%s}.", logThreadSeq, cp.JointIndexChanRowCount)
+	a1log := fmt.Sprintf("(%d) check JointIndexChanRowCount parameter message is {%d}.", logThreadSeq, cp.JointIndexChanRowCount)
 	global.Wlog.Info(a1log)
 
 	b1log := fmt.Sprintf("(%d)  start init queue-size values.", logThreadSeq)
@@ -341,7 +341,7 @@ func (rc *readConf) checkPar(cp *ConfigParameter) {
 	if cp.QueueDepth < int(1) {
 		rc.getErr("queue-size parameter must be greater than 0", errors.New("parameter error"))
 	}
-	c1log := fmt.Sprintf("(%d) check queue-size parameter message is {%s}.", logThreadSeq, cp.QueueDepth)
+	c1log := fmt.Sprintf("(%d) check queue-size parameter message is {%d}.", logThreadSeq, cp.QueueDepth)
 	global.Wlog.Info(c1log)
 
 	d1log := fmt.Sprintf("(%d) start init Ratio values.", logThreadSeq)
@@ -349,7 +349,7 @@ func (rc *readConf) checkPar(cp *ConfigParameter) {
 	if cp.Ratio < 1 && cp.Ratio > 100 {
 		rc.getErr("Failed to get Ratio parameters", errors.New("parameter error"))
 	}
-	e1log := fmt.Sprintf("(%d) check Ratio parameter message is {%s}.", logThreadSeq, cp.Ratio)
+	e1log := fmt.Sprintf("(%d) check Ratio parameter message is {%d}.", logThreadSeq, cp.Ratio)
 	global.Wlog.Info(e1log)
 
 	f1log := fmt.Sprintf("(%d) start init check mode values.", logThreadSeq)
@@ -360,11 +360,11 @@ func (rc *readConf) checkPar(cp *ConfigParameter) {
 	g1log := fmt.Sprintf("(%d) check check mode parameter message is {%s}.", logThreadSeq, cp.CheckMode)
 	global.Wlog.Info(g1log)
 
-	h1log := fmt.Sprintf("(%d) start init trx conn pool values.")
+	h1log := fmt.Sprintf("(%d) start init trx conn pool values.", logThreadSeq)
 	global.Wlog.Info(h1log)
 	cp.PoolMin = cp.Concurrency*3 + 10
 	cp.PoolMax = cp.PoolMin
-	i1log := fmt.Sprintf("(%d) check trx conn pool message is {%s}.", logThreadSeq, cp.PoolMin)
+	i1log := fmt.Sprintf("(%d) check trx conn pool message is {%d}.", logThreadSeq, cp.PoolMin)
 	global.Wlog.Info(i1log)
 }
 

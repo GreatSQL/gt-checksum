@@ -54,6 +54,7 @@ func (my QueryTableDate) QueryTableIndexColumnInfo(db *sql.DB, logThreadSeq int6
 	tableData, err := rowDataDisposMap(sqlRows, "IndexColumn", logThreadSeq)
 	zlog := fmt.Sprintf("(%d) Oracle db query table index column data completion.", logThreadSeq)
 	global.Wlog.Info(zlog)
+	
 	return tableData, err
 }
 func (my QueryTableDate) IndexDisposF(queryData []map[string]interface{}, logThreadSeq int64) ([]string, map[string][]string, map[string][]string) {
