@@ -10,7 +10,9 @@ import (
 	"time"
 )
 
-var fullDataCompletionStatus = make(chan struct{}, 1)
+var (
+	fullDataCompletionStatus = make(chan struct{}, 1)
+)
 
 func main() {
 	//获取当前时间
@@ -108,6 +110,7 @@ func main() {
 				}
 				//开始有索引表校验
 				actions.CheckTableQuerySchedule(sdc, ddc, tableIndexColumnMap, tableAllCol, *m).Schedulingtasks()
+				//if m.CheckNoIndexTable == "yes" {
 				for {
 					time.Sleep(time.Second)
 					if len(noIndexC) == 0 {
@@ -116,6 +119,7 @@ func main() {
 						break
 					}
 				}
+				//}
 			case "count":
 				actions.CheckTableQuerySchedule(sdc, ddc, tableIndexColumnMap, tableAllCol, *m).DoCountDataCheck()
 			case "sample":
