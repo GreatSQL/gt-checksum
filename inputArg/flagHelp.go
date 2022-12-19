@@ -42,9 +42,9 @@ func cliHelp(q *ConfigParameter) {
 	app := cli.NewApp()
 	app.Name = "gt-checksum"                           //应用名称
 	app.Usage = "mysql Oracle table data verification" //应用功能说明
-	app.Author = "GreatSql community"                  //作者
-	app.Email = "greatsql@greatdb.com"                 //邮箱
-	app.Version = "1.1.8"                              //版本
+	app.Author = "GreatSQL"                            //作者
+	app.Email = "GreatSQL <greatsql@greatdb.com>"      //邮箱
+	app.Version = "1.1.9"                              //版本
 	app.Flags = []cli.Flag{
 		cli.StringFlag{
 			Name:        "config,f",                                                                      //命令名称
@@ -63,32 +63,6 @@ func cliHelp(q *ConfigParameter) {
 			Usage:       "Configures dest connection information. for example: -D type=mysql,user=root,passwd=abc123,host=127.0.0.1,port=3306,charset=jbk",
 			Value:       "",
 			Destination: &q.DestJdbc,
-		},
-		//cli.IntFlag{
-		//	Name:        "poolMin,pi",
-		//	Usage:       "configure the min connection pool. for example: --poolMin 50",
-		//	Value:       50,
-		//	Destination: &q.PoolMin,
-		//},
-		//cli.IntFlag{
-		//	Name:        "poolMax,pa",
-		//	Usage:       "configure the max connection pool. for example: --poolMin 100",
-		//	Value:       100,
-		//	Destination: &q.PoolMax,
-		//},
-		cli.StringFlag{
-			Name:        "databases,d",
-			Usage:       "configure the check schema. for example: --database all or --d sysbench,benchmarksql",
-			Value:       "nil",
-			Destination: &q.Schema,
-			EnvVar:      "nil,aaa,bbb,...",
-		},
-		cli.StringFlag{
-			Name:        "ignore-databases,id",
-			Usage:       "configure the ignore check schema. for example: --id cc,bb",
-			Value:       "nil",
-			EnvVar:      "nil,ccc,ddd,...",
-			Destination: &q.Igschema,
 		},
 		cli.StringFlag{
 			Name:        "tables,t",
@@ -118,23 +92,17 @@ func cliHelp(q *ConfigParameter) {
 			EnvVar:      "yes,no",
 			Destination: &q.LowerCaseTableNames,
 		},
-		//cli.StringFlag{
-		//	Name:        "logPath,lp",
-		//	Usage:       "configures the log output path. for example: --lp /tmp",
-		//	Value:       "./",
-		//	Destination: &q.LogPath,
-		//},
 		cli.StringFlag{
 			Name:        "logFile,lf",
 			Usage:       "configures the log output file. for example: --lf /tmp/greatdb.log",
-			Value:       "gt-checksum.log",
+			Value:       "./gt-checksum.log",
 			Destination: &q.LogFile,
 		},
 		cli.StringFlag{
 			Name:        "logLevel,ll",
 			Usage:       "configures the log output level. for example: --ll info",
 			Value:       "info",
-			EnvVar:      "debug,info,warning,error",
+			EnvVar:      "debug,info,warn,error",
 			Destination: &q.LogLevel,
 		},
 		cli.IntFlag{
@@ -189,18 +157,10 @@ func cliHelp(q *ConfigParameter) {
 			EnvVar:      "file,table",
 			Destination: &q.Datafix,
 		},
-
-		cli.StringFlag{
-			Name:        "fixPath,fp",
-			Usage:       "configuration repair file path. for example: --fp /tmp",
-			Value:       "./",
-			Destination: &q.FixPath,
-		},
-
 		cli.StringFlag{
 			Name:        "fixFileName,ffn",
-			Usage:       "configuration repair file name. for example: --ffn greatdbCheckDataFix.sql",
-			Value:       "gt-checkOutDataFix.sql",
+			Usage:       "configuration repair file name. for example: --ffn /tmp/greatdbCheckDataFix.sql",
+			Value:       "./gt-checkOutDataFix.sql",
 			Destination: &q.FixFileName,
 		},
 	}

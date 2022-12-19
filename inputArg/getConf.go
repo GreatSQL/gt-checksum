@@ -11,7 +11,10 @@ type readConf struct{}
 该函数用于读取配置文件中的配置参数
 */
 func (rc *readConf) getConfig(configName string, q *ConfigParameter) {
-	//var cfs = &ConfigFileStruct{}
+	var (
+		sdc, do, ls, cr, sr *ini.Section
+		err1                error
+	)
 	//读取配置文件信息
 	//cfg, err := ini.Load(configName)
 	//处理配置文件中的特殊字符
@@ -19,82 +22,58 @@ func (rc *readConf) getConfig(configName string, q *ConfigParameter) {
 	if err != nil {
 		rc.getErr("configuration file error.", err)
 	}
-	var (
-		//sdc, dcps, do, ls, cr, idc, sr *ini.Section
-		//sdc, dcps, do, ls, cr, sr *ini.Section
-		sdc, do, ls, cr, sr *ini.Section
-		err1                error
-	)
 
 	//判断一级标题是否正确
-	if sdc, err1 = cfg.GetSection("Source Destination connection"); sdc == nil && err1 != nil {
-		rc.getErr("", err1)
+	if sdc, err1 = cfg.GetSection("DSNs"); sdc == nil && err1 != nil {
+		rc.getErr("Failed to get DSNs parameters", err1)
 	}
-	//if dcps, err1 = cfg.GetSection("Database Conn Pool Setting"); dcps == nil && err1 != nil {
-	//	rc.getErr("", err1)
-	//}
-	if do, err1 = cfg.GetSection("Detection object"); do == nil && err1 != nil {
-		rc.getErr("", err1)
+	if do, err1 = cfg.GetSection("Schema"); do == nil && err1 != nil {
+		rc.getErr("Failed to get Schema parameters", err1)
 	}
-	if ls, err1 = cfg.GetSection("Log Setting"); ls == nil && err1 != nil {
-		rc.getErr("Failed to get Log Setting parameters", err1)
+	if ls, err1 = cfg.GetSection("Logs"); ls == nil && err1 != nil {
+		rc.getErr("Failed to get Logs parameters", err1)
 	}
-	if cr, err1 = cfg.GetSection("CheckSum Rules"); cr == nil && err1 != nil {
-		rc.getErr("Failed to get CheckSum Rules parameters", err1)
+	if cr, err1 = cfg.GetSection("Rules"); cr == nil && err1 != nil {
+		rc.getErr("Failed to get Rules parameters", err1)
 	}
 	//if idc, err1 = cfg.GetSection("increment Data Check"); idc == nil && err1 != nil {
 	//	rc.getErr("Failed to get increment Data Check parameters", err1)
 	//}
-	if sr, err1 = cfg.GetSection("Sql Repair"); sr == nil && err1 != nil {
-		rc.getErr("Failed to get Sql Repair parameters", err1)
+	if sr, err1 = cfg.GetSection("Repair"); sr == nil && err1 != nil {
+		rc.getErr("Failed to get Repair parameters", err1)
 	}
 
 	//二级参数正确性验证
 	//Source Destination connection 获取jdbc连接信息
 	if _, err2 := sdc.GetKey("srcDSN"); err2 != nil {
-		rc.getErr("", err2)
+		rc.getErr("Failed to get srcDSN parameters", err2)
 	}
 	if _, err2 := sdc.GetKey("dstDSN"); err2 != nil {
-		rc.getErr("", err2)
+		rc.getErr("Failed to get dstDSN parameters", err2)
 	}
 
 	//Database Conn Pool Setting 获取一致性快照连接池大小
-	//if _, err2 := dcps.GetKey("poolMin"); err2 != nil {
-	//	rc.getErr("Failed to convert poolMin parameter to int", err2)
-	//}
-	//if _, err2 := dcps.GetKey("poolMax"); err2 != nil {
-	//	rc.getErr("Failed to convert poolMax parameter to int", err2)
-	//}
-	//Detection object 获取校验库表信息
-	if _, err2 := do.GetKey("databases"); err2 != nil {
-		rc.getErr("Failed to get databases parameters", err2)
-	}
+	//Schema 获取校验库表信息
 	if _, err2 := do.GetKey("tables"); err2 != nil {
 		rc.getErr("Failed to get tables parameters", err2)
 	}
-	if _, err2 := do.GetKey("ignore-databases"); err2 != nil {
-		rc.getErr("Failed to get ignore-databases parameters", err2)
-	}
-	if _, err2 := do.GetKey("ignore-tables"); err2 != nil {
-		rc.getErr("Failed to get ignore-tables parameters", err2)
-	}
+	//if _, err2 := do.GetKey("ignore-tables"); err2 != nil {
+	//	rc.getErr("Failed to get ignore-tables parameters", err2)
+	//}
 	if _, err2 := do.GetKey("checkNoIndexTable"); err2 != nil {
 		rc.getErr("Failed to get checkNoIndexTable parameters", err2)
 	}
 	if _, err2 := do.GetKey("lowerCaseTableNames"); err2 != nil {
 		rc.getErr("Failed to get lowerCaseTableNames parameters", err2)
 	}
-	//Log Setting 二级参数信息
-	//if _, err2 := ls.GetKey("logPath"); err2 != nil {
-	//	rc.getErr("Failed to get logPath parameters", err2)
-	//}
+	//Logs 二级参数信息
 	if _, err2 := ls.GetKey("log"); err2 != nil {
 		rc.getErr("Failed to get log parameters", err2)
 	}
 	if _, err2 := ls.GetKey("logLevel"); err2 != nil {
 		rc.getErr("Failed to get logLevel parameters", err2)
 	}
-	//CheckSum Rules 二级参数检测
+	//Rules 二级参数检测
 	if _, err2 := cr.GetKey("parallel-thds"); err2 != nil {
 		rc.getErr("Failed to get parallel-thds parameters", err2)
 	}
@@ -120,16 +99,13 @@ func (rc *readConf) getConfig(configName string, q *ConfigParameter) {
 	//if _, err2 := idc.GetKey("incSwitch"); err2 != nil {
 	//	rc.getErr("Failed to get incSwitch parameters", err2)
 	//}
-	//Sql Repair 二级参数校验
+	//Repair 二级参数校验
 	if _, err2 := sr.GetKey("datafix"); err2 != nil {
 		rc.getErr("Failed to get datafix parameters", err2)
 	}
 	if _, err2 := sr.GetKey("fixFileName"); err2 != nil {
 		rc.getErr("Failed to get fixFileName parameters", err2)
 	}
-	//if _, err2 := sr.GetKey("fixPath"); err2 != nil {
-	//	rc.getErr("Failed to get fixPath parameters", err2)
-	//}
 
 	//获取参数
 	//Source Destination connection 获取jdbc连接信息
@@ -148,32 +124,23 @@ func (rc *readConf) getConfig(configName string, q *ConfigParameter) {
 		q.DestJdbc = djdbc
 	}
 
-	//数据库连接池设置
-	//if q.PoolMin, err1 = dcps.Key("poolMin").Int(); err1 != nil {
-	//	rc.getErr("Failed to convert poolMin parameter to time.Duration", err1)
-	//}
-	//if q.PoolMax, err1 = dcps.Key("poolMax").Int(); err1 != nil {
-	//	rc.getErr("Failed to convert poolMax parameter to int", err1)
-	//}
-
 	//校验库表设置
 	q.LowerCaseTableNames = do.Key("lowerCaseTableNames").In("no", []string{"yes", "no"})
 	q.CheckNoIndexTable = do.Key("checkNoIndexTable").In("no", []string{"yes", "no"})
-	q.Schema = strings.TrimSpace(do.Key("databases").String())
+	//q.Schema = strings.TrimSpace(do.Key("databases").String())
 	q.Table = strings.TrimSpace(do.Key("tables").String())
-	q.Igschema = strings.TrimSpace(do.Key("ignore-databases").String())
-	if q.Igschema == "" {
-		q.Igschema = "nil"
-	}
+	//q.Igschema = strings.TrimSpace(do.Key("ignore-databases").String())
+	//if q.Igschema == "" {
+	//	q.Igschema = "nil"
+	//}
 	q.Igtable = strings.TrimSpace(do.Key("ignore-tables").String())
 	if q.Igtable == "" {
 		q.Igtable = "nil"
 	}
 
-	//Log Setting 获取相关参数
-	//q.LogPath = ls.Key("log").String()
+	//Logs 获取相关参数
 	q.LogFile = ls.Key("log").String()
-	q.LogLevel = ls.Key("logLevel").In("info", []string{"debug", "info", "warning", "error"})
+	q.LogLevel = ls.Key("logLevel").In("info", []string{"debug", "info", "warn", "error"})
 
 	//判断并发设置，并判断设置的是否正确
 	if q.Concurrency, err1 = cr.Key("parallel-thds").Int(); err1 != nil {
@@ -195,7 +162,6 @@ func (rc *readConf) getConfig(configName string, q *ConfigParameter) {
 	if q.Ratio, err1 = cr.Key("ratio").Int(); err1 != nil {
 		rc.getErr("Failed to convert Ratio parameter to int", err1)
 	}
-	//q.FixPath = sr.Key("fixPath").String()
 	q.FixFileName = sr.Key("fixFileName").String()
 	q.Datafix = sr.Key("datafix").In("file", []string{"file", "table"})
 }

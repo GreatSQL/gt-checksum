@@ -48,7 +48,7 @@
 
     shell> ./gt-checksum -v
     -- GreatdbCheck init os Args files --
-    gt-checkOut version 1.1.8
+    gt-checkOut version 1.1.9
 
     shell> ./gt-checksum -h
     NAME:
@@ -58,10 +58,10 @@
     greatdbCheck.exe [global options] command [command options] [arguments...]
 
     VERSION:
-    1.1.8
+    1.1.9
     
     AUTHOR:
-    GreatSQL community <greatsql@greatdb.com>
+    GreatSQL <greatsql@greatdb.com>
     
     COMMANDS:
     help, h  Shows a list of commands or help for one command
@@ -156,5 +156,5 @@ _____
 -----
 ## Author ##
 
-    - name: GreatSQL community
+    - name: GreatSQL
     - mail: greatsql@greatdb.com

@@ -13,24 +13,24 @@ import (
 )
 
 type ConfigParameter struct {
-	config                                       string   //配置文件信息
-	SourceJdbc, DestJdbc, SourceDrive, DestDrive string   //源端的连接信息
-	PoolMin, PoolMax                             int      //数据库连接池最小值
-	Schema, Igschema                             string   //待校验的库和忽略的库
-	Table, Igtable                               string   //待校验的表和忽略的表
-	CheckNoIndexTable                            string   //是否校验无索引表
-	LowerCaseTableNames                          string   //是否忽略校验表的大小写
-	LogPath, LogFile, LogLevel                   string   //关于日志输出信息配置
-	Concurrency                                  int      //查询并发度
-	SingleIndexChanRowCount                      int      //单索引列校验数据块长度
-	JointIndexChanRowCount                       int      //多列索引校验数据块长度
-	QueueDepth                                   int      //数据块长度
-	Datafix, FixPath, FixFileName                string   //差异数据修复的方式及配置
-	IncCheckSwitch                               string   //增量数据校验
-	CheckMode                                    string   //校验的方式，可以为count(*)或者是校验row数据
-	CheckObject                                  string   //校验的对象，可以是struct或者是data
-	Ratio                                        int      //配置数据抽检时配置的比例
-	Sfile                                        *os.File //修复文件的文件句柄
+	config                                       string //配置文件信息
+	SourceJdbc, DestJdbc, SourceDrive, DestDrive string //源端的连接信息
+	PoolMin                                      int    //数据库连接池最小值
+	//TableM, IgtableM                             string   //待校验的库和忽略的库
+	Table, Igtable          string   //待校验的表和忽略的表
+	CheckNoIndexTable       string   //是否校验无索引表
+	LowerCaseTableNames     string   //是否忽略校验表的大小写
+	LogFile, LogLevel       string   //关于日志输出信息配置
+	Concurrency             int      //查询并发度
+	SingleIndexChanRowCount int      //单索引列校验数据块长度
+	JointIndexChanRowCount  int      //多列索引校验数据块长度
+	QueueDepth              int      //数据块长度
+	Datafix, FixFileName    string   //差异数据修复的方式及配置
+	IncCheckSwitch          string   //增量数据校验
+	CheckMode               string   //校验的方式，可以为count(*)或者是校验row数据
+	CheckObject             string   //校验的对象，可以是struct或者是data
+	Ratio                   int      //配置数据抽检时配置的比例
+	Sfile                   *os.File //修复文件的文件句柄
 }
 
 var illegalParameterStatus = false
@@ -58,7 +58,7 @@ var rexPat = func(rl *readConf, rex *regexp.Regexp, rexStr string, illegalParame
 		}
 	}
 	if illegalParameterStatus { //不法参数
-		rl.getErr("schema/table/ignoreSchema/ignoreTable Parameter setting error.", errors.New("parameter error"))
+		rl.getErr("table/ignoreTable Parameter setting error.", errors.New("parameter error"))
 	}
 }
 var fileExsit = func(rl *readConf, logFile string) {
@@ -121,7 +121,6 @@ func (rc *readConf) pathExists(path string) (bool, error) {
 
 func (rc *readConf) getErr(msg string, err error) {
 	if err != nil {
-		//errorinfo := fmt.Sprintf("%v error Msg: %v", msg, err)
 		fmt.Println(err, ":", msg)
 		os.Exit(0)
 	}
@@ -161,86 +160,44 @@ func (rc *readConf) checkPar(cp *ConfigParameter) {
 	}
 	dlog := fmt.Sprintf("(%d) dest DB node connection message oK!", logThreadSeq)
 	global.Wlog.Info(dlog)
-	elog := fmt.Sprintf("(%d) Init database and table message {%s,%s}, start to check it...", logThreadSeq, cp.Schema, cp.Table)
+	elog := fmt.Sprintf("(%d) Init table message {%s}, start to check it...", logThreadSeq, cp.Table)
 	global.Wlog.Info(elog)
 
-	//if strings.ToUpper(cp.Table) == "ALL" || strings.ToUpper(cp.Table) == "ALL" || strings.ToUpper(cp.Table) == "ALL" { //不法参数
-	//	rc.getErr("table or ignoreTable Cannot be set to ALL.", errors.New("parameter error"))
-	//}
-	flog := fmt.Sprintf("(%d) start check database Name and ignore database Name Legitimacy.", logThreadSeq)
-	global.Wlog.Info(flog)
-	schr, _ := regexp.Compile(`[0-9a-zA-Z!@_{}-]`)
-	rexPat(rc, schr, cp.Schema, illegalParameterStatus)
-	rexPat(rc, schr, cp.Igschema, illegalParameterStatus)
 	//表级别的正则匹配
 	glog := fmt.Sprintf("(%d) start check table Name and ignore table Name Legitimacy.", logThreadSeq)
 	global.Wlog.Info(glog)
-	tabr, _ := regexp.Compile(`[0-9a-zA-Z!@_{}-]\.[0-9a-zA-Z!@_{}-]`)
+	if cp.Table == "" {
+		rc.getErr("table cannot all be set to nil ", errors.New("parameter error"))
+	}
+	tabr, _ := regexp.Compile(`[0-9a-zA-Z!@_{}*%-]\.[0-9a-zA-Z!@_{}%*-]`)
 	rexPat(rc, tabr, cp.Table, illegalParameterStatus)
 	rexPat(rc, tabr, cp.Igtable, illegalParameterStatus)
-
-	if strings.ToUpper(cp.Schema) == "ALL" {
-		cp.Schema = "*"
+	if cp.Table == cp.Igtable {
+		rc.getErr("The test form and the skip form cannot be consistent.", errors.New("parameter error"))
 	}
-	if strings.ToUpper(cp.Table) == "NIL" {
-		cp.Table = ""
-	}
-	if strings.ToUpper(cp.Schema) == "NIL" {
-		cp.Schema = ""
-	}
-	if strings.ToUpper(cp.Igschema) == "NIL" {
-		cp.Igschema = ""
-	}
-	if strings.ToUpper(cp.Igtable) == "NIL" {
-		cp.Igtable = ""
-	}
-
-	//判断校验库表参数
-	if cp.Schema == "" && cp.Table == "" { //库为空，表为空
-		rc.getErr("schema and  table cannot all be set to nil ", errors.New("parameter error"))
-	} else if cp.Schema != "" && cp.Table == "" { //库不为空，表为空
-		cp.Table = "*"
-	} else if (cp.Schema != "") && cp.Table != "" { //库为空，表不为空
-		cp.Schema = schemaTableFilter(cp.Schema, cp.Table)
-	}
-
-	//判断忽略库表参数
-	cp.Igschema = schemaTableFilter(cp.Igschema, cp.Igtable)
-	if cp.Schema == cp.Igschema {
-		cp.Schema = ""
-		cp.Igschema = ""
-	} else {
-		a := strings.Split(cp.Schema, ",")
-		b := strings.Split(cp.Igschema, ",")
-		var c, d = make(map[string]int), make(map[string]int)
-		var e, f []string
-		for _, i := range a {
-			c[i] = 0
-		}
-		for _, i := range b {
-			d[i] = 0
-		}
-		for k, _ := range c {
-			if _, ok := d[k]; ok {
-				delete(c, k)
-				delete(d, k)
-			} else {
-				e = append(e, k)
+	//判断*.*之外是否还包含其他的值
+	if strings.Contains(cp.Table, "*.*") {
+		table := strings.Replace(cp.Table, "*.*", "", 1)
+		for _, i := range strings.Split(table, ",") {
+			ii := strings.TrimSpace(i)
+			if ii != "" {
+				rc.getErr("table Parameter setting error.", errors.New("parameter error"))
 			}
 		}
-		for k, _ := range d {
-			f = append(f, k)
-		}
-		cp.Schema = strings.Join(e, ",")
-		cp.Igschema = strings.Join(f, ",")
+	}
+	var cc []string
+	for _, i := range strings.Split(cp.Table, ",") {
+		cc = append(cc, strings.TrimSpace(i))
+	}
+	cp.Table = strings.Join(cc, ",")
+	if strings.HasSuffix(cp.Table, ",") {
+		cp.Table = cp.Table[:len(cp.Table)-1]
 	}
 	if cp.LowerCaseTableNames == "no" {
-		cp.Schema = strings.ToUpper(strings.TrimSpace(cp.Schema))
 		cp.Table = strings.ToUpper(strings.TrimSpace(cp.Table))
-		cp.Igschema = strings.ToUpper(strings.TrimSpace(cp.Igschema))
 		cp.Igtable = strings.ToUpper(strings.TrimSpace(cp.Igtable))
 	}
-	hlog := fmt.Sprintf("(%d) check schema and table parameter message is {database: %s table: %s ignore database: %s ignore table: %s}", logThreadSeq, cp.Schema, cp.Table, cp.Igschema, cp.Igtable)
+	hlog := fmt.Sprintf("(%d) check table parameter message is {table: %s ignore table: %s}", logThreadSeq, cp.Table, cp.Igtable)
 	global.Wlog.Info(hlog)
 
 	ilog := fmt.Sprintf("(%d) start init check object values.", logThreadSeq)
@@ -286,7 +243,7 @@ func (rc *readConf) checkPar(cp *ConfigParameter) {
 	if cp.FixFileName == "" {
 		cp.FixFileName = "./greatdbCheckDataFix.sql"
 	} else {
-		if exit, err2 := rc.pathExists(cp.FixPath); !exit {
+		if exit, err2 := rc.pathExists(cp.FixFileName); !exit {
 			rc.getErr("The fix Path parameters error.", err2)
 		}
 	}
@@ -363,7 +320,6 @@ func (rc *readConf) checkPar(cp *ConfigParameter) {
 	h1log := fmt.Sprintf("(%d) start init trx conn pool values.", logThreadSeq)
 	global.Wlog.Info(h1log)
 	cp.PoolMin = cp.Concurrency*3 + 10
-	cp.PoolMax = cp.PoolMin
 	i1log := fmt.Sprintf("(%d) check trx conn pool message is {%d}.", logThreadSeq, cp.PoolMin)
 	global.Wlog.Info(i1log)
 }
@@ -402,7 +358,7 @@ func NewConfigInit() *ConfigParameter {
 	}
 	//初始化日志文件
 	fmt.Println("-- gt-checksum init log files -- ")
-	global.Wlog = log.NewWlog(cp.LogFile)
+	global.Wlog = log.NewWlog(cp.LogFile, cp.LogLevel)
 
 	global.Wlog.Info("(0) Initializing gt-checksum parameter.")
 	fmt.Println("-- gt-checksum check parameter --")

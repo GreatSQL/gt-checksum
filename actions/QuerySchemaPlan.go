@@ -285,23 +285,23 @@ func (wttds writeTmpTableDataStruct) indexColUniq(il string, pag int64, selectCo
 
 	blog := fmt.Sprintf("(%d) Check table %s.%s and start deduplication and union of index column data ...", logThreadSeq, wttds.schema, wttds.table)
 	global.Wlog.Info(blog)
-	if len(sourceTmpTableData) != 0 && len(destTmpTableData) != 0 {
-		for _, ii := range sourceTmpTableData {
-			lock.Lock()
+	if len(sourceTmpTableData) == 0 && len(destTmpTableData) == 0 {
+		return tmpsl
+	}
+	for _, ii := range sourceTmpTableData {
+		lock.Lock()
+		tmpmap[ii]++
+		lock.Unlock()
+	}
+	for _, ii := range destTmpTableData {
+		lock.Lock()
+		if _, ok := tmpmap[ii]; !ok {
 			tmpmap[ii]++
-			lock.Unlock()
 		}
-		for _, ii := range destTmpTableData {
-			lock.Lock()
-			if _, ok := tmpmap[ii]; !ok {
-				tmpmap[ii]++
-			}
-			lock.Unlock()
-		}
-		for k, _ := range tmpmap {
-			tmpsl = append(tmpsl, k)
-		}
-
+		lock.Unlock()
+	}
+	for k, _ := range tmpmap {
+		tmpsl = append(tmpsl, k)
 	}
 	clog := fmt.Sprintf("(%d) Check table %s.%s The original target index column data processing is completed. !!!", logThreadSeq, wttds.schema, wttds.table)
 	global.Wlog.Info(clog)
@@ -524,7 +524,7 @@ func (wttds writeTmpTableDataStruct) AbnormalDataDispos(schema, table string, sq
 				global.Wlog.Info(dlog)
 				for _, i := range del {
 					dbf.RowData = i
-					sqlstr, err := dbf.DataAbnormalFix().FixDeleteSqlExec(ddb, wttds.sdrive, logThreadSeq)
+					sqlstr, err := dbf.DataAbnormalFix().FixDeleteSqlExec(ddb, wttds.ddrive, logThreadSeq)
 					//sqlstr, err := dbExec.DataFix().DataAbnormalFix(schema, table, i, colData.DColumnInfo, sqlwhere[wttds.ddrive], wttds.ddrive, indexColumnType).FixDeleteSqlExec(ddb, wttds.sdrive)
 					if err != nil {
 						wttds.getErr(fmt.Sprintf("dest: checkSum table %s.%s generate delete sql error.", schema, table), err)
@@ -539,7 +539,7 @@ func (wttds writeTmpTableDataStruct) AbnormalDataDispos(schema, table string, sq
 				global.Wlog.Info(dlog)
 				for _, i := range add {
 					dbf.RowData = i
-					sqlstr, err := dbf.DataAbnormalFix().FixDeleteSqlExec(ddb, wttds.sdrive, logThreadSeq)
+					sqlstr, err := dbf.DataAbnormalFix().FixInsertSqlExec(ddb, wttds.ddrive, logThreadSeq)
 					//sqlstr, err := dbExec.DataFix().DataAbnormalFix(schema, table, i, colData.DColumnInfo, sqlwhere[wttds.ddrive], wttds.ddrive, indexColumnType).FixInsertSqlExec(ddb, wttds.sdrive)
 					if err != nil {
 						wttds.getErr(fmt.Sprintf("dest: checkSum table %s.%s generate insert sql error.", schema, table), err)
