@@ -202,6 +202,9 @@ func (stcls *schemaTable) FuzzyMatchingDispos(dbCheckNameList map[string]int, Ft
 	}
 	//处理库的模糊查询
 	for _, i := range strings.Split(Ftable, ",") {
+		if !strings.Contains(i, ".") {
+			continue
+		}
 		schema := i[:strings.Index(i, ".")]
 		if schema == "*" { //处理*.table
 			b = dbCheckNameList
@@ -255,6 +258,9 @@ func (stcls *schemaTable) FuzzyMatchingDispos(dbCheckNameList map[string]int, Ft
 	}
 	//处理表的模糊查询
 	for _, i := range strings.Split(Ftable, ",") {
+		if !strings.Contains(i, ".") {
+			continue
+		}
 		schema := strings.ReplaceAll(i[:strings.Index(i, ".")], "%", "")
 		table := i[strings.Index(i, ".")+1:]
 		for k, _ := range b {
@@ -331,7 +337,6 @@ func (stcls *schemaTable) SchemaTableFilter(logThreadSeq1, logThreadSeq2 int64) 
 		global.Wlog.Error(hlog)
 		os.Exit(1)
 	}
-	fmt.Println(f)
 	flog := fmt.Sprintf("(%d) schema.table {%s} init sccessfully, num [%d].", logThreadSeq1, f, len(f))
 	global.Wlog.Info(flog)
 	return f
