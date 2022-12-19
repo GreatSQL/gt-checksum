@@ -230,9 +230,10 @@ func (rc *readConf) checkPar(cp *ConfigParameter) {
 	if cp.LogFile == "" {
 		cp.LogFile = "./gt-checksum.log"
 	} else {
-		if exit, err2 := rc.pathExists(cp.LogFile); !exit {
-			rc.getErr("The log Path parameters error.", err2)
-		}
+		//if exit, err2 := fileExsit(rc,cp.LogFile); !exit {
+		//	rc.getErr("The log Path parameters error.", err2)
+		//}
+		fileExsit(rc, cp.LogFile)
 	}
 	fileExsit(rc, cp.LogFile)
 	rlog := fmt.Sprintf("(%d) check log out parameter message is {%s}.", logThreadSeq, cp.LogFile)
@@ -243,9 +244,10 @@ func (rc *readConf) checkPar(cp *ConfigParameter) {
 	if cp.FixFileName == "" {
 		cp.FixFileName = "./greatdbCheckDataFix.sql"
 	} else {
-		if exit, err2 := rc.pathExists(cp.FixFileName); !exit {
-			rc.getErr("The fix Path parameters error.", err2)
-		}
+		//if exit, err2 := rc.pathExists(cp.FixFileName); !exit {
+		//	rc.getErr("The fix Path parameters error.", err2)
+		//}
+		fileExsit(rc, cp.LogFile)
 	}
 
 	tlog := fmt.Sprintf("(%d) Open repair file {%s} handle.", logThreadSeq, cp.FixFileName)
