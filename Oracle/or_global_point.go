@@ -11,7 +11,6 @@ type GlobalCS struct {
 	Jdbc            string
 	Drive           string
 	ConnPoolMin     int
-	ConnPoolMax     int
 	ConnMaxIdleTime time.Duration
 	ConnMaxLifetime time.Duration
 }
@@ -210,5 +209,5 @@ func (or *GlobalCS) NewConnPool(logThreadSeq int) (*global.Pool, bool) {
 		return nil, false
 	}
 	db.Close()
-	return global.NewPool(or.ConnPoolMin, or.ConnPoolMax, session, logThreadSeq, "Oracle"), true
+	return global.NewPool(or.ConnPoolMin, session, logThreadSeq, "Oracle"), true
 }

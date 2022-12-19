@@ -7,19 +7,20 @@ import (
 )
 
 type TableColumnNameStruct struct {
-	Schema  string
-	Table   string
-	Drive   string
-	Db      *sql.DB
-	Datafix string
+	Schema              string
+	Table               string
+	IgnoreTable         string
+	Drive               string
+	Db                  *sql.DB
+	Datafix             string
+	LowerCaseTableNames string
 }
 
 type QueryTableColumnNameInterface interface {
 	TableColumnName(db *sql.DB, logThreadSeq int64) ([]map[string]interface{}, error)
 	GlobalAccessPri(db *sql.DB, logThreadSeq int64) bool
 	TableAccessPriCheck(db *sql.DB, checkTableList []string, datefix string, logThreadSeq int64) (map[string]int, error)
-	DatabaseNameList(ignschema string, logThreadSeq int64) []string
-	TableNameList(db *sql.DB, logThreadSeq int64) ([]map[string]interface{}, error)
+	DatabaseNameList(logThreadSeq int64) map[string]int
 	TableAllColumn(db *sql.DB, logThreadSeq int64) ([]map[string]interface{}, error)
 	TableIndexChoice(queryData []map[string]interface{}, logThreadSeq int64) map[string][]string
 	Trigger(db *sql.DB, logThreadSeq int64) (map[string]string, error)
@@ -34,16 +35,18 @@ func (tcns *TableColumnNameStruct) Query() QueryTableColumnNameInterface {
 	var aa QueryTableColumnNameInterface
 	if tcns.Drive == "mysql" {
 		aa = &mysql.QueryTable{
-			Schema: tcns.Schema,
-			Table:  tcns.Table,
-			Db:     tcns.Db,
+			Schema:              tcns.Schema,
+			Table:               tcns.Table,
+			Db:                  tcns.Db,
+			LowerCaseTableNames: tcns.LowerCaseTableNames,
 		}
 	}
 	if tcns.Drive == "godror" {
 		aa = &oracle.QueryTable{
-			Schema: tcns.Schema,
-			Table:  tcns.Table,
-			Db:     tcns.Db,
+			Schema:              tcns.Schema,
+			Table:               tcns.Table,
+			Db:                  tcns.Db,
+			LowerCaseTableNames: tcns.LowerCaseTableNames,
 		}
 	}
 	return aa

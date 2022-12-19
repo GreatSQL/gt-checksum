@@ -523,7 +523,7 @@ func CheckTableQuerySchedule(sdb, ddb *global.Pool, tableIndexColumnMap map[stri
 		tableIndexColumnMap:     tableIndexColumnMap,
 		tableAllCol:             tableAllCol,
 		datafixType:             m.Datafix,
-		datafixSql:              fmt.Sprintf("%s/%s", m.FixPath, m.FixFileName),
+		datafixSql:              m.FixFileName,
 		sdrive:                  m.SourceDrive,
 		ddrive:                  m.DestDrive,
 		mqQueueDepth:            m.QueueDepth,

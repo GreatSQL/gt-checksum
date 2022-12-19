@@ -19,12 +19,11 @@ type DBGlobalCS interface {
 	NewConnPool(logThreadSeq int) (*global.Pool, bool)    //连接池
 }
 
-func (gs GlobalSNStruct) GcnObject(poolMin, poolMax int, jdbc, dbDevice string) DBGlobalCS {
+func (gs GlobalSNStruct) GcnObject(poolMin int, jdbc, dbDevice string) DBGlobalCS {
 	var dbcs DBGlobalCS
 	if dbDevice == "mysql" {
 		dbcs = &mysql.GlobalCS{
 			Jdbc:        jdbc,
-			ConnPoolMax: poolMax,
 			ConnPoolMin: poolMin,
 			Drive:       dbDevice,
 		}
@@ -32,7 +31,6 @@ func (gs GlobalSNStruct) GcnObject(poolMin, poolMax int, jdbc, dbDevice string) 
 	if dbDevice == "godror" {
 		dbcs = &oracle.GlobalCS{
 			Jdbc:        jdbc,
-			ConnPoolMax: poolMax,
 			ConnPoolMin: poolMin,
 			Drive:       dbDevice,
 		}

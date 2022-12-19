@@ -136,7 +136,7 @@ func Warnln(args ...interface{}) {
 	logger.Output(2, LevelWarn, fmt.Sprintln(args...))
 }
 
-func NewWlog(logfile string) *Logger {
+func NewWlog(logfile, logLevel string) *Logger {
 	//var logFile string
 	//if runtime.GOOS == "windows"{
 	//	logFile = fmt.Sprintf("%s\\%s",logpath,logfile)
@@ -160,6 +160,6 @@ func NewWlog(logfile string) *Logger {
 		os.Exit(1)
 	}
 	wlog := NewDefault(h)
-	wlog.Debug("aaa")
+	wlog.SetLevelByName(logLevel)
 	return wlog
 }

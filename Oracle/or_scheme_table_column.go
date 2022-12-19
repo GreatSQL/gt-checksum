@@ -8,10 +8,11 @@ import (
 )
 
 type QueryTable struct {
-	Schema  string
-	Table   string
-	Db      *sql.DB
-	Datafix string
+	Schema              string
+	Table               string
+	Db                  *sql.DB
+	Datafix             string
+	LowerCaseTableNames string
 }
 
 var rowDataDisposMap = func(sqlRows *sql.Rows, event string, seq int64) ([]map[string]interface{}, error) {
@@ -51,25 +52,28 @@ var rowDataDisposMap = func(sqlRows *sql.Rows, event string, seq int64) ([]map[s
 	return tableData, nil
 }
 
-func (or *QueryTable) DatabaseNameList(ignschema string, logThreadSeq int64) []string {
+func (or *QueryTable) DatabaseNameList(logThreadSeq int64) map[string]int {
 	var sqlStr, excludeSchema string
-	var dbName []string
+	//var dbName []string
+	var A = make(map[string]int)
 	excludeSchema = fmt.Sprintf("'SYS','OUTLN','SYSTEM','DBSNMP','APPQOSSYS','WMSYS','EXFSYS','CTXSYS','XDB','ORDDATA','ORDSYS','MDSYS','OLAPSYS','SYSMAN','FLOWS_FILES','APEX_030200','OWBSYS','SCOTT','HR','OE','SH','IX','PM'")
 	alog := fmt.Sprintf("(%d) Oracle DB ignore sys database message is {%s}", logThreadSeq, excludeSchema)
 	global.Wlog.Info(alog)
-	if ignschema != "" {
-		excludeSchema = fmt.Sprintf("'SYS','OUTLN','SYSTEM','DBSNMP','APPQOSSYS','WMSYS','EXFSYS','CTXSYS','XDB','ORDDATA','ORDSYS','MDSYS','OLAPSYS','SYSMAN','FLOWS_FILES','APEX_030200','OWBSYS','SCOTT','HR','OE','SH','IX','PM','%s'", strings.ToUpper(ignschema))
-	}
-	blog := fmt.Sprintf("(%d) Oracle DB ignore database message is {%s}", logThreadSeq, excludeSchema)
-	global.Wlog.Info(blog)
-	if or.Schema == "*" {
-		sqlStr = fmt.Sprintf("select distinct OWNER as \"databaseName\" from all_tables where owner not in (%s)", excludeSchema)
-	} else {
-		or.Schema = strings.ReplaceAll(or.Schema, ",", "','")
-		sqlStr = fmt.Sprintf("select distinct OWNER as \"databaseName\" from all_tables where owner in ('%s') and owner not in (%s)", or.Schema, excludeSchema)
-	}
+	//if ignschema != "" {
+	//	excludeSchema = fmt.Sprintf("'SYS','OUTLN','SYSTEM','DBSNMP','APPQOSSYS','WMSYS','EXFSYS','CTXSYS','XDB','ORDDATA','ORDSYS','MDSYS','OLAPSYS','SYSMAN','FLOWS_FILES','APEX_030200','OWBSYS','SCOTT','HR','OE','SH','IX','PM','%s'", strings.ToUpper(ignschema))
+	//}
+	//blog := fmt.Sprintf("(%d) Oracle DB ignore database message is {%s}", logThreadSeq, excludeSchema)
+	//global.Wlog.Info(blog)
+	//if or.Schema == "*" {
+	//	sqlStr = fmt.Sprintf("select distinct OWNER as \"databaseName\" from all_tables where owner not in (%s)", excludeSchema)
+	//} else {
+	//	or.Schema = strings.ReplaceAll(or.Schema, ",", "','")
+	//	sqlStr = fmt.Sprintf("select distinct OWNER as \"databaseName\" from all_tables where owner in ('%s') and owner not in (%s)", or.Schema, excludeSchema)
+	//}
+	sqlStr = fmt.Sprintf("SELECT owner as \"databaseName\",table_name as \"tableName\" FROM DBA_TABLES WHERE OWNER not in (%s)", excludeSchema)
 	clog := fmt.Sprintf("(%d) Oracle DB query database exec sql is {%s}", logThreadSeq, sqlStr)
 	global.Wlog.Info(clog)
+
 	clog = fmt.Sprintf("(%d) Oracle DB begin exec sql.", logThreadSeq)
 	global.Wlog.Info(clog)
 	rows, err := or.Db.Query(sqlStr)
@@ -82,30 +86,22 @@ func (or *QueryTable) DatabaseNameList(ignschema string, logThreadSeq int64) []s
 	tableData, err := rowDataDisposMap(rows, "Schema", logThreadSeq)
 	if err == nil && len(tableData) > 0 {
 		for i := range tableData {
-			dbName = append(dbName, strings.ToUpper(fmt.Sprintf("%v", tableData[i]["databaseName"])))
+			var ga string
+			gd, gt := fmt.Sprintf("%v", tableData[i]["databaseName"]), fmt.Sprintf("%v", tableData[i]["tableName"])
+			if or.LowerCaseTableNames == "no" {
+				gd = strings.ToUpper(gd)
+				gt = strings.ToUpper(gt)
+			}
+			ga = fmt.Sprintf("%v/*schema&table*/%v", gd, gt)
+			A[ga]++
 		}
+		//for i := range tableData {
+		//	dbName = append(dbName, strings.ToUpper(fmt.Sprintf("%v", tableData[i]["databaseName"])))
+		//}
 	}
 	defer rows.Close()
-	return dbName
-	return []string{}
-}
-
-func (or *QueryTable) TableNameList(db *sql.DB, logThreadSeq int64) ([]map[string]interface{}, error) {
-	var sqlStr string
-	if or.Table == "*" {
-		sqlStr = fmt.Sprintf("SELECT owner as \"databaseName\",table_name as \"tableName\" FROM DBA_TABLES WHERE OWNER='%s'", or.Schema)
-	} else {
-		sqlStr = fmt.Sprintf("SELECT owner as \"databaseName\",table_name as \"tableName\" FROM DBA_TABLES WHERE OWNER='%s' and table_name = '%s'", or.Schema, or.Table)
-	}
-	alog := fmt.Sprintf("(%d) Oracle DB query table metadata info exec sql is {%s}", logThreadSeq, sqlStr)
-	global.Wlog.Info(alog)
-	rows, err1 := or.Db.Query(sqlStr)
-	if err1 != nil {
-		blog := fmt.Sprintf("(%d) Oracle DB exec sql fail. sql message is {%s}, Error info is {%s}.", logThreadSeq, sqlStr, err1)
-		global.Wlog.Error(blog)
-	}
-	defer rows.Close()
-	return rowDataDisposMap(rows, "Table", logThreadSeq)
+	return A
+	//return []string{}
 }
 
 func (or *QueryTable) TableColumnName(db *sql.DB, logThreadSeq int64) ([]map[string]interface{}, error) {

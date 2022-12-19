@@ -9,10 +9,12 @@ import (
 )
 
 type QueryTable struct {
-	Schema  string
-	Table   string
-	Db      *sql.DB
-	Datafix string
+	Schema              string
+	Table               string
+	IgnoreTable         string
+	Db                  *sql.DB
+	Datafix             string
+	LowerCaseTableNames string
 }
 
 var rowDataDisposMap = func(sqlRows *sql.Rows, event string, seq int64) ([]map[string]interface{}, error) {
@@ -55,21 +57,14 @@ var rowDataDisposMap = func(sqlRows *sql.Rows, event string, seq int64) ([]map[s
 /*
    获取MySQL的database的列表信息，排除'information_Schema','performance_Schema','sys','mysql'
 */
-func (my *QueryTable) DatabaseNameList(ignSchema string, logThreadSeq int64) []string {
+func (my *QueryTable) DatabaseNameList(logThreadSeq int64) map[string]int {
 	var sqlStr string
-	var dbName []string
+	var A = make(map[string]int)
 	excludeSchema := fmt.Sprintf("'information_Schema','performance_Schema','sys','mysql'")
 	alog := fmt.Sprintf("(%d) MySQL DB ignore sys database message is {%s}", logThreadSeq, excludeSchema)
 	global.Wlog.Info(alog)
-	excludeSchema = fmt.Sprintf("%s,'%s'", excludeSchema, ignSchema)
-	blog := fmt.Sprintf("(%d) MySQL DB ignore database message is {%s}", logThreadSeq, excludeSchema)
-	global.Wlog.Info(blog)
-	if my.Schema == "*" {
-		sqlStr = fmt.Sprintf("select Schema_NAME as databaseName from information_Schema.Schemata where Schema_name not in (%s);", excludeSchema)
-	} else {
-		my.Schema = strings.ReplaceAll(my.Schema, ",", "','")
-		sqlStr = fmt.Sprintf("select Schema_NAME as databaseName from information_Schema.Schemata where Schema_name  in ('%s') and Schema_name not in (%s);", my.Schema, excludeSchema)
-	}
+
+	sqlStr = fmt.Sprintf("select TABLE_SCHEMA as databaseName,TABLE_NAME as tableName from information_Schema.TABLES where TABLE_SCHEMA not in (%s);", excludeSchema)
 	clog := fmt.Sprintf("(%d) MySQL DB query database exec sql is {%s}", logThreadSeq, sqlStr)
 	global.Wlog.Info(clog)
 
@@ -80,34 +75,23 @@ func (my *QueryTable) DatabaseNameList(ignSchema string, logThreadSeq int64) []s
 		elog := fmt.Sprintf("(%d) MySQL DB exec sql fail. sql message is {%s},Error info is {%s}", logThreadSeq, sqlStr, err)
 		global.Wlog.Error(elog)
 	}
-	flog := fmt.Sprintf("(%d) MySQL DB complete exec sql.")
+	flog := fmt.Sprintf("(%d) MySQL DB complete exec sql.", logThreadSeq)
 	global.Wlog.Info(flog)
 	tableData, err := rowDataDisposMap(rows, "Schema", logThreadSeq)
 	if err == nil && len(tableData) > 0 {
 		for i := range tableData {
-			dbName = append(dbName, fmt.Sprintf("%v", tableData[i]["databaseName"]))
+			var ga string
+			gd, gt := fmt.Sprintf("%v", tableData[i]["databaseName"]), fmt.Sprintf("%v", tableData[i]["tableName"])
+			if my.LowerCaseTableNames == "no" {
+				gd = strings.ToUpper(gd)
+				gt = strings.ToUpper(gt)
+			}
+			ga = fmt.Sprintf("%v/*schema&table*/%v", gd, gt)
+			A[ga]++
 		}
 	}
 	defer rows.Close()
-	return dbName
-}
-
-func (my *QueryTable) TableNameList(db *sql.DB, logThreadSeq int64) ([]map[string]interface{}, error) {
-	var sqlStr string
-	if my.Table == "*" {
-		sqlStr = fmt.Sprintf("select table_Schema as databaseName,table_name as tableName from information_Schema.tables where TABLE_Schema in ('%s');", my.Schema)
-	} else {
-		sqlStr = fmt.Sprintf("select table_Schema as databaseName,table_name as tableName from information_Schema.tables where TABLE_Schema in ('%s') and TABLE_NAME in ('%s');", my.Schema, my.Table)
-	}
-	alog := fmt.Sprintf("(%d) MySQL DB query table metadata info exec sql is {%s}", logThreadSeq, sqlStr)
-	global.Wlog.Info(alog)
-	rows, err1 := my.Db.Query(sqlStr)
-	if err1 != nil {
-		blog := fmt.Sprintf("(%d) MySQL DB exec sql fail. sql message is {%s},Error info is {%s}.", logThreadSeq, sqlStr, err1)
-		global.Wlog.Error(blog)
-	}
-	defer rows.Close()
-	return rowDataDisposMap(rows, "Table", logThreadSeq)
+	return A
 }
 
 func (my *QueryTable) TableColumnName(db *sql.DB, logThreadSeq int64) ([]map[string]interface{}, error) {
@@ -129,7 +113,6 @@ func (my *QueryTable) TableColumnName(db *sql.DB, logThreadSeq int64) ([]map[str
 }
 func (my *QueryTable) GlobalAccessPri(db *sql.DB, logThreadSeq int64) bool {
 	var (
-		//logThreadSeq int = 20
 		globalPri   = make(map[string]int)
 		currentUser string
 		sqlQuery    = func(logseq int64, sql, logKeyword string) []map[string]interface{} {
@@ -233,6 +216,10 @@ func (my *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 		globalPri["INSERT"] = 0
 		globalPri["DELETE"] = 0
 	}
+	var globalPriS []string
+	for k, _ := range globalPri {
+		globalPriS = append(globalPriS, k)
+	}
 	elog := fmt.Sprintf("(%d) The permissions that the current MySQL DB needs to check is message {%v}, to check it...", logThreadSeq, globalPri)
 	global.Wlog.Info(elog)
 
@@ -258,7 +245,7 @@ func (my *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 	//查找全局权限 类似于grant all privileges on *.* 或 grant select on *.*
 	ilog := fmt.Sprintf("(%d) Query the current MySQL DB global dynamic grants permission, to query it...", logThreadSeq)
 	global.Wlog.Info(ilog)
-	strsql = fmt.Sprintf("select PRIVILEGE_TYPE as privileges from information_schema.USER_PRIVILEGES where PRIVILEGE_TYPE in('SELECT','DELETE','INSERT') and grantee = \"%s\";", currentUser)
+	strsql = fmt.Sprintf("select PRIVILEGE_TYPE as privileges from information_schema.USER_PRIVILEGES where PRIVILEGE_TYPE in('%s') and grantee = \"%s\";", strings.Join(globalPriS, "','"), currentUser)
 	globalDynamic := sqlQuery(logThreadSeq, strsql, "Global Dynamic Grants")
 	//权限缺失列表
 	for _, gd := range globalDynamic {
@@ -279,7 +266,7 @@ func (my *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 	for AC, _ := range A {
 		var cc []string
 		var intseq int
-		strsql = fmt.Sprintf("select TABLE_SCHEMA as databaseName,PRIVILEGE_TYPE as privileges from information_schema.schema_PRIVILEGES where PRIVILEGE_TYPE in ('SELECT','DELETE','INSERT') and TABLE_SCHEMA = '%s' and grantee = \"%s\";", AC, currentUser)
+		strsql = fmt.Sprintf("select TABLE_SCHEMA as databaseName,PRIVILEGE_TYPE as privileges from information_schema.schema_PRIVILEGES where PRIVILEGE_TYPE in ('%s') and TABLE_SCHEMA = '%s' and grantee = \"%s\";", strings.Join(globalPriS, "','"), AC, currentUser)
 		schemaPri := sqlQuery(logThreadSeq, strsql, "SCHEMA PRIVILEGES")
 		if len(schemaPri) == 0 {
 			continue
@@ -298,7 +285,7 @@ func (my *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 	}
 	if len(A) == 0 {
 		jlog := fmt.Sprintf("(%d) The MySQL DB table information that meets the permissions and needs to be verified is {%v}...", logThreadSeq, newCheckTableList)
-		global.Wlog.Info(jlog)
+		global.Wlog.Error(jlog)
 		return newCheckTableList, nil
 	}
 	mlog := fmt.Sprintf("(%d) MySQL DB library level permissions are not satisfied with {%v}", logThreadSeq, A)

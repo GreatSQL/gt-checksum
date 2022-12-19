@@ -17,7 +17,7 @@ type Pool struct {
 }
 
 // 初始化池实例
-func NewPool(min, max int, db []*sql.DB, logThreadSeq int, drive string) *Pool {
+func NewPool(min int, db []*sql.DB, logThreadSeq int, drive string) *Pool {
 	defer func() {
 		if err := recover(); err != nil {
 			fmt.Println(err)
@@ -25,9 +25,9 @@ func NewPool(min, max int, db []*sql.DB, logThreadSeq int, drive string) *Pool {
 	}()
 	p := &Pool{
 		minConn: min,
-		maxConn: max,
+		maxConn: min,
 		numConn: 1,
-		conns:   make(chan *sql.DB, max),
+		conns:   make(chan *sql.DB, min),
 		close:   false,
 		drive:   drive,
 	}

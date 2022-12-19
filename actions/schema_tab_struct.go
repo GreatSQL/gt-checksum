@@ -25,119 +25,6 @@ type schemaTable struct {
 }
 
 /*
- 该函数用于根据库名来获取MySQL的表数据信息
- 如果要检测单库下所有表，则需要输入库名.* ，如果要检测某一个表，则需要输入库名.表名
-*/
-func (stcls *schemaTable) tableList(dbNameList []string, logThreadSeq, logThreadSeq2 int64) []string {
-	var tnS []string
-	var tmpIgnoreMap = make(map[string]int)
-	//处理排除的表
-	alog := fmt.Sprintf("(%d) start init ignore table.", logThreadSeq)
-	global.Wlog.Info(alog)
-	if stcls.ignoreTable != "" {
-		if strings.Contains(stcls.ignoreTable, ",") { //多个忽略表
-			tmpIgT := strings.Split(stcls.ignoreTable, ",")
-			for i := range tmpIgT {
-				if strings.Contains(tmpIgT[i], ".") {
-					dbname := strings.Split(tmpIgT[i], ".")[0]
-					tablename := strings.Split(tmpIgT[i], ".")[1]
-					key := fmt.Sprintf("%s.%s", dbname, tablename)
-					tmpIgnoreMap[key] = 0
-				}
-			}
-		} else { //单个忽略表
-			if strings.Contains(stcls.ignoreTable, ".") {
-				dbname := strings.Split(stcls.ignoreTable, ".")[0]
-				tablename := strings.Split(stcls.ignoreTable, ".")[1]
-				key := fmt.Sprintf("%s.%s", dbname, tablename)
-				tmpIgnoreMap[key] = 0
-			}
-		}
-	}
-	blog := fmt.Sprintf("(%d) ignore table message is {%v} num [%d].", logThreadSeq, tmpIgnoreMap, len(tmpIgnoreMap))
-	global.Wlog.Info(blog)
-
-	//处理库列表，生成tableName 例如pcms.*
-	var opt []string
-	if len(dbNameList) > 0 {
-		for i := range dbNameList {
-			tmpa := fmt.Sprintf("%s.*", dbNameList[i])
-			opt = append(opt, tmpa)
-		}
-	} else {
-		opt = strings.Split(stcls.table, ",")
-	}
-	clog := fmt.Sprintf("(%d) start init check table info.", logThreadSeq)
-	global.Wlog.Info(clog)
-	if len(opt) > 0 {
-		var tmpM = make(map[string]int)
-		for _, op := range opt {
-			if strings.Contains(op, ".") {
-				dbName := strings.Split(op, ".")[0]
-				tbName := strings.Split(op, ".")[1]
-				tc := dbExec.TableColumnNameStruct{Schema: dbName, Table: tbName, Drive: stcls.sourceDrive, Db: stcls.sourceDB}
-				squeryData, _ := tc.Query().TableNameList(stcls.sourceDB, logThreadSeq2)
-				tc.Drive = stcls.destDrive
-				tc.Db = stcls.destDB
-				dqueryData, _ := tc.Query().TableNameList(stcls.destDB, logThreadSeq2)
-				for _, i := range squeryData {
-					var a string
-					a = fmt.Sprintf("%s.%s", i["databaseName"].(string), i["tableName"].(string))
-					if stcls.lowerCaseTableNames == "no" {
-						a = strings.ToUpper(fmt.Sprintf("%s.%s", i["databaseName"].(string), i["tableName"].(string)))
-					}
-					if _, ok := tmpIgnoreMap[a]; ok {
-						continue
-					} else {
-						tmpM[a]++
-					}
-				}
-				for _, i := range dqueryData {
-					var a string
-					a = fmt.Sprintf("%s.%s", i["databaseName"].(string), i["tableName"].(string))
-					if stcls.lowerCaseTableNames == "no" {
-						a = strings.ToUpper(fmt.Sprintf("%s.%s", i["databaseName"].(string), i["tableName"].(string)))
-					}
-					if _, ok := tmpIgnoreMap[a]; ok {
-						continue
-					} else {
-						tmpM[a]++
-					}
-				}
-			}
-		}
-		for k, _ := range tmpM {
-			tnS = append(tnS, k)
-		}
-	}
-	dlog := fmt.Sprintf("(%d) chck table message is {%s} num [%d]", logThreadSeq, tnS, len(tnS))
-	global.Wlog.Info(dlog)
-	return tnS
-}
-
-/*
- 该函数用于获取MySQL的数据库信息,返回库名列表，排除'information_schema','performance_schema','sys','mysql'
-*/
-func (stcls *schemaTable) schemaList(dbname string, ignoreSchema string, logThreadSeq1, logThreadSeq2 int64) []string {
-	var ignschema string
-	var dbCheckNameList []string
-	if ignoreSchema != "" {
-		tmpa := strings.Split(ignoreSchema, ",")
-		ignschema = strings.Join(tmpa, "','")
-	}
-	alog := fmt.Sprintf("(%d) ignore Schema is {%s}", logThreadSeq1, ignschema)
-	global.Wlog.Info(alog)
-	//获取当前数据库信息列表
-	tc := dbExec.TableColumnNameStruct{Schema: dbname, Table: stcls.table, Drive: stcls.sourceDrive, Db: stcls.sourceDB}
-	blog := fmt.Sprintf("(%d) query check database list info.", logThreadSeq1)
-	global.Wlog.Info(blog)
-	dbCheckNameList = tc.Query().DatabaseNameList(ignschema, logThreadSeq2)
-	clog := fmt.Sprintf("(%d) checksum database list message is {%s}", logThreadSeq1, dbCheckNameList)
-	global.Wlog.Info(clog)
-	return dbCheckNameList
-}
-
-/*
    查询待校验表的列名
 */
 func (stcls *schemaTable) tableColumnName(db *sql.DB, drive string, logThreadSeq, logThreadSeq2 int64) string {
@@ -200,7 +87,6 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 	检查当前用户对该库表是否有响应的权限（权限包括：查询权限，flush_tables,session_variables_admin）
 */
 func (stcls *schemaTable) GlobalAccessPriCheck(logThreadSeq, logThreadSeq2 int64) bool {
-	//var logThreadSeq int = 19
 	elog := fmt.Sprintf("(%d) Start to get the source and target Global Access Permissions information and check whether they are consistent", logThreadSeq)
 	global.Wlog.Info(elog)
 	tc := dbExec.TableColumnNameStruct{Schema: stcls.schema, Table: stcls.table, Drive: stcls.sourceDrive, Datafix: stcls.datefix}
@@ -301,40 +187,154 @@ func (stcls *schemaTable) tableIndexAlgorithm(indexType map[string][]string) (st
 	return "", nil
 }
 
+func (stcls *schemaTable) FuzzyMatchingDispos(dbCheckNameList map[string]int, Ftable string, logThreadSeq1 int64) map[string]int {
+	var a, b, f = make(map[string]int), make(map[string]int), make(map[string]int)
+	for k, _ := range dbCheckNameList {
+		a[strings.Split(k, "/*schema&table*/")[0]]++
+	}
+	//处理*.*
+	if Ftable == "*.*" {
+		for k, _ := range dbCheckNameList {
+			d := strings.Split(k, "/*schema&table*/")
+			f[fmt.Sprintf("%s.%s", d[0], d[1])]++
+		}
+		return f
+	}
+	//处理库的模糊查询
+	for _, i := range strings.Split(Ftable, ",") {
+		schema := i[:strings.Index(i, ".")]
+		if schema == "*" { //处理*.table
+			b = dbCheckNameList
+		} else if strings.HasPrefix(schema, "%") && !strings.HasSuffix(schema, "%") { //处理%schema.xxx
+			tmpschema := strings.ReplaceAll(schema, "%", "")
+			for k, _ := range a {
+				//获取该库对应下的表信息，以切片的方式
+				if strings.HasSuffix(k, tmpschema) {
+					for ki, _ := range dbCheckNameList {
+						d := strings.Split(ki, "/*schema&table*/")
+						if strings.EqualFold(d[0], k) {
+							b[fmt.Sprintf("%s/*schema&table*/%s", k, d[1])]++
+						}
+					}
+				}
+			}
+		} else if strings.HasSuffix(schema, "%") && !strings.HasPrefix(schema, "%") { //处理schema%.xxx
+			tmpschema := strings.ReplaceAll(schema, "%", "")
+			for k, _ := range a {
+				if strings.HasPrefix(k, tmpschema) {
+					for ki, _ := range dbCheckNameList {
+						d := strings.Split(ki, "/*schema&table*/")
+						if strings.EqualFold(d[0], k) {
+							b[fmt.Sprintf("%s/*schema&table*/%s", k, d[1])]++
+						}
+					}
+				}
+			}
+		} else if strings.HasPrefix(schema, "%") && strings.HasSuffix(schema, "%") { //处理%schema%.xxx
+			tmpschema := strings.ReplaceAll(schema, "%", "")
+			for k, _ := range a {
+				if strings.Contains(k, tmpschema) {
+					for ki, _ := range dbCheckNameList {
+						d := strings.Split(ki, "/*schema&table*/")
+						if strings.EqualFold(d[0], k) {
+							b[fmt.Sprintf("%s/*schema&table*/%s", k, d[1])]++
+						}
+					}
+				}
+			}
+		} else { //处理schema.xxx
+			if _, ok := a[schema]; ok {
+				for ki, _ := range dbCheckNameList {
+					d := strings.Split(ki, "/*schema&table*/")
+					if strings.EqualFold(d[0], schema) {
+						b[fmt.Sprintf("%s/*schema&table*/%s", schema, d[1])]++
+					}
+				}
+			}
+		}
+	}
+	//处理表的模糊查询
+	for _, i := range strings.Split(Ftable, ",") {
+		schema := strings.ReplaceAll(i[:strings.Index(i, ".")], "%", "")
+		table := i[strings.Index(i, ".")+1:]
+		for k, _ := range b {
+			g := strings.Split(k, "/*schema&table*/")
+			if strings.Contains(g[0], schema) || schema == "*" {
+				if table == "*" { //处理schema.*
+					f[fmt.Sprintf("%s.%s", g[0], g[1])]++
+				} else if strings.HasPrefix(table, "%") && !strings.HasSuffix(table, "%") { //处理schema.%table
+					tmptable := strings.ReplaceAll(table, "%", "")
+					if strings.HasSuffix(g[1], tmptable) {
+						f[fmt.Sprintf("%s.%s", g[0], g[1])]++
+					}
+				} else if strings.HasSuffix(table, "%") && !strings.HasPrefix(table, "%") { //处理schema.table%
+					tmptable := strings.ReplaceAll(table, "%", "")
+					if strings.HasPrefix(g[1], tmptable) {
+						f[fmt.Sprintf("%s.%s", g[0], g[1])]++
+					}
+				} else if strings.HasPrefix(table, "%") && strings.HasSuffix(table, "%") { //处理schema.%table%
+					tmptable := strings.ReplaceAll(table, "%", "")
+					if strings.Contains(g[1], tmptable) {
+						f[fmt.Sprintf("%s.%s", g[0], g[1])]++
+					}
+				} else { //处理schema.table
+					if strings.EqualFold(g[1], table) {
+						f[fmt.Sprintf("%s.%s", g[0], g[1])]++
+					}
+				}
+			}
+		}
+	}
+	return f
+}
+
 /*
 	处理需要校验的库表
 	将忽略的库表从校验列表中去除，如果校验列表为空则退出
 */
 func (stcls *schemaTable) SchemaTableFilter(logThreadSeq1, logThreadSeq2 int64) []string {
-	//根据配置文件中的过滤条件筛选需要校验的表
-	var dbNameList []string
-	alog := fmt.Sprintf("(%d) Start to init schema info.", logThreadSeq1)
+	var (
+		f               []string
+		dbCheckNameList map[string]int
+	)
+	alog := fmt.Sprintf("(%d) Start to init schema.table info.", logThreadSeq1)
 	global.Wlog.Info(alog)
 	//处理待校验的库数量
-	if stcls.schema != "" {
-		dbNameList = stcls.schemaList(stcls.schema, stcls.ignoreSchema, logThreadSeq1, logThreadSeq2)
-		//判断校验的库是否为空，为空则退出
-		if len(dbNameList) == 0 {
-			blog := fmt.Sprintf("(%d) check Schema is emty, will exit!", logThreadSeq1)
-			global.Wlog.Error(blog)
-			os.Exit(1)
-		}
+	if stcls.table == "" {
+		return f
 	}
-	clog := fmt.Sprintf("(%d) schema {%s} init sccessfully, num [%d].", logThreadSeq1, dbNameList, len(dbNameList))
+	//获取当前数据库信息列表
+	tc := dbExec.TableColumnNameStruct{Table: stcls.table, Drive: stcls.sourceDrive, Db: stcls.sourceDB, IgnoreTable: stcls.ignoreTable, LowerCaseTableNames: stcls.lowerCaseTableNames}
+	clog := fmt.Sprintf("(%d) query check database list info.", logThreadSeq1)
 	global.Wlog.Info(clog)
-
-	dlog := fmt.Sprintf("(%d) Start to init table info.", logThreadSeq1)
+	dbCheckNameList = tc.Query().DatabaseNameList(logThreadSeq2)
+	dlog := fmt.Sprintf("(%d) checksum database list message is {%s}", logThreadSeq1, dbCheckNameList)
 	global.Wlog.Info(dlog)
-	//处理表校验
-	tableList := stcls.tableList(dbNameList, logThreadSeq1, logThreadSeq2)
-	if len(tableList) == 0 {
-		elog := fmt.Sprintf("(%d) check table is emty, will exit!", logThreadSeq1)
+	//判断校验的库是否为空，为空则退出
+	if len(dbCheckNameList) == 0 {
+		elog := fmt.Sprintf("(%d) check Schema.table is emty, will exit!", logThreadSeq1)
 		global.Wlog.Error(elog)
 		os.Exit(1)
 	}
-	flog := fmt.Sprintf("(%d) table {%s} init sccessfully, num [%d].", logThreadSeq1, tableList, len(tableList))
+	schema := stcls.FuzzyMatchingDispos(dbCheckNameList, stcls.table, logThreadSeq1)
+	ignoreSchema := stcls.FuzzyMatchingDispos(dbCheckNameList, stcls.ignoreTable, logThreadSeq1)
+	for k, _ := range ignoreSchema {
+		if _, ok := schema[k]; ok {
+			delete(schema, k)
+		}
+	}
+	for k, _ := range schema {
+		f = append(f, k)
+	}
+	if len(f) == 0 {
+		hlog := fmt.Sprintf("(%d) check table is emty, will exit!", logThreadSeq1)
+		global.Wlog.Error(hlog)
+		os.Exit(1)
+	}
+	fmt.Println(f)
+	flog := fmt.Sprintf("(%d) schema.table {%s} init sccessfully, num [%d].", logThreadSeq1, f, len(f))
 	global.Wlog.Info(flog)
-	return tableList
+	return f
 }
 
 /*
@@ -1003,9 +1003,9 @@ func SchemaTableInit(m *inputArg.ConfigParameter) *schemaTable {
 	sdb := dbOpenTest(m.SourceDrive, m.SourceJdbc)
 	ddb := dbOpenTest(m.DestDrive, m.DestJdbc)
 	return &schemaTable{
-		ignoreSchema:        m.Igschema,
-		ignoreTable:         m.Igtable,
-		schema:              m.Schema,
+		//ignoreSchema:        m.Igschema,
+		ignoreTable: m.Igtable,
+		//schema:              m.Schema,
 		table:               m.Table,
 		sourceDrive:         m.SourceDrive,
 		destDrive:           m.DestDrive,

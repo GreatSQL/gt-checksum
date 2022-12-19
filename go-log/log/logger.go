@@ -30,11 +30,11 @@ type Level int
 // Log level, from low to high, more high means more serious
 const (
 	LevelTrace Level = iota
-	LevelDebug
-	LevelInfo
-	LevelWarn
-	LevelError
-	LevelFatal
+	LevelDebug Level = 1
+	LevelInfo  Level = 2
+	LevelWarn  Level = 3
+	LevelError Level = 4
+	LevelFatal Level = 5
 )
 
 // String returns level String
