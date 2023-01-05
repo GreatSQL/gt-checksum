@@ -1,160 +1,157 @@
-# MySQL体系数据库 静态数据一致性校验 #
+[![](https://img.shields.io/badge/GreatSQL-官网-orange.svg)](https://greatsql.cn/)
+[![](https://img.shields.io/badge/GreatSQL-论坛-brightgreen.svg)](https://greatsql.cn/forum.php)
+[![](https://img.shields.io/badge/GreatSQL-博客-brightgreen.svg)](https://greatsql.cn/home.php?mod=space&uid=10&do=blog&view=me&from=space)
+[![](https://img.shields.io/badge/License-GPL_v2.0-blue.svg)](https://gitee.com/GreatSQL/GreatSQL/blob/master/LICENSE)
+[![](https://img.shields.io/badge/release-8.0.25_16-blue.svg)](https://gitee.com/GreatSQL/GreatSQL/releases/tag/GreatSQL-8.0.25-16)
 
-----------
-##  Introductory ##
+# 关于 gt-checksum
+gt-checksum是GreatSQL社区开源的一款静态数据库校验修复工具，支持MySQL、Oracle等主流数据库。
 
-          很高兴大家能使用gt-checkOut工具进行数据的校验比对，该工具设计的初衷是当前市面上开源的数据校验工具很少，作为DBA的我们在日常维护或者架构变更中经常
-      会因为数据变动又无法进行数据校验而苦恼，那么我们只能求助于github大哥，而求助github大哥有时也不太好使，不是bug就是运行不起来（其实出现bug只是代码的场景与你的
-      场景不符合而已），那么我们该怎么办呢？
-     
-       gt-checkOut适用哪些场景呢？什么样的情况下才会用到呢？我在这里列了几点（仅为抛砖引玉）：
-        1）业务主从场景: 因某些原因导致主从中断后差异数据太多且数据量太大，除了重做从库还有什么办法
-        2）业务mgr场景: 因某些原因导致mgr架构崩溃或者某个节点异常退出，如何快速的恢复集群，除了重做异常节点还有什么办法
-        3）上云下云场景: 目前现在云业务盛行，我们需要做数据的迁移操作，如果字符集改变导致特殊数据出现乱码或其他的情况该如何处理呢？如果数据迁移工具在迁移过程中出现bug或者数据异常而又迁移成功，此时除了业务发现又该如何处理呢？等等（静态数据或动态数据）
-        4）异构迁移场景: 有时我们会遇到异构数据迁移场景，例如从oracle迁移到MySQL，那么我们数据迁移完成后，该如何确定数据是否一致呢？（因字符集不同，数据类型不同等情况）
-        5）定期校验场景: 作为DBA在维护高可用架构中为了保证主出现异常后能够且正常切换，并且保证主从的数据一致，不影响业务，那么我们就需要定期的做主从的数据校验工作，那么我们该又什么办法呢？
-------
+# 特性
+---
+MySQL DBA最常用的数据校验&修复工具应该是Percona Toolkit中的pt-table-checksum和pt-table-sync这两个工具，不过这两个工具并不支持MySQL MGR架构，以及国内常见的上云下云业务场景，还有MySQL、Oracle间的异构数据库等多种场景。
 
-## Download  ##
+GreatSQL开源的gt-checksum工具可以满足上述多种业务需求场景，解决这些痛点。
 
-&emsp;&emsp;&emsp;你可以从 [这里](https://gitee.com/gt-tools/gt-check-out/releases) 下载二进制可执行文件，我已经在ubuntu、centos、redhat下测试过
+gt-checksum工具支持以下几种常见业务需求场景：
+1. **MySQL主从复制**：主从复制中断后较长时间才发现，且主从间差异的数据量太多，这时候通常基本上只能重建复制从库，如果利用pt-table-checksum先校验主从数据一致性后，再利用pt-table-sync工具修复差异数据，这个过程要特别久，时间代价太大。
+2. **MySQL MGR组复制**：MySQL MGR因故崩溃整个集群报错退出，或某个节点异常退出，在恢复MGR集群时一般要面临着先检查各节点间数据一致性的需求，这时通常为了省事会选择其中一个节点作为主节点，其余从节点直接复制数据重建，这个过程要特别久，时间代价大。
+3. **上云下云业务场景**：目前上云下云的业务需求很多，在这个过程中要进行大量的数据迁移及校验工作，如果出现字符集改变导致特殊数据出现乱码或其他的情况，如果数据迁移工具在迁移过程中出现bug或者数据异常而又迁移成功，此时都需要在迁移结束后进行一次数据校验才放心。
+4. **异构迁移场景**：有时我们会遇到异构数据迁移场景，例如从Oracle迁移到MySQL，通常存在字符集不同，以及数据类型不同等情况，也需要在迁移结束后进行一次数据校验才放心。
+5. **定期校验场景**：作为DBA在维护高可用架构中为了保证主节点出现异常后能够快速放心切换，就需要保证各节点间的数据一致性，需要定期执行数据校验工作。
 
------
-## Usage  ##
-&emsp;&emsp;假如需要校验oracle数据库，则需要下载oracle相应版本的驱动，例如：待校验的数据库为11-2则需要去下载11-2的驱动,并生效,否则连接Oracle会报错
+以上这些场景，都可以利用gt-chcksum工具来满足。
 
-###   安装Oracle Instant Client 
-     从https://www.oracle.com/database/technologies/instant-client/downloads.html下载免费的Basic或Basic Light软件包。
-     #oracle basic client
-     instantclient-basic-linux.x64-11.2.0.4.0.zip
-     # oracle sqlplus
-     instantclient-sqlplus-linux.x64-11.2.0.4.0.zip
-     # oracle sdk
-     instantclient-sdk-linux.x64-11.2.0.4.0.zip
+# 下载
+---
+可以 [这里](https://gitee.com/GreatSQL/gt-checksum/releases) 下载预编译好的二进制文件包，已经在Ubuntu、CentOS、RHEL等多个下测试通过。
 
-###  配置oracle client并生效
-     shell> unzip instantclient-basic-linux.x64-11.2.0.4.0.zip
-     shell> unzip instantclient-sqlplus-linux.x64-11.2.0.4.0.zip
-     shell> unzip instantclient-sdk-linux.x64-11.2.0.4.0.zip
-     shell> mv instantclient_11_2 /usr/local
-     shell> echo "export LD_LIBRARY_PATH=/usr/local/instantclient_11_2:$LD_LIBRARY_PATH" >>/etc/profile
-     shell> source /etc/profile
+如果需要校验Oracle数据库，则还需要先下载Oracle数据库相应版本的驱动程序，并配置驱动程序使之生效。例如：待校验的数据库为Oracle 11-2，则要下载Oracle 11-2的驱动程序，并使之生效，否则连接Oracle会报错。详细方法请见下方内容：[**下载配置Oracle驱动程序**](x) 。
 
-###   工具使用说明
+# 快速运行
+---
+```shell
+# 不带任何参数
+shell> ./gt-checksum
+If no parameters are loaded, view the command with --help or -h
 
-    shell> ./gt-checksum
-    -- GreatdbCheck init os Args files --
-    No output configuration parameters, use --help or -h
+# 查看版本号
+shell> ./gt-checksum -v
+gt-checksum version 1.1.9
 
-    shell> ./gt-checksum -v
-    -- GreatdbCheck init os Args files --
-    gt-checkOut version 1.1.9
+# 查看使用帮助
+shell> ./gt-checksum -h
+NAME:
+   gt-checksum - A opensource table and data checksum tool by GreatSQL
 
-    shell> ./gt-checksum -h
-    NAME:
-    gt-checksum - mysql Oracle table data verification
+USAGE:
+   gt-checksum [global options] command [command options] [arguments...]
+...
 
-    USAGE:
-    greatdbCheck.exe [global options] command [command options] [arguments...]
+# 指定配置文件，开始执行数据校验，示例：
+shell> ./gt-checksum -f ./gc.conf
+-- gt-checksum init configuration files --
+-- gt-checksum init log files --
+-- gt-checksum check parameter --
+-- GreatSQLCheck init check table --
+-- GreatSQLCheck init check table column --
+-- GreatSQLCheck init check table index column --
+-- GreatSQLCheck init source and dest transaction snapshoot conn pool --
+-- GreatSQLCheck init cehck table query plan and check data --
+begin checkSum index table TEST.T2
+table Index Column Data done! 2023-01-05 13:45:36
+table QuerySql Where Data Generate done! 2023-01-05 13:45:36
+table query sql Product done! 2023-01-05 13:45:36
+table All Measured Data CheckSum done! 2023-01-05 13:45:36
+table Differences in Data CheckSum done! 2023-01-05 13:45:36
+table Differences in Data fix done!! 2023-01-05 13:45:36
+TEST.T2 校验完成
 
-    VERSION:
-    1.1.9
-    
-    AUTHOR:
-    GreatSQL <greatsql@greatdb.com>
-    
-    COMMANDS:
-    help, h  Shows a list of commands or help for one command
-    
-    GLOBAL OPTIONS:
-    --config value, -f value                       Specifies the configuration file. for example: --config gc.conf or -f gc.conf
-    --sourceJdbc value, -S value                   Configures source connection information. for example: -S type=mysql,user=root,passwd=abc123,host=127.0.0.1
-    --destJdbc value, -D value                     Configures dest connection information. for example: -D type=mysql,user=root,passwd=abc123,host=127.0.0.1,port=3306,charset=jbk
-    --poolMin value, --pi value                    configure the min connection pool. for example: --poolMin 50 (default: 50)
-    --poolMax value, --pa value                    configure the max connection pool. for example: --poolMin 100 (default: 100)
-    --schema value, -s value                       configure the check schema. for example: --schema all or --schema sysbench,benchmarksql (default: "nil") [%nil%, %schema%, %...%]
-    --igschema value, --is value                   configure the ignore check schema. for example: --igschema cc,bb (default: "nil") [%nil%, %schema%, %...%]
-    --table value, -t value                        configure the check table. for example: --table nil (default: "nil") [%nil%, %schema.table%, %...%]
-    --igtable value, --it value                    configure the ignore check table. for example: --igtable nil (default: "nil") [%nil%, %schema.table%, %...%]
-    --noIndexTable value, --nit value              Specifies whether to verify non-indexed tables. for example: --nit no (default: "no") [%yes%, %no%]
-    --lowerCase value, --lc value                  Configures whether the checklist ignores case. for example: --lc no (default: "no") [%yes%, %no%]
-    --logPath value, --lp value                    configures the log output path. for example: --lp /tmp (default: "./")
-    --logFile value, --lf value                    configures the log output file. for example: --lf greatdb.log (default: "gt-checkOut.log")
-    --logLevel value, --ll value                   configures the log output level. for example: --ll info (default: "info") [%debug%, %info%, %warning%, %error%]
-    --concurrency value, --cc value                configures the number of concurrent checks to check data blocks. for example: --cc 5 (default: 5)
-    --singleIndexChanRowCount value, --sicr value  configure a single column index single check database. for example: --sicr 1000 (default: 10000)
-    --jointIndexChanRowCount value, --jicr value   configures single-check data blocks with multi-column indexes. for example: --jicr 100 (default: 1000)
-    --checkMode value, --cm value                  Select the method for verifying data. for example: --cm count (default: "rows") [%count%, %rows%, %sample%]
-    --checkObject value, --co value                xample Query the parity object of data. for example: --co struct (default: "data") [%data%, %struct%, %index%, %partitions%, %foreign%, %trigger%, %func%, %proc%]
-    --ratio value, -r value                        When checkmod is set to sample, you can set the percentage of spot checks ranging from 1 to 100%. for example: -r 1 (default: 10)
-    --queueDepth value, --qd value                 configure queue depth. for example: --qd 100 (default: 100)
-    --datafix value, --df value                    configures repair statements. for example: --df table (default: "file") [%file%, %table%]
-    --fixPath value, --fp value                    configuration repair file path. for example: --fp /tmp (default: "./")
-    --fixFileName value, --ffn value               configuration repair file name. for example: --ffn greatdbCheckDataFix.sql (default: "gt-checkOutDataFix.sql")
-    --help, -h                                     show help
-    --version, -v                                  print the version
+** gt-checksum Overview of results **
+Check time:  1.51s (Seconds)
+Schema  Table   IndexCol        checkMod        Rows    Differences     Datafix
+TEST    T2      id              rows            3,3     yes             table
 
---------
-## Examples ##
+# 使用命令行传参方式执行数据校验
+#shell> ./gt-checksum -S type=mysql,user=yejr,passwd=yejr,host=127.0.0.1,port=3306,charset=latin1 -D type=mysql,user=yejr,passwd=yejr,host=127.0.0.1,port=4306,charset=utf8 -t test.t2 -nit yes
+shell> ./gt-checksum -S type=mysql,user=checksum,passwd=Checksum@123,host=172.16.0.1,port=3306,charset=utf8 -D type=mysql,user=checksum,passwd=Checksum@123,host=172.16.0.2,port=3306,charset=utf8 -t test.t2 -nit yes
+-- gt-checksum init configuration files --
+-- gt-checksum init log files --
+-- gt-checksum check parameter --
+-- GreatSQLCheck init check table --
+-- GreatSQLCheck init check table column --
+-- GreatSQLCheck init check table index column --
+-- GreatSQLCheck init source and dest transaction snapshoot conn pool --
+-- GreatSQLCheck init cehck table query plan and check data --
+begin checkSum index table TEST.T2
+table Index Column Data done! 2023-01-05 13:54:33
+table QuerySql Where Data Generate done! 2023-01-05 13:54:33
+table query sql Product done! 2023-01-05 13:54:33
+table All Measured Data CheckSum done! 2023-01-05 13:54:33
+table Differences in Data CheckSum done! 2023-01-05 13:54:33
+table Differences in Data fix done!! 2023-01-05 13:54:33
+TEST.T2 校验完成
 
-     1）加载配置文件执行数据校验的命令
-     shell> ./gt-checksum -f ./gc.conf
-     2）使用命令行传参执行数据校验命令
-     shell> ./gt-checksum -S type=mysql,user=root,passwd=abc123,host=xxxx -D type=mysql,user=root,passwd=abc123,host=xxxx -s benchmarksql,sysbench,aaa -is benchmarksql -it sysbench.sbtest3 -nit yes
-     3）示例：
-     shell> ./gt-checksum -f gc.conf
-    -- GreatdbCheck init configuration files --
-    -- GreatdbCheck init log files --
-    -- GreatdbCheck init check table --
-    -- GreatdbCheck init check table column --
-    -- GreatdbCheck init check table index column --
-    -- GreatdbCheck Obtain global consensus sites --
-    -- GreatdbCheck init source and dest transaction snapshoot conn pool --
-    -- GreatdbCheck init cehck table query plan and check data --
-    begin checkSum no index table sysbench.sbtest4
-    begin checkSum index table sysbench.sbtest1
-    table Index Column Data done! 2022-10-23 13:04:1010
-    table QuerySql Where Data Generate done! 2022-10-23 13:04:1010
-    table All Measured Data CheckSum done! 2022-10-23 13:04:1010
-    table Differences in Data CheckSum done! 2022-10-23 13:04:1010
-    sysbench.sbtest1 校验完成
-    begin checkSum index table sysbench.sbtest2
-    table Index Column Data done! 2022-10-23 13:06:1010
-    table QuerySql Where Data Generate done! 2022-10-23 13:06:1010
-    table All Measured Data CheckSum done! 2022-10-23 13:06:1010
-    table Differences in Data CheckSum done! 2022-10-23 13:06:1010
-    sysbench.sbtest2 校验完成
-    sysbench.sbtest4 校验完成
-    
-    ** GreatdbCheck Overview of verification results **
-    Check time:  360.15s (Seconds)
-    Schema          Table   IndexCol        Rows            Differences     Datafix
-    sysbench        sbtest1 id              100000,100000     yes             file
-    sysbench        sbtest4 noIndex         99994,99994       yes             file
-    sysbench        sbtest2 id              100000,100000     yes             file
--------
-## Building ##
+** gt-checksum Overview of results **
+Check time:  1.37s (Seconds)
+Schema  Table   IndexCol        checkMod        Rows    Differences     Datafix
+TEST    T2      id              rows            3,3     no              file
+```
 
-    mycheck needs go version > 1.17 for go mod
+# 下载配置Oracle驱动程序
+---
+如果需要校验Oracle数据库，则还需要先下载Oracle数据库相应版本的驱动程序。例如：待校验的数据库为Oracle 11-2，则要下载Oracle 11-2的驱动程序，并使之生效，否则连接Oracle会报错。
 
-    shell> git clone https://gitee.com/gt-tools/gt-check-out.git
-    shell> go build -o gt-checksum greatdbCheck.go
-    shell> chmod +x gt-checksum
-    shell> mv gt-checksum /usr/bin
+## 下载Oracle Instant Client
+从 [https://www.oracle.com/database/technologies/instant-client/downloads.html](https://www.oracle.com/database/technologies/instant-client/downloads.html) 下载免费的Basic或Basic Light软件包。
 
------
-## Requirements ##
+- oracle basic client, instantclient-basic-linux.x64-11.2.0.4.0.zip
 
-    数据校验目前支持MySQL and oracle 体系的静态数据校验
-_____
-## doc ##
-    操作使用手册：
-    在线手册：
-            https://bbkv6krkep.feishu.cn/wiki/wikcn92c6R9Eh7hJ0mvw1NEwfld
-    离线手册：
-            /doc/GreatdbToolKit1.1.8.pdf
------
-## Author ##
+- oracle sqlplus, instantclient-sqlplus-linux.x64-11.2.0.4.0.zip
 
-    - name: GreatSQL
-    - mail: greatsql@greatdb.com
+- oracle sdk, instantclient-sdk-linux.x64-11.2.0.4.0.zip
+
+## 配置oracle client并生效
+```shell
+shell> unzip instantclient-basic-linux.x64-11.2.0.4.0.zip
+shell> unzip instantclient-sqlplus-linux.x64-11.2.0.4.0.zip
+shell> unzip instantclient-sdk-linux.x64-11.2.0.4.0.zip
+shell> mv instantclient_11_2 /usr/local
+shell> echo "export LD_LIBRARY_PATH=/usr/local/instantclient_11_2:$LD_LIBRARY_PATH" >> /etc/profile
+shell> source /etc/profile
+```
+
+# 源码编译
+gt-checksum工具采用GO语言开发，您可以自行编译生成二进制文件。
+
+编译环境要求使用golang 1.17及以上版本。
+
+请参考下面方法下载源码并进行编译：
+```shell
+shell> git clone https://gitee.com/GreatSQL/gt-checksum.git
+shell> go build -o gt-checksum gt-checksum.go
+shell> chmod +x gt-checksum
+shell> mv gt-checksum /usr/local/bin
+```
+
+# 使用文档
+---
+- [gt-checksum manual](https://gitee.com/GreatSQL/gt-checksum/blob/master/docs/gt-checksum-manual.md)
+
+
+# 版本历史
+---
+- [gt-checksum 更新说明 1.1.10(2023-1-10)](https://gitee.com/GreatSQL/gt-checksum/blob/master/relnotes/changes-gt-checksum-1110-20230110.md)
+
+
+# 问题反馈
+---
+- [问题反馈 gitee](https://gitee.com/GreatSQL/gt-checksum/issues)
+
+
+# 联系我们
+---
+
+扫码关注微信公众号
+
+![输入图片说明](https://images.gitee.com/uploads/images/2021/0802/141935_2ea2c196_8779455.jpeg "greatsql社区-wx-qrcode-0.5m.jpg")
