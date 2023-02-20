@@ -12,11 +12,11 @@ if [ ! -d "/usr/lcoal/instantclient_19_17" ];then
 fi
 export LD_LIBRARY_PATH=/usr/local/instantclient_19_17:$LD_LIBRARY_PATH
 
-go build -o gt-checkOut greatdbCheck.go
-mkdir gt-checkOut-${vs}-linux-arm-64
-cp -rpf gt-checkOut gc.conf gt-checkOut-${vs}-linux-arm-64
-cp -rpf Oracle/instantclient_19_17 gt-checkOut-${vs}-linux-arm-64
-cp -rpf README.md gt-checkOut-${vs}-linux-arm-64
-tar zcf gt-checkOut-${vs}-linux-arm-64.tar.gz gt-checkOut-${vs}-linux-arm-64
+go build -o gt-checksum greatdbCheck.go
+mkdir gt-checksum-${vs}-linux-arm-64
+cp -rpf gt-checksum gc.conf gt-checksum-${vs}-linux-arm-64
+cp -rpf Oracle/instantclient_19_17 gt-checksum-${vs}-linux-arm-64
+cp -rpf README.md gt-checksum-${vs}-linux-arm-64
+tar zcf gt-checksum-${vs}-linux-arm-64.tar.gz gt-checksum-${vs}-linux-arm-64
 mkdir binary
-mv gt-checkOut-${vs}-linux-arm-64.tar.gz binary
+mv gt-checksum-${vs}-linux-arm-64.tar.gz binary

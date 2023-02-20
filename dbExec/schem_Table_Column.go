@@ -18,9 +18,9 @@ type TableColumnNameStruct struct {
 
 type QueryTableColumnNameInterface interface {
 	TableColumnName(db *sql.DB, logThreadSeq int64) ([]map[string]interface{}, error)
-	GlobalAccessPri(db *sql.DB, logThreadSeq int64) bool
+	GlobalAccessPri(db *sql.DB, logThreadSeq int64) (bool, error)
 	TableAccessPriCheck(db *sql.DB, checkTableList []string, datefix string, logThreadSeq int64) (map[string]int, error)
-	DatabaseNameList(logThreadSeq int64) map[string]int
+	DatabaseNameList(db *sql.DB, logThreadSeq int64) (map[string]int, error)
 	TableAllColumn(db *sql.DB, logThreadSeq int64) ([]map[string]interface{}, error)
 	TableIndexChoice(queryData []map[string]interface{}, logThreadSeq int64) map[string][]string
 	Trigger(db *sql.DB, logThreadSeq int64) (map[string]string, error)

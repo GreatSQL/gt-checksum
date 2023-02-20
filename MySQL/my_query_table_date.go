@@ -3,69 +3,54 @@ package mysql
 import (
 	"database/sql"
 	"fmt"
+	"greatdbCheck/dataDispos"
 	"greatdbCheck/global"
+	"sort"
 	"strconv"
 	"strings"
 )
 
-type QueryTableDate struct {
-	Schema           string
-	Table            string
-	TmpTableFileName string
-	ColumnName       []string
-	ChanrowCount     int
-	TableColumn      []map[string]string
-	//TableColumn global.TableAllColumnInfoS
-	Sqlwhere                       string
-	ColData                        []map[string]string
-	SelectColumnString, LengthTrim string
-	ColumnLengthAs                 []string
-	BeginSeq                       string
-	RowDataCh                      int64
-	//ColData map[string]global.TableAllColumnInfoS
-}
-
-//查询MySQL 临时表
-type IndexColumn struct {
-	Schema           string
-	Table            string
-	TmpTableFileName string
-	ColumnName       []string
-	ChanrowCount     int
-	TableColumn      []map[string]string
-	Sqlwhere         string
-	ColData          []map[string]string
+/*
+	查询MySQL库下指定表的索引统计信息
+*/
+func (my *QueryTable) QueryTableIndexColumnInfo(db *sql.DB, logThreadSeq int64) ([]map[string]interface{}, error) {
+	var (
+		Event = "Q_Index_Statistics"
+	)
+	strsql = fmt.Sprintf("select isc.COLUMN_NAME as columnName,isc.COLUMN_TYPE as columnType,isc.COLUMN_KEY as columnKey,isc.EXTRA as autoIncrement,iss.NON_UNIQUE as nonUnique,iss.INDEX_NAME as indexName,iss.SEQ_IN_INDEX IndexSeq,isc.ORDINAL_POSITION columnSeq from information_schema.columns isc inner join (select NON_UNIQUE,INDEX_NAME,SEQ_IN_INDEX,COLUMN_NAME from information_schema.STATISTICS where table_schema='%s' and table_name='%s') as iss on isc.column_name =iss.column_name where isc.table_schema='%s' and isc.table_name='%s';", my.Schema, my.Table, my.Schema, my.Table)
+	vlog = fmt.Sprintf("(%d) [%s] Generate a sql statement to query the index statistics of table %s.%s under the %s database.sql messige is {%s}", logThreadSeq, Event, my.Schema, my.Table, DBType, strsql)
+	global.Wlog.Debug(vlog)
+	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
+	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
+		return nil, err
+	}
+	tableData, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
+	if err != nil {
+		return nil, err
+	}
+	vlog = fmt.Sprintf("(%d) [%s] The index statistics query of table %s.%s under the %s database is completed. index statistics is {%v}", logThreadSeq, Event, my.Schema, my.Table, DBType, tableData)
+	global.Wlog.Debug(vlog)
+	defer dispos.SqlRows.Close()
+	return tableData, err
 }
 
 /*
-   查询表的索引信息， 并输出当前所有的索引信息列
+	根据MySQL库下指定表的索引信息，筛选主键索引、唯一索引、普通索引
 */
-func (my QueryTableDate) QueryTableIndexColumnInfo(db *sql.DB, logThreadSeq int64) ([]map[string]interface{}, error) {
-	strsql := fmt.Sprintf("select isc.COLUMN_NAME as columnName,isc.COLUMN_TYPE as columnType,isc.COLUMN_KEY as columnKey,isc.EXTRA as autoIncrement,iss.NON_UNIQUE as nonUnique,iss.INDEX_NAME as indexName,iss.SEQ_IN_INDEX IndexSeq,isc.ORDINAL_POSITION columnSeq from information_schema.columns isc inner join (select NON_UNIQUE,INDEX_NAME,SEQ_IN_INDEX,COLUMN_NAME from information_schema.STATISTICS where table_schema='%s' and table_name='%s') as iss on isc.column_name =iss.column_name where isc.table_schema='%s' and isc.table_name='%s';", my.Schema, my.Table, my.Schema, my.Table)
-	slog := fmt.Sprintf("(%d) MySQL DB query table index column info exec sql is {%s}", logThreadSeq, strsql)
-	global.Wlog.Info(slog)
-	sqlRows, err := db.Query(strsql)
-	if err != nil {
-		elog := fmt.Sprintf("(%d) MySQL DB exec sql fail. sql message is {%s} Error info is {%s}", logThreadSeq, strsql, err)
-		global.Wlog.Error(elog)
-	}
-	clog := fmt.Sprintf("(%d) start dispos oracle DB query table %s.%s index column data.", logThreadSeq, my.Schema, my.Table)
-	global.Wlog.Info(clog)
-	tableData, err := rowDataDisposMap(sqlRows, "IndexColumn", logThreadSeq)
-	zlog := fmt.Sprintf("(%d) Oracle db query table index column data completion.", logThreadSeq)
-	global.Wlog.Info(zlog)
-	
-	return tableData, err
-}
-func (my QueryTableDate) IndexDisposF(queryData []map[string]interface{}, logThreadSeq int64) ([]string, map[string][]string, map[string][]string) {
-	nultiseriateIndexColumnMap := make(map[string][]string)
-	multiseriateIndexColumnMap := make(map[string][]string)
-	var PriIndexCol, uniIndexCol, mulIndexCol []string
-	var indexName string
-	alog := fmt.Sprintf("(%d) Start to classify different index columns of MySQL DB table, to dispos it...", logThreadSeq)
-	global.Wlog.Info(alog)
+func (my *QueryTable) IndexDisposF(queryData []map[string]interface{}, logThreadSeq int64) (map[string][]string, map[string][]string, map[string][]string) {
+	var (
+		nultiseriateIndexColumnMap            = make(map[string][]string)
+		multiseriateIndexColumnMap            = make(map[string][]string)
+		priIndexColumnMap                     = make(map[string][]string)
+		PriIndexCol, uniIndexCol, mulIndexCol []string
+		indexName                             string
+		currIndexName                         string
+		Event                                 = "E_Index_Filter"
+	)
+	vlog = fmt.Sprintf("(%d) [%s] Start to filter the primary key index, unique index, and common index based on the index information of the specified table %s.%s under the %s library", logThreadSeq, Event, my.Schema, my.Table, DBType)
+	global.Wlog.Debug(vlog)
 	for _, v := range queryData {
-		var currIndexName = strings.ToUpper(v["indexName"].(string))
+		currIndexName = strings.ToUpper(v["indexName"].(string))
 		//判断唯一索引（包含主键索引和普通索引）
 		if v["nonUnique"].(string) == "0" {
 			if currIndexName == "PRIMARY" {
@@ -73,6 +58,7 @@ func (my QueryTableDate) IndexDisposF(queryData []map[string]interface{}, logThr
 					indexName = currIndexName
 				}
 				PriIndexCol = append(PriIndexCol, fmt.Sprintf("%s", v["columnName"]))
+				priIndexColumnMap["pri"] = PriIndexCol
 			} else {
 				if currIndexName != indexName {
 					indexName = currIndexName
@@ -92,296 +78,298 @@ func (my QueryTableDate) IndexDisposF(queryData []map[string]interface{}, logThr
 			}
 		}
 	}
-	clog := fmt.Sprintf("(%d) Complete the classification of different index columns of MySQL DB table. primary key message is {%s} num [%d] unique key message is {%s} num [%d] nounique key message is {%s} num [%d]", logThreadSeq, PriIndexCol, len(PriIndexCol), nultiseriateIndexColumnMap, len(nultiseriateIndexColumnMap), multiseriateIndexColumnMap, len(multiseriateIndexColumnMap))
-	global.Wlog.Info(clog)
-	return PriIndexCol, nultiseriateIndexColumnMap, multiseriateIndexColumnMap
-}
-
-func (my *IndexColumn) QPrepareRow(db *sql.DB, sqlStr string) (*sql.Rows, error) {
-	global.Wlog.Info("begin exec query sql \"", sqlStr, "\"")
-	sqlRows, err := db.Query(sqlStr)
-	if err != nil {
-		global.Wlog.Error("select sql exec fail. sql: ", sqlStr, " Error info: ", err)
-		return nil, err
-	}
-	global.Wlog.Info("sql exec successful. sql info: ", sqlStr)
-	return sqlRows, nil
-}
-
-func (my *IndexColumn) QueryTableAllColumnSeq(db *sql.DB) ([]map[string]interface{}, error) {
-	sqlStr := fmt.Sprintf("select COLUMN_NAME as columnName ,COLUMN_TYPE as dataType,ORDINAL_POSITION as columnSeq from information_schema.columns where table_schema= '%s' and table_name='%s' order by ORDINAL_POSITION;", my.Schema, my.Table)
-	global.Wlog.Info("[check table index column data] exec mysql sql info: ", sqlStr)
-	sqlRows, err := db.Query(sqlStr)
-	if err != nil {
-		global.Wlog.Error("[check table index column data] exec mysql sql fail. sql info: ", sqlStr, "Error Info: ", err)
-		return nil, err
-	}
-	tableData, err := rowDataDisposMap(sqlRows, "IndexColumn", 13)
-	return tableData, err
+	vlog = fmt.Sprintf("(%d) [%s] The index information screening of the specified table %s.%s under the %s library is completed", logThreadSeq, Event, my.Schema, my.Table, DBType)
+	global.Wlog.Debug(vlog)
+	return priIndexColumnMap, nultiseriateIndexColumnMap, multiseriateIndexColumnMap
 }
 
 /*
-   查询表，生成select column信息并输出索引列数据的字符串长度，判断是否有null或空
+	查询表，输出索引列数据的字符串长度，判断是否有null或空
 */
-func (my *QueryTableDate) TmpTableIndexColumnDataLength(logThreadSeq int64) (string, []string, string) {
+func (my *QueryTable) TmpTableIndexColumnSelectDispos(logThreadSeq int64) map[string]string {
 	//根据索引列的多少，生成select 列条件，并生成列长度，为判断列是否为null或为空做判断
 	var (
-		selectColumnString, lengthTrim string
-		columnLengthAs                 []string
-		columnName                     = my.ColumnName
+		columnSelect = make(map[string]string)
+		columnName   = my.ColumnName
+		Event        = "D_Index_Length"
 	)
-	alog := fmt.Sprintf("(%d) MySQL DB starts to handle index class length.", logThreadSeq)
-	global.Wlog.Info(alog)
+	vlog = fmt.Sprintf("(%d) [%s] Start to query the length of the query index column in table %s.%s in the specified %s database.", logThreadSeq, Event, my.Schema, my.Table, DBType)
+	global.Wlog.Debug(vlog)
 	//根据索引列的多少，生成select 列条件，并生成列长度，为判断列是否为null或为空做判断
 	if len(columnName) == 1 {
-		selectColumnString = strings.Join(columnName, "")
-		lengthTrim = fmt.Sprintf("LENGTH(trim(%s)) as %s_length", strings.Join(my.ColumnName, ""), strings.Join(columnName, ""))
-		columnLengthAs = append(columnLengthAs, fmt.Sprintf("%s_length", strings.Join(columnName, "")))
+		columnSelect["selectColumnName"] = strings.Join(columnName, "")
+		columnSelect["selectColumnLength"] = fmt.Sprintf("LENGTH(trim(%s)) as %s_length", strings.Join(columnName, ""), strings.Join(columnName, ""))
+		columnSelect["selectColumnLengthSlice"] = fmt.Sprintf("%s_length", strings.Join(columnName, ""))
+		columnSelect["selectColumnNull"] = fmt.Sprintf("%s is null ", strings.Join(columnName, ""))
+		columnSelect["selectColumnEmpty"] = fmt.Sprintf("%s = '' ", strings.Join(columnName, ""))
 	} else if len(columnName) > 1 {
-		selectColumnString = strings.Join(columnName, ",")
-		var aa []string
+		columnSelect["selectColumnName"] = strings.Join(columnName, "/*column*/")
+		var aa, bb, cc, dd, ee []string
 		for i := range columnName {
 			aa = append(aa, fmt.Sprintf("LENGTH(trim(%s)) as %s_length", columnName[i], columnName[i]))
-			columnLengthAs = append(columnLengthAs, fmt.Sprintf("%s_length", columnName[i]))
+			bb = append(bb, fmt.Sprintf("%s_length", columnName[i]))
+			cc = append(cc, fmt.Sprintf("%s is null ", columnName[i]))
+			dd = append(dd, fmt.Sprintf("%s = '' ", columnName[i]))
+			ee = append(ee, fmt.Sprintf("%s != '' ", columnName[i]))
 		}
-		lengthTrim = strings.Join(aa, ",")
+		columnSelect["selectColumnLength"] = strings.Join(aa, "/*column*/")
+		columnSelect["selectColumnLengthSlice"] = strings.Join(bb, "/*column*/")
+		columnSelect["selectColumnNull"] = strings.Join(cc, "/*column*/")
+		columnSelect["selectColumnEmpty"] = strings.Join(dd, "/*column*/")
 	}
-	return selectColumnString, columnLengthAs, lengthTrim
+	vlog = fmt.Sprintf("(%d) [%s] The length of the query index column of table %s.%s in the %s database is completed.", logThreadSeq, Event, my.Schema, my.Table, DBType)
+	global.Wlog.Debug(vlog)
+	return columnSelect
 }
 
 /*
-   查询表，生成select column信息并输出索引列数据的字符串长度，判断是否有null或空
+	MySQL 查询有索引表的总行数
 */
-func (my *QueryTableDate) TmpTableRowsCount(db *sql.DB, logThreadSeq int64) (int, error) {
+func (my *QueryTable) TmpTableIndexColumnRowsCount(db *sql.DB, logThreadSeq int64) (uint64, error) {
 	var (
-		tmpTableCount int
+		tmpTableCount uint64
+		Event         = "Q_Index_Table_Count"
+		E             string
 	)
-	alog := fmt.Sprintf("(%d) Start to query the total number of rows in MySQL DB current check table %s.%s ...", logThreadSeq, my.Schema, my.Table)
-	global.Wlog.Info(alog)
-	sqlstr := fmt.Sprintf("select a.* from (select (@i:=@i+1) as i from `%s`.`%s`,(select @i:=0) i) a order by a.i desc limit 1", my.Schema, my.Table)
-	db.QueryRow(sqlstr).Scan(&tmpTableCount)
-	blog := fmt.Sprintf("(%d) The total number of rows in MySQL DB database table %s.%s is [%d].", logThreadSeq, my.Schema, my.Table, tmpTableCount)
-	global.Wlog.Info(blog)
+	vlog = fmt.Sprintf("(%d) [%s] Start to query the total number of rows in the following table %s.%s of the %s database.", logThreadSeq, Event, my.Schema, my.Table, DBType)
+	global.Wlog.Debug(vlog)
+	strsql = fmt.Sprintf("select index_name AS INDEX_NAME,column_name AS columnName,cardinality as CARDINALITY from INFORMATION_SCHEMA.STATISTICS where TABLE_SCHEMA = '%s' and table_name = '%s' and SEQ_IN_INDEX=1", my.Schema, my.Table)
+	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
+	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
+		return 0, err
+	}
+	if B, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{}); err != nil {
+		return 0, err
+	} else {
+		if len(B) != 0 {
+			var C []int
+			for _, i := range B {
+				d, _ := strconv.Atoi(fmt.Sprintf("%s", i["CARDINALITY"]))
+				C = append(C, d)
+			}
+			sort.Ints(C)
+			for _, i := range B {
+				d, _ := strconv.Atoi(fmt.Sprintf("%s", i["CARDINALITY"]))
+				if d == C[0] {
+					E = fmt.Sprintf("%s", i["columnName"])
+					break
+				}
+			}
+		}
+	}
+	if E != "" {
+		strsql = fmt.Sprintf("select sum(a.count) as sum from (select count(1) as count from `%s`.`%s` group by %s) a", my.Schema, my.Table, E)
+	} else {
+		strsql = fmt.Sprintf("select count(1) as sum from `%s`.`%s`", my.Schema, my.Table)
+	}
+	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
+		return 0, err
+	}
+	if tableData, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{}); err != nil {
+		return 0, err
+	} else {
+		for _, i := range tableData {
+			d, _ := strconv.ParseUint(fmt.Sprintf("%s", i["sum"]), 10, 64)
+			tmpTableCount += d
+		}
+	}
+	vlog = fmt.Sprintf("(%d) [%s] The query of the total number of rows in the following table %s.%s of the %s database is completed.", logThreadSeq, Event, my.Schema, my.Table, DBType)
+	global.Wlog.Debug(vlog)
+	defer dispos.SqlRows.Close()
 	return tmpTableCount, nil
 }
 
 /*
-	按照分页查询表的索引列数据
+	处理MySQL 5.7版本针对列数据类型为FLOAT类型时，select where column = 'float'查询不出数据问题
 */
-func (my *QueryTableDate) TmpTableIndexColumnDataDispos(db *sql.DB, logThreadSeq int64) ([]string, error) {
+func (my QueryTable) FloatTypeQueryDispos(db *sql.DB, where string, logThreadSeq int64) (string, error) {
+	var whereExist string
+	column, err := my.TableAllColumn(db, logThreadSeq)
+	if err != nil {
+		return "", err
+	}
+	var C = make(map[string]string)
+	whereExist = fmt.Sprintf("where %v", where)
+	for _, i := range strings.Split(where, "and") {
+		if strings.Contains(i, " = ") {
+			C[strings.ToUpper(strings.TrimSpace(strings.Split(i, " = ")[0]))] = strings.TrimSpace(strings.Split(i, " = ")[1])
+		}
+	}
+	for _, i := range column {
+		if V, ok := C[strings.ToUpper(fmt.Sprintf("%v", i["columnName"]))]; ok {
+			if strings.Contains(fmt.Sprintf("%v", i["dataType"]), "float") {
+				D := strings.Split(fmt.Sprintf("%v", i["dataType"]), ",")
+				//onesPlace := D[0][strings.Index(D[0], "(")+1:]
+				Place := D[1][:strings.Index(D[1], ")")]
+				whereExist = fmt.Sprintf("where %s ", strings.ReplaceAll(where, fmt.Sprintf("%v = %v", i["columnName"], V), fmt.Sprintf("format(%v,%v) = format(%v,%v)", i["columnName"], Place, V, Place)))
+			}
+		}
+	}
+	return whereExist, nil
+}
+
+/*
+	MySQL库下查询表的索引列数据，并进行去重排序
+*/
+func (my QueryTable) TmpTableColumnGroupDataDispos(db *sql.DB, where string, columnName string, logThreadSeq int64) (chan map[string]interface{}, error) {
 	var (
-		strsql string
-		err    error
+		whereExist string
+		Event      = "Q_Index_ColumnData"
 	)
-	alog := fmt.Sprintf("(%d) MySQL DB check table %s.%s start query processing index column data", logThreadSeq, my.Schema, my.Table)
-	global.Wlog.Info(alog)
-	bens, _ := strconv.Atoi(strings.Split(my.BeginSeq, ",")[0])
-	strsql = fmt.Sprintf("select %s,%s from `%s`.`%s` group by %s order by %s limit %d,%d;", my.SelectColumnString, my.LengthTrim, my.Schema, my.Table, my.SelectColumnString, my.SelectColumnString, bens, my.RowDataCh)
-	blog := fmt.Sprintf("(%d) MySQL DB query table index column data info exec sql is {%s}", logThreadSeq, strsql)
-	global.Wlog.Info(blog)
-
-	rows, err := db.Query(strsql)
+	vlog = fmt.Sprintf("(%d) [%s] Start to query the index column data of the following table %s.%s in the %s database and de-reorder the data.", logThreadSeq, Event, my.Schema, my.Table, DBType)
+	global.Wlog.Debug(vlog)
+	version, err := my.DatabaseVersion(db, logThreadSeq)
 	if err != nil {
-		clog := fmt.Sprintf("(%d) MySQL DB exec sql fail. sql message is {%s},Error info is {%s}.", logThreadSeq, strsql, err)
-		global.Wlog.Error(clog)
+		return nil, err
 	}
-	var tableRowData []string
-	if rows == nil {
-		return nil, nil
-	}
-
-	column, err1 := rows.Columns()
-	if err1 != nil {
-		clog := fmt.Sprintf("(%d) MySQL DB failed to get column information. sql message is {%s},Error info is {%s}.", logThreadSeq, strsql, err)
-		global.Wlog.Error(clog)
-	}
-	valuePtrs := make([]interface{}, len(column))
-	values := make([]interface{}, len(column))
-	for rows.Next() {
-		var tmpStringInputSlice []string
-		for i := 0; i < len(column); i++ {
-			valuePtrs[i] = &values[i]
-		}
-		rows.Scan(valuePtrs...)
-		entry := make(map[string]interface{})
-		for i, col := range column {
-			var v interface{}
-			val := values[i]
-			b, ok := val.([]byte)
-			if ok {
-				v = string(b)
-			} else {
-				v = val
-			}
-			entry[col] = v
-		}
-		for _, aa1 := range my.ColumnLengthAs {
-			//对null做处理
-			var tmpadf interface{}
-			if fmt.Sprintf("%v", entry[aa1]) == "<nil>" {
-				tmpadf = "greatdbCheckNULL"
-				entry[strings.ReplaceAll(aa1, "_length", "")] = tmpadf
-			}
-			//对空字符串做处理
-			if fmt.Sprintf("%v", entry[aa1]) == "0" {
-				tmpadf = "greatdbCheckEmtry"
-				entry[strings.ReplaceAll(aa1, "_length", "")] = tmpadf
+	whereExist = where
+	if where != "" {
+		whereExist = fmt.Sprintf("where %s ", where)
+		if strings.Contains(version, "5.7") {
+			whereExist, err = my.FloatTypeQueryDispos(db, where, logThreadSeq)
+			if err != nil {
+				return nil, err
 			}
 		}
-		for _, aa1 := range my.ColumnName {
-			if len(aa1) > 0 {
-				tmpStringInputSlice = append(tmpStringInputSlice, fmt.Sprintf("%v", entry[aa1]))
-			}
-		}
-		tableRowData = append(tableRowData, strings.Join(tmpStringInputSlice, "/*,*/"))
 	}
-	rows.Close()
-	zlog := fmt.Sprintf("(%d) MySQL DB check table %s.%s query index column data completed", logThreadSeq, my.Schema, my.Table)
-	global.Wlog.Info(zlog)
-	return tableRowData, nil
+	strsql = fmt.Sprintf("select %s as columnName,count(1) as count from `%s`.`%s` %s group by %s", columnName, my.Schema, my.Table, whereExist, columnName)
+	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
+	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
+		return nil, err
+	}
+	C := dispos.DataChanDispos()
+	vlog = fmt.Sprintf("(%d) [%s] The index column data query of the following table %s.%s in the %s database is completed.", logThreadSeq, Event, my.Schema, my.Table, DBType)
+	global.Wlog.Debug(vlog)
+	return C, nil
 }
 
-//处理无索引表查询select的order by列，防止原目标端查询的段不一致情况
-func (or *QueryTableDate) NoIndexOrderBySingerColumn(orderCol []map[string]string) string {
+/*
+	MySQL 查询表的统计信息中行数
+*/
+func (my *QueryTable) TableRows(db *sql.DB, logThreadSeq int64) (uint64, error) {
+	var (
+		Event = "Q_I_S_tableRows"
+	)
+	vlog = fmt.Sprintf("(%d) [%s] Start querying the statistical information of table %s.%s in the %s database and get the number of rows in the table", logThreadSeq, Event, my.Schema, my.Table, DBType)
+	global.Wlog.Debug(vlog)
+	strsql = fmt.Sprintf("select TABLE_ROWS as tableRows from information_schema.tables where table_schema='%s' and table_name ='%s'", my.Schema, my.Table)
+	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
+	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
+		return 0, err
+	}
+	tableData, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
+	if err != nil {
+		return 0, err
+	}
+	defer dispos.SqlRows.Close()
+	vlog = fmt.Sprintf("(%d) [%s] The number of rows in table %s.%s in the %s database has been obtained.", logThreadSeq, Event, my.Schema, my.Table, DBType)
+	global.Wlog.Debug(vlog)
+	return strconv.ParseUint(fmt.Sprintf("%s", tableData[0]["tableRows"]), 10, 64)
+}
+
+/*
+	处理无索引表查询select的order by列，防止原目标端查询的段不一致情况
+*/
+func (my *QueryTable) NoIndexOrderBySingerColumn(orderCol []map[string]string) []string {
 	//处理order by column
+	var selectC []string
 	for _, v := range orderCol {
-		if strings.HasPrefix(v["dataType"], "INT") {
-			return v["columnName"]
-		}
-		if strings.HasPrefix(v["dataType"], "DATETIME") {
-			return v["columnName"]
-		}
-		if strings.HasPrefix(v["dataType"], "TIMESTAMP") {
-			return v["columnName"]
-		}
-		if strings.HasPrefix(v["dataType"], "CHAR") {
-			return v["columnName"]
-		}
-		if strings.HasPrefix(v["dataType"], "VARCHAR") {
-			return v["columnName"]
-		}
+		selectC = append(selectC, v["columnName"])
+		//if strings.HasPrefix(v["dataType"], "INT") {
+		//	return v["columnName"]
+		//}
+		//if strings.HasPrefix(v["dataType"], "DATETIME") {
+		//	return v["columnName"]
+		//}
+		//if strings.HasPrefix(v["dataType"], "TIMESTAMP") {
+		//	return v["columnName"]
+		//}
+		//if strings.HasPrefix(v["dataType"], "CHAR") {
+		//	return v["columnName"]
+		//}
+		//if strings.HasPrefix(v["dataType"], "VARCHAR") {
+		//	return v["columnName"]
+		//}
 	}
-	return ""
+	return selectC
 }
 
 /*
-	无索引下的处理
+	查询无索引表的数据（使用limit分页的方式），并排序
 */
-func (my *QueryTableDate) NoIndexGeneratingQueryCriteria(db *sql.DB, beginSeq, chanrowCount int, orderByColumn string, logThreadSeq int64) (string, error) {
-	var rowDataString []string
-	sqlstr := fmt.Sprintf("select * from `%s`.`%s` limit %d,%d", my.Schema, my.Table, beginSeq, chanrowCount)
-	if orderByColumn != "" {
-		sqlstr = fmt.Sprintf("select * from `%s`.`%s` order by %s limit %d,%d", my.Schema, my.Table, orderByColumn, beginSeq, chanrowCount)
+func (my *QueryTable) NoIndexGeneratingQueryCriteria(db *sql.DB, beginSeq uint64, chanrowCount int, logThreadSeq int64) (string, error) {
+	var (
+		columnNameSeq []string
+		Event         = "Q_table_Data"
+	)
+	for _, i := range my.TableColumn {
+		var tmpcolumnName string
+		tmpcolumnName = i["columnName"]
+		if strings.ToUpper(i["dataType"]) == "DATETIME" {
+			tmpcolumnName = fmt.Sprintf("date_format(%s,'%%Y-%%m-%%d %%H:%%i:%%s')", i["columnName"])
+		}
+		if strings.Contains(strings.ToUpper(i["dataType"]), "TIMESTAMP") {
+			tmpcolumnName = fmt.Sprintf("date_format(%s,'%%Y-%%m-%%d %%H:%%i:%%s')", i["columnName"])
+		}
+		if strings.HasPrefix(strings.ToUpper(i["dataType"]), "DOUBLE(") {
+			dianAfter := strings.ReplaceAll(strings.Split(i["dataType"], ",")[1], ")", "")
+			bb, _ := strconv.Atoi(dianAfter)
+			dianBefer := strings.Split(strings.Split(i["dataType"], ",")[0], "(")[1]
+			bbc, _ := strconv.Atoi(dianBefer)
+			tmpcolumnName = fmt.Sprintf("CAST(%s AS DECIMAL(%d,%d))", i["columnName"], bbc, bb)
+		}
+		columnNameSeq = append(columnNameSeq, tmpcolumnName)
 	}
-
-	alog := fmt.Sprintf("(%d) MySQL DB query table data info exec sql is {%s}", logThreadSeq, sqlstr)
-	global.Wlog.Info(alog)
-	rows, err := db.Query(sqlstr)
-	if err != nil {
-		blog := fmt.Sprintf("(%d) exec MySQL DB sql fail. sql info is {%s} error info is {%s}.", logThreadSeq, sqlstr, err)
-		global.Wlog.Error(blog)
-	}
-	columns, err := rows.Columns()
-	if err != nil {
-		blog := fmt.Sprintf("(%d) get table columns of MySQL DB sql fail. error info is {%s}.", logThreadSeq, err)
-		global.Wlog.Error(blog)
+	strsql = fmt.Sprintf("select %s from `%s`.`%s` limit %d,%d", strings.Join(columnNameSeq, ","), my.Schema, my.Table, beginSeq, chanrowCount)
+	//if orderByColumn != "" {
+	//	strsql = fmt.Sprintf("select * from `%s`.`%s` order by %s limit %d,%d", my.Schema, my.Table, orderByColumn, beginSeq, chanrowCount)
+	//}
+	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
+	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return "", err
 	}
-	valuePtrs := make([]interface{}, len(columns))
-	values := make([]interface{}, len(columns))
-	for rows.Next() {
-		var tmpaaS []string
-		for i := 0; i < len(columns); i++ {
-			valuePtrs[i] = &values[i]
-		}
-		rows.Scan(valuePtrs...)
-		for i := range columns {
-			var v interface{}
-			val := values[i]
-			b, ok := val.([]byte)
-			if ok {
-				v = string(b)
-			} else {
-				v = val
-			}
-			tmpaaS = append(tmpaaS, fmt.Sprintf("%v", v))
-		}
-		tmpaa := strings.Join(tmpaaS, "/*go actions columnData*/")
-		rowDataString = append(rowDataString, tmpaa)
-	}
-	rows.Close()
-	return strings.Join(rowDataString, "/*go actions rowData*/"), nil
-}
-
-func (my *QueryTableDate) performQueryConditions(db *sql.DB, sqlstr string, logThreadSeq int64) (string, error) {
-	var rows *sql.Rows
-	var rowDataString []string
-	alog := fmt.Sprintf("(%d) MySQL DB query table chunk data info exec sql is {%s}", logThreadSeq, sqlstr)
-	global.Wlog.Info(alog)
-
-	rows, err := db.Query(sqlstr)
+	tableData, err := dispos.DataRowsDispos([]string{})
 	if err != nil {
-		blog := fmt.Sprintf("(%d) MySQL DB exec sql fail. sql message is {%s} Error info is {%s}.", logThreadSeq, sqlstr, err)
-		global.Wlog.Error(blog)
-	}
-	clog := fmt.Sprintf("(%d) start dispos MySQL DB query table %s.%s chunk data info.", logThreadSeq, my.Schema, my.Table)
-	global.Wlog.Info(clog)
-	if rows == nil {
-		return "", nil
-	}
-	columns, err := rows.Columns()
-	if err != nil {
-		errInfo := fmt.Sprintf("(%d) MySQL DB Get the column fail. Error Info: ", logThreadSeq, err)
-		global.Wlog.Error(errInfo)
 		return "", err
 	}
-	valuePtrs := make([]interface{}, len(columns))
-	values := make([]interface{}, len(columns))
-	for rows.Next() {
-		var tmpaaS []string
-		for i := 0; i < len(columns); i++ {
-			valuePtrs[i] = &values[i]
-		}
-		rows.Scan(valuePtrs...)
-		for i := range columns {
-			var v interface{}
-			val := values[i]
-			b, ok := val.([]byte)
-			if ok {
-				v = string(b)
-			} else {
-				v = val
-			}
-			tmpaaS = append(tmpaaS, fmt.Sprintf("%v", v))
-		}
-		tmpaa := strings.Join(tmpaaS, "/*go actions columnData*/")
-		rowDataString = append(rowDataString, tmpaa)
-	}
-	rows.Close()
-	zlog := fmt.Sprintf("(%d) MySQL DB query table %s.%s metadata data completion.", logThreadSeq, my.Schema, my.Table)
-	global.Wlog.Info(zlog)
-	return strings.Join(rowDataString, "/*go actions rowData*/"), nil
+	defer dispos.SqlRows.Close()
+	return strings.Join(tableData, "/*go actions rowData*/"), nil
 }
 
 /*
-   该函数用于需要查询源目表端数据库校验块数据，查询数据生成带有greatdbCheck标识的数据块
+	MySQL 通过where条件查询表的分段数据（查询数据生成带有greatdbCheck标识的数据块）
 */
-func (my QueryTableDate) GeneratingQueryCriteria(db *sql.DB, logThreadSeq int64) (string, error) {
-	rowData, err := my.performQueryConditions(db, my.Sqlwhere, logThreadSeq)
+func (my QueryTable) GeneratingQueryCriteria(db *sql.DB, logThreadSeq int64) (string, error) {
+	var (
+		Event = "Q_Table_Data"
+	)
+	vlog = fmt.Sprintf("(%d) [%s] Start to query the segmented data of the following table %s.%s in the %s database through the where condition.", logThreadSeq, Event, my.Schema, my.Table, DBType)
+	global.Wlog.Debug(vlog)
+	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
+	if dispos.SqlRows, err = dispos.DBSQLforExec(my.Sqlwhere); err != nil {
+		return "", err
+	}
+	tableData, err := dispos.DataRowsDispos([]string{})
 	if err != nil {
 		return "", err
 	}
-	return rowData, nil
+	defer dispos.SqlRows.Close()
+	vlog = fmt.Sprintf("(%d) [%s] Complete the data in the following table %s.%s of the %s database.", logThreadSeq, Event, my.Schema, my.Table, DBType)
+	return strings.Join(tableData, "/*go actions rowData*/"), nil
 }
 
 /*
-   该函数用于需要查询源目表端数据库校验块数据，查询数据生成带有greatdbCheck标识的数据块
+	MySQL 生成查询数据的sql语句
 */
-func (my *QueryTableDate) GeneratingQuerySql(logThreadSeq int64) string {
-	var columnNameSeq []string
+func (my *QueryTable) GeneratingQuerySql(db *sql.DB, logThreadSeq int64) (string, error) {
+	var (
+		columnNameSeq []string
+		Event         = "E_Table_SQL"
+		selectSql     string
+	)
+	vlog = fmt.Sprintf("(%d) [%s] Start to generate the data query sql of table %s.%s in the %s database", logThreadSeq, Event, my.Schema, my.Table, DBType)
+	global.Wlog.Debug(vlog)
 	//处理mysql查询时间列时数据带时区问题  2021-01-23 10:16:29 +0800 CST
-	alog := fmt.Sprintf("(%d) MySQL DB starts to process the checklist %s.%s select column", logThreadSeq, my.Schema, my.Table)
-	global.Wlog.Info(alog)
 	for _, i := range my.TableColumn {
 		var tmpcolumnName string
 		tmpcolumnName = i["columnName"]
@@ -401,8 +389,15 @@ func (my *QueryTableDate) GeneratingQuerySql(logThreadSeq int64) string {
 		columnNameSeq = append(columnNameSeq, tmpcolumnName)
 	}
 	queryColumn := strings.Join(columnNameSeq, ",")
-	blog := fmt.Sprintf("(%d) MySQL DB checklist %s.%s select sql is {%s}", logThreadSeq, my.Schema, my.Table, fmt.Sprintf("select %s from `%s`.`%s` where %s", queryColumn, my.Schema, my.Table, my.Sqlwhere))
-	global.Wlog.Info(blog)
-	//fmt.Println(fmt.Sprintf("select %s from `%s`.`%s` where %s", queryColumn, my.Schema, my.Table, my.Sqlwhere))
-	return fmt.Sprintf("select %s from `%s`.`%s` where %s", queryColumn, my.Schema, my.Table, my.Sqlwhere)
+	version, err := my.DatabaseVersion(db, logThreadSeq)
+	if strings.Contains(version, "5.7") {
+		my.Sqlwhere, err = my.FloatTypeQueryDispos(db, my.Sqlwhere, logThreadSeq)
+		if err != nil {
+			return "", err
+		}
+	}
+	selectSql = fmt.Sprintf("select %s from `%s`.`%s` %s", queryColumn, my.Schema, my.Table, my.Sqlwhere)
+	vlog = fmt.Sprintf("(%d) [%s] Complete the data query sql of table %s.%s in the %s database.", logThreadSeq, Event, my.Schema, my.Table, DBType)
+	global.Wlog.Debug(vlog)
+	return selectSql, nil
 }

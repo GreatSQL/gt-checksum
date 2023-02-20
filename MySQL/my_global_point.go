@@ -50,60 +50,63 @@ func (my *GlobalCS) fushTableReadLock(db *sql.DB, logThreadSeq int) error {
    创建源、目并发查询数据时需要的 快照会话，防止数据修改查询数据不对
 */
 func (my *GlobalCS) sessionRR(logThreadSeq int) ([]*sql.DB, error) {
-	var cisoRRsession []*sql.DB //设置有全局一致性事务的事务快照的db连接id管道
-	alog := fmt.Sprintf("(%d) MySQL DB init database conn Pool ...", logThreadSeq)
-	global.Wlog.Info(alog)
+	var (
+		vlog          string
+		cisoRRsession []*sql.DB //设置有全局一致性事务的事务快照的db连接id管道
+	)
+
+	vlog = fmt.Sprintf("(%d) MySQL DB init database conn Pool ...", logThreadSeq)
+	global.Wlog.Debug(vlog)
 	for i := 1; i <= my.ConnPoolMin; i++ {
 		db1, err := sql.Open(my.Drive, my.Jdbc)
 		if err != nil {
-			blog := fmt.Sprintf("(%d) MySQL DB database open fail. Error Info is {%s}.", logThreadSeq, err)
-			global.Wlog.Error(blog)
+			vlog = fmt.Sprintf("(%d) MySQL DB database open fail. Error Info is {%s}.", logThreadSeq, err)
+			global.Wlog.Error(vlog)
 			return nil, err
 		}
 		if err = db1.Ping(); err != nil {
-			clog := fmt.Sprintf("(%d) MySQL DB database connection fail. conn jdbc is {%s} Error Info is {%s}.", logThreadSeq, my.Jdbc, err)
-			global.Wlog.Error(clog)
+			vlog = fmt.Sprintf("(%d) MySQL DB database connection fail. conn jdbc is {%s} Error Info is {%s}.", logThreadSeq, my.Jdbc, err)
+			global.Wlog.Error(vlog)
 			return nil, err
 		}
 		db1.SetMaxIdleConns(1000)
 		db1.SetMaxOpenConns(1000)
 		db1.SetConnMaxLifetime(-1)
 		db1.SetConnMaxIdleTime(-1)
-		hlog := fmt.Sprintf("(%d) MySQL DB starts a transaction", logThreadSeq)
-		global.Wlog.Info(hlog)
+		vlog = fmt.Sprintf("(%d) MySQL DB starts a transaction", logThreadSeq)
+		global.Wlog.Debug(vlog)
 		tx, err2 := db1.Begin()
 		if err2 != nil {
-			dlog := fmt.Sprintf("(%d) MySQL DB database create session connection fail. conn jdbc is {%s} Error Info is {%s}.", logThreadSeq, my.Jdbc, err)
-			global.Wlog.Error(dlog)
+			vlog = fmt.Sprintf("(%d) MySQL DB database create session connection fail. conn jdbc is {%s} Error Info is {%s}.", logThreadSeq, my.Jdbc, err)
+			global.Wlog.Error(vlog)
 			return nil, err
 		}
 		strsql := "set session wait_timeout=86400;"
 		if _, err = tx.Exec(strsql); err != nil {
-			elog := fmt.Sprintf("(%d) MySQL DB exec sql %s fail. Error Info is {%s}.", logThreadSeq, strsql, err)
-			global.Wlog.Error(elog)
+			vlog = fmt.Sprintf("(%d) MySQL DB exec sql %s fail. Error Info is {%s}.", logThreadSeq, strsql, err)
+			global.Wlog.Error(vlog)
 			return nil, err
 		}
 		strsql = "SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;"
 		if _, err = tx.Exec(strsql); err != nil {
-			flog := fmt.Sprintf("(%d) MySQL DB exec sql %s fail. Error Info is {%s}.", logThreadSeq, strsql, err)
-			global.Wlog.Error(flog)
+			vlog = fmt.Sprintf("(%d) MySQL DB exec sql %s fail. Error Info is {%s}.", logThreadSeq, strsql, err)
+			global.Wlog.Error(vlog)
 			return nil, err
 		}
 		strsql = "SET session sql_mode=(SELECT REPLACE(@@sql_mode,'ONLY_FULL_GROUP_BY',''));"
 		if _, err = tx.Exec(strsql); err != nil {
-			glog := fmt.Sprintf("(%d) MySQL DB exec sql %s fail. Error Info is {%s}.", logThreadSeq, strsql, err)
-			global.Wlog.Error(glog)
+			vlog = fmt.Sprintf("(%d) MySQL DB exec sql %s fail. Error Info is {%s}.", logThreadSeq, strsql, err)
+			global.Wlog.Error(vlog)
 			return nil, err
 		}
 		if err = tx.Commit(); err != nil {
-			ilog := fmt.Sprintf("(%d) MySQL DB commit a transaction fail.", logThreadSeq)
-			global.Wlog.Error(ilog)
+			vlog = fmt.Sprintf("(%d) MySQL DB commit a transaction fail.", logThreadSeq)
+			global.Wlog.Error(vlog)
 			tx.Rollback()
 		} else {
-			ilog := fmt.Sprintf("(%d) MySQL DB commit a transaction successful.", logThreadSeq)
-			global.Wlog.Info(ilog)
+			vlog = fmt.Sprintf("(%d) MySQL DB commit a transaction successful.", logThreadSeq)
+			global.Wlog.Debug(vlog)
 		}
-
 		cisoRRsession = append(cisoRRsession, db1)
 	}
 	return cisoRRsession, nil
@@ -141,12 +144,16 @@ func (my *GlobalCS) globalConsistencyPoint(db *sql.DB, logThreadSeq int) (map[st
    解锁
 */
 func (my *GlobalCS) unlock(db *sql.DB, logThreadSeq int) error {
-	sqlstr := fmt.Sprintf("UNLOCK TABLES")
-	alog := fmt.Sprintf("(%d) MySQL DB unlock tables.", logThreadSeq)
-	global.Wlog.Info(alog)
+	var (
+		vlog   string
+		sqlstr string
+	)
+	sqlstr = fmt.Sprintf("UNLOCK TABLES")
+	vlog = fmt.Sprintf("(%d) MySQL DB unlock tables.", logThreadSeq)
+	global.Wlog.Debug(vlog)
 	if _, err := db.Exec(sqlstr); err != nil {
-		glog := fmt.Sprintf("(%d) MySQL DB exec sql %s fail. Error Info is {%s}.", logThreadSeq, sqlstr, err)
-		global.Wlog.Error(glog)
+		vlog = fmt.Sprintf("(%d) MySQL DB exec sql %s fail. Error Info is {%s}.", logThreadSeq, sqlstr, err)
+		global.Wlog.Error(vlog)
 		return err
 	}
 	return nil
@@ -187,19 +194,23 @@ func (my *GlobalCS) GlobalCN(logThreadSeq int) (map[string]string, error) {
 }
 
 func (my *GlobalCS) NewConnPool(logThreadSeq int) (*global.Pool, bool) {
-	//defer func() {
-	//	if err := recover(); err != nil {
-	//	}
-	//}()
-	db, err := sql.Open(my.Drive, my.Jdbc)
+	var (
+		vlog string
+		err  error
+		db   *sql.DB
+	)
+	vlog = fmt.Sprintf("(%d) Start to initialize the connection pool of the original target...", logThreadSeq)
+	global.Wlog.Info(vlog)
+
+	db, err = sql.Open(my.Drive, my.Jdbc)
 	if err != nil {
-		alog := fmt.Sprintf("(%d) MySQL DB connection failed. The error message is {%s}", logThreadSeq, err)
-		global.Wlog.Error(alog)
+		vlog = fmt.Sprintf("(%d) MySQL DB connection failed. The error message is {%s}", logThreadSeq, err)
+		global.Wlog.Error(vlog)
 		return nil, false
 	}
 	if err = db.Ping(); err != nil {
-		blog := fmt.Sprintf("(%d) MySQL DB connection failed. The error message is {%s}", logThreadSeq, err)
-		global.Wlog.Error(blog)
+		vlog = fmt.Sprintf("(%d) MySQL DB connection failed. The error message is {%s}", logThreadSeq, err)
+		global.Wlog.Error(vlog)
 		return nil, false
 	}
 	my.ConnMaxLifetime = -1
@@ -216,5 +227,8 @@ func (my *GlobalCS) NewConnPool(logThreadSeq int) (*global.Pool, bool) {
 		return nil, false
 	}
 	db.Close()
-	return global.NewPool(my.ConnPoolMin, session, logThreadSeq, "MySQL"), true
+	C := global.NewPool(my.ConnPoolMin, session, logThreadSeq, "MySQL")
+	vlog = fmt.Sprintf("(%d) The connection pool initialization of the MySQL target is completed !!!", logThreadSeq)
+	global.Wlog.Info(vlog)
+	return C, true
 }

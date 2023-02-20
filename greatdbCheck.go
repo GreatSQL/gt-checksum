@@ -10,28 +10,20 @@ import (
 	"time"
 )
 
-var (
-	fullDataCompletionStatus = make(chan struct{}, 1)
-)
-
 func main() {
 	//获取当前时间
 	beginTime := time.Now()
 
 	//获取配置文件
-	m := inputArg.NewConfigInit()
+	m := inputArg.NewConfigInit(0)
 	if !actions.SchemaTableInit(m).GlobalAccessPriCheck(1, 2) {
 		fmt.Println("GreatSQL report: Missing global permissions, please check the log for details.")
-		os.Exit(0)
+		os.Exit(1)
 	}
-	//获取待校验表信息
-	fmt.Println("-- GreatSQLCheck init check table -- ")
-	tableList := actions.SchemaTableInit(m).SchemaTableFilter(3, 4)
 
-	if len(tableList) == 0 {
-		fmt.Println("GreatSQL report: No checklist, please check the log for details.")
-		os.Exit(0)
-	}
+	//获取待校验表信息
+	fmt.Println("-- GreatSQLCheck init check table name -- ")
+	tableList := actions.SchemaTableInit(m).SchemaTableFilter(3, 4)
 
 	if m.CheckObject != "data" {
 		switch m.CheckObject {
@@ -65,24 +57,21 @@ func main() {
 		tableList, _ = actions.SchemaTableInit(m).TableColumnNameCheck(tableList, 9, 10)
 		if len(tableList) == 0 {
 			fmt.Println("GreatSQL report: No checklist, please check the log for details.")
-			os.Exit(0)
+			os.Exit(1)
 		}
 		//19、20
 		tableList, _ = actions.SchemaTableInit(m).TableAccessPriCheck(tableList, 19, 20)
 		if len(tableList) == 0 {
 			fmt.Println("GreatSQL report: Insufficient permissions for the verification table, please check the log for details.")
-			os.Exit(0)
+			os.Exit(1)
 		}
-
 		if len(tableList) > 0 {
 			//根据要校验的表，获取该表的全部列信息
 			fmt.Println("-- GreatSQLCheck init check table column --")
 			tableAllCol := actions.SchemaTableInit(m).SchemaTableAllCol(tableList, 21, 22)
-
 			//根据要校验的表，筛选查询数据时使用到的索引列信息
 			fmt.Println("-- GreatSQLCheck init check table index column --")
 			tableIndexColumnMap := actions.SchemaTableInit(m).TableIndexColumn(tableList, 23, 24)
-
 			//获取全局一致 x性位点
 			//fmt.Println("-- GreatdbCheck Obtain global consensus sites --")
 			//sglobalSites, err := dbExec.GCN().GcnObject(m.PoolMin, m.PoolMax, m.SourceJdbc, m.SourceDrive).GlobalCN(25)
@@ -117,21 +106,7 @@ func main() {
 			fmt.Println("-- GreatSQLCheck init cehck table query plan and check data --")
 			switch m.CheckMode {
 			case "rows":
-				var noIndexC = make(chan struct{}, m.Concurrency)
-				//开始无索引表校验
-				if m.CheckNoIndexTable == "yes" {
-					go actions.CheckTableQuerySchedule(sdc, ddc, tableIndexColumnMap, tableAllCol, *m).DoNoIndexDataCheck(noIndexC)
-				}
-				//开始有索引表校验
 				actions.CheckTableQuerySchedule(sdc, ddc, tableIndexColumnMap, tableAllCol, *m).Schedulingtasks()
-				for {
-					time.Sleep(time.Second)
-					if len(noIndexC) == 0 {
-						close(noIndexC)
-						m.Sfile.Close()
-						break
-					}
-				}
 			case "count":
 				actions.CheckTableQuerySchedule(sdc, ddc, tableIndexColumnMap, tableAllCol, *m).DoCountDataCheck()
 			case "sample":
@@ -143,10 +118,10 @@ func main() {
 		}
 	}
 
-	global.Wlog.Info("gt-checksum check object {", m.CheckObject, "} complete !!!")
+	global.Wlog.Info("GreatSQLCheck check object {", m.CheckObject, "} complete !!!")
 	//输出结果信息
 	fmt.Println("")
-	fmt.Println("** GreatdbCheck Overview of verification results **")
+	fmt.Println("** GreatSQLCheck Overview of verification results **")
 	fmt.Println("Check time: ", fmt.Sprintf("%.2fs", time.Since(beginTime).Seconds()), "(Seconds)")
 	actions.CheckResultOut(m)
 }

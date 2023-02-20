@@ -147,7 +147,9 @@ func NewWlog(logfile, logLevel string) *Logger {
 	_, err := os.Open(logfile)
 	if err != nil && os.IsNotExist(err) {
 		_, err = os.OpenFile(logfile, os.O_WRONLY|os.O_CREATE, 0666)
-		fmt.Println(err)
+		if err != nil {
+			fmt.Println(err)
+		}
 	}
 	fp, err := os.OpenFile(logfile, os.O_RDWR|os.O_APPEND, 0666)
 	if err != nil {

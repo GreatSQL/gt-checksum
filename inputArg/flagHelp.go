@@ -44,7 +44,7 @@ func cliHelp(q *ConfigParameter) {
 	app.Usage = "mysql Oracle table data verification" //应用功能说明
 	app.Author = "GreatSQL"                            //作者
 	app.Email = "GreatSQL <greatsql@greatdb.com>"      //邮箱
-	app.Version = "1.1.9"                              //版本
+	app.Version = "1.1.10"                             //版本
 	app.Flags = []cli.Flag{
 		cli.StringFlag{
 			Name:        "config,f",                                                                      //命令名称
@@ -162,6 +162,12 @@ func cliHelp(q *ConfigParameter) {
 			Usage:       "configuration repair file name. for example: --ffn /tmp/greatdbCheckDataFix.sql",
 			Value:       "./gt-checkOutDataFix.sql",
 			Destination: &q.FixFileName,
+		},
+		cli.IntFlag{
+			Name:        "fixTrxNum,ftn",
+			Usage:       "configuration repair trx bumber. for example: --ftn 30",
+			Value:       20,
+			Destination: &q.FixTrxNum,
 		},
 	}
 	app.Action = func(c *cli.Context) { //应用执行函数
