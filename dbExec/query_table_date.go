@@ -14,59 +14,54 @@ type IndexColumnStruct struct {
 	ColumnName       []string
 	ChanrowCount     int
 	TableColumn      []map[string]string
-	//TableColumn global.TableAllColumnInfoS
-	Sqlwhere                       string
-	ColData                        []map[string]string
-	SelectColumnString, LengthTrim string
-	ColumnLengthAs                 []string
-	BeginSeq                       string
-	RowDataCh                      int64
+	Sqlwhere         string
+	ColData          []map[string]string
+	BeginSeq         string
+	RowDataCh        int64
+	SelectColumn     map[string]string
 }
 
 type TableIndexColumner interface {
+	TmpTableIndexColumnSelectDispos(logThreadSeq int64) map[string]string
+	TmpTableIndexColumnRowsCount(db *sql.DB, logThreadSeq int64) (uint64, error)
+	TmpTableColumnGroupDataDispos(db *sql.DB, where string, columnName string, logThreadSeq int64) (chan map[string]interface{}, error)
+	TableRows(db *sql.DB, logThreadSeq int64) (uint64, error)
 	QueryTableIndexColumnInfo(db *sql.DB, logThreadSeq int64) ([]map[string]interface{}, error)
-	IndexDisposF(queryData []map[string]interface{}, logThreadSeq int64) ([]string, map[string][]string, map[string][]string)
-	TmpTableRowsCount(db *sql.DB, logThreadSeq int64) (int, error)
-	TmpTableIndexColumnDataDispos(db *sql.DB, logThreadSeq int64) ([]string, error)
-	TmpTableIndexColumnDataLength(logThreadSeq int64) (string, []string, string)
-	NoIndexOrderBySingerColumn(orderCol []map[string]string) string
-	NoIndexGeneratingQueryCriteria(db *sql.DB, beginSeq, chanrowCount int, orderCol string, logThreadSeq int64) (string, error)
-	GeneratingQuerySql(logThreadSeq int64) string
+	IndexDisposF(queryData []map[string]interface{}, logThreadSeq int64) (map[string][]string, map[string][]string, map[string][]string)
+	NoIndexOrderBySingerColumn(orderCol []map[string]string) []string
+	NoIndexGeneratingQueryCriteria(db *sql.DB, beginSeq uint64, chanrowCount int, logThreadSeq int64) (string, error)
+	GeneratingQuerySql(db *sql.DB, logThreadSeq int64) (string, error)
 	GeneratingQueryCriteria(db *sql.DB, logThreadSeq int64) (string, error)
 }
 
 func (qticis *IndexColumnStruct) TableIndexColumn() TableIndexColumner {
 	var aa TableIndexColumner
 	if qticis.Drivce == "mysql" {
-		aa = &mysql.QueryTableDate{
-			Schema:             qticis.Schema,
-			Table:              qticis.Table,
-			ColumnName:         qticis.ColumnName,
-			ChanrowCount:       qticis.ChanrowCount,
-			TableColumn:        qticis.TableColumn,
-			Sqlwhere:           qticis.Sqlwhere,
-			ColData:            qticis.ColData,
-			SelectColumnString: qticis.SelectColumnString,
-			LengthTrim:         qticis.LengthTrim,
-			ColumnLengthAs:     qticis.ColumnLengthAs,
-			BeginSeq:           qticis.BeginSeq,
-			RowDataCh:          qticis.RowDataCh,
+		aa = &mysql.QueryTable{
+			Schema:       qticis.Schema,
+			Table:        qticis.Table,
+			ColumnName:   qticis.ColumnName,
+			ChanrowCount: qticis.ChanrowCount,
+			TableColumn:  qticis.TableColumn,
+			Sqlwhere:     qticis.Sqlwhere,
+			ColData:      qticis.ColData,
+			SelectColumn: qticis.SelectColumn,
+			BeginSeq:     qticis.BeginSeq,
+			RowDataCh:    qticis.RowDataCh,
 		}
 	}
 	if qticis.Drivce == "godror" {
-		aa = &oracle.QueryTableDate{
-			Schema:             qticis.Schema,
-			Table:              qticis.Table,
-			ColumnName:         qticis.ColumnName,
-			ChanrowCount:       qticis.ChanrowCount,
-			TableColumn:        qticis.TableColumn,
-			Sqlwhere:           qticis.Sqlwhere,
-			ColData:            qticis.ColData,
-			SelectColumnString: qticis.SelectColumnString,
-			LengthTrim:         qticis.LengthTrim,
-			ColumnLengthAs:     qticis.ColumnLengthAs,
-			BeginSeq:           qticis.BeginSeq,
-			RowDataCh:          qticis.RowDataCh,
+		aa = &oracle.QueryTable{
+			Schema:       qticis.Schema,
+			Table:        qticis.Table,
+			ColumnName:   qticis.ColumnName,
+			ChanrowCount: qticis.ChanrowCount,
+			TableColumn:  qticis.TableColumn,
+			Sqlwhere:     qticis.Sqlwhere,
+			ColData:      qticis.ColData,
+			SelectColumn: qticis.SelectColumn,
+			BeginSeq:     qticis.BeginSeq,
+			RowDataCh:    qticis.RowDataCh,
 		}
 	}
 	return aa

@@ -22,64 +22,84 @@ type schemaTable struct {
 	destDB              *sql.DB
 	lowerCaseTableNames string
 	datefix             string
+	sfile               *os.File
+	djdbc               string
 }
 
 /*
    查询待校验表的列名
 */
-func (stcls *schemaTable) tableColumnName(db *sql.DB, drive string, logThreadSeq, logThreadSeq2 int64) string {
-	var col string
-	//var logThreadSeq int = 5
-	tc := dbExec.TableColumnNameStruct{Schema: stcls.schema, Table: stcls.table, Drive: drive}
-	queryData, _ := tc.Query().TableColumnName(db, logThreadSeq2)
-	alog := fmt.Sprintf("(%d) start dispos DB query columns data. to dispos it...", logThreadSeq)
-	global.Wlog.Info(alog)
+func (stcls *schemaTable) tableColumnName(db *sql.DB, tc dbExec.TableColumnNameStruct, logThreadSeq, logThreadSeq2 int64) (string, error) {
+	var (
+		col       string
+		vlog      string
+		queryData []map[string]interface{}
+		err       error
+		Event     = "Q_table_columns"
+	)
+	if queryData, err = tc.Query().TableColumnName(db, logThreadSeq2); err != nil {
+		return "", err
+	}
+	vlog = fmt.Sprintf("(%d) [%s] start dispos DB query columns data. to dispos it...", logThreadSeq, Event)
+	global.Wlog.Debug(vlog)
 	for _, v := range queryData {
 		if v["columnName"].(string) != "" {
 			col += fmt.Sprintf("%s,", v["columnName"].(string))
 		}
 	}
-	blog := fmt.Sprintf("(%d) complete dispos DB query columns data.", logThreadSeq)
-	global.Wlog.Info(blog)
-	return col
+	vlog = fmt.Sprintf("(%d) [%s] complete dispos DB query columns data.", logThreadSeq, Event)
+	global.Wlog.Debug(vlog)
+	return col, nil
 }
 
 /*
 	针对表的列名进行校验
 */
 func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThreadSeq, logThreadSeq2 int64) ([]string, []string) {
-	var newCheckTableList, abnormalTableList []string
-	//var logThreadSeq int = 5
-	elog := fmt.Sprintf("(%d) Start to get the source and target table structure and column information and check whether they are consistent", logThreadSeq)
-	global.Wlog.Info(elog)
-	global.Wlog.Info()
+	var (
+		vlog                                 string
+		newCheckTableList, abnormalTableList []string
+		err                                  error
+	)
+	vlog = fmt.Sprintf("(%d) Start to check the consistency information of source and target table structure and column information ...", logThreadSeq)
+	global.Wlog.Info(vlog)
+
 	for _, v := range checkTableList {
 		var sColumn, dColumn string
 		stcls.schema = strings.Split(v, ".")[0]
 		stcls.table = strings.Split(v, ".")[1]
-		if stcls.lowerCaseTableNames == "yes" {
-			sColumn = stcls.tableColumnName(stcls.sourceDB, stcls.sourceDrive, logThreadSeq, logThreadSeq2)
-			dColumn = stcls.tableColumnName(stcls.destDB, stcls.destDrive, logThreadSeq, logThreadSeq2)
-		} else {
-			sColumn = strings.ToUpper(stcls.tableColumnName(stcls.sourceDB, stcls.sourceDrive, logThreadSeq, logThreadSeq2))
-			dColumn = strings.ToUpper(stcls.tableColumnName(stcls.destDB, stcls.destDrive, logThreadSeq, logThreadSeq2))
+		tc := dbExec.TableColumnNameStruct{Schema: stcls.schema, Table: stcls.table, Drive: stcls.sourceDrive}
+		sColumn, err = stcls.tableColumnName(stcls.sourceDB, tc, logThreadSeq, logThreadSeq2)
+		if err != nil {
+			return nil, nil
 		}
-		alog := fmt.Sprintf("(%d) source DB table name [%s.%s] column name message is {%s} num [%d]", logThreadSeq, stcls.schema, stcls.table, sColumn, len(strings.Split(sColumn, ","))-1)
-		global.Wlog.Info(alog)
-		blog := fmt.Sprintf("(%d) dest DB table name [%s.%s] column name message is {%s} num [%d]", logThreadSeq, stcls.schema, stcls.table, dColumn, len(strings.Split(dColumn, ","))-1)
-		global.Wlog.Info(blog)
+		tc.Drive = stcls.destDrive
+		dColumn, err = stcls.tableColumnName(stcls.destDB, tc, logThreadSeq, logThreadSeq2)
+		if err != nil {
+			return nil, nil
+		}
+		if stcls.lowerCaseTableNames == "no" {
+			sColumn = strings.ToUpper(sColumn)
+			dColumn = strings.ToUpper(dColumn)
+		}
+		vlog = fmt.Sprintf("(%d) source DB table name [%s.%s] column name message is {%s} num [%d]", logThreadSeq, stcls.schema, stcls.table, sColumn, len(strings.Split(sColumn, ","))-1)
+		global.Wlog.Debug(vlog)
+		vlog = fmt.Sprintf("(%d) dest DB table name [%s.%s] column name message is {%s} num [%d]", logThreadSeq, stcls.schema, stcls.table, dColumn, len(strings.Split(dColumn, ","))-1)
+		global.Wlog.Debug(vlog)
 
 		//防止异构数据库中列明大小不一致
-		clog := fmt.Sprintf("(%d) start diff source dest db table columns name, to check it...", logThreadSeq)
-		global.Wlog.Info(clog)
+		vlog = fmt.Sprintf("(%d) start diff source dest db table columns name, to check it...", logThreadSeq)
+		global.Wlog.Debug(vlog)
 		if CheckSum().CheckSha1(sColumn) == CheckSum().CheckSha1(dColumn) {
 			newCheckTableList = append(newCheckTableList, v)
 		} else {
 			abnormalTableList = append(abnormalTableList, v)
 		}
-		dlog := fmt.Sprintf("(%d) complete checksum source dest db table columns name.", logThreadSeq)
-		global.Wlog.Info(dlog)
+		vlog = fmt.Sprintf("(%d) complete checksum source dest db table columns name.", logThreadSeq)
+		global.Wlog.Debug(vlog)
 	}
+	vlog = fmt.Sprintf("(%d) The consistency information check of the source and target table structure and column information is completed !!!", logThreadSeq)
+	global.Wlog.Info(vlog)
 	return newCheckTableList, abnormalTableList
 }
 
@@ -87,52 +107,79 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 	检查当前用户对该库表是否有响应的权限（权限包括：查询权限，flush_tables,session_variables_admin）
 */
 func (stcls *schemaTable) GlobalAccessPriCheck(logThreadSeq, logThreadSeq2 int64) bool {
-	elog := fmt.Sprintf("(%d) Start to get the source and target Global Access Permissions information and check whether they are consistent", logThreadSeq)
-	global.Wlog.Info(elog)
+	var (
+		vlog                   string
+		err                    error
+		StableList, DtableList bool
+	)
+	vlog = fmt.Sprintf("(%d) Start to get the source and target Global Access Permissions information and check whether they are consistent", logThreadSeq)
+	global.Wlog.Info(vlog)
 	tc := dbExec.TableColumnNameStruct{Schema: stcls.schema, Table: stcls.table, Drive: stcls.sourceDrive, Datafix: stcls.datefix}
-	flog := fmt.Sprintf("(%d) Start to get the source Global Access Permissions information and check whether they are consistent", logThreadSeq)
-	global.Wlog.Info(flog)
-	StableList := tc.Query().GlobalAccessPri(stcls.sourceDB, logThreadSeq2)
-	glog := fmt.Sprintf("(%d) The Global Access Permission verification of the source DB is completed, and the status of the global access permission is {%v}.", logThreadSeq, StableList)
-	global.Wlog.Info(glog)
+	vlog = fmt.Sprintf("(%d) Start to get the source Global Access Permissions information and check whether they are consistent", logThreadSeq)
+	global.Wlog.Debug(vlog)
+	if StableList, err = tc.Query().GlobalAccessPri(stcls.sourceDB, logThreadSeq2); err != nil {
+		return false
+	}
+	vlog = fmt.Sprintf("(%d) The Global Access Permission verification of the source DB is completed, and the status of the global access permission is {%v}.", logThreadSeq, StableList)
+	global.Wlog.Debug(vlog)
 	tc.Drive = stcls.destDrive
-	hlog := fmt.Sprintf("(%d) Start to get the dest Global Access Permissions information and check whether they are consistent", logThreadSeq)
-	global.Wlog.Info(hlog)
-	DtableList := tc.Query().GlobalAccessPri(stcls.destDB, logThreadSeq2)
-	ilog := fmt.Sprintf("(%d) The Global Access Permission verification of the dest DB is completed, and the status of the global access permission is {%v}.", logThreadSeq, DtableList)
-	global.Wlog.Info(ilog)
+	vlog = fmt.Sprintf("(%d) Start to get the dest Global Access Permissions information and check whether they are consistent", logThreadSeq)
+	global.Wlog.Debug(vlog)
+
+	if DtableList, err = tc.Query().GlobalAccessPri(stcls.destDB, logThreadSeq2); err != nil {
+		return false
+	}
+
+	vlog = fmt.Sprintf("(%d) The Global Access Permission verification of the dest DB is completed, and the status of the global access permission is {%v}.", logThreadSeq, DtableList)
+	global.Wlog.Debug(vlog)
 	if StableList && DtableList {
-		jlog := fmt.Sprintf("(%d) The verification of the global access permission of the source and destination is completed", logThreadSeq)
-		global.Wlog.Info(jlog)
+		vlog = fmt.Sprintf("(%d) The verification of the global access permission of the source and destination is completed", logThreadSeq)
+		global.Wlog.Info(vlog)
 		return true
 	}
-	klog := fmt.Sprintf("(%d) Some global access permissions are missing at the source and destination, and verification cannot continue.", logThreadSeq)
-	global.Wlog.Error(klog)
+	vlog = fmt.Sprintf("(%d) Some global access permissions are missing at the source and destination, and verification cannot continue.", logThreadSeq)
+	global.Wlog.Error(vlog)
 	return false
 }
 func (stcls *schemaTable) TableAccessPriCheck(checkTableList []string, logThreadSeq, logThreadSeq2 int64) ([]string, []string) {
-	var newCheckTableList, abnormalTableList []string
-	elog := fmt.Sprintf("(%d) Start to get the source and target table access permissions information and check whether they are consistent", logThreadSeq)
-	global.Wlog.Info(elog)
+	var (
+		vlog                                 string
+		err                                  error
+		StableList, DtableList               map[string]int
+		newCheckTableList, abnormalTableList []string
+	)
+	vlog = fmt.Sprintf("(%d) Start to get the source and target table access permissions information and check whether they are consistent", logThreadSeq)
+	global.Wlog.Info(vlog)
 	tc := dbExec.TableColumnNameStruct{Schema: stcls.schema, Table: stcls.table, Drive: stcls.sourceDrive}
-	flog := fmt.Sprintf("(%d) Start to get the source table access permissions information and check whether they are consistent", logThreadSeq)
-	global.Wlog.Info(flog)
-	StableList, _ := tc.Query().TableAccessPriCheck(stcls.sourceDB, checkTableList, stcls.datefix, logThreadSeq2)
-	glog := fmt.Sprintf("(%d) Complete the verification table permission verification of the source DB, the current verification table with permission is {%v}.", logThreadSeq, StableList)
-	global.Wlog.Info(glog)
-	tc.Drive = stcls.destDrive
-	hlog := fmt.Sprintf("(%d) Start to get the dest table access permissions information and check whether they are consistent", logThreadSeq)
-	global.Wlog.Info(hlog)
-	DtableList, _ := tc.Query().TableAccessPriCheck(stcls.destDB, checkTableList, stcls.datefix, logThreadSeq2)
-	if len(DtableList) == 0 {
-		ilog := fmt.Sprintf("(%d) Complete the verification table permission verification of the source DB, the current verification table with permission is {%v}.", logThreadSeq, StableList)
-		global.Wlog.Error(ilog)
-	} else {
-		ilog := fmt.Sprintf("(%d) Complete the verification table permission verification of the source DB, the current verification table with permission is {%v}.", logThreadSeq, StableList)
-		global.Wlog.Info(ilog)
+	vlog = fmt.Sprintf("(%d) Start to get the source table access permissions information and check whether they are consistent", logThreadSeq)
+	global.Wlog.Debug(vlog)
+
+	if StableList, err = tc.Query().TableAccessPriCheck(stcls.sourceDB, checkTableList, stcls.datefix, logThreadSeq2); err != nil {
+		return nil, nil
 	}
-	jlog := fmt.Sprintf("(%d) Start processing the difference of the table to be checked at the source and target.", logThreadSeq)
-	global.Wlog.Info(jlog)
+	if len(StableList) == 0 {
+		vlog = fmt.Sprintf("(%d) Complete the verification table permission verification of the source DB, the current verification table with permission is {%v}.", logThreadSeq, StableList)
+		global.Wlog.Error(vlog)
+	} else {
+		vlog = fmt.Sprintf("(%d) Complete the verification table permission verification of the source DB, the current verification table with permission is {%v}.", logThreadSeq, StableList)
+		global.Wlog.Debug(vlog)
+	}
+
+	tc.Drive = stcls.destDrive
+	vlog = fmt.Sprintf("(%d) Start to get the dest table access permissions information and check whether they are consistent", logThreadSeq)
+	global.Wlog.Debug(vlog)
+	if DtableList, err = tc.Query().TableAccessPriCheck(stcls.destDB, checkTableList, stcls.datefix, logThreadSeq2); err != nil {
+		return nil, nil
+	}
+	if len(DtableList) == 0 {
+		vlog = fmt.Sprintf("(%d) Complete the verification table permission verification of the source DB, the current verification table with permission is {%v}.", logThreadSeq, DtableList)
+		global.Wlog.Error(vlog)
+	} else {
+		vlog = fmt.Sprintf("(%d) Complete the verification table permission verification of the source DB, the current verification table with permission is {%v}.", logThreadSeq, DtableList)
+		global.Wlog.Debug(vlog)
+	}
+	vlog = fmt.Sprintf("(%d) Start processing the difference of the table to be checked at the source and target.", logThreadSeq)
+	global.Wlog.Debug(vlog)
 	for k, _ := range StableList {
 		if _, ok := DtableList[k]; ok {
 			newCheckTableList = append(newCheckTableList, k)
@@ -140,8 +187,8 @@ func (stcls *schemaTable) TableAccessPriCheck(checkTableList []string, logThread
 			abnormalTableList = append(abnormalTableList, k)
 		}
 	}
-	klog := fmt.Sprintf("(%d) The difference processing of the table to be checked at the source and target ends is completed. normal table message is {%s} num [%d] abnormal table message is {%s} num [%d]", logThreadSeq, newCheckTableList, len(newCheckTableList), abnormalTableList, len(abnormalTableList))
-	global.Wlog.Info(klog)
+	vlog = fmt.Sprintf("(%d) The difference processing of the table to be checked at the source and target ends is completed. normal table message is {%s} num [%d] abnormal table message is {%s} num [%d]", logThreadSeq, newCheckTableList, len(newCheckTableList), abnormalTableList, len(abnormalTableList))
+	global.Wlog.Info(vlog)
 	return newCheckTableList, abnormalTableList
 }
 
@@ -300,26 +347,32 @@ func (stcls *schemaTable) FuzzyMatchingDispos(dbCheckNameList map[string]int, Ft
 */
 func (stcls *schemaTable) SchemaTableFilter(logThreadSeq1, logThreadSeq2 int64) []string {
 	var (
+		vlog            string
 		f               []string
 		dbCheckNameList map[string]int
+		err             error
 	)
-	alog := fmt.Sprintf("(%d) Start to init schema.table info.", logThreadSeq1)
-	global.Wlog.Info(alog)
+	vlog = fmt.Sprintf("(%d) Start to init schema.table info.", logThreadSeq1)
+	global.Wlog.Info(vlog)
 	//处理待校验的库数量
 	if stcls.table == "" {
 		return f
 	}
 	//获取当前数据库信息列表
 	tc := dbExec.TableColumnNameStruct{Table: stcls.table, Drive: stcls.sourceDrive, Db: stcls.sourceDB, IgnoreTable: stcls.ignoreTable, LowerCaseTableNames: stcls.lowerCaseTableNames}
-	clog := fmt.Sprintf("(%d) query check database list info.", logThreadSeq1)
-	global.Wlog.Info(clog)
-	dbCheckNameList = tc.Query().DatabaseNameList(logThreadSeq2)
-	dlog := fmt.Sprintf("(%d) checksum database list message is {%s}", logThreadSeq1, dbCheckNameList)
-	global.Wlog.Info(dlog)
+	vlog = fmt.Sprintf("(%d) query check database list info.", logThreadSeq1)
+	global.Wlog.Debug(vlog)
+	dbCheckNameList, err = tc.Query().DatabaseNameList(stcls.sourceDB, logThreadSeq2)
+	if err != nil {
+		return nil
+	}
+	vlog = fmt.Sprintf("(%d) checksum database list message is {%s}", logThreadSeq1, dbCheckNameList)
+	global.Wlog.Debug(vlog)
 	//判断校验的库是否为空，为空则退出
 	if len(dbCheckNameList) == 0 {
-		elog := fmt.Sprintf("(%d) check Schema.table is emty, will exit!", logThreadSeq1)
-		global.Wlog.Error(elog)
+		fmt.Println("GreatSQL report: check Schema.table is emty, please check the log for details!")
+		vlog = fmt.Sprintf("(%d) check Schema.table is emty, will exit!", logThreadSeq1)
+		global.Wlog.Error(vlog)
 		os.Exit(1)
 	}
 	schema := stcls.FuzzyMatchingDispos(dbCheckNameList, stcls.table, logThreadSeq1)
@@ -333,12 +386,13 @@ func (stcls *schemaTable) SchemaTableFilter(logThreadSeq1, logThreadSeq2 int64) 
 		f = append(f, k)
 	}
 	if len(f) == 0 {
-		hlog := fmt.Sprintf("(%d) check table is emty, will exit!", logThreadSeq1)
-		global.Wlog.Error(hlog)
+		fmt.Println("GreatSQL report: check table is emty,please check the log for details!")
+		vlog = fmt.Sprintf("(%d) check table is emty, will exit!", logThreadSeq1)
+		global.Wlog.Error(vlog)
 		os.Exit(1)
 	}
-	flog := fmt.Sprintf("(%d) schema.table {%s} init sccessfully, num [%d].", logThreadSeq1, f, len(f))
-	global.Wlog.Info(flog)
+	vlog = fmt.Sprintf("(%d) schema.table {%s} init sccessfully, num [%d].", logThreadSeq1, f, len(f))
+	global.Wlog.Info(vlog)
 	return f
 }
 
@@ -346,47 +400,58 @@ func (stcls *schemaTable) SchemaTableFilter(logThreadSeq1, logThreadSeq2 int64) 
 	库表的所有列信息
 */
 func (stcls *schemaTable) SchemaTableAllCol(tableList []string, logThreadSeq, logThreadSeq2 int64) map[string]global.TableAllColumnInfoS {
-	var tableCol = make(map[string]global.TableAllColumnInfoS)
-	var interfToString = func(colData []map[string]interface{}) []map[string]string {
-		kel := make([]map[string]string, 0)
-		for i := range colData {
-			ke := make(map[string]string)
-			for ii, iv := range colData[i] {
-				ke[ii] = fmt.Sprintf("%v", iv)
+	var (
+		a, b           []map[string]interface{}
+		err            error
+		vlog           string
+		tableCol       = make(map[string]global.TableAllColumnInfoS)
+		interfToString = func(colData []map[string]interface{}) []map[string]string {
+			kel := make([]map[string]string, 0)
+			for i := range colData {
+				ke := make(map[string]string)
+				for ii, iv := range colData[i] {
+					ke[ii] = fmt.Sprintf("%v", iv)
+				}
+				kel = append(kel, ke)
 			}
-			kel = append(kel, ke)
+			return kel
 		}
-		return kel
-	}
-	alog := fmt.Sprintf("(%d) Start to obtain the metadata information of the source-target verification table ...", logThreadSeq)
-	global.Wlog.Info(alog)
+	)
+	vlog = fmt.Sprintf("(%d) Start to obtain the metadata information of the source-target verification table ...", logThreadSeq)
+	global.Wlog.Info(vlog)
 	for _, i := range tableList {
 		if strings.Contains(i, ".") {
 			schema := strings.Split(i, ".")[0]
 			table := strings.Split(i, ".")[1]
-			blog := fmt.Sprintf("(%d) Start to query all column information of source DB %s table %s.%s", logThreadSeq, stcls.sourceDrive, schema, table)
-			global.Wlog.Info(blog)
+			vlog = fmt.Sprintf("(%d) Start to query all column information of source DB %s table %s.%s", logThreadSeq, stcls.sourceDrive, schema, table)
+			global.Wlog.Debug(vlog)
 			tc := dbExec.TableColumnNameStruct{Schema: schema, Table: table, Drive: stcls.sourceDrive}
-			a, _ := tc.Query().TableAllColumn(stcls.sourceDB, logThreadSeq2)
-			clog := fmt.Sprintf("(%d) All column information query of source DB %s table %s.%s is completed", logThreadSeq, stcls.sourceDrive, schema, table)
-			global.Wlog.Info(clog)
+			a, err = tc.Query().TableAllColumn(stcls.sourceDB, logThreadSeq2)
+			if err != nil {
+				return nil
+			}
+			vlog = fmt.Sprintf("(%d) All column information query of source DB %s table %s.%s is completed", logThreadSeq, stcls.sourceDrive, schema, table)
+			global.Wlog.Debug(vlog)
 
-			dlog := fmt.Sprintf("(%d) Start to query all column information of dest DB %s table %s.%s", logThreadSeq, stcls.destDrive, schema, table)
-			global.Wlog.Info(dlog)
+			vlog = fmt.Sprintf("(%d) Start to query all column information of dest DB %s table %s.%s", logThreadSeq, stcls.destDrive, schema, table)
+			global.Wlog.Debug(vlog)
 			tc.Drive = stcls.destDrive
-			b, _ := tc.Query().TableAllColumn(stcls.destDB, logThreadSeq2)
-			elog := fmt.Sprintf("(%d) All column information query of dest DB %s table %s.%s is completed", logThreadSeq, stcls.destDrive, schema, table)
-			global.Wlog.Info(elog)
+			b, err = tc.Query().TableAllColumn(stcls.destDB, logThreadSeq2)
+			if err != nil {
+				return nil
+			}
+			vlog = fmt.Sprintf("(%d) All column information query of dest DB %s table %s.%s is completed", logThreadSeq, stcls.destDrive, schema, table)
+			global.Wlog.Debug(vlog)
 			tableCol[fmt.Sprintf("%s_greatdbCheck_%s", schema, table)] = global.TableAllColumnInfoS{
 				SColumnInfo: interfToString(a),
 				DColumnInfo: interfToString(b),
 			}
-			flog := fmt.Sprintf("(%d) all column information query of table %s.%s is completed. table column message is {source: %s, dest: %s}", logThreadSeq, schema, table, interfToString(a), interfToString(b))
-			global.Wlog.Info(flog)
+			vlog = fmt.Sprintf("(%d) all column information query of table %s.%s is completed. table column message is {source: %s, dest: %s}", logThreadSeq, schema, table, interfToString(a), interfToString(b))
+			global.Wlog.Debug(vlog)
 		}
 	}
-	glog := fmt.Sprintf("(%d) The metadata information of the source target verification table has been obtained !!!", logThreadSeq)
-	global.Wlog.Info(glog)
+	vlog = fmt.Sprintf("(%d) The metadata information of the source target verification table has been obtained !!!", logThreadSeq)
+	global.Wlog.Info(vlog)
 	return tableCol
 }
 
@@ -394,34 +459,42 @@ func (stcls *schemaTable) SchemaTableAllCol(tableList []string, logThreadSeq, lo
 	获取校验表的索引列信息，包含是否有索引，列名，列序号
 */
 func (stcls *schemaTable) TableIndexColumn(dtabS []string, logThreadSeq, logThreadSeq2 int64) map[string][]string {
-	var tableIndexColumnMap = make(map[string][]string)
-	alog := fmt.Sprintf("(%d) Start to query the table index listing information and select the appropriate index ...", logThreadSeq)
-	global.Wlog.Info(alog)
+	var (
+		queryData           []map[string]interface{}
+		err                 error
+		vlog                string
+		tableIndexColumnMap = make(map[string][]string)
+	)
+	vlog = fmt.Sprintf("(%d) Start to query the table index listing information and select the appropriate index ...", logThreadSeq)
+	global.Wlog.Info(vlog)
+
 	for _, i := range dtabS {
 		stcls.schema = strings.Split(i, ".")[0]
 		stcls.table = strings.Split(i, ".")[1]
-		blog := fmt.Sprintf("(%d) Start querying the index list information of table %s.%s.", logThreadSeq, stcls.schema, stcls.table)
-		global.Wlog.Info(blog)
+		vlog = fmt.Sprintf("(%d) Start querying the index list information of table %s.%s.", logThreadSeq, stcls.schema, stcls.table)
+		global.Wlog.Debug(vlog)
 		idxc := dbExec.IndexColumnStruct{Schema: stcls.schema, Table: stcls.table, Drivce: stcls.sourceDrive}
-		queryData, _ := idxc.TableIndexColumn().QueryTableIndexColumnInfo(stcls.sourceDB, logThreadSeq2)
+		queryData, err = idxc.TableIndexColumn().QueryTableIndexColumnInfo(stcls.sourceDB, logThreadSeq2)
+		if err != nil {
+			return nil
+		}
 		tc := dbExec.TableColumnNameStruct{Schema: stcls.schema, Table: stcls.table, Drive: stcls.sourceDrive, Db: stcls.sourceDB}
 		indexType := tc.Query().TableIndexChoice(queryData, logThreadSeq2)
-		clog := fmt.Sprintf("(%d) Table %s.%s index list information query completed. index list message is {%v}", logThreadSeq, stcls.schema, stcls.table, indexType)
-		global.Wlog.Info(clog)
-
+		vlog = fmt.Sprintf("(%d) Table %s.%s index list information query completed. index list message is {%v}", logThreadSeq, stcls.schema, stcls.table, indexType)
+		global.Wlog.Debug(vlog)
 		if len(indexType) == 0 { //针对于表没有索引的，进行处理
 			key := fmt.Sprintf("%s/*greatdbSchemaTable*/%s", stcls.schema, stcls.table)
 			tableIndexColumnMap[key] = []string{}
-			dlog := fmt.Sprintf("(%d) The current table %s.%s has no index.", logThreadSeq, stcls.schema, stcls.table)
-			global.Wlog.Warn(dlog)
+			vlog = fmt.Sprintf("(%d) The current table %s.%s has no index.", logThreadSeq, stcls.schema, stcls.table)
+			global.Wlog.Warn(vlog)
 		} else {
-			flog := fmt.Sprintf("(%d) Start to perform index selection on table %s.%s according to the algorithm", logThreadSeq, stcls.schema, stcls.table)
-			global.Wlog.Info(flog)
+			vlog = fmt.Sprintf("(%d) Start to perform index selection on table %s.%s according to the algorithm", logThreadSeq, stcls.schema, stcls.table)
+			global.Wlog.Debug(vlog)
 			ab, aa := stcls.tableIndexAlgorithm(indexType)
 			key := fmt.Sprintf("%s/*greatdbSchemaTable*/%s/*indexColumnType*/%s", stcls.schema, stcls.table, ab)
 			tableIndexColumnMap[key] = aa
-			glog := fmt.Sprintf("(%d) The index selection of table %s.%s is completed, and the selected index information is { keyName:%s keyColumn: %s}", logThreadSeq, stcls.schema, stcls.table, ab, aa)
-			global.Wlog.Info(glog)
+			vlog = fmt.Sprintf("(%d) The index selection of table %s.%s is completed, and the selected index information is { keyName:%s keyColumn: %s}", logThreadSeq, stcls.schema, stcls.table, ab, aa)
+			global.Wlog.Debug(vlog)
 		}
 	}
 	zlog := fmt.Sprintf("(%d) Table index listing information and appropriate index completion !!!", logThreadSeq)
@@ -433,14 +506,21 @@ func (stcls *schemaTable) TableIndexColumn(dtabS []string, logThreadSeq, logThre
 	校验触发器
 */
 func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 int64) {
-	var pods = Pod{
-		Datafix:     "no",
-		CheckObject: "trigger",
-	}
-	var z = make(map[string]int)
-	var c, d []string
-	alog := fmt.Sprintf("(%d) Start init check source and target DB Trigger. to check it...", logThreadSeq)
-	global.Wlog.Info(alog)
+	var (
+		vlog string
+		tmpM = make(map[string]int)
+		z    = make(map[string]int)
+		c, d []string
+		pods = Pod{
+			Datafix:     "no",
+			CheckObject: "trigger",
+		}
+		sourceTrigger, destTrigger map[string]string
+		err                        error
+	)
+
+	vlog = fmt.Sprintf("(%d) Start init check source and target DB Trigger. to check it...", logThreadSeq)
+	global.Wlog.Info(vlog)
 	for _, i := range dtabS {
 		i = strings.Split(i, ".")[0]
 		if stcls.lowerCaseTableNames == "yes" {
@@ -454,36 +534,38 @@ func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 in
 	//校验触发器
 	for i, _ := range z {
 		pods.Schema = stcls.schema
-		blog := fmt.Sprintf("(%d) Start processing source DB %s data databases %s Trigger. to dispos it...", logThreadSeq, stcls.sourceDrive, stcls.schema)
-		global.Wlog.Info(blog)
+		vlog = fmt.Sprintf("(%d) Start processing source DB %s data databases %s Trigger. to dispos it...", logThreadSeq, stcls.sourceDrive, stcls.schema)
+		global.Wlog.Debug(vlog)
 		tc := dbExec.TableColumnNameStruct{Schema: i, Drive: stcls.sourceDrive}
-		sourceTrigger, _ := tc.Query().Trigger(stcls.sourceDB, logThreadSeq2)
-		clog := fmt.Sprintf("(%d) Source DB %s data databases %s message is {%s}", logThreadSeq, stcls.sourceDrive, stcls.schema, sourceTrigger)
-		global.Wlog.Info(clog)
-
-		dlog := fmt.Sprintf("(%d) Start processing dest DB %s data databases %s Trigger data. to dispos it...", logThreadSeq, stcls.destDrive, stcls.schema)
-		global.Wlog.Info(dlog)
-		tc.Drive = stcls.destDrive
-		destTrigger, _ := tc.Query().Trigger(stcls.destDB, logThreadSeq2)
-		elog := fmt.Sprintf("(%d) Dest DB %s data databases %s message is {%s}", logThreadSeq, stcls.destDrive, stcls.schema, destTrigger)
-		global.Wlog.Info(elog)
-
-		if len(sourceTrigger) == 0 && len(destTrigger) == 0 {
-			continue
-			flog := fmt.Sprintf("(%d) The current original target data is empty, and the verification of this databases %s will be skipped", logThreadSeq, stcls.schema)
-			global.Wlog.Info(flog)
+		if sourceTrigger, err = tc.Query().Trigger(stcls.sourceDB, logThreadSeq2); err != nil {
+			return
 		}
-		var tmpM = make(map[string]int)
-		glog := fmt.Sprintf("(%d) Start seeking the union of the source and target databases %s Trigger. to dispos it...", logThreadSeq, stcls.schema)
-		global.Wlog.Info(glog)
+		vlog = fmt.Sprintf("(%d) Source DB %s data databases %s message is {%s}", logThreadSeq, stcls.sourceDrive, stcls.schema, sourceTrigger)
+		global.Wlog.Debug(vlog)
+		vlog = fmt.Sprintf("(%d) Start processing dest DB %s data databases %s Trigger data. to dispos it...", logThreadSeq, stcls.destDrive, stcls.schema)
+		global.Wlog.Debug(vlog)
+		tc.Drive = stcls.destDrive
+		if destTrigger, err = tc.Query().Trigger(stcls.destDB, logThreadSeq2); err != nil {
+			return
+		}
+		vlog = fmt.Sprintf("(%d) Dest DB %s data databases %s message is {%s}", logThreadSeq, stcls.destDrive, stcls.schema, destTrigger)
+		global.Wlog.Debug(vlog)
+		if len(sourceTrigger) == 0 && len(destTrigger) == 0 {
+			vlog = fmt.Sprintf("(%d) The current original target data is empty, and the verification of this databases %s will be skipped", logThreadSeq, stcls.schema)
+			global.Wlog.Debug(vlog)
+			continue
+		}
+		tmpM = nil
+		vlog = fmt.Sprintf("(%d) Start seeking the union of the source and target databases %s Trigger. to dispos it...", logThreadSeq, stcls.schema)
+		global.Wlog.Debug(vlog)
 		for k, _ := range sourceTrigger {
 			tmpM[k]++
 		}
 		for k, _ := range destTrigger {
 			tmpM[k]++
 		}
-		hlog := fmt.Sprintf("(%d) Start to compare whether the Trigger is consistent.", logThreadSeq)
-		global.Wlog.Info(hlog)
+		vlog = fmt.Sprintf("(%d) Start to compare whether the Trigger is consistent.", logThreadSeq)
+		global.Wlog.Debug(vlog)
 		for k, _ := range tmpM {
 			pods.TriggerName = strings.ReplaceAll(strings.Split(k, ".")[1], "\"", "")
 			if sourceTrigger[k] != destTrigger[k] {
@@ -493,55 +575,65 @@ func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 in
 				pods.Differences = "no"
 				c = append(c, k)
 			}
-			zlog := fmt.Sprintf("(%d) Complete the consistency check of the source target segment databases %s Trigger. normal databases message is {%s} num [%d] abnormal databases message is {%s} num [%d]", logThreadSeq, stcls.schema, c, len(c), d, len(d))
-			global.Wlog.Info(zlog)
-			llog := fmt.Sprintf("(%d) The source target segment databases %s Trigger data verification is completed.!!!", logThreadSeq, stcls.schema)
-			global.Wlog.Info(llog)
+			vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment databases %s Trigger. normal databases message is {%s} num [%d] abnormal databases message is {%s} num [%d]", logThreadSeq, stcls.schema, c, len(c), d, len(d))
+			global.Wlog.Debug(vlog)
+			vlog = fmt.Sprintf("(%d) The source target segment databases %s Trigger data verification is completed.!!!", logThreadSeq, stcls.schema)
+			global.Wlog.Debug(vlog)
 			measuredDataPods = append(measuredDataPods, pods)
 		}
-		zlog := fmt.Sprintf("(%d) Complete the consistency check of the source target segment table Trigger data. normal databases message is {%s} num [%d] abnormal databases message is {%s} num [%d]", logThreadSeq, c, len(c), d, len(d))
-		global.Wlog.Info(zlog)
 	}
+	vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment table Trigger data. normal databases message is {%s} num [%d] abnormal databases message is {%s} num [%d]", logThreadSeq, c, len(c), d, len(d))
+	global.Wlog.Info(vlog)
 }
 
 /*
 	校验存储过程
 */
 func (stcls *schemaTable) Proc(dtabS []string, logThreadSeq, logThreadSeq2 int64) {
-	var schemaMap = make(map[string]int)
-	var pods = Pod{
-		Datafix:     "no",
-		CheckObject: "proc",
-	}
-	alog := fmt.Sprintf("(%d) Start init check source and target DB Stored Procedure. to check it...", logThreadSeq)
-	global.Wlog.Info(alog)
+	var (
+		vlog      string
+		c, d      []string
+		schemaMap = make(map[string]int)
+		pods      = Pod{
+			Datafix:     "no",
+			CheckObject: "proc",
+		}
+		sourceProc, destProc map[string]string
+		err                  error
+		tmpM                 = make(map[string]int)
+	)
+	vlog = fmt.Sprintf("(%d) Start init check source and target DB Stored Procedure. to check it...", logThreadSeq)
+	global.Wlog.Info(vlog)
 	for _, i := range dtabS {
 		schemaMap[strings.Split(i, ".")[0]] = +schemaMap[strings.Split(i, ".")[0]]
 	}
-	var c, d []string
+
 	for schema, _ := range schemaMap {
-		blog := fmt.Sprintf("(%d) Start processing source DB %s data databases %s Stored Procedure. to dispos it...", logThreadSeq, stcls.sourceDrive, stcls.schema)
-		global.Wlog.Info(blog)
+		vlog = fmt.Sprintf("(%d) Start processing source DB %s data databases %s Stored Procedure. to dispos it...", logThreadSeq, stcls.sourceDrive, stcls.schema)
+		global.Wlog.Debug(vlog)
 		tc := dbExec.TableColumnNameStruct{Schema: schema, Drive: stcls.sourceDrive}
-		sourceProc, _ := tc.Query().Proc(stcls.sourceDB, logThreadSeq2)
-		clog := fmt.Sprintf("(%d) Source DB %s data databases %s message is {%s}", logThreadSeq, stcls.sourceDrive, stcls.schema, sourceProc)
-		global.Wlog.Info(clog)
-
-		tc.Drive = stcls.destDrive
-		dlog := fmt.Sprintf("(%d) Start processing dest DB %s data table %s Stored Procedure data. to dispos it...", logThreadSeq, stcls.destDrive, stcls.schema, stcls.table)
-		global.Wlog.Info(dlog)
-		destProc, _ := tc.Query().Proc(stcls.destDB, logThreadSeq2)
-		elog := fmt.Sprintf("(%d) Dest DB %s data databases %s message is {%s}", logThreadSeq, stcls.destDrive, stcls.schema, destProc)
-		global.Wlog.Info(elog)
-
-		if len(sourceProc) == 0 && len(destProc) == 0 {
-			continue
-			flog := fmt.Sprintf("(%d) The current original target data is empty, and the verification of this databases %s will be skipped", logThreadSeq, stcls.schema)
-			global.Wlog.Info(flog)
+		if sourceProc, err = tc.Query().Proc(stcls.sourceDB, logThreadSeq2); err != nil {
+			return
 		}
-		var tmpM = make(map[string]int)
-		glog := fmt.Sprintf("(%d) Start seeking the union of the source and target databases %s Stored Procedure. to dispos it...", logThreadSeq, stcls.schema)
-		global.Wlog.Info(glog)
+		vlog = fmt.Sprintf("(%d) Source DB %s data databases %s message is {%s}", logThreadSeq, stcls.sourceDrive, stcls.schema, sourceProc)
+		global.Wlog.Debug(vlog)
+		tc.Drive = stcls.destDrive
+		vlog = fmt.Sprintf("(%d) Start processing dest DB %s data table %s Stored Procedure data. to dispos it...", logThreadSeq, stcls.destDrive, stcls.schema, stcls.table)
+		global.Wlog.Debug(vlog)
+		if destProc, err = tc.Query().Proc(stcls.destDB, logThreadSeq2); err != nil {
+			return
+		}
+		vlog = fmt.Sprintf("(%d) Dest DB %s data databases %s message is {%s}", logThreadSeq, stcls.destDrive, stcls.schema, destProc)
+		global.Wlog.Debug(vlog)
+		if len(sourceProc) == 0 && len(destProc) == 0 {
+			vlog = fmt.Sprintf("(%d) The current original target data is empty, and the verification of this databases %s will be skipped", logThreadSeq, stcls.schema)
+			global.Wlog.Warn(vlog)
+			continue
+		}
+
+		tmpM = nil
+		vlog = fmt.Sprintf("(%d) Start seeking the union of the source and target databases %s Stored Procedure. to dispos it...", logThreadSeq, stcls.schema)
+		global.Wlog.Debug(vlog)
 		for k, _ := range sourceProc {
 			if k == "DEFINER" {
 				continue
@@ -554,8 +646,8 @@ func (stcls *schemaTable) Proc(dtabS []string, logThreadSeq, logThreadSeq2 int64
 			}
 			tmpM[k]++
 		}
-		flog := fmt.Sprintf("(%d) Start to compare whether the Stored Procedure is consistent.", logThreadSeq)
-		global.Wlog.Info(flog)
+		vlog = fmt.Sprintf("(%d) Start to compare whether the Stored Procedure is consistent.", logThreadSeq)
+		global.Wlog.Debug(vlog)
 		pods.Schema = schema
 		for k, v := range tmpM {
 			if stcls.sourceDrive != stcls.destDrive {
@@ -579,63 +671,76 @@ func (stcls *schemaTable) Proc(dtabS []string, logThreadSeq, logThreadSeq2 int64
 					c = append(c, k)
 				}
 			}
-			zlog := fmt.Sprintf("(%d) Complete the consistency check of the source target segment databases %s Stored Procedure. normal databases message is {%s} num [%d] abnormal databases message is {%s} num [%d]", logThreadSeq, stcls.schema, c, len(c), d, len(d))
-			global.Wlog.Info(zlog)
-			llog := fmt.Sprintf("(%d) The source target segment databases %s Stored Procedure data verification is completed.!!!", logThreadSeq, stcls.schema)
-			global.Wlog.Info(llog)
+			vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment databases %s Stored Procedure. normal databases message is {%s} num [%d] abnormal databases message is {%s} num [%d]", logThreadSeq, stcls.schema, c, len(c), d, len(d))
+			global.Wlog.Debug(vlog)
+			vlog = fmt.Sprintf("(%d) The source target segment databases %s Stored Procedure data verification is completed.!!!", logThreadSeq, stcls.schema)
+			global.Wlog.Debug(vlog)
 			measuredDataPods = append(measuredDataPods, pods)
 		}
-		zlog := fmt.Sprintf("(%d) Complete the consistency check of the source target segment table Stored Procedure data. normal databases message is {%s} num [%d] abnormal databases message is {%s} num [%d]", logThreadSeq, c, len(c), d, len(d))
-		global.Wlog.Info(zlog)
 	}
+	vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment table Stored Procedure data. normal databases message is {%s} num [%d] abnormal databases message is {%s} num [%d]", logThreadSeq, c, len(c), d, len(d))
+	global.Wlog.Info(vlog)
 }
 
 /*
 	校验函数
 */
 func (stcls *schemaTable) Func(dtabS []string, logThreadSeq, logThreadSeq2 int64) {
-	var schemaMap = make(map[string]int)
-	var pods = Pod{
-		Datafix:     "no",
-		CheckObject: "func",
-	}
-	alog := fmt.Sprintf("(%d) Start init check source and target DB Stored Function. to check it...", logThreadSeq)
-	global.Wlog.Info(alog)
+	var (
+		vlog                 string
+		sourceFunc, destFunc map[string]string
+		tmpM                 = make(map[string]int)
+		schemaMap            = make(map[string]int)
+		pods                 = Pod{
+			Datafix:     "no",
+			CheckObject: "func",
+		}
+		err  error
+		c, d []string
+	)
+
+	vlog = fmt.Sprintf("(%d) Start init check source and target DB Stored Function. to check it...", logThreadSeq)
+	global.Wlog.Info(vlog)
 	for _, i := range dtabS {
 		schemaMap[strings.Split(i, ".")[0]] = +schemaMap[strings.Split(i, ".")[0]]
 	}
-	var c, d []string
+
 	for schema, _ := range schemaMap {
-		blog := fmt.Sprintf("(%d) Start processing source DB %s data databases %s Stored Function. to dispos it...", logThreadSeq, stcls.sourceDrive, stcls.schema)
-		global.Wlog.Info(blog)
+		vlog = fmt.Sprintf("(%d) Start processing source DB %s data databases %s Stored Function. to dispos it...", logThreadSeq, stcls.sourceDrive, stcls.schema)
+		global.Wlog.Debug(vlog)
 		tc := dbExec.TableColumnNameStruct{Schema: schema, Drive: stcls.sourceDrive}
-		sourceFunc, _ := tc.Query().Func(stcls.sourceDB, logThreadSeq2)
-		clog := fmt.Sprintf("(%d) Source DB %s data databases %s message is {%s}", logThreadSeq, stcls.sourceDrive, stcls.schema, sourceFunc)
-		global.Wlog.Info(clog)
+		if sourceFunc, err = tc.Query().Func(stcls.sourceDB, logThreadSeq2); err != nil {
+			return
+		}
+		vlog = fmt.Sprintf("(%d) Source DB %s data databases %s message is {%s}", logThreadSeq, stcls.sourceDrive, stcls.schema, sourceFunc)
+		global.Wlog.Debug(vlog)
 
 		tc.Drive = stcls.destDrive
-		dlog := fmt.Sprintf("(%d) Start processing dest DB %s data table %s Stored Function data. to dispos it...", logThreadSeq, stcls.destDrive, stcls.schema, stcls.table)
-		global.Wlog.Info(dlog)
-		destFunc, _ := tc.Query().Func(stcls.destDB, logThreadSeq2)
-		elog := fmt.Sprintf("(%d) Dest DB %s data databases %s message is {%s}", logThreadSeq, stcls.destDrive, stcls.schema, destFunc)
-		global.Wlog.Info(elog)
+		vlog = fmt.Sprintf("(%d) Start processing dest DB %s data table %s Stored Function data. to dispos it...", logThreadSeq, stcls.destDrive, stcls.schema, stcls.table)
+		global.Wlog.Debug(vlog)
+		if destFunc, err = tc.Query().Func(stcls.destDB, logThreadSeq2); err != nil {
+			return
+		}
+		vlog = fmt.Sprintf("(%d) Dest DB %s data databases %s message is {%s}", logThreadSeq, stcls.destDrive, stcls.schema, destFunc)
+		global.Wlog.Debug(vlog)
 
 		if len(sourceFunc) == 0 && len(destFunc) == 0 {
+			vlog = fmt.Sprintf("(%d) The current original target data is empty, and the verification of this databases %s will be skipped", logThreadSeq, stcls.schema)
+			global.Wlog.Debug(vlog)
 			continue
-			flog := fmt.Sprintf("(%d) The current original target data is empty, and the verification of this databases %s will be skipped", logThreadSeq, stcls.schema)
-			global.Wlog.Info(flog)
 		}
-		var tmpM = make(map[string]int)
-		glog := fmt.Sprintf("(%d) Start seeking the union of the source and target databases %s Stored Function. to dispos it...", logThreadSeq, stcls.schema)
-		global.Wlog.Info(glog)
+
+		tmpM = nil
+		vlog = fmt.Sprintf("(%d) Start seeking the union of the source and target databases %s Stored Function. to dispos it...", logThreadSeq, stcls.schema)
+		global.Wlog.Debug(vlog)
 		for k, _ := range sourceFunc {
 			tmpM[k]++
 		}
 		for k, _ := range destFunc {
 			tmpM[k]++
 		}
-		hlog := fmt.Sprintf("(%d) Start to compare whether the Stored Function is consistent.", logThreadSeq)
-		global.Wlog.Info(hlog)
+		vlog = fmt.Sprintf("(%d) Start to compare whether the Stored Function is consistent.", logThreadSeq)
+		global.Wlog.Debug(vlog)
 		pods.Schema = schema
 		for k, v := range tmpM {
 			var sv, dv string
@@ -661,15 +766,15 @@ func (stcls *schemaTable) Func(dtabS []string, logThreadSeq, logThreadSeq2 int64
 					c = append(c, k)
 				}
 			}
-			zlog := fmt.Sprintf("(%d) Complete the consistency check of the source target segment databases %s Stored Function. normal databases message is {%s} num [%d] abnormal databases message is {%s} num [%d]", logThreadSeq, stcls.schema, c, len(c), d, len(d))
-			global.Wlog.Info(zlog)
-			llog := fmt.Sprintf("(%d) The source target segment databases %s Stored Function data verification is completed.!!!", logThreadSeq, stcls.schema)
-			global.Wlog.Info(llog)
+			vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment databases %s Stored Function. normal databases message is {%s} num [%d] abnormal databases message is {%s} num [%d]", logThreadSeq, stcls.schema, c, len(c), d, len(d))
+			global.Wlog.Debug(vlog)
+			vlog = fmt.Sprintf("(%d) The source target segment databases %s Stored Function data verification is completed.!!!", logThreadSeq, stcls.schema)
+			global.Wlog.Debug(vlog)
 			measuredDataPods = append(measuredDataPods, pods)
 		}
-		zlog := fmt.Sprintf("(%d) Complete the consistency check of the source target segment table Stored Function data. normal databases message is {%s} num [%d] abnormal databases message is {%s} num [%d]", logThreadSeq, c, len(c), d, len(d))
-		global.Wlog.Info(zlog)
 	}
+	vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment table Stored Function data. normal databases message is {%s} num [%d] abnormal databases message is {%s} num [%d]", logThreadSeq, c, len(c), d, len(d))
+	global.Wlog.Info(vlog)
 }
 
 /*
@@ -684,9 +789,6 @@ func (stcls *schemaTable) IndexDisposF(queryData []map[string]interface{}) ([]st
 	for _, v := range queryData {
 		var currIndexName = strings.ToUpper(v["indexName"].(string))
 		//判断唯一索引（包含主键索引和普通索引）
-		if stcls.sourceDrive == "mysql" {
-
-		}
 		if v["nonUnique"].(string) == "0" || v["nonUnique"].(string) == "UNIQUE" {
 			if currIndexName == "PRIMARY" || v["columnKey"].(string) == "1" {
 				if currIndexName != indexName {
@@ -716,49 +818,60 @@ func (stcls *schemaTable) IndexDisposF(queryData []map[string]interface{}) ([]st
 }
 
 func (stcls *schemaTable) Foreign(dtabS []string, logThreadSeq, logThreadSeq2 int64) {
-	var pods = Pod{
-		Datafix:     "no",
-		CheckObject: "Foreign",
-	}
-	alog := fmt.Sprintf("(%d) Start init check source and target DB Foreign. to check it...", logThreadSeq)
-	global.Wlog.Info(alog)
+	var (
+		vlog                       string
+		sourceForeign, destForeign map[string]string
+		tmpM                       = make(map[string]int)
+		err                        error
+		pods                       = Pod{
+			Datafix:     "no",
+			CheckObject: "Foreign",
+		}
+	)
+
+	vlog = fmt.Sprintf("(%d) Start init check source and target DB Foreign. to check it...", logThreadSeq)
+	global.Wlog.Info(vlog)
 	//校验外键
 	var c, d []string
 	for _, i := range dtabS {
 		stcls.schema = strings.Split(i, ".")[0]
 		stcls.table = strings.Split(i, ".")[1]
-		blog := fmt.Sprintf("(%d) Start processing source DB %s data table %s.%s Foreign. to dispos it...", logThreadSeq, stcls.sourceDrive, stcls.schema, stcls.table)
-		global.Wlog.Info(blog)
+		vlog = fmt.Sprintf("(%d) Start processing source DB %s data table %s.%s Foreign. to dispos it...", logThreadSeq, stcls.sourceDrive, stcls.schema, stcls.table)
+		global.Wlog.Debug(vlog)
 		pods.Schema = stcls.schema
 		pods.Table = stcls.table
 		tc := dbExec.TableColumnNameStruct{Schema: stcls.schema, Table: stcls.table, Drive: stcls.sourceDrive}
-		sourceForeign, _ := tc.Query().Foreign(stcls.sourceDB, logThreadSeq2)
-		clog := fmt.Sprintf("(%d) Source DB %s data table %s.%s message is {%s}", logThreadSeq, stcls.sourceDrive, stcls.schema, stcls.table, sourceForeign)
-		global.Wlog.Info(clog)
-
-		dlog := fmt.Sprintf("(%d) Start processing dest DB %s data table %s.%s Foreign. to dispos it...", logThreadSeq, stcls.destDrive, stcls.schema, stcls.table)
-		global.Wlog.Info(dlog)
-		tc.Drive = stcls.destDrive
-		destForeign, _ := tc.Query().Foreign(stcls.destDB, logThreadSeq2)
-		elog := fmt.Sprintf("(%d) Dest DB %s data table %s.%s message is {%s}", logThreadSeq, stcls.destDrive, stcls.schema, stcls.table, destForeign)
-		global.Wlog.Info(elog)
-
-		if len(sourceForeign) == 0 && len(destForeign) == 0 {
-			continue
-			flog := fmt.Sprintf("(%d) The current original target data is empty, and the verification of this table %s.%s will be skipped", logThreadSeq, stcls.schema, stcls.table)
-			global.Wlog.Info(flog)
+		if sourceForeign, err = tc.Query().Foreign(stcls.sourceDB, logThreadSeq2); err != nil {
+			return
 		}
-		var tmpM = make(map[string]int)
-		glog := fmt.Sprintf("(%d) Start seeking the union of the source and target table %s.%s Foreign Name. to dispos it...", logThreadSeq, stcls.schema, stcls.table)
-		global.Wlog.Info(glog)
+		vlog = fmt.Sprintf("(%d) Source DB %s data table %s.%s message is {%s}", logThreadSeq, stcls.sourceDrive, stcls.schema, stcls.table, sourceForeign)
+		global.Wlog.Debug(vlog)
+
+		vlog = fmt.Sprintf("(%d) Start processing dest DB %s data table %s.%s Foreign. to dispos it...", logThreadSeq, stcls.destDrive, stcls.schema, stcls.table)
+		global.Wlog.Debug(vlog)
+		tc.Drive = stcls.destDrive
+		if destForeign, err = tc.Query().Foreign(stcls.destDB, logThreadSeq2); err != nil {
+			return
+		}
+
+		vlog = fmt.Sprintf("(%d) Dest DB %s data table %s.%s message is {%s}", logThreadSeq, stcls.destDrive, stcls.schema, stcls.table, destForeign)
+		global.Wlog.Debug(vlog)
+		if len(sourceForeign) == 0 && len(destForeign) == 0 {
+			vlog = fmt.Sprintf("(%d) The current original target data is empty, and the verification of this table %s.%s will be skipped", logThreadSeq, stcls.schema, stcls.table)
+			global.Wlog.Debug(vlog)
+			continue
+		}
+		tmpM = nil
+		vlog = fmt.Sprintf("(%d) Start seeking the union of the source and target table %s.%s Foreign Name. to dispos it...", logThreadSeq, stcls.schema, stcls.table)
+		global.Wlog.Debug(vlog)
 		for k, _ := range sourceForeign {
 			tmpM[k]++
 		}
 		for k, _ := range destForeign {
 			tmpM[k]++
 		}
-		hlog := fmt.Sprintf("(%d) Start to compare whether the Foreign table is consistent.", logThreadSeq)
-		global.Wlog.Info(hlog)
+		vlog = fmt.Sprintf("(%d) Start to compare whether the Foreign table is consistent.", logThreadSeq)
+		global.Wlog.Debug(vlog)
 		for k, _ := range tmpM {
 			if sourceForeign[k] != destForeign[k] {
 				pods.Differences = "yes"
@@ -768,60 +881,71 @@ func (stcls *schemaTable) Foreign(dtabS []string, logThreadSeq, logThreadSeq2 in
 				c = append(c, k)
 			}
 		}
-		zlog := fmt.Sprintf("(%d) Complete the consistency check of the source target segment table %s.%s Foreign. normal table message is {%s} num [%d] abnormal table message is {%s} num [%d]", logThreadSeq, stcls.schema, stcls.table, c, len(c), d, len(d))
-		global.Wlog.Info(zlog)
-		llog := fmt.Sprintf("(%d) The source target segment table %s.%s Foreign data verification is completed.!!!", logThreadSeq, stcls.schema, stcls.table)
-		global.Wlog.Info(llog)
+		vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment table %s.%s Foreign. normal table message is {%s} num [%d] abnormal table message is {%s} num [%d]", logThreadSeq, stcls.schema, stcls.table, c, len(c), d, len(d))
+		global.Wlog.Debug(vlog)
+		vlog = fmt.Sprintf("(%d) The source target segment table %s.%s Foreign data verification is completed.!!!", logThreadSeq, stcls.schema, stcls.table)
+		global.Wlog.Debug(vlog)
 		measuredDataPods = append(measuredDataPods, pods)
 	}
-	zlog := fmt.Sprintf("(%d) Complete the consistency check of the source target segment table Foreign data. normal table message is {%s} num [%d] abnormal table message is {%s} num [%d]", logThreadSeq, c, len(c), d, len(d))
-	global.Wlog.Info(zlog)
+	vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment table Foreign data. normal table message is {%s} num [%d] abnormal table message is {%s} num [%d]", logThreadSeq, c, len(c), d, len(d))
+	global.Wlog.Info(vlog)
 }
 
 //校验分区
 func (stcls *schemaTable) Partitions(dtabS []string, logThreadSeq, logThreadSeq2 int64) {
-	var pods = Pod{
-		Datafix:     "no",
-		CheckObject: "Partitions",
-	}
-	alog := fmt.Sprintf("(%d) Start init check source and target DB partition table. to check it...", logThreadSeq)
-	global.Wlog.Info(alog)
-	var c, d []string
+	var (
+		vlog                             string
+		c, d                             []string
+		sourcePartitions, destPartitions map[string]string
+		pods                             = Pod{
+			Datafix:     "no",
+			CheckObject: "Partitions",
+		}
+		tmpM = make(map[string]int)
+	)
+	vlog = fmt.Sprintf("(%d) Start init check source and target DB partition table. to check it...", logThreadSeq)
+	global.Wlog.Info(vlog)
 	for _, i := range dtabS {
 		stcls.schema = strings.Split(i, ".")[0]
 		stcls.table = strings.Split(i, ".")[1]
-		blog := fmt.Sprintf("(%d) Start processing source DB %s data table %s.%s partitions data. to dispos it...", logThreadSeq, stcls.sourceDrive, stcls.schema, stcls.table)
-		global.Wlog.Info(blog)
+		vlog = fmt.Sprintf("(%d) Start processing source DB %s data table %s.%s partitions data. to dispos it...", logThreadSeq, stcls.sourceDrive, stcls.schema, stcls.table)
+		global.Wlog.Debug(vlog)
 		tc := dbExec.TableColumnNameStruct{Schema: stcls.schema, Table: stcls.table, Drive: stcls.sourceDrive}
-		sourcePartitions, _ := tc.Query().Partitions(stcls.sourceDB, logThreadSeq2)
-		clog := fmt.Sprintf("(%d) Source DB %s data table %s.%s message is {%s}", logThreadSeq, stcls.sourceDrive, stcls.schema, stcls.table, sourcePartitions)
-		global.Wlog.Info(clog)
+		if sourcePartitions, err = tc.Query().Partitions(stcls.sourceDB, logThreadSeq2); err != nil {
+			return
+		}
+
+		vlog = fmt.Sprintf("(%d) Source DB %s data table %s.%s message is {%s}", logThreadSeq, stcls.sourceDrive, stcls.schema, stcls.table, sourcePartitions)
+		global.Wlog.Debug(vlog)
 
 		tc.Drive = stcls.destDrive
-		dlog := fmt.Sprintf("(%d) Start processing dest DB %s data table %s.%s partitions data. to dispos it...", logThreadSeq, stcls.destDrive, stcls.schema, stcls.table)
-		global.Wlog.Info(dlog)
-		destPartitions, _ := tc.Query().Partitions(stcls.destDB, logThreadSeq2)
-		elog := fmt.Sprintf("(%d) Dest DB %s data table %s.%s message is {%s}", logThreadSeq, stcls.destDrive, stcls.schema, stcls.table, destPartitions)
-		global.Wlog.Info(elog)
+		vlog = fmt.Sprintf("(%d) Start processing dest DB %s data table %s.%s partitions data. to dispos it...", logThreadSeq, stcls.destDrive, stcls.schema, stcls.table)
+		global.Wlog.Debug(vlog)
+		if destPartitions, err = tc.Query().Partitions(stcls.destDB, logThreadSeq2); err != nil {
+			return
+		}
+		vlog = fmt.Sprintf("(%d) Dest DB %s data table %s.%s message is {%s}", logThreadSeq, stcls.destDrive, stcls.schema, stcls.table, destPartitions)
+		global.Wlog.Debug(vlog)
 
 		pods.Schema = stcls.schema
 		pods.Table = stcls.table
 		if len(sourcePartitions) == 0 && len(destPartitions) == 0 {
+			vlog = fmt.Sprintf("(%d) The current original target data is empty, and the verification of this table %s.%s will be skipped", logThreadSeq, stcls.schema, stcls.table)
+			global.Wlog.Debug(vlog)
 			continue
-			flog := fmt.Sprintf("(%d) The current original target data is empty, and the verification of this table %s.%s will be skipped", logThreadSeq, stcls.schema, stcls.table)
-			global.Wlog.Info(flog)
 		}
-		var tmpM = make(map[string]int)
-		glog := fmt.Sprintf("(%d) Start seeking the union of the source and target table %s.%s Partitions Column. to dispos it...", logThreadSeq, stcls.schema, stcls.table)
-		global.Wlog.Info(glog)
+
+		tmpM = nil
+		vlog = fmt.Sprintf("(%d) Start seeking the union of the source and target table %s.%s Partitions Column. to dispos it...", logThreadSeq, stcls.schema, stcls.table)
+		global.Wlog.Debug(vlog)
 		for k, _ := range sourcePartitions {
 			tmpM[k]++
 		}
 		for k, _ := range destPartitions {
 			tmpM[k]++
 		}
-		hlog := fmt.Sprintf("(%d) Start to compare whether the partitions table is consistent.", logThreadSeq)
-		global.Wlog.Info(hlog)
+		vlog = fmt.Sprintf("(%d) Start to compare whether the partitions table is consistent.", logThreadSeq)
+		global.Wlog.Debug(vlog)
 		for k, _ := range tmpM {
 			if strings.Join(strings.Fields(sourcePartitions[k]), "") != strings.Join(strings.Fields(destPartitions[k]), "") {
 				pods.Differences = "yes"
@@ -831,131 +955,105 @@ func (stcls *schemaTable) Partitions(dtabS []string, logThreadSeq, logThreadSeq2
 				pods.Differences = "no"
 			}
 		}
-		zlog := fmt.Sprintf("(%d) Complete the consistency check of the source target segment table %s.%s partitions. normal table message is {%s} num [%d] abnormal table message is {%s} num [%d]", logThreadSeq, stcls.schema, stcls.table, c, len(c), d, len(d))
-		global.Wlog.Info(zlog)
-		llog := fmt.Sprintf("(%d) The source target segment table %s.%s partitions data verification is completed.!!!", logThreadSeq, stcls.schema, stcls.table)
-		global.Wlog.Info(llog)
+		vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment table %s.%s partitions. normal table message is {%s} num [%d] abnormal table message is {%s} num [%d]", logThreadSeq, stcls.schema, stcls.table, c, len(c), d, len(d))
+		global.Wlog.Debug(vlog)
+		vlog = fmt.Sprintf("(%d) The source target segment table %s.%s partitions data verification is completed.!!!", logThreadSeq, stcls.schema, stcls.table)
+		global.Wlog.Debug(vlog)
 		measuredDataPods = append(measuredDataPods, pods)
 	}
-	zlog := fmt.Sprintf("(%d) Complete the consistency check of the source target segment table partitions data. normal table message is {%s} num [%d] abnormal table message is {%s} num [%d]", logThreadSeq, c, len(c), d, len(d))
-	global.Wlog.Info(zlog)
+	vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment table partitions data. normal table message is {%s} num [%d] abnormal table message is {%s} num [%d]", logThreadSeq, c, len(c), d, len(d))
+	global.Wlog.Info(vlog)
 }
 
 func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int64) {
 	var (
-		abNormalTableM, normalTableM = make(map[string][]string), make(map[string][]string)
-		indexCompare                 = func(smul, dmul map[string][]string) ([]string, []string) {
-			var abNormalTableS, normalTableS []string
-			var tmpa = make(map[string]int)
-			for k, _ := range smul {
-				tmpa[k]++
+		vlog string
+		sqlS []string
+		aa   = &CheckSumTypeStruct{}
+		//sqlM          = make(map[int]string)
+		indexGenerate = func(smu, dmu map[string][]string, a *CheckSumTypeStruct, indexType string) []string {
+			var cc, c, d []string
+			for k, _ := range smu {
+				c = append(c, k)
 			}
-			for k, _ := range dmul {
-				tmpa[k]++
+			for k, _ := range dmu {
+				d = append(d, k)
 			}
-			for k, _ := range tmpa {
-				var sv, dv []string
-				if _, ok := smul[k]; ok {
-					sv = smul[k]
-				}
-				if _, ok := dmul[k]; ok {
-					dv = dmul[k]
-				}
-				if strings.Join(sv, ",") != strings.Join(dv, ",") {
-					abNormalTableS = append(abNormalTableS, k)
-				} else {
-					normalTableS = append(normalTableS, k)
-				}
+			if a.CheckMd5(strings.Join(c, ",")) != a.CheckMd5(strings.Join(d, ",")) {
+				e, f := a.Arrcmp(c, d)
+				dbf := dbExec.DataAbnormalFixStruct{Schema: stcls.schema, Table: stcls.table, SourceDevice: stcls.destDrive, IndexType: indexType, DatafixType: stcls.datefix}
+				cc, _ = dbf.DataAbnormalFix().FixAlterSqlExec(e, f, smu, "MySQL", logThreadSeq)
 			}
-			return normalTableS, abNormalTableS
+			return cc
 		}
 	)
 	//校验索引
-	alog := fmt.Sprintf("(%d) start init check source and target DB index Column. to check it...", logThreadSeq)
-	global.Wlog.Info(alog)
+	vlog = fmt.Sprintf("(%d) start init check source and target DB index Column. to check it...", logThreadSeq)
+	global.Wlog.Info(vlog)
 	for _, i := range dtabS {
 		stcls.schema = strings.Split(i, ".")[0]
 		stcls.table = strings.Split(i, ".")[1]
 		idxc := dbExec.IndexColumnStruct{Schema: stcls.schema, Table: stcls.table, Drivce: stcls.sourceDrive}
-		slog := fmt.Sprintf("(%d) Start processing source DB %s data table %s.%s index column data. to dispos it...", logThreadSeq, stcls.sourceDrive, stcls.schema, stcls.table)
-		global.Wlog.Info(slog)
+		vlog = fmt.Sprintf("(%d) Start processing source DB %s data table %s.%s index column data. to dispos it...", logThreadSeq, stcls.sourceDrive, stcls.schema, stcls.table)
+		global.Wlog.Debug(vlog)
 		squeryData, _ := idxc.TableIndexColumn().QueryTableIndexColumnInfo(stcls.sourceDB, logThreadSeq2)
 		spri, suni, smul := idxc.TableIndexColumn().IndexDisposF(squeryData, logThreadSeq2)
+
 		idxc.Drivce = stcls.destDrive
-		dlog := fmt.Sprintf("(%d) Start processing dest DB %s data table %s.%s index column data. to dispos it...", logThreadSeq, stcls.destDrive, stcls.schema, stcls.table)
-		global.Wlog.Info(dlog)
+		vlog = fmt.Sprintf("(%d) Start processing dest DB %s data table %s.%s index column data. to dispos it...", logThreadSeq, stcls.destDrive, stcls.schema, stcls.table)
+		global.Wlog.Debug(vlog)
 		dqueryData, _ := idxc.TableIndexColumn().QueryTableIndexColumnInfo(stcls.destDB, logThreadSeq2)
 		dpri, duni, dmul := idxc.TableIndexColumn().IndexDisposF(dqueryData, logThreadSeq2)
-		st := fmt.Sprintf("%s.%s", stcls.schema, stcls.table)
+
+		var pods = Pod{
+			Datafix:     stcls.datefix,
+			CheckObject: "Index",
+			Differences: "no",
+			Schema:      stcls.schema,
+			Table:       stcls.table,
+		}
 		//先比较主键索引
-		plog := fmt.Sprintf("(%d) Start to compare whether the primary key index is consistent.", logThreadSeq)
-		global.Wlog.Info(plog)
-		if strings.Join(spri, ",") != strings.Join(dpri, ",") {
-			abNormalTableM[st] = spri
-		} else {
-			normalTableM[st] = spri
+		vlog = fmt.Sprintf("(%d) Start to compare whether the primary key index is consistent.", logThreadSeq)
+		global.Wlog.Debug(vlog)
+		sqlS = append(sqlS, indexGenerate(spri, dpri, aa, "pri")...)
+		vlog = fmt.Sprintf("(%d) Compare whether the primary key index is consistent and verified.", logThreadSeq)
+		global.Wlog.Debug(vlog)
+		//再比较唯一索引
+		vlog = fmt.Sprintf("(%d) Start to compare whether the unique key index is consistent.", logThreadSeq)
+		global.Wlog.Debug(vlog)
+		sqlS = append(sqlS, indexGenerate(suni, duni, aa, "uni")...)
+		vlog = fmt.Sprintf("(%d) Compare whether the unique key index is consistent and verified.", logThreadSeq)
+		global.Wlog.Info(vlog)
+		//后比较普通索引
+		vlog = fmt.Sprintf("(%d) Start to compare whether the no-unique key index is consistent.", logThreadSeq)
+		global.Wlog.Debug(vlog)
+		sqlS = append(sqlS, indexGenerate(smul, dmul, aa, "mul")...)
+		vlog = fmt.Sprintf("(%d) Compare whether the no-unique key index is consistent and verified.", logThreadSeq)
+		global.Wlog.Debug(vlog)
+		if len(sqlS) > 0 {
+			pods.Differences = "yes"
 		}
-		plog = fmt.Sprintf("(%d) Compare whether the primary key index is consistent and verified. normal table message is {%s} num [%d] abnormal table message is {%s} num [%d]", logThreadSeq, normalTableM, len(normalTableM), abNormalTableM, len(abNormalTableM))
-		global.Wlog.Info(plog)
-
-		ulog := fmt.Sprintf("(%d) Start to compare whether the unique key index is consistent.", logThreadSeq)
-		global.Wlog.Info(ulog)
-		//在比较唯一索引
-		var c, d []string
-		if len(duni) > 0 || len(suni) > 0 {
-			c, d = indexCompare(suni, duni)
-			normalTableM[st] = append(normalTableM[st], c...)
-			abNormalTableM[st] = append(abNormalTableM[st], d...)
-		}
-		ulog = fmt.Sprintf("(%d) Compare whether the unique key index is consistent and verified. normal table message is {%s} num [%d] abnormal table message is {%s} num [%d]", logThreadSeq, c, len(c), d, len(d))
-		global.Wlog.Info(ulog)
-
-		nlog := fmt.Sprintf("(%d) Start to compare whether the no-unique key index is consistent.", logThreadSeq)
-		global.Wlog.Info(nlog)
-		//比较普通索引
-		if len(smul) > 0 || len(dmul) > 0 {
-			c, d = indexCompare(smul, dmul)
-			normalTableM[st] = append(normalTableM[st], c...)
-			abNormalTableM[st] = append(abNormalTableM[st], d...)
-		}
-		nlog = fmt.Sprintf("(%d) Compare whether the no-unique key index is consistent and verified. normal table message is {%s} num [%d] abnormal table message is {%s} num [%d]", logThreadSeq, c, len(c), d, len(d))
-		global.Wlog.Info(nlog)
-
-		dlog = fmt.Sprintf("(%d) The source target segment table %s.%s index column data verification is completed.!!!", logThreadSeq, stcls.schema, stcls.table)
-		global.Wlog.Info(dlog)
-	}
-	zlog := fmt.Sprintf("(%d) Complete the consistency check of the source target segment table index column. normal table message is {%s} num [%d] abnormal table message is {%s} num [%d]", logThreadSeq, normalTableM, len(normalTableM), abNormalTableM, len(abNormalTableM))
-	global.Wlog.Info(zlog)
-	var pods = Pod{
-		Datafix:     "no",
-		CheckObject: "Index",
-	}
-	for k, v := range normalTableM {
-		aa := strings.Split(k, ".")
-		pods.Schema = aa[0]
-		pods.Table = aa[1]
-		pods.IndexCol = fmt.Sprintf("%s", strings.Join(v, ","))
-		if _, ok := abNormalTableM[k]; !ok {
-			pods.Differences = "no"
-			measuredDataPods = append(measuredDataPods, pods)
-		}
-	}
-	for k, v := range abNormalTableM {
-		aa := strings.Split(k, ".")
-		pods.Schema = aa[0]
-		pods.Table = aa[1]
-		pods.IndexCol = fmt.Sprintf("%s", strings.Join(v, ","))
-		pods.Differences = "yes"
+		//for k, v := range sqlS {
+		//	sqlM[k] = v
+		//}
+		ApplyDataFix(sqlS, stcls.datefix, stcls.sfile, stcls.destDrive, stcls.djdbc, logThreadSeq)
 		measuredDataPods = append(measuredDataPods, pods)
+		vlog = fmt.Sprintf("(%d) The source target segment table %s.%s index column data verification is completed.!!!", logThreadSeq, stcls.schema, stcls.table)
+		global.Wlog.Info(vlog)
 	}
 }
+
+/*
+	校验表结构是否正确
+*/
 func (stcls *schemaTable) Struct(dtabS []string, logThreadSeq, logThreadSeq2 int64) {
 	//校验列名
-	alog := fmt.Sprintf("(%d) begin check source and target struct. check object is {%s} num[%d]", logThreadSeq, dtabS, len(dtabS))
-	global.Wlog.Info(alog)
+	var vlog string
+	vlog = fmt.Sprintf("(%d) begin check source and target struct. check object is {%s} num[%d]", logThreadSeq, dtabS, len(dtabS))
+	global.Wlog.Info(vlog)
 	normal, abnormal := stcls.TableColumnNameCheck(dtabS, logThreadSeq, logThreadSeq2)
-	blog := fmt.Sprintf("(%d) Complete the data consistency check of the source target segment table structure column. normal table message is {%s} num [%d], abnormal table message is {%s} num [%d].", logThreadSeq, normal, len(normal), abnormal, len(abnormal))
-	global.Wlog.Info(blog)
+	vlog = fmt.Sprintf("(%d) Complete the data consistency check of the source target segment table structure column. normal table message is {%s} num [%d], abnormal table message is {%s} num [%d].", logThreadSeq, normal, len(normal), abnormal, len(abnormal))
+	global.Wlog.Debug(vlog)
 	//输出校验结果信息
 	var pods = Pod{
 		IndexCol:    "no",
@@ -979,7 +1077,6 @@ func (stcls *schemaTable) Struct(dtabS []string, logThreadSeq, logThreadSeq2 int
 	}
 	clog := fmt.Sprintf("(%d) check source and target DB table struct complete!!!", logThreadSeq)
 	global.Wlog.Info(clog)
-	//校验列类型
 }
 
 /*
@@ -1008,9 +1105,7 @@ func SchemaTableInit(m *inputArg.ConfigParameter) *schemaTable {
 	sdb := dbOpenTest(m.SourceDrive, m.SourceJdbc)
 	ddb := dbOpenTest(m.DestDrive, m.DestJdbc)
 	return &schemaTable{
-		//ignoreSchema:        m.Igschema,
-		ignoreTable: m.Igtable,
-		//schema:              m.Schema,
+		ignoreTable:         m.Igtable,
 		table:               m.Table,
 		sourceDrive:         m.SourceDrive,
 		destDrive:           m.DestDrive,
@@ -1018,5 +1113,7 @@ func SchemaTableInit(m *inputArg.ConfigParameter) *schemaTable {
 		destDB:              ddb,
 		lowerCaseTableNames: m.LowerCaseTableNames,
 		datefix:             m.Datafix,
+		sfile:               m.Sfile,
+		djdbc:               m.DestJdbc,
 	}
 }

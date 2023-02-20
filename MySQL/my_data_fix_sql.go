@@ -17,6 +17,9 @@ type MysqlDataAbnormalFixStruct struct {
 	Sqlwhere        string
 	IndexColumnType string
 	ColData         []map[string]string
+	IndexType       string
+	IndexColumn     []string
+	DatafixType     string
 }
 
 /*
@@ -24,38 +27,62 @@ type MysqlDataAbnormalFixStruct struct {
 */
 func (my *MysqlDataAbnormalFixStruct) FixInsertSqlExec(db *sql.DB, sourceDrive string, logThreadSeq int64) (string, error) {
 	//查询该表的列名和列信息
-	var insertSql string
-	var valuesNameSeq []string
-	colData := my.ColData
+	var (
+		insertSql     string
+		valuesNameSeq []string
+	)
+	vlog = fmt.Sprintf("(%d)  MySQL DB check table %s.%s starts to generate insert repair statement.", logThreadSeq, my.Schema, my.Table)
+	global.Wlog.Debug(vlog)
+	//tmprowSlic := strings.Split(strings.TrimSpace(my.RowData), "/*go actions columnData*/")
 	//处理mysql查询时间列时数据带时区问题  2021-01-23 10:16:29 +0800 CST
-	for i := range my.ColData {
+	for k, v := range strings.Split(my.RowData, "/*go actions columnData*/") {
 		var tmpcolumnName string
-		if !strings.Contains(my.RowData, "/*go actions columnData*/") {
-			insertSql = fmt.Sprintf("insert into `%s`.`%s` values(%s) ", my.Schema, my.Table, my.RowData)
-		}
-		tmprowSlic := strings.Split(my.RowData, "/*go actions columnData*/")
-		tmpcolumnName = fmt.Sprintf("'%s'", tmprowSlic[i])
-		if strings.ToUpper(colData[i]["dataType"]) == "DATETIME" {
-			tmpColumnSeq, _ := strconv.Atoi(fmt.Sprintf("%v", colData[i]["columnSeq"]))
-			tmprowSLIC := strings.ReplaceAll(tmprowSlic[tmpColumnSeq-1], "'", "")
-			tmpcolumnName = fmt.Sprintf("date_format('%s','%%Y-%%m-%%d %%H:%%i:%%s')", tmprowSLIC)
-		}
-		if strings.Contains(strings.ToUpper(colData[i]["dataType"]), "TIMESTAMP") {
-			tmpColumnSeq, _ := strconv.Atoi(fmt.Sprintf("%v", colData[i]["columnSeq"]))
-			tmprowSLIC := strings.ReplaceAll(tmprowSlic[tmpColumnSeq-1], "'", "")
-			tmpcolumnName = fmt.Sprintf("date_format('%s','%%Y-%%m-%%d %%H:%%i:%%s')", tmprowSLIC)
+		if strings.EqualFold(v, "<entry>") {
+			tmpcolumnName = fmt.Sprintf("''")
+		} else if strings.EqualFold(v, "<nil>") {
+			tmpcolumnName = fmt.Sprintf("NULL")
+		} else {
+			if strings.ToUpper(my.ColData[k]["dataType"]) == "DATETIME" {
+				tmpcolumnName = fmt.Sprintf("date_format('%s','%%Y-%%m-%%d %%H:%%i:%%s')", v)
+			} else if strings.Contains(strings.ToUpper(my.ColData[k]["dataType"]), "TIMESTAMP") {
+				tmpcolumnName = fmt.Sprintf("date_format('%s','%%Y-%%m-%%d %%H:%%i:%%s')", v)
+			} else {
+				tmpcolumnName = fmt.Sprintf("'%v'", v)
+			}
 		}
 		valuesNameSeq = append(valuesNameSeq, tmpcolumnName)
 	}
-	queryColumn := strings.Join(valuesNameSeq, ",")
-	if strings.Contains(queryColumn, "'<nil>'") {
-		insertSql = fmt.Sprintf("insert into `%s`.`%s` values(%s) ", my.Schema, my.Table, strings.ReplaceAll(queryColumn, "'<nil>'", "NULL"))
-	} else {
-		insertSql = fmt.Sprintf("insert into `%s`.`%s` values(%s) ", my.Schema, my.Table, queryColumn)
+	//for i := range my.ColData {
+	//	var tmpcolumnName string
+	//	if !strings.Contains(my.RowData, "/*go actions columnData*/") {
+	//		insertSql = fmt.Sprintf("insert into `%s`.`%s` values(%s) ", my.Schema, my.Table, my.RowData)
+	//	}
+	//	tmpcolumnName = fmt.Sprintf("'%s'", tmprowSlic[i])
+	//	if strings.ToUpper(my.ColData[i]["dataType"]) == "DATETIME" {
+	//		tmpColumnSeq, _ := strconv.Atoi(fmt.Sprintf("%v", my.ColData[i]["columnSeq"]))
+	//		tmprowSLIC := strings.ReplaceAll(tmprowSlic[tmpColumnSeq-1], "'", "")
+	//		tmpcolumnName = fmt.Sprintf("date_format('%s','%%Y-%%m-%%d %%H:%%i:%%s')", tmprowSLIC)
+	//	}
+	//	if strings.Contains(strings.ToUpper(my.ColData[i]["dataType"]), "TIMESTAMP") {
+	//		tmpColumnSeq, _ := strconv.Atoi(fmt.Sprintf("%v", my.ColData[i]["columnSeq"]))
+	//		tmprowSLIC := strings.ReplaceAll(tmprowSlic[tmpColumnSeq-1], "'", "")
+	//		tmpcolumnName = fmt.Sprintf("date_format('%s','%%Y-%%m-%%d %%H:%%i:%%s')", tmprowSLIC)
+	//	}
+	//	valuesNameSeq = append(valuesNameSeq, tmpcolumnName)
+	//}
+	if len(valuesNameSeq) > 0 {
+		queryColumn := strings.Join(valuesNameSeq, ",")
+		insertSql = fmt.Sprintf("insert into `%s`.`%s` values(%s) ;", my.Schema, my.Table, queryColumn)
 	}
-	if sourceDrive == "godror" && strings.Contains(insertSql, ",'',") {
-		insertSql = strings.ReplaceAll(insertSql, ",'',", ",null,")
-	}
+	//if strings.Contains(queryColumn, "'<nil>'") {
+	//	insertSql = fmt.Sprintf("insert into `%s`.`%s` values(%s) ;", my.Schema, my.Table, strings.ReplaceAll(queryColumn, "'<nil>'", "NULL"))
+	//} else {
+	//	insertSql = fmt.Sprintf("insert into `%s`.`%s` values(%s) ;", my.Schema, my.Table, queryColumn)
+	//}
+	//if sourceDrive == "godror" && strings.Contains(insertSql, ",'',") {
+	//	insertSql = strings.ReplaceAll(insertSql, ",'',", ",null,")
+	//}
+	//fmt.Println(insertSql)
 	return insertSql, nil
 }
 
@@ -63,12 +90,12 @@ func (my *MysqlDataAbnormalFixStruct) FixInsertSqlExec(db *sql.DB, sourceDrive s
   mysql 生成delete 修复语句
 */
 func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive string, logThreadSeq int64) (string, error) {
-	var deleteSql, deleteSqlWhere string
-	var indexColName string
-	var indexColSeq string
+	var (
+		deleteSql, deleteSqlWhere string
+		ad                        = make(map[string]int)
+		acc                       = make(map[string]string) //判断特殊数据类型
+	)
 	colData := my.ColData
-	var ad = make(map[string]int)
-	var acc = make(map[string]string) //判断特殊数据类型
 	for _, i := range colData {
 		cls, _ := strconv.Atoi(fmt.Sprintf("%s", i["columnSeq"]))
 		ad[i["columnName"]] = cls
@@ -76,129 +103,88 @@ func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive s
 			acc["double"] = i["columnName"]
 		}
 	}
-	alog := fmt.Sprintf("(%d)  MySQL DB check table %s.%s starts to generate delete repair statement.", logThreadSeq, my.Schema, my.Table)
-	global.Wlog.Info(alog)
-	//判断索引列是否是有唯一性
-	if strings.Contains(my.IndexColumnType, "mui") { //判断索引列没有唯一性
-		blog := fmt.Sprintf("(%d) MySQL DB check table %s.%s Generate delete repair statement based on common index.", logThreadSeq, my.Schema, my.Table)
-		global.Wlog.Info(blog)
-		var sqlwhereSlice []string
-		if strings.Contains(my.RowData, "/*go actions columnData*/") { //多行数据
-			for k, v := range strings.Split(my.RowData, "/*go actions columnData*/") {
-				for ki, vi := range ad {
-					if vi == k+1 {
-						if v == "<nil>" {
-							sqlwhereSlice = append(sqlwhereSlice, fmt.Sprintf(" %s is NULL", ki))
-						} else if ki == acc["double"] {
-							sqlwhereSlice = append(sqlwhereSlice, fmt.Sprintf("  concat(%s,'') = '%s'", ki, v))
-						} else {
-							sqlwhereSlice = append(sqlwhereSlice, fmt.Sprintf("  %s = '%s'", ki, v))
-						}
-					}
-				}
-			}
-		} else { //单行数据
-			for ki, _ := range ad {
-				if ki == "<nil>" {
-					sqlwhereSlice = append(sqlwhereSlice, fmt.Sprintf(" %s is NULL", ki))
-				} else if ki == acc["double"] {
-					sqlwhereSlice = append(sqlwhereSlice, fmt.Sprintf("  concat(%s,'') = '%s'", ki, my.RowData))
-				} else {
-					sqlwhereSlice = append(sqlwhereSlice, fmt.Sprintf("  %s = '%s'", ki, my.RowData))
-				}
-			}
+	vlog = fmt.Sprintf("(%d)  MySQL DB check table %s.%s starts to generate delete repair statement.", logThreadSeq, my.Schema, my.Table)
+	global.Wlog.Debug(vlog)
+	vlog = fmt.Sprintf("(%d) MySQL DB check table %s.%s Generate delete repair statement based on unique index.", logThreadSeq, my.Schema, my.Table)
+	global.Wlog.Debug(vlog)
+	if my.IndexType == "mui" {
+		var FB, AS []string
+		for _, i := range colData {
+			FB = append(FB, i["columnName"])
 		}
-		deleteSqlWhere = fmt.Sprintf(" %s ", strings.Join(sqlwhereSlice, " and "))
-	}
-	if !strings.Contains(my.IndexColumnType, "mui") { //索引列具有唯一性
-		clog := fmt.Sprintf("(%d) MySQL DB check table %s.%s Generate delete repair statement based on unique index.", logThreadSeq, my.Schema, my.Table)
-		global.Wlog.Info(clog)
-		if strings.Contains(my.Sqlwhere, " in (") {
-			aa := strings.ReplaceAll(my.Sqlwhere, "/* actions */ ", "")
-			indexColName = strings.Split(strings.Split(aa, " in (")[0], "where ")[1]
-			for i := range colData {
-				if strings.ToUpper(strings.TrimSpace(colData[i]["columnName"])) == strings.ToUpper(strings.TrimSpace(indexColName)) {
-					indexColSeq = colData[i]["columnSeq"]
-				}
-			}
-			if strings.Contains(my.RowData, "/*go actions columnData*/") {
-				for k, v := range strings.Split(my.RowData, "/*go actions columnData*/") {
-					if indexColSeq == strconv.Itoa(k+1) {
-						if v == "<nil>" {
-							deleteSqlWhere = fmt.Sprintf(" %s is NULL ", indexColName)
-						} else if indexColName == acc["double"] {
-							deleteSqlWhere = fmt.Sprintf("  concat(%s,'') = '%s'", indexColName, v)
-						} else {
-							deleteSqlWhere = fmt.Sprintf(" %s = '%s' ", indexColName, v)
-						}
-					}
-				}
-			}
-			//单列数据
-			if !strings.Contains(my.RowData, "/*go actions columnData*/") {
-				for ki, _ := range ad {
-					if my.RowData == "<nil>" {
-						deleteSqlWhere = fmt.Sprintf(" %s is NULL ", my.RowData)
-					} else if indexColName == acc["double"] {
-						deleteSqlWhere = fmt.Sprintf("  concat(%s,'') = '%s'", ki, my.RowData)
-					} else {
-						deleteSqlWhere = fmt.Sprintf(" %s = '%s' ", ki, my.RowData)
-					}
-				}
-			}
-		} else if strings.Contains(my.Sqlwhere, " or (") {
-			aa := strings.ReplaceAll(my.Sqlwhere, "/* actions */ ", "")
-			indexColName = strings.TrimSpace(strings.ReplaceAll(strings.Split(aa, " or (")[1], ")", ""))
-			var ac []string
-			var add = make(map[string]int)
-			if strings.Contains(indexColName, "and") {
-				ab := strings.Split(indexColName, "and")
-				for i := range ab {
-					if !strings.Contains(ab[i], "=") {
-						continue
-					}
-					ac = append(ac, strings.TrimSpace(strings.Split(ab[i], "=")[0]))
-				}
-			}
-			for i := range colData {
-				for v := range ac {
-					if strings.ToUpper(strings.TrimSpace(colData[i]["columnName"])) == strings.ToUpper(strings.TrimSpace(ac[v])) {
-						indexColSeq = colData[i]["columnSeq"]
-						add[ac[v]], _ = strconv.Atoi(indexColSeq)
-					}
-				}
-			}
-			var sqlwhereSlice []string
-			if strings.Contains(my.RowData, "/*go actions columnData*/") {
-				for k, v := range strings.Split(my.RowData, "/*go actions columnData*/") {
-					for ki, vi := range add {
-						if vi == k+1 {
-							if v == "<nil>" {
-								sqlwhereSlice = append(sqlwhereSlice, fmt.Sprintf(" %s is NULL", ki))
-							} else if indexColName == acc["double"] {
-								sqlwhereSlice = append(sqlwhereSlice, fmt.Sprintf("  concat(%s,'') = '%s'", ki, v))
-							} else {
-								sqlwhereSlice = append(sqlwhereSlice, fmt.Sprintf("  %s = '%s'", ki, v))
-							}
-						}
-					}
-				}
-				deleteSqlWhere = fmt.Sprintf(" %s ", strings.Join(sqlwhereSlice, " and "))
+		rowData := strings.ReplaceAll(my.RowData, "/*go actions columnData*/<nil>/*go actions columnData*/", "/*go actions columnData*/greatdbNull/*go actions columnData*/")
+		for k, v := range strings.Split(rowData, "/*go actions columnData*/") {
+			if v == "<nil>" {
+				AS = append(AS, fmt.Sprintf(" %s is null ", FB[k]))
+			} else if v == "<entry>" {
+				AS = append(AS, fmt.Sprintf(" %s = ''", FB[k]))
+			} else if v == acc["double"] {
+				AS = append(AS, fmt.Sprintf("  concat(%s,'') = '%s'", FB[k], v))
 			} else {
-				for ki, _ := range ad {
-					if my.RowData == "<nil>" {
-						deleteSqlWhere = fmt.Sprintf(" %s is NULL ", my.RowData)
-					} else if indexColName == acc["double"] {
-						deleteSqlWhere = fmt.Sprintf("  concat(%s,'') = '%s'", ki, my.RowData)
-					} else {
-						deleteSqlWhere = fmt.Sprintf(" %s = '%s' ", ki, my.RowData)
-					}
+				AS = append(AS, fmt.Sprintf(" %s = '%s' ", FB[k], v))
+			}
+		}
+		deleteSqlWhere = strings.Join(AS, " and ")
+	}
+	if my.IndexType == "pri" || my.IndexType == "uni" {
+		var FB []string
+		for _, i := range colData {
+			for _, v := range my.IndexColumn {
+				if strings.EqualFold(v, i["columnName"]) {
+					FB = append(FB, i["columnSeq"])
 				}
 			}
-		} else {
-			deleteSqlWhere = my.Sqlwhere
+		}
+		var AS []string
+		for k, v := range strings.Split(my.RowData, "/*go actions columnData*/") {
+			for l, I := range FB {
+				if I == strconv.Itoa(k+1) {
+					if v == "<nil>" {
+						AS = append(AS, fmt.Sprintf(" %s is null ", my.IndexColumn[l]))
+					} else if v == "<entry>" {
+						AS = append(AS, fmt.Sprintf(" %s = '' ", my.IndexColumn[l]))
+					} else if v == acc["double"] {
+						AS = append(AS, fmt.Sprintf("  concat(%s,'') = '%s'", my.IndexColumn[l], v))
+					} else {
+						AS = append(AS, fmt.Sprintf(" %s = '%s' ", my.IndexColumn[l], v))
+					}
+				}
+				deleteSqlWhere = strings.Join(AS, " and ")
+			}
 		}
 	}
-	deleteSql = fmt.Sprintf("delete from `%s`.`%s` where %s;", my.Schema, my.Table, deleteSqlWhere)
+	if len(deleteSqlWhere) > 0 {
+		deleteSql = fmt.Sprintf("delete from `%s`.`%s` where %s;", my.Schema, my.Table, deleteSqlWhere)
+	}
 	return deleteSql, nil
+}
+func (my *MysqlDataAbnormalFixStruct) FixAlterSqlExec(e, f []string, si map[string][]string, sourceDrive string, logThreadSeq int64) ([]string, error) {
+	var sqlS []string
+	for _, v := range e {
+		var c []string
+		for _, vi := range si[v] {
+			c = append(c, strings.TrimSpace(strings.Split(vi, "/*actions Column Type*/")[0]))
+		}
+		switch my.IndexType {
+		case "pri":
+			strsql = fmt.Sprintf("alter table %s.%s add primary key(`%s`);", my.Schema, my.Table, strings.Join(c, "`,`"))
+		case "uni":
+			strsql = fmt.Sprintf("alter table %s.%s add unique index %s(`%s`);", my.Schema, my.Table, v, strings.Join(c, "`,`"))
+		case "mul":
+			strsql = fmt.Sprintf("alter table %s.%s add index %s(`%s`);", my.Schema, my.Table, v, strings.Join(c, "`,`"))
+		}
+		sqlS = append(sqlS, strsql)
+	}
+	for _, v := range f {
+		switch my.IndexType {
+		case "pri":
+			strsql = fmt.Sprintf("alter table %s.%s drop primary key;", my.Schema, my.Table)
+		case "uni":
+			strsql = fmt.Sprintf("alter table %s.%s drop index %s;", my.Schema, my.Table, v)
+		case "mul":
+			strsql = fmt.Sprintf("alter table %s.%s drop index %s;", my.Schema, my.Table, v)
+		}
+		sqlS = append(sqlS, strsql)
+	}
+	return sqlS, nil
 }

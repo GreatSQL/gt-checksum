@@ -232,3 +232,22 @@ CREATE TRIGGER tri_test
     INSERT INTO test2 SET a2=NEW.a1;
     END$
     DELIMITER ;
+
+/*
+    索引
+ */
+create table IndexT(
+`id` int(11) NOT NULL,
+`tenantry_id` bigint(20) NOT NULL COMMENT '商品id',
+`code` varchar(64) NOT NULL COMMENT '商品编码（货号）',
+`goods_name` varchar(50) NOT NULL COMMENT '商品名称',
+`props_name` varchar(100) NOT NULL COMMENT '商品名称描述字符串，格式：p1:v1;p2:v2，例如：品牌:盈讯;型号:F908',
+`price` decimal(10,2) NOT NULL COMMENT '商品定价',
+`price_url` varchar(1000) NOT NULL COMMENT '商品主图片地址',
+`create_time` datetime NOT NULL COMMENT '商品创建时间',
+`modify_time` datetime DEFAULT NULL COMMENT '商品最近修改时间',
+`deleted` tinyint(1) NOT NULL DEFAULT '0' COMMENT '标记逻辑删除',
+PRIMARY KEY (`id`),
+KEY `idx_2` (`tenantry_id`,`code`),
+KEY `idx_3` (`code`,`tenantry_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COMMENT='商品信息表';

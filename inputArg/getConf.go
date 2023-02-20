@@ -103,9 +103,6 @@ func (rc *readConf) getConfig(configName string, q *ConfigParameter) {
 	if _, err2 := sr.GetKey("datafix"); err2 != nil {
 		rc.getErr("Failed to get datafix parameters", err2)
 	}
-	if _, err2 := sr.GetKey("fixFileName"); err2 != nil {
-		rc.getErr("Failed to get fixFileName parameters", err2)
-	}
 
 	//获取参数
 	//Source Destination connection 获取jdbc连接信息
@@ -127,12 +124,7 @@ func (rc *readConf) getConfig(configName string, q *ConfigParameter) {
 	//校验库表设置
 	q.LowerCaseTableNames = do.Key("lowerCaseTableNames").In("no", []string{"yes", "no"})
 	q.CheckNoIndexTable = do.Key("checkNoIndexTable").In("no", []string{"yes", "no"})
-	//q.Schema = strings.TrimSpace(do.Key("databases").String())
 	q.Table = strings.TrimSpace(do.Key("tables").String())
-	//q.Igschema = strings.TrimSpace(do.Key("ignore-databases").String())
-	//if q.Igschema == "" {
-	//	q.Igschema = "nil"
-	//}
 	q.Igtable = strings.TrimSpace(do.Key("ignore-tables").String())
 	if q.Igtable == "" {
 		q.Igtable = "nil"
@@ -162,6 +154,14 @@ func (rc *readConf) getConfig(configName string, q *ConfigParameter) {
 	if q.Ratio, err1 = cr.Key("ratio").Int(); err1 != nil {
 		rc.getErr("Failed to convert Ratio parameter to int", err1)
 	}
-	q.FixFileName = sr.Key("fixFileName").String()
 	q.Datafix = sr.Key("datafix").In("file", []string{"file", "table"})
+	if q.Datafix == "file" {
+		if _, err2 := sr.GetKey("fixFileName"); err2 != nil {
+			rc.getErr("Failed to get fixFileName parameters", err2)
+		}
+		q.FixFileName = sr.Key("fixFileName").String()
+	}
+	if q.FixTrxNum, err1 = sr.Key("fixTrxNum").Int(); err1 != nil {
+		rc.getErr("Failed to convert fixTrxNum parameter to int", err1)
+	}
 }

@@ -15,15 +15,19 @@ type DataAbnormalFixStruct struct {
 	Sqlwhere        string
 	IndexColumnType string
 	ColData         []map[string]string
+	IndexType       string
+	IndexColumn     []string
+	DatafixType     string
 }
 type DataAbnormalFixInterface interface {
 	FixInsertSqlExec(db *sql.DB, sourceDrive string, logThreadSeq int64) (string, error)
 	FixDeleteSqlExec(db *sql.DB, sourceDrive string, logThreadSeq int64) (string, error)
+	FixAlterSqlExec(e, f []string, si map[string][]string, sourceDrive string, logThreadSeq int64) ([]string, error)
 }
 
 func (dafs DataAbnormalFixStruct) DataAbnormalFix() DataAbnormalFixInterface {
 	var tqaci DataAbnormalFixInterface
-	if dafs.SourceDevice == "mysql" {
+	if dafs.DestDevice == "mysql" {
 		tqaci = &mysql.MysqlDataAbnormalFixStruct{
 			Schema:          dafs.Schema,
 			Table:           dafs.Table,
@@ -32,9 +36,11 @@ func (dafs DataAbnormalFixStruct) DataAbnormalFix() DataAbnormalFixInterface {
 			SourceDevice:    dafs.SourceDevice,
 			IndexColumnType: dafs.IndexColumnType,
 			ColData:         dafs.ColData,
+			IndexType:       dafs.IndexType,
+			IndexColumn:     dafs.IndexColumn,
 		}
 	}
-	if dafs.SourceDevice == "godror" {
+	if dafs.DestDevice == "godror" {
 		tqaci = &oracle.OracleDataAbnormalFixStruct{
 			Schema:          dafs.Schema,
 			Table:           dafs.Table,
@@ -43,10 +49,10 @@ func (dafs DataAbnormalFixStruct) DataAbnormalFix() DataAbnormalFixInterface {
 			SourceDevice:    dafs.SourceDevice,
 			IndexColumnType: dafs.IndexColumnType,
 			ColData:         dafs.ColData,
+			IndexType:       dafs.IndexType,
+			IndexColumn:     dafs.IndexColumn,
+			DatafixType:     dafs.DatafixType,
 		}
 	}
 	return tqaci
-}
-func DataFix() *DataAbnormalFixStruct {
-	return &DataAbnormalFixStruct{}
 }

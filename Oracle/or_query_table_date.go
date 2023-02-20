@@ -3,63 +3,54 @@ package oracle
 import (
 	"database/sql"
 	"fmt"
+	"greatdbCheck/dataDispos"
 	"greatdbCheck/global"
 	"strconv"
 	"strings"
 )
 
-type QueryTableDate struct {
-	Schema                         string
-	Table                          string
-	TmpTableFileName               string
-	ColumnName                     []string
-	ChanrowCount                   int
-	TableColumn                    []map[string]string
-	Sqlwhere                       string
-	ColData                        []map[string]string
-	SelectColumnString, LengthTrim string
-	ColumnLengthAs                 []string
-	BeginSeq                       string
-	RowDataCh                      int64
-}
+/*
+	查询Oracle库下指定表的索引统计信息
+*/
 
-//查询oracle 临时表
-type IndexColumn struct {
-	Schema           string
-	Table            string
-	TmpTableFileName string
-	ColumnName       []string
-	ChanrowCount     int
-	TableColumn      []map[string]string
-	Sqlwhere         string
-	ColData          []map[string]interface{}
-}
-
-func (or QueryTableDate) QueryTableIndexColumnInfo(db *sql.DB, logThreadSeq int64) ([]map[string]interface{}, error) {
-	strsql := fmt.Sprintf("select c.COLUMN_NAME as \"columnName\",decode(c.DATA_TYPE,'DATE',c.data_type,c.DATA_TYPE || '(' || c.data_LENGTH || ')') as \"columnType\", decode(co.constraint_type, 'P','1','0') as \"columnKey\",i.UNIQUENESS as \"nonUnique\", ic.INDEX_NAME as \"indexName\", ic.COLUMN_POSITION as \"IndexSeq\", c.COLUMN_ID as \"columnSeq\" from all_tab_cols c inner join all_ind_columns ic on c.TABLE_NAME = ic.TABLE_NAME and c.OWNER = ic.INDEX_OWNER and c.COLUMN_NAME = ic.COLUMN_NAME inner join all_indexes i on ic.INDEX_OWNER = i.OWNER and ic.INDEX_NAME = i.INDEX_NAME and ic.TABLE_NAME = i.TABLE_NAME left join all_constraints co on co.owner = c.owner and co.table_name = c.table_name and co.index_name = i.index_name where c.OWNER = '%s' and c.TABLE_NAME = '%s' ORDER BY I.INDEX_NAME, ic.COLUMN_POSITION", strings.ToUpper(or.Schema), or.Table)
-	slog := fmt.Sprintf("(%d) oracle DB query table index column info exec sql is {%s}", logThreadSeq, strsql)
-	global.Wlog.Info(slog)
-	sqlRows, err := db.Query(strsql)
-	if err != nil {
-		elog := fmt.Sprintf("(%d) oracle DB exec sql fail. sql message is {%s} Error info is {%s}", logThreadSeq, strsql, err)
-		global.Wlog.Error(elog)
+func (or *QueryTable) QueryTableIndexColumnInfo(db *sql.DB, logThreadSeq int64) ([]map[string]interface{}, error) {
+	var (
+		Event = "Q_Index_Statistics"
+	)
+	strsql = fmt.Sprintf("select c.COLUMN_NAME as \"columnName\",decode(c.DATA_TYPE,'DATE',c.data_type,c.DATA_TYPE || '(' || c.data_LENGTH || ')') as \"columnType\", decode(co.constraint_type, 'P','1','0') as \"columnKey\",i.UNIQUENESS as \"nonUnique\", ic.INDEX_NAME as \"indexName\", ic.COLUMN_POSITION as \"IndexSeq\", c.COLUMN_ID as \"columnSeq\" from all_tab_cols c inner join all_ind_columns ic on c.TABLE_NAME = ic.TABLE_NAME and c.OWNER = ic.INDEX_OWNER and c.COLUMN_NAME = ic.COLUMN_NAME inner join all_indexes i on ic.INDEX_OWNER = i.OWNER and ic.INDEX_NAME = i.INDEX_NAME and ic.TABLE_NAME = i.TABLE_NAME left join all_constraints co on co.owner = c.owner and co.table_name = c.table_name and co.index_name = i.index_name where c.OWNER = '%s' and c.TABLE_NAME = '%s' ORDER BY I.INDEX_NAME, ic.COLUMN_POSITION", strings.ToUpper(or.Schema), or.Table)
+	vlog = fmt.Sprintf("(%d) [%s] Generate a sql statement to query the index statistics of table %s.%s under the %s database.sql messige is {%s}", logThreadSeq, Event, or.Schema, or.Table, DBType, strsql)
+	global.Wlog.Debug(vlog)
+	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
+	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
+		return nil, err
 	}
-	clog := fmt.Sprintf("(%d) start dispos oracle DB query table %s.%s index column data.", logThreadSeq, or.Schema, or.Table)
-	global.Wlog.Info(clog)
-	tableData, err := rowDataDisposMap(sqlRows, "IndexColumn", logThreadSeq)
-	zlog := fmt.Sprintf("(%d) Oracle db query table index column data completion.", logThreadSeq)
-	global.Wlog.Info(zlog)
+	tableData, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
+	if err != nil {
+		return nil, err
+	}
+	vlog = fmt.Sprintf("(%d) [%s] The index statistics query of table %s.%s under the %s database is completed. index statistics is {%v}", logThreadSeq, Event, or.Schema, or.Table, DBType, tableData)
+	global.Wlog.Debug(vlog)
+	defer dispos.SqlRows.Close()
 	return tableData, err
 }
-func (or QueryTableDate) IndexDisposF(queryData []map[string]interface{}, logThreadSeq int64) ([]string, map[string][]string, map[string][]string) {
-	nultiseriateIndexColumnMap := make(map[string][]string)
-	multiseriateIndexColumnMap := make(map[string][]string)
-	var PriIndexCol, uniIndexCol, mulIndexCol []string
-	var indexName string
-	alog := fmt.Sprintf("(%d) Start to classify different index columns of Oracle db table, to dispos it...", logThreadSeq)
-	global.Wlog.Info(alog)
+
+/*
+	根据Oracle库下指定表的索引信息，筛选主键索引、唯一索引、普通索引
+*/
+func (or *QueryTable) IndexDisposF(queryData []map[string]interface{}, logThreadSeq int64) (map[string][]string, map[string][]string, map[string][]string) {
+	var (
+		nultiseriateIndexColumnMap            = make(map[string][]string)
+		multiseriateIndexColumnMap            = make(map[string][]string)
+		priIndexColumnMap                     = make(map[string][]string)
+		PriIndexCol, uniIndexCol, mulIndexCol []string
+		indexName                             string
+		currIndexName                         string
+		Event                                 = "E_Index_Filter"
+	)
+	vlog = fmt.Sprintf("(%d) [%s] Start to filter the primary key index, unique index, and common index based on the index information of the specified table %s.%s under the %s library", logThreadSeq, Event, or.Schema, or.Table, DBType)
+	global.Wlog.Debug(vlog)
 	for _, v := range queryData {
-		var currIndexName = strings.ToUpper(v["indexName"].(string))
+		currIndexName = strings.ToUpper(v["indexName"].(string))
 		//判断唯一索引（包含主键索引和普通索引）
 		if v["nonUnique"].(string) == "UNIQUE" {
 			if v["columnKey"].(string) == "1" {
@@ -67,6 +58,7 @@ func (or QueryTableDate) IndexDisposF(queryData []map[string]interface{}, logThr
 					indexName = currIndexName
 				}
 				PriIndexCol = append(PriIndexCol, fmt.Sprintf("%s", v["columnName"]))
+				priIndexColumnMap["pri"] = PriIndexCol
 			} else {
 				if currIndexName != indexName {
 					indexName = currIndexName
@@ -86,345 +78,236 @@ func (or QueryTableDate) IndexDisposF(queryData []map[string]interface{}, logThr
 			}
 		}
 	}
-	clog := fmt.Sprintf("(%d) Complete the classification of different index columns of Oracle db table. primary key message is {%s} num [%d] unique key message is {%s} num [%d] nounique key message is {%s} num [%d]", logThreadSeq, PriIndexCol, len(PriIndexCol), nultiseriateIndexColumnMap, len(nultiseriateIndexColumnMap), multiseriateIndexColumnMap, len(multiseriateIndexColumnMap))
-	global.Wlog.Info(clog)
-	return PriIndexCol, nultiseriateIndexColumnMap, multiseriateIndexColumnMap
+	vlog = fmt.Sprintf("(%d) [%s] The index information screening of the specified table %s.%s under the %s library is completed", logThreadSeq, Event, or.Schema, or.Table, DBType)
+	global.Wlog.Debug(vlog)
+	return priIndexColumnMap, nultiseriateIndexColumnMap, multiseriateIndexColumnMap
 }
 
-func (or *QueryTableDate) TmpTableIndexColumnDataLength(logThreadSeq int64) (string, []string, string) {
+/*
+	查询表，输出索引列数据的字符串长度，判断是否有null或空
+*/
+func (or *QueryTable) TmpTableIndexColumnSelectDispos(logThreadSeq int64) map[string]string {
 	//根据索引列的多少，生成select 列条件，并生成列长度，为判断列是否为null或为空做判断
 	var (
-		selectColumnString, lengthTrim string
-		columnLengthAs                 []string
-		columnName                     = or.ColumnName
+		columnSelect = make(map[string]string)
+		columnName   = or.ColumnName
+		Event        = "D_Index_Length"
 	)
-	alog := fmt.Sprintf("(%d) Oracle DB starts to handle index class length.", logThreadSeq)
-	global.Wlog.Info(alog)
+	vlog = fmt.Sprintf("(%d) [%s] Start to query the length of the query index column in table %s.%s in the specified %s database.", logThreadSeq, Event, or.Schema, or.Table, DBType)
+	global.Wlog.Debug(vlog)
 	//根据索引列的多少，生成select 列条件，并生成列长度，为判断列是否为null或为空做判断
 	if len(columnName) == 1 {
-		selectColumnString = strings.Join(columnName, "")
-		lengthTrim = fmt.Sprintf("NVL(LENGTH(trim(%s)),0) as %s_LENGTH", strings.Join(or.ColumnName, ""), strings.Join(columnName, ""))
-		columnLengthAs = append(columnLengthAs, fmt.Sprintf("%s_LENGTH", strings.Join(columnName, "")))
+		columnSelect["selectColumnName"] = strings.Join(columnName, "")
+		columnSelect["selectColumnLength"] = fmt.Sprintf("LENGTH(trim(%s)) as %s_length", strings.Join(columnName, ""), strings.Join(columnName, ""))
+		columnSelect["selectColumnLengthSlice"] = fmt.Sprintf("%s_length", strings.Join(columnName, ""))
+		columnSelect["selectColumnNull"] = fmt.Sprintf("%s is null ", strings.Join(columnName, ""))
+		columnSelect["selectColumnEmpty"] = fmt.Sprintf("%s = '' ", strings.Join(columnName, ""))
+		columnSelect["selectColumnData"] = fmt.Sprintf("%s != '' and %s is not null ", strings.Join(columnName, ""), strings.Join(columnName, ""))
 	} else if len(columnName) > 1 {
-		selectColumnString = strings.Join(columnName, ",")
-		var aa []string
+		columnSelect["selectColumnName"] = strings.Join(columnName, "/*column*/")
+		var aa, bb, cc, dd []string
 		for i := range columnName {
-			aa = append(aa, fmt.Sprintf("NVL(LENGTH(trim(%s)),0) as %s_LENGTH", columnName[i], columnName[i]))
-			columnLengthAs = append(columnLengthAs, fmt.Sprintf("%s_LENGTH", columnName[i]))
+			aa = append(aa, fmt.Sprintf("LENGTH(trim(%s)) as %s_length", columnName[i], columnName[i]))
+			bb = append(bb, fmt.Sprintf("%s_length", columnName[i]))
+			cc = append(cc, fmt.Sprintf("%s is null ", columnName[i]))
+			dd = append(dd, fmt.Sprintf("%s = '' ", columnName[i]))
 		}
-		lengthTrim = strings.Join(aa, ",")
+		columnSelect["selectColumnLength"] = strings.Join(aa, "/*column*/")
+		columnSelect["selectColumnLengthSlice"] = strings.Join(bb, "/*column*/")
+		columnSelect["selectColumnNull"] = strings.Join(cc, "/*column*/")
+		columnSelect["selectColumnEmpty"] = strings.Join(dd, "/*column*/")
 	}
-	return selectColumnString, columnLengthAs, lengthTrim
+	vlog = fmt.Sprintf("(%d) [%s] The length of the query index column of table %s.%s in the %s database is completed.", logThreadSeq, Event, or.Schema, or.Table, DBType)
+	global.Wlog.Debug(vlog)
+	return columnSelect
 }
-func (or *QueryTableDate) TmpTableRowsCount(db *sql.DB, logThreadSeq int64) (int, error) {
+
+/*
+  Oracle 查询有索引表的总行数
+*/
+func (or *QueryTable) TmpTableIndexColumnRowsCount(db *sql.DB, logThreadSeq int64) (uint64, error) {
 	var (
-		tmpTableCount int
+		tmpTableCount uint64
+		Event         = "Q_Index_Table_Count"
 	)
-	alog := fmt.Sprintf("(%d) Start to query the total number of rows in Oracle DB current check table %s.%s ...", logThreadSeq, or.Schema, or.Table)
-	global.Wlog.Info(alog)
-	sqlstr := fmt.Sprintf("select count(*) from \"%s\".\"%s\"", strings.ToUpper(or.Schema), or.Table)
-	db.QueryRow(sqlstr).Scan(&tmpTableCount)
-	blog := fmt.Sprintf("(%d) The total number of rows in Oracle DB database table %s.%s is [%d].", logThreadSeq, or.Schema, or.Table, tmpTableCount)
-	global.Wlog.Info(blog)
+	vlog = fmt.Sprintf("(%d) [%s] Start to query the total number of rows in the following table %s.%s of the %s database.", logThreadSeq, Event, or.Schema, or.Table, DBType)
+	global.Wlog.Debug(vlog)
+	strsql = fmt.Sprintf("select count(1) as \"sum\" from \"%s\".\"%s\"", or.Schema, or.Table)
+	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
+	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
+		return 0, err
+	}
+	if tableData, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{}); err != nil {
+		return 0, err
+	} else {
+		for _, i := range tableData {
+			d, _ := strconv.ParseUint(fmt.Sprintf("%s", i["sum"]), 10, 64)
+			tmpTableCount += d
+		}
+	}
+	vlog = fmt.Sprintf("(%d) [%s] The query of the total number of rows in the following table %s.%s of the %s database is completed.", logThreadSeq, Event, or.Schema, or.Table, DBType)
+	global.Wlog.Debug(vlog)
+	defer dispos.SqlRows.Close()
 	return tmpTableCount, nil
 }
-func (or *QueryTableDate) TmpTableIndexColumnDataDispos(db *sql.DB, logThreadSeq int64) ([]string, error) {
+
+/*
+	Oracle库下查询表的索引列数据，并进行去重排序
+*/
+func (or *QueryTable) TmpTableColumnGroupDataDispos(db *sql.DB, where string, columnName string, logThreadSeq int64) (chan map[string]interface{}, error) {
 	var (
-		strsql    string
-		err       error
-		rowDisops = func(rows *sql.Rows, threadId int64) []string {
-			var tableRowData []string
-			column, err1 := rows.Columns()
-			if err1 != nil {
-				clog := fmt.Sprintf("(%d) Oracle DB failed to get column information. sql message is {%s},Error info is {%s}.", logThreadSeq, strsql, err)
-				global.Wlog.Error(clog)
-			}
-			valuePtrs := make([]interface{}, len(column))
-			values := make([]interface{}, len(column))
-			for rows.Next() {
-				var tmpStringInputSlice []string
-				for i := 0; i < len(column); i++ {
-					valuePtrs[i] = &values[i]
-				}
-				rows.Scan(valuePtrs...)
-				entry := make(map[string]interface{})
-				for i, col := range column {
-					var v interface{}
-					val := values[i]
-					b, ok := val.([]byte)
-					if ok {
-						v = string(b)
-					} else {
-						v = val
-					}
-					entry[col] = v
-				}
-				for _, aa1 := range or.ColumnLengthAs {
-					//对null做处理
-					var tmpadf interface{}
-					if fmt.Sprintf("%v", entry[strings.ToUpper(aa1)]) == "0" {
-						tmpadf = "greatdbCheckNULL"
-						entry[strings.ReplaceAll(aa1, "_LENGTH", "")] = tmpadf
-					}
-				}
-				for _, aa1 := range or.ColumnName {
-					if len(aa1) > 0 {
-						tmpStringInputSlice = append(tmpStringInputSlice, fmt.Sprintf("%v", entry[strings.ToUpper(aa1)]))
-					}
-				}
-				tableRowData = append(tableRowData, strings.Join(tmpStringInputSlice, "/*,*/"))
-			}
-			return tableRowData
-		}
+		Event      = "Q_Index_ColumnData"
+		whereExist string
 	)
-	alog := fmt.Sprintf("(%d) Oracle DB check table %s.%s start query processing index column data", logThreadSeq, or.Schema, or.Table)
-	global.Wlog.Info(alog)
-
-	bensql, _ := strconv.Atoi(strings.Split(or.BeginSeq, ",")[0])
-	//countsql, _ := strconv.Atoi(strings.Split(beginSeq, ",")[1])
-	strsql = fmt.Sprintf("SELECT * FROM ( SELECT A.*, ROWNUM RN FROM (SELECT %s,%s FROM \"%s\".\"%s\" group by %s order by %s) A WHERE ROWNUM <= %d) WHERE RN > %d", or.SelectColumnString, or.LengthTrim, strings.ToUpper(or.Schema), or.Table, or.SelectColumnString, or.SelectColumnString, int64(bensql)+or.RowDataCh, bensql)
-	blog := fmt.Sprintf("(%d) Oracle DB query table index column data info exec sql is {%s}", logThreadSeq, strsql)
-	global.Wlog.Info(blog)
-
-	rows, err := db.Query(strsql)
-	if err != nil {
-		clog := fmt.Sprintf("(%d) Oracle DB exec sql fail. sql message is {%s},Error info is {%s}.", logThreadSeq, strsql, err)
-		global.Wlog.Error(clog)
+	vlog = fmt.Sprintf("(%d) [%s] Start to query the index column data of the following table %s.%s in the %s database and de-reorder the data.", logThreadSeq, Event, or.Schema, or.Table, DBType)
+	global.Wlog.Debug(vlog)
+	whereExist = where
+	if where != "" {
+		whereExist = fmt.Sprintf("where %s ", where)
 	}
-	if rows == nil {
-		return nil, nil
+	strsql = fmt.Sprintf("select %s as \"columnName\",count(1) as \"count\" from \"%s\".\"%s\" %s group by %s order by %s", columnName, or.Schema, or.Table, whereExist, columnName, columnName)
+	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
+	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
+		return nil, err
 	}
-	tableRowData := rowDisops(rows, logThreadSeq)
-
-	rows.Close()
-	//if int64(bensql)+rowDataCh >= int64(countsql) {
-	//	strsql = fmt.Sprintf("SELECT %s,%s FROM \"%s\".\"%s\" where code is null group by %s ", selectColumnString, lengthTrim, strings.ToUpper(or.Schema), or.Table, selectColumnString)
-	//	rows, err = db.Query(strsql)
-	//	if err != nil {
-	//		global.Wlog.Error("[check table index column data] (", threadId, ") exec oracle sql fail. sql info: ", strsql, "error info: ", err)
-	//	}
-	//	if rows == nil {
-	//		return nil, nil
-	//	}
-	//	tableRowData1 := rowDisops(rows)
-	//	for _, i := range tableRowData1 {
-	//		tableRowData = append(tableRowData, i)
-	//	}
-	//}
-	zlog := fmt.Sprintf("(%d) Oracle DB check table %s.%s query index column data completed", logThreadSeq, or.Schema, or.Table)
-	global.Wlog.Info(zlog)
-	return tableRowData, nil
+	C := dispos.DataChanDispos()
+	vlog = fmt.Sprintf("(%d) [%s] The index column data query of the following table %s.%s in the %s database is completed.", logThreadSeq, Event, or.Schema, or.Table, DBType)
+	global.Wlog.Debug(vlog)
+	return C, nil
 }
 
-//处理oracle的null值，由于oracle的null值不会存储在索引上，需要单独处理
-//func (or *QueryTableDate) TmpTableIndexColumnNullDispos(db *sql.DB, threadId int, selectColumnString, lengthTrim string, columnLengthAs, columnName []string, beginSeq, rowDataCh int64) ([]string, error) {
-//	var (
-//		strsql    string
-//		err       error
-//		rowDisops = func(rows *sql.Rows) []string {
-//			var tableRowData []string
-//			column, err1 := rows.Columns()
-//			if err1 != nil {
-//				global.Wlog.Error("[check table index column data] (", threadId, ") exec oracle sql fail. sql info: ", strsql, "error info: ", err1)
-//			}
-//			valuePtrs := make([]interface{}, len(column))
-//			values := make([]interface{}, len(column))
-//			for rows.Next() {
-//				var tmpStringInputSlice []string
-//				for i := 0; i < len(column); i++ {
-//					valuePtrs[i] = &values[i]
-//				}
-//				rows.Scan(valuePtrs...)
-//				entry := make(map[string]interface{})
-//				for i, col := range column {
-//					var v interface{}
-//					val := values[i]
-//					b, ok := val.([]byte)
-//					if ok {
-//						v = string(b)
-//					} else {
-//						v = val
-//					}
-//					entry[col] = v
-//				}
-//				for _, aa1 := range columnLengthAs {
-//					//对null做处理
-//					var tmpadf interface{}
-//					if fmt.Sprintf("%v", entry[strings.ToUpper(aa1)]) == "0" {
-//						tmpadf = "greatdbCheckNULL"
-//						entry[strings.ReplaceAll(aa1, "_length", "")] = tmpadf
-//					}
-//				}
-//				for _, aa1 := range columnName {
-//					if len(aa1) > 0 {
-//						tmpStringInputSlice = append(tmpStringInputSlice, fmt.Sprintf("%v", entry[strings.ToUpper(aa1)]))
-//					}
-//				}
-//				tableRowData = append(tableRowData, strings.Join(tmpStringInputSlice, "/*,*/"))
-//			}
-//			return tableRowData
-//		}
-//	)
-//	strsql = fmt.Sprintf("SELECT %s,NVL(LENGTH(trim(%s)), 0) as CODE_LENGTH FROM \"%s\".\"%s\" where code is null group by %s ", selectColumnString, lengthTrim, strings.ToUpper(or.Schema), or.Table, selectColumnString)
-//	slog := fmt.Sprintf("(%d) oracle DB query table metadata info exec sql is {%s}", or.ThreadId, strsql)
-//	global.Wlog.Info(slog)
-//	rows, err := db.Query(strsql)
-//	if err != nil {
-//		global.Wlog.Error("[check table index column data] (", threadId, ") exec oracle sql fail. sql info: ", strsql, "error info: ", err)
-//	}
-//
-//	if rows == nil {
-//		return nil, nil
-//	}
-//	tableRowData := rowDisops(rows)
-//	return tableRowData, nil
-//}
-
-//func (or *QueryTableDate) QueryTableAllColumnSeq(db *sql.DB) ([]map[string]interface{}, error) {
-//	//sqlStr := fmt.Sprintf("select COLUMN_NAME as columnName ,COLUMN_TYPE as dataType,ORDINAL_POSITION as columnSeq from information_schema.columns where table_schema= '%s' and table_name='%s' order by ORDINAL_POSITION", or.Schema, or.Table)
-//	sqlStr := fmt.Sprintf("SELECT column_name as \"columnName\",data_type as \"dataType\" FROM all_tab_cols c where c.OWNER = '%s' and c.TABLE_NAME = '%s' order by column_id asc", or.Schema, or.Table)
-//	slog := fmt.Sprintf("(%d) oracle DB query table metadata info exec sql is {%s}", or.ThreadId, sqlStr)
-//	global.Wlog.Info(slog)
-//
-//	sqlRows, err := db.Query(sqlStr)
-//	if err != nil {
-//		global.Wlog.Error("[check table index column data] exec oracle sql fail. sql info: ", sqlStr, "Error Info: ", err)
-//		return nil, err
-//	}
-//	tableData, err := rowDataDisposMap(sqlRows, "IndexColumn", 15)
-//	return tableData, err
-//}
+/*
+	MySQL 查询表的统计信息中行数
+*/
+func (or *QueryTable) TableRows(db *sql.DB, logThreadSeq int64) (uint64, error) {
+	var (
+		Event = "Q_I_S_tableRows"
+	)
+	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
+	vlog = fmt.Sprintf("(%d) [%s] Start querying the statistical information of table %s.%s in the %s database and get the number of rows in the table", logThreadSeq, Event, or.Schema, or.Table, DBType)
+	global.Wlog.Debug(vlog)
+	strsql = fmt.Sprintf("exec dbms_stats.gather_table_stats('%s','%s');", or.Schema, or.Table)
+	dispos.DBSQLforExec(strsql)
+	strsql = fmt.Sprintf("select num_rows as \"tableRows\" from dba_tables where owner='%s' and table_name='%s'", or.Schema, or.Table)
+	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
+		return 0, err
+	}
+	tableData, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
+	if err != nil {
+		return 0, err
+	}
+	defer dispos.SqlRows.Close()
+	vlog = fmt.Sprintf("(%d) [%s] The number of rows in table %s.%s in the %s database has been obtained.", logThreadSeq, Event, or.Schema, or.Table, DBType)
+	global.Wlog.Debug(vlog)
+	return strconv.ParseUint(fmt.Sprintf("%s", tableData[0]["tableRows"]), 10, 64)
+}
 
 //处理无索引表查询select的order by列，防止原目标端查询的段不一致情况
-func (or *QueryTableDate) NoIndexOrderBySingerColumn(orderCol []map[string]string) string {
+func (or *QueryTable) NoIndexOrderBySingerColumn(orderCol []map[string]string) []string {
 	//处理order by column
+	var selectC []string
 	for _, v := range orderCol {
-		if strings.HasPrefix(v["dataType"], "NUMBER") {
-			return v["columnName"]
-		}
-		if strings.HasPrefix(v["dataType"], "DATE") {
-			return v["columnName"]
-		}
-		if strings.HasPrefix(v["dataType"], "CHAR") {
-			return v["columnName"]
-		}
-		if strings.HasPrefix(v["dataType"], "VARCHAR2") {
-			return v["columnName"]
-		}
+		selectC = append(selectC, v["columnName"])
+		//if strings.HasPrefix(v["dataType"], "NUMBER") {
+		//	return v["columnName"]
+		//}
+		//if strings.HasPrefix(v["dataType"], "DATE") {
+		//	return v["columnName"]
+		//}
+		//if strings.HasPrefix(v["dataType"], "CHAR") {
+		//	return v["columnName"]
+		//}
+		//if strings.HasPrefix(v["dataType"], "VARCHAR2") {
+		//	return v["columnName"]
+		//}
 	}
-	return ""
+	return selectC
 }
 
-func (or *QueryTableDate) NoIndexGeneratingQueryCriteria(db *sql.DB, beginSeq, chanrowCount int, orderByColumn string, logThreadSeq int64) (string, error) {
-	var rowDataString []string
-	sqlstr := fmt.Sprintf("SELECT * FROM ( SELECT A.*, ROWNUM RN FROM (SELECT * FROM \"%s\".\"%s\") A WHERE ROWNUM <= %d) WHERE RN > %d", strings.ToUpper(or.Schema), or.Table, beginSeq+chanrowCount, beginSeq)
-	if orderByColumn != "" {
-		sqlstr = fmt.Sprintf("SELECT * FROM ( SELECT A.*, ROWNUM RN FROM (SELECT * FROM \"%s\".\"%s\" order by %s) A WHERE ROWNUM <= %d) WHERE RN > %d", strings.ToUpper(or.Schema), or.Table, orderByColumn, beginSeq+chanrowCount, beginSeq)
-	}
-
-	alog := fmt.Sprintf("(%d) Oracle DB query table data info exec sql is {%s}", logThreadSeq, sqlstr)
-	global.Wlog.Info(alog)
-	rows, err := db.Query(sqlstr)
-	if err != nil {
-		blog := fmt.Sprintf("(%d) exec Oracle DB sql fail. sql info is {%s} error info is {%s}.", logThreadSeq, sqlstr, err)
-		global.Wlog.Error(blog)
-		return "", err
-	}
-
-	columns, err := rows.Columns()
-	if err != nil {
-		blog := fmt.Sprintf("(%d) get table columns of Oracle DB sql fail. error info is {%s}.", logThreadSeq, err)
-		global.Wlog.Error(blog)
-		return "", err
-	}
-	valuePtrs := make([]interface{}, len(columns))
-	values := make([]interface{}, len(columns))
-	for rows.Next() {
-		var tmpaaS []string
-		for i := 0; i < len(columns); i++ {
-			valuePtrs[i] = &values[i]
-		}
-		rows.Scan(valuePtrs...)
-		for i := range columns {
-			var v interface{}
-			val := values[i]
-			b, ok := val.([]byte)
-			if ok {
-				v = string(b)
-			} else {
-				v = val
-			}
-			tmpaaS = append(tmpaaS, fmt.Sprintf("%v", v))
-		}
-		tmpaa := strings.Join(tmpaaS, "/*go actions columnData*/")
-		rowDataString = append(rowDataString, tmpaa)
-	}
-	rows.Close()
-	return strings.Join(rowDataString, "/*go actions rowData*/"), nil
-}
-func (or *QueryTableDate) performQueryConditions(db *sql.DB, sqlstr string, logThreadSeq int64) (string, error) {
-	var rows *sql.Rows
-	var rowDataString []string
-	alog := fmt.Sprintf("(%d) Oracle DB query table chunk data info exec sql is {%s}", logThreadSeq, sqlstr)
-	global.Wlog.Info(alog)
-
-	rows, err := db.Query(sqlstr)
-	if err != nil {
-		blog := fmt.Sprintf("(%d) Oracle DB exec sql fail. sql message is {%s} Error info is {%s}.", logThreadSeq, sqlstr, err)
-		global.Wlog.Error(blog)
-	}
-	clog := fmt.Sprintf("(%d) start dispos Oracle DB query table %s.%s chunk data info.", logThreadSeq, or.Schema, or.Table)
-	global.Wlog.Info(clog)
-	if rows == nil {
-		return "", nil
-	}
-	columns, err := rows.Columns()
-	if err != nil {
-		errInfo := fmt.Sprintf("(%d) Oracle DB Get the column fail. Error Info: ", logThreadSeq, err)
-		global.Wlog.Error(errInfo)
-		return "", err
-	}
-	valuePtrs := make([]interface{}, len(columns))
-	values := make([]interface{}, len(columns))
-	for rows.Next() {
-		var tmpaaS []string
-		for i := 0; i < len(columns); i++ {
-			valuePtrs[i] = &values[i]
-		}
-		rows.Scan(valuePtrs...)
-		for i := range columns {
-			var v interface{}
-			val := values[i]
-			b, ok := val.([]byte)
-			if ok {
-				v = string(b)
-			} else {
-				v = val
-			}
-			tmpaaS = append(tmpaaS, fmt.Sprintf("%v", v))
-		}
-		tmpaa := strings.Join(tmpaaS, "/*go actions columnData*/")
-		rowDataString = append(rowDataString, tmpaa)
-	}
-	rows.Close()
-	zlog := fmt.Sprintf("(%d) Oracle DB query table %s.%s metadata data completion.", logThreadSeq, or.Schema, or.Table)
-	global.Wlog.Info(zlog)
-	return strings.Join(rowDataString, "/*go actions rowData*/"), nil
-}
-
-func (or *QueryTableDate) GeneratingQueryCriteria(db *sql.DB, logThreadSeq int64) (string, error) {
-	rowData, err := or.performQueryConditions(db, or.Sqlwhere, logThreadSeq)
-	if err != nil {
-		return "", err
-	}
-	return rowData, nil
-}
-
-func (or *QueryTableDate) GeneratingQuerySql(logThreadSeq int64) string {
-	var columnNameSeq []string
+func (or *QueryTable) NoIndexGeneratingQueryCriteria(db *sql.DB, beginSeq uint64, chanrowCount int, logThreadSeq int64) (string, error) {
+	var (
+		columnNameSeq []string
+		Event         = "Q_table_Data"
+	)
 	//处理oracle查询时间列时数据带时区问题  2021-01-23 10:16:29 +0800 CST
-	alog := fmt.Sprintf("(%d) Oracle DB starts to process the checklist %s.%s select column", logThreadSeq, or.Schema, or.Table)
-	global.Wlog.Info(alog)
+	for _, i := range or.TableColumn {
+		mu := "9"
+		nu := "0"
+		var tmpcolumnName string
+		tmpcolumnName = i["columnName"]
+		if strings.ToUpper(i["dataType"]) == "DATE" {
+			tmpcolumnName = fmt.Sprintf("to_char(%s,'YYYY-MM-DD HH24:MI:SS')", i["columnName"])
+		}
+		if strings.Contains(strings.ToUpper(i["dataType"]), "TIMESTAMP") {
+			tmpcolumnName = fmt.Sprintf("to_char(%s,'YYYY-MM-DD HH24:MI:SS')", i["columnName"])
+		}
+		if strings.HasPrefix(strings.ToUpper(i["dataType"]), "NUMBER(") {
+			dianAfter := strings.ReplaceAll(strings.Split(i["dataType"], ",")[1], ")", "")
+			bb, _ := strconv.Atoi(dianAfter)
+			dianBefer := strings.Split(strings.Split(i["dataType"], ",")[0], "(")[1]
+			bbc, _ := strconv.Atoi(dianBefer)
+			var tmpa, tmpb []string
+			for ii := 0; ii < bb; ii++ {
+				tmpa = append(tmpa, nu)
+			}
+			for ii := 1; ii < bbc-bb; ii++ {
+				tmpb = append(tmpb, mu)
+			}
+			if bb == 0 {
+				tmpcolumnName = fmt.Sprintf("to_char(%s,'FM%s0')", i["columnName"], strings.Join(tmpb, ""))
+			} else {
+				tmpcolumnName = fmt.Sprintf("to_char(%s,'FM%s0.%s')", i["columnName"], strings.Join(tmpb, ""), strings.Join(tmpa, ""))
+			}
+		}
+		columnNameSeq = append(columnNameSeq, tmpcolumnName)
+	}
+	strsql = fmt.Sprintf("SELECT %s FROM ( SELECT A.*, ROWNUM RN FROM (SELECT * FROM \"%s\".\"%s\") A WHERE ROWNUM <= %d) WHERE RN > %d", strings.Join(columnNameSeq, ","), strings.ToUpper(or.Schema), or.Table, beginSeq+uint64(chanrowCount), beginSeq)
+	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
+	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
+		return "", err
+	}
+	tableData, err := dispos.DataRowsDispos([]string{})
+	if err != nil {
+		return "", err
+	}
+	defer dispos.SqlRows.Close()
+	return strings.Join(tableData, "/*go actions rowData*/"), nil
+}
+
+/*
+	Oracle 通过where条件查询表的分段数据（查询数据生成带有greatdbCheck标识的数据块）
+*/
+func (or *QueryTable) GeneratingQueryCriteria(db *sql.DB, logThreadSeq int64) (string, error) {
+	var (
+		Event = "Q_Table_Data"
+	)
+	vlog = fmt.Sprintf("(%d) [%s] Start to query the segmented data of the following table %s.%s in the %s database through the where condition.", logThreadSeq, Event, or.Schema, or.Table, DBType)
+	global.Wlog.Debug(vlog)
+	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
+	if dispos.SqlRows, err = dispos.DBSQLforExec(or.Sqlwhere); err != nil {
+		return "", err
+	}
+	tableData, err := dispos.DataRowsDispos([]string{})
+	if err != nil {
+		return "", err
+	}
+	defer dispos.SqlRows.Close()
+	vlog = fmt.Sprintf("(%d) [%s] Complete the data in the following table %s.%s of the %s database.", logThreadSeq, Event, or.Schema, or.Table, DBType)
+	return strings.Join(tableData, "/*go actions rowData*/"), nil
+}
+
+/*
+	Oracle 生成查询数据的sql语句
+*/
+func (or *QueryTable) GeneratingQuerySql(db *sql.DB, logThreadSeq int64) (string, error) {
+	var (
+		columnNameSeq []string
+		Event         = "E_Table_SQL"
+		selectSql     string
+	)
+	vlog = fmt.Sprintf("(%d) [%s] Start to generate the data query sql of table %s.%s in the %s database", logThreadSeq, Event, or.Schema, or.Table, DBType)
+	global.Wlog.Debug(vlog)
+	//处理oracle查询时间列时数据带时区问题  2021-01-23 10:16:29 +0800 CST
 	for _, i := range or.TableColumn {
 		mu := "9"
 		nu := "0"
@@ -459,7 +342,8 @@ func (or *QueryTableDate) GeneratingQuerySql(logThreadSeq int64) string {
 	queryColumn := strings.Join(columnNameSeq, ",")
 	//sqlstr := fmt.Sprintf("select %s from \"%s\".\"%s\" as of scn %s where %s", queryColumn, schema, table, oracleScn, sqlWhere)
 	//fmt.Println(fmt.Sprintf("select %s from \"%s\".\"%s\" where %s", queryColumn, strings.ToUpper(or.Schema), or.Table, or.Sqlwhere))
-	blog := fmt.Sprintf("(%d) Oracle DB checklist %s.%s select sql is {%s}", logThreadSeq, or.Schema, or.Table, fmt.Sprintf("select %s from `%s`.`%s` where %s", queryColumn, or.Schema, or.Table, or.Sqlwhere))
-	global.Wlog.Info(blog)
-	return fmt.Sprintf("select %s from \"%s\".\"%s\" where %s", queryColumn, strings.ToUpper(or.Schema), or.Table, or.Sqlwhere)
+	selectSql = fmt.Sprintf("select %s from \"%s\".\"%s\" where %s", queryColumn, strings.ToUpper(or.Schema), or.Table, or.Sqlwhere)
+	vlog = fmt.Sprintf("(%d) [%s] Complete the data query sql of table %s.%s in the %s database.", logThreadSeq, Event, or.Schema, or.Table, DBType)
+	global.Wlog.Debug(vlog)
+	return selectSql, nil
 }

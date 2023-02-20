@@ -3,6 +3,7 @@ package oracle
 import (
 	"database/sql"
 	"fmt"
+	"greatdbCheck/dataDispos"
 	"greatdbCheck/global"
 	"strings"
 )
@@ -13,155 +14,128 @@ type QueryTable struct {
 	Db                  *sql.DB
 	Datafix             string
 	LowerCaseTableNames string
+	TmpTableFileName    string
+	ColumnName          []string
+	ChanrowCount        int
+	TableColumn         []map[string]string
+	Sqlwhere            string
+	ColData             []map[string]string
+	BeginSeq            string
+	RowDataCh           int64
+	SelectColumn        map[string]string
 }
 
-var rowDataDisposMap = func(sqlRows *sql.Rows, event string, seq int64) ([]map[string]interface{}, error) {
-	// 获取列名
-	columns, err := sqlRows.Columns()
+var (
+	DBType = "Oracle"
+	vlog   string
+	err    error
+	strsql string
+)
+
+/*
+   Oracle 获取对应的库表信息，排除'SYS','OUTLN','SYSTEM','DBSNMP','APPQOSSYS','WMSYS','EXFSYS','CTXSYS','XDB','ORDDATA','ORDSYS','MDSYS','OLAPSYS','SYSMAN','FLOWS_FILES','APEX_030200','OWBSYS','SCOTT','HR','OE','SH','IX','PM'
+*/
+func (or *QueryTable) DatabaseNameList(db *sql.DB, logThreadSeq int64) (map[string]int, error) {
+	var (
+		excludeSchema string
+		A             = make(map[string]int)
+		Event         = "Q_Schema_Table_List"
+	)
+	excludeSchema = fmt.Sprintf("'SYS','OUTLN','SYSTEM','DBSNMP','APPQOSSYS','WMSYS','EXFSYS','CTXSYS','XDB','ORDDATA','ORDSYS','MDSYS','OLAPSYS','SYSMAN','FLOWS_FILES','APEX_030200','OWBSYS','HR','OE','SH','IX','PM'")
+	vlog = fmt.Sprintf("(%d) [%s] Start to query the metadata of the %s database and obtain library and table information.", logThreadSeq, Event, DBType)
+	global.Wlog.Debug(vlog)
+	strsql = fmt.Sprintf("SELECT owner as \"databaseName\",table_name as \"tableName\" FROM DBA_TABLES WHERE OWNER not in (%s)", excludeSchema)
+	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
+	rows, err := dispos.DBSQLforExec(strsql)
 	if err != nil {
-		errInfo := fmt.Sprintf("(", seq, ") Oracle DB Get the column fail. Error Info: ", event, err)
-		global.Wlog.Error(errInfo)
 		return nil, err
 	}
-	// 定义一个切片，长度是字段的个数，切片里面的元素类型是sql.RawBytes
-	//values := make([]sql.RawBytes,len(columns))
-	//定义一个切片，元素类型是interface{}接口
-	//scanArgs := make([]interface{},len(values))
-	valuePtrs := make([]interface{}, len(columns))
-	tableData := make([]map[string]interface{}, 0)
-	values := make([]interface{}, len(columns))
-	for sqlRows.Next() {
-		for i := 0; i < len(columns); i++ {
-			valuePtrs[i] = &values[i]
-		}
-		sqlRows.Scan(valuePtrs...)
-		entry := make(map[string]interface{})
-		for i, col := range columns {
-			var v interface{}
-			val := values[i]
-			b, ok := val.([]byte)
-			if ok {
-				v = string(b)
-			} else {
-				v = val
-			}
-			entry[col] = v
-		}
-		tableData = append(tableData, entry)
-	}
-	return tableData, nil
-}
-
-func (or *QueryTable) DatabaseNameList(logThreadSeq int64) map[string]int {
-	var sqlStr, excludeSchema string
-	//var dbName []string
-	var A = make(map[string]int)
-	excludeSchema = fmt.Sprintf("'SYS','OUTLN','SYSTEM','DBSNMP','APPQOSSYS','WMSYS','EXFSYS','CTXSYS','XDB','ORDDATA','ORDSYS','MDSYS','OLAPSYS','SYSMAN','FLOWS_FILES','APEX_030200','OWBSYS','SCOTT','HR','OE','SH','IX','PM'")
-	alog := fmt.Sprintf("(%d) Oracle DB ignore sys database message is {%s}", logThreadSeq, excludeSchema)
-	global.Wlog.Info(alog)
-	//if ignschema != "" {
-	//	excludeSchema = fmt.Sprintf("'SYS','OUTLN','SYSTEM','DBSNMP','APPQOSSYS','WMSYS','EXFSYS','CTXSYS','XDB','ORDDATA','ORDSYS','MDSYS','OLAPSYS','SYSMAN','FLOWS_FILES','APEX_030200','OWBSYS','SCOTT','HR','OE','SH','IX','PM','%s'", strings.ToUpper(ignschema))
-	//}
-	//blog := fmt.Sprintf("(%d) Oracle DB ignore database message is {%s}", logThreadSeq, excludeSchema)
-	//global.Wlog.Info(blog)
-	//if or.Schema == "*" {
-	//	sqlStr = fmt.Sprintf("select distinct OWNER as \"databaseName\" from all_tables where owner not in (%s)", excludeSchema)
-	//} else {
-	//	or.Schema = strings.ReplaceAll(or.Schema, ",", "','")
-	//	sqlStr = fmt.Sprintf("select distinct OWNER as \"databaseName\" from all_tables where owner in ('%s') and owner not in (%s)", or.Schema, excludeSchema)
-	//}
-	sqlStr = fmt.Sprintf("SELECT owner as \"databaseName\",table_name as \"tableName\" FROM DBA_TABLES WHERE OWNER not in (%s)", excludeSchema)
-	clog := fmt.Sprintf("(%d) Oracle DB query database exec sql is {%s}", logThreadSeq, sqlStr)
-	global.Wlog.Info(clog)
-
-	clog = fmt.Sprintf("(%d) Oracle DB begin exec sql.", logThreadSeq)
-	global.Wlog.Info(clog)
-	rows, err := or.Db.Query(sqlStr)
+	dispos.SqlRows = rows
+	tableData, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
 	if err != nil {
-		dlog := fmt.Sprintf("(%d) Oracle DB exec sql fail. sql message is {%s},Error info is {%s}", logThreadSeq, sqlStr, err)
-		global.Wlog.Error(dlog)
+		return nil, err
 	}
-	elog := fmt.Sprintf("(%d) Oracle DB complete exec sql.", logThreadSeq)
-	global.Wlog.Info(elog)
-	tableData, err := rowDataDisposMap(rows, "Schema", logThreadSeq)
-	if err == nil && len(tableData) > 0 {
-		for i := range tableData {
-			var ga string
-			gd, gt := fmt.Sprintf("%v", tableData[i]["databaseName"]), fmt.Sprintf("%v", tableData[i]["tableName"])
-			if or.LowerCaseTableNames == "no" {
-				gd = strings.ToUpper(gd)
-				gt = strings.ToUpper(gt)
-			}
-			ga = fmt.Sprintf("%v/*schema&table*/%v", gd, gt)
-			A[ga]++
+	for i := range tableData {
+		var ga string
+		gd, gt := fmt.Sprintf("%v", tableData[i]["databaseName"]), fmt.Sprintf("%v", tableData[i]["tableName"])
+		if or.LowerCaseTableNames == "no" {
+			gd = strings.ToUpper(gd)
+			gt = strings.ToUpper(gt)
 		}
-		//for i := range tableData {
-		//	dbName = append(dbName, strings.ToUpper(fmt.Sprintf("%v", tableData[i]["databaseName"])))
-		//}
+		ga = fmt.Sprintf("%v/*schema&table*/%v", gd, gt)
+		A[ga]++
 	}
+	vlog = fmt.Sprintf("(%d) [%s] Complete the library and table information query of the %s database.", logThreadSeq, Event, DBType)
+	global.Wlog.Debug(vlog)
 	defer rows.Close()
-	return A
-	//return []string{}
+	return A, nil
 }
 
+/*
+	Oracle 通过查询表的元数据信息获取列名
+*/
 func (or *QueryTable) TableColumnName(db *sql.DB, logThreadSeq int64) ([]map[string]interface{}, error) {
-	strsql := fmt.Sprintf("select column_name as \"columnName\" from all_tab_columns where owner='%s' and table_name='%s' order by 'column_id'", strings.ToUpper(or.Schema), or.Table)
-	alog := fmt.Sprintf("(%d) Oracle DB query table metadata info exec sql is {%s}", logThreadSeq, strsql)
-	global.Wlog.Info(alog)
-	rows, err := db.Query(strsql)
-	if err != nil {
-		blog := fmt.Sprintf("(%d) Oracle DB exec sql fail. sql message is {%s},Error info is {%s}", logThreadSeq, strsql, err)
-		global.Wlog.Error(blog)
+	var (
+		Event = "Q_table_columns"
+	)
+	vlog = fmt.Sprintf("(%d) [%s] Start querying the metadata information of table %s.%s in the %s database and get all the column names", logThreadSeq, Event, or.Schema, or.Table, DBType)
+	global.Wlog.Debug(vlog)
+	strsql = fmt.Sprintf("select column_name as \"columnName\" from all_tab_columns where owner='%s' and table_name='%s' order by 'column_id'", strings.ToUpper(or.Schema), or.Table)
+	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
+	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
+		if err != nil {
+			return nil, err
+		}
 	}
-	clog := fmt.Sprintf("(%d) start dispos Oracle DB query table %s.%s metadata info.", logThreadSeq, or.Schema, or.Table)
-	global.Wlog.Info(clog)
-	tableData, err := rowDataDisposMap(rows, "Column", logThreadSeq)
-	zlog := fmt.Sprintf("(%d) Oracle DB query table %s.%s metadata data completion.", logThreadSeq, or.Schema, or.Table)
-	global.Wlog.Info(zlog)
-	defer rows.Close()
+	tableData, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
+	if err != nil {
+		return nil, err
+	}
+	vlog = fmt.Sprintf("(%d) [%s] Complete the acquisition of all column names in the following table %s.%s of the %s database.", logThreadSeq, Event, or.Schema, or.Table, DBType)
+	global.Wlog.Debug(vlog)
+	defer dispos.SqlRows.Close()
 	return tableData, err
 }
 
 /*
-	检查访问视图的权限是否存在
+	Oracle 查看当前用户是否有全局变量
 */
-func (or *QueryTable) GlobalAccessPri(db *sql.DB, logThreadSeq int64) bool {
+func (or *QueryTable) GlobalAccessPri(db *sql.DB, logThreadSeq int64) (bool, error) {
 	var (
-		globalPri = make(map[string]int)
-		sqlQuery  = func(logseq int64, sql, logKeyword string) []map[string]interface{} {
-			alog := fmt.Sprintf("(%d) Oracle DB query %s info exec sql is {%s}", logseq, logKeyword, sql)
-			global.Wlog.Info(alog)
-			rows, err := db.Query(sql)
-			if err != nil {
-				blog := fmt.Sprintf("(%d) Oracle DB exec sql fail. sql message is {%s} Error info is {%s}.", logseq, sql, err)
-				global.Wlog.Error(blog)
-			}
-			clog := fmt.Sprintf("(%d) start dispos Oracle DB query %s.", logseq, logKeyword)
-			global.Wlog.Info(clog)
-			a, _ := rowDataDisposMap(rows, "Privileges", logseq)
-			dlog := fmt.Sprintf("(%d) Oracle DB query %s data completion.", logseq, logKeyword)
-			global.Wlog.Info(dlog)
-			return a
-		}
+		globalPri     = make(map[string]int)
+		Event         = "Q_Table_Global_Access_Pri"
+		globalDynamic []map[string]interface{}
 	)
+	vlog = fmt.Sprintf("(%d) [%s] The permissions that the current %s DB needs to check is message {%v}, to check it...", logThreadSeq, Event, DBType, globalPri)
+	global.Wlog.Debug(vlog)
 	globalPri["SELECT ANY DICTIONARY"] = 0
-	elog := fmt.Sprintf("(%d) The permissions that the current Oracle DB needs to check is message {%v}, to check it...", logThreadSeq, globalPri)
-	global.Wlog.Info(elog)
+	//vlog = fmt.Sprintf("(%d) The permissions that the current Oracle DB needs to check is message {%v}, to check it...", logThreadSeq, globalPri)
+	//global.Wlog.Debug(vlog)
 
 	var globalPriS []string
 	for k, _ := range globalPri {
 		globalPriS = append(globalPriS, k)
 	}
 	//查找全局权限 类似于grant all privileges on *.* 或 grant select on *.*
-	ilog := fmt.Sprintf("(%d) Query the current Oracle DB global dynamic grants permission, to query it...", logThreadSeq)
-	global.Wlog.Info(ilog)
-	//strsql := fmt.Sprintf("SELECT GRANTEE as \"role\",PRIVILEGE as \"privileges\" FROM DBA_SYS_PRIVS b,(select GRANTED_ROLE as \"role\" from user_role_privs group by GRANTED_ROLE) a where a.\"role\" =b.GRANTEE AND b.privilege in ('SELECT ANY DICTIONARY')")
-	strsql := fmt.Sprintf("select PRIVILEGE as \"privileges\" from user_sys_privs where PRIVILEGE IN ('%s')", strings.Join(globalPriS, "','"))
-	globalDynamic := sqlQuery(logThreadSeq, strsql, "Global Dynamic Grants")
+	vlog = fmt.Sprintf("(%d) [%s] Query the current %s DB global dynamic grants permission, to query it...", logThreadSeq, Event, DBType)
+	global.Wlog.Debug(vlog)
+	strsql = fmt.Sprintf("select PRIVILEGE as \"privileges\" from user_sys_privs where PRIVILEGE IN ('%s')", strings.Join(globalPriS, "','"))
+	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
+	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
+		return false, err
+	}
+	if globalDynamic, err = dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{}); err != nil {
+		return false, err
+	}
 	//权限缺失列表
 	if len(globalDynamic) == 0 {
 		strsql = fmt.Sprintf("SELECT PRIVILEGE as \"privileges\" FROM ROLE_SYS_PRIVS WHERE PRIVILEGE IN ('%s') group by PRIVILEGE", strings.Join(globalPriS, "','"))
-		globalDynamic = sqlQuery(logThreadSeq, strsql, "Global Dynamic Grants")
+		if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
+			return false, err
+		}
+		if globalDynamic, err = dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{}); err != nil {
+			return false, err
+		}
 	}
 	for _, gd := range globalDynamic {
 		if _, ok := globalPri[strings.ToUpper(fmt.Sprintf("%s", gd["privileges"]))]; ok {
@@ -169,44 +143,34 @@ func (or *QueryTable) GlobalAccessPri(db *sql.DB, logThreadSeq int64) bool {
 		}
 	}
 	if len(globalPri) == 0 {
-		jlog := fmt.Sprintf("(%d) The current global access user with permission to connect to Oracle DB is normal and can be verified normally...", logThreadSeq)
-		global.Wlog.Info(jlog)
-		return true
+		vlog = fmt.Sprintf("(%d) [%s] The current global access user with permission to connect to %s DB is normal and can be verified normally...", logThreadSeq, Event, DBType)
+		global.Wlog.Debug(vlog)
+		return true, nil
 	}
-	if _, ok := globalPri["SELECT ANY DICTIONARY"]; ok {
-		klog := fmt.Sprintf("(%d) The current user connecting to Oracle DB lacks \"SELECT ANY DICTIONARY\" permission, Please authorize this permission...", logThreadSeq)
-		global.Wlog.Error(klog)
-		return false
+	if _, ok := globalPri["SELECT ANY DICTIONARY"]; !ok {
+		vlog = fmt.Sprintf("(%d) [%s] The current user connecting to %s DB lacks \"SELECT ANY DICTIONARY\" permission, Please authorize this permission...", logThreadSeq, Event, DBType)
+		global.Wlog.Error(vlog)
+		return false, nil
 	}
 	//if _, ok := globalPri["ALTER SYSTEM"]; ok {
 	//	klog := fmt.Sprintf("(%d) The current user connecting to Oracle DB lacks \"ALTER SYSTEM\" permission, and the check table is empty", logThreadSeq)
 	//	global.Wlog.Error(klog)
 	//	return nil, nil
 	//}
-	return true
+	return true, nil
 }
+
+/*
+	Oracle 查询用户是否有表的查询权限
+*/
 func (or *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, datefix string, logThreadSeq int64) (map[string]int, error) {
 	var (
 		globalPri, globalPriAllTab = make(map[string]int), make(map[string]int)
 		newCheckTableList          = make(map[string]int)
 		A                          = make(map[string]int)
 		PT, abPT                   = make(map[string]int), make(map[string]int)
-		sqlQuery                   = func(logseq int64, sql, logKeyword string) []map[string]interface{} {
-			alog := fmt.Sprintf("(%d) Oracle DB query %s info exec sql is {%s}", logseq, logKeyword, sql)
-			global.Wlog.Info(alog)
-			rows, err := db.Query(sql)
-			if err != nil {
-				blog := fmt.Sprintf("(%d) Oracle DB exec sql fail. sql message is {%s} Error info is {%s}.", logseq, sql, err)
-				global.Wlog.Error(blog)
-			}
-			clog := fmt.Sprintf("(%d) start dispos Oracle DB query %s.", logseq, logKeyword)
-			global.Wlog.Info(clog)
-			a, _ := rowDataDisposMap(rows, "Privileges", logseq)
-			dlog := fmt.Sprintf("(%d) Oracle DB query %s data completion.", logseq, logKeyword)
-			global.Wlog.Info(dlog)
-			return a
-		}
-		columnMerge = func(AC []map[string]interface{}, F1 ...string) map[string][]string {
+		Event                      = "Q_Table_Access_Pri"
+		columnMerge                = func(AC []map[string]interface{}, F1 ...string) map[string][]string {
 			var cc = make(map[string][]string)
 			var N, E string
 			var dd []string
@@ -216,7 +180,6 @@ func (or *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 				} else {
 					E = fmt.Sprintf("%s", C[F1[0]])
 				}
-				//E = fmt.Sprintf("%s", F1)
 				if E != N {
 					N = E
 					dd = []string{}
@@ -236,8 +199,8 @@ func (or *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 			}
 			return cc
 		}
+		priAllTableS []string
 	)
-
 	globalPri["SELECT"] = 0
 	globalPriAllTab["SELECT ANY TABLE"] = 0
 	if strings.ToUpper(datefix) == "TABLE" {
@@ -246,33 +209,41 @@ func (or *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 		globalPri["DELETE"] = 0
 		globalPriAllTab["DELETE ANY TABLE"] = 0
 	}
-	var priAllTableS []string
 	for k, _ := range globalPriAllTab {
 		priAllTableS = append(priAllTableS, k)
 	}
-	elog := fmt.Sprintf("(%d) The permissions that the current Oracle DB needs to check is message {%v}, to check it...", logThreadSeq, globalPri)
-	global.Wlog.Info(elog)
+	vlog = fmt.Sprintf("(%d) [%s] The permissions that the current %s DB needs to check is message {%v},check table list is {%v}. to check it...", logThreadSeq, Event, DBType, globalPri, newCheckTableList)
+	global.Wlog.Debug(vlog)
 
 	//针对要校验的库做去重（库级别的）
 	//校验库.表由切片改为map
 	for _, AA := range checkTableList {
 		newCheckTableList[strings.ToUpper(AA)]++
 	}
-	flog := fmt.Sprintf("(%d) The current Oracle DB needs to check the permission table is message {%v}, to check it...", logThreadSeq, newCheckTableList)
-	global.Wlog.Info(flog)
+	//vlog = fmt.Sprintf("(%d) The current Oracle DB needs to check the permission table is message {%v}, to check it...", logThreadSeq, newCheckTableList)
+	//global.Wlog.Debug(vlog)
 	//校验库做去重处理
 	for _, aa := range checkTableList {
 		A[strings.ToUpper(strings.Split(aa, ".")[0])]++
 	}
-	glog := fmt.Sprintf("(%d) The current Oracle DB needs to check the authority of the library is message {%v},to check it...", logThreadSeq, A)
-	global.Wlog.Info(glog)
+	//vlog = fmt.Sprintf("(%d) The current Oracle DB needs to check the authority of the library is message {%v},to check it...", logThreadSeq, A)
+	//global.Wlog.Debug(vlog)
 
 	//处理oracle用户角色，该用户角色拥有insert、select 、delete any table的权限
 	//查找全局权限 类似于grant all privileges on *.* 或 grant select on *.*
-	ilog := fmt.Sprintf("(%d) Query the current Oracle DB global dynamic grants permission, to query it...", logThreadSeq)
-	global.Wlog.Info(ilog)
-	strsql := fmt.Sprintf("SELECT PRIVILEGE as \"privileges\" FROM ROLE_SYS_PRIVS WHERE PRIVILEGE IN ('%s') group by PRIVILEGE", strings.Join(priAllTableS, "','"))
-	globalDynamic := sqlQuery(logThreadSeq, strsql, "Global Dynamic Grants")
+	vlog = fmt.Sprintf("(%d) [%s] Query the current %s DB global dynamic grants permission, to query it...", logThreadSeq, Event, DBType)
+	global.Wlog.Debug(vlog)
+	strsql = fmt.Sprintf("SELECT PRIVILEGE as \"privileges\" FROM ROLE_SYS_PRIVS WHERE PRIVILEGE IN ('%s') group by PRIVILEGE", strings.Join(priAllTableS, "','"))
+	//globalDynamic, err := sqlQuery(logThreadSeq, strsql, "Global Dynamic Grants")
+	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
+	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
+		return nil, err
+	}
+	globalDynamic, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
+	if err != nil {
+		return nil, err
+	}
+
 	//该用户有权限角色设置
 	if len(globalDynamic) != 0 {
 		A = globalPriAllTab
@@ -285,8 +256,8 @@ func (or *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 				}
 			}
 			if len(A) == aaseq {
-				jlog := fmt.Sprintf("(%d) The Oracle DB table information that meets the permissions and needs to be verified is {%v}...", logThreadSeq, newCheckTableList)
-				global.Wlog.Info(jlog)
+				vlog = fmt.Sprintf("(%d) [%s] The %s DB table information that meets the permissions and needs to be verified is {%v}...", logThreadSeq, Event, DBType, newCheckTableList)
+				global.Wlog.Debug(vlog)
 				return newCheckTableList, nil
 			}
 		}
@@ -299,20 +270,23 @@ func (or *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 			}
 		}
 	}
-	//查询当前库的权限
-	//类似于grant all privileges on pcms.* 或 grant select on pcms.*
-
 	//查询当前表的权限
 	//类似于grant all privileges on pcms.a 或 grant select on pcms.a
-	nlog := fmt.Sprintf("(%d) Query the current Oracle DB global dynamic table permission, to query it...", logThreadSeq)
-	global.Wlog.Info(nlog)
+	vlog = fmt.Sprintf("(%d) %s Query the current %s DB global dynamic table permission, to query it...", logThreadSeq, Event, DBType)
+	global.Wlog.Debug(vlog)
 	//遍历没有schema pri权限的剩余库
 	var DM = make(map[string]int)
 	for _, D := range checkTableList {
 		DM[strings.ToUpper(D)]++
 	}
 	strsql = fmt.Sprintf("select owner||'.'||table_name AS \"tablesName\",PRIVILEGE as \"privileges\" from user_tab_privs")
-	tablePri := sqlQuery(logThreadSeq, strsql, "TABLE PRIVILEGES")
+	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
+		return nil, err
+	}
+	tablePri, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
+	if err != nil {
+		return nil, err
+	}
 	DD := columnMerge(tablePri, "tablesName", "privileges")
 	for K, V := range DD {
 		var aaaseq int
@@ -329,46 +303,60 @@ func (or *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 			abPT[K]++
 		}
 	}
-	fmt.Println("111: ", or.Schema, or.Table)
 	if len(PT) == 0 {
-		olog := fmt.Sprintf("(%d) The current table %s.%s in Oracle DB lacks some rights restrictions, please check the rights related to the table %s.%s {%v}", logThreadSeq, or.Schema, or.Table, or.Schema, or.Table, globalPri)
-		global.Wlog.Error(olog)
+		vlog = fmt.Sprintf("(%d) [%s] The current table %s.%s in %s DB lacks some rights restrictions, please check the rights related to the table %s.%s {%v}", logThreadSeq, Event, or.Schema, or.Table, DBType, or.Schema, or.Table, globalPri)
+		global.Wlog.Error(vlog)
+		return nil, nil
 	}
-	olog := fmt.Sprintf("(%d) The Oracle DB table information that needs to be verified to meet the permissions is {%v}, and the information that is not satisfied is {%v}...", logThreadSeq, PT, abPT)
-	global.Wlog.Info(olog)
+	vlog = fmt.Sprintf("(%d) [%s] The %s DB table information that needs to be verified to meet the permissions is {%v}, and the information that is not satisfied is {%v}...", logThreadSeq, Event, DBType, PT, abPT)
+	global.Wlog.Debug(vlog)
 	return PT, nil
 }
 
 /*
-	获取校验表的列信息，包含列名，列序号，列类型
+	Oracle 获取校验表的列信息，包含列名，列序号，列类型
 */
 func (or *QueryTable) TableAllColumn(db *sql.DB, logThreadSeq int64) ([]map[string]interface{}, error) {
-	//sqlStr := fmt.Sprintf("select column_name as \"columnName\",data_type as \"dataType\",COLUMN_id as \"columnSeq\" from all_tab_columns where owner=\"%s\" and table_name=\"%s\" order by 'column_id'", strings.ToUpper(or.Schema), or.Table)
-	sqlStr := fmt.Sprintf("SELECT column_name as \"columnName\",case when data_type='NUMBER' AND DATA_PRECISION is null THEN DATA_TYPE when data_type='NUMBER' AND DATA_PRECISION is not null then DATA_TYPE || '(' || DATA_PRECISION || ',' || NVL(DATA_SCALE,0) || ')' when data_type='VARCHAR2' THEN DATA_TYPE||'('||DATA_LENGTH||')' ELSE DATA_TYPE END AS \"dataType\",COLUMN_id as \"columnSeq\" FROM all_tab_columns WHERE owner='%s' and TABLE_NAME = '%s' order by 'column_id'", strings.ToUpper(or.Schema), or.Table)
-	alog := fmt.Sprintf("(%d) Oracle DB query table query Table metadata info exec sql is {%s}", logThreadSeq, sqlStr)
-	global.Wlog.Info(alog)
-	sqlRows, err := db.Query(sqlStr)
-	if err != nil {
-		blog := fmt.Sprintf("(%d) Oracle DB exec sql fail. sql message is {%s} Error info is {%s}.", logThreadSeq, sqlStr, err)
-		global.Wlog.Error(blog)
+	var (
+		Event = "Q_Table_Column_Metadata"
+	)
+	vlog = fmt.Sprintf("(%d) [%s] Start to query the metadata of all the columns of table %s.%s in the %s database", logThreadSeq, Event, or.Schema, or.Table, DBType)
+	global.Wlog.Debug(vlog)
+	strsql = fmt.Sprintf("SELECT column_name as \"columnName\",case when data_type='NUMBER' AND DATA_PRECISION is null THEN DATA_TYPE when data_type='NUMBER' AND DATA_PRECISION is not null then DATA_TYPE || '(' || DATA_PRECISION || ',' || NVL(DATA_SCALE,0) || ')' when data_type='VARCHAR2' THEN DATA_TYPE||'('||DATA_LENGTH||')' ELSE DATA_TYPE END AS \"dataType\",COLUMN_id as \"columnSeq\",NULLABLE as \"isNull\" FROM all_tab_columns WHERE owner='%s' and TABLE_NAME = '%s' order by 'column_id'", strings.ToUpper(or.Schema), or.Table)
+
+	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
+	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return nil, err
 	}
-	defer sqlRows.Close()
-	return rowDataDisposMap(sqlRows, "TableAllColumn", logThreadSeq)
+	tableData, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
+	if err != nil {
+		return nil, err
+	}
+	vlog = fmt.Sprintf("(%d) [%s] Complete the metadata query of all columns in table %s.%s in the %s database.", logThreadSeq, Event, or.Schema, or.Table, DBType)
+	global.Wlog.Debug(vlog)
+	defer dispos.SqlRows.Close()
+	return tableData, err
 }
 
-//处理唯一索引索引（包含主键索引）
+/*
+	Oracle 处理唯一索引索引（包含主键索引）
+*/
 func (or *QueryTable) keyChoiceDispos(IndexColumnMap map[string][]string, indexType string) map[string][]string {
-	breakIndexColumnType := []string{"NUMBER", "INT", "CHAR", "VARCHAR2", "YEAR", "DATE", "TIME"}
-	var a, c = make(map[string][]string), make(map[string][]int)
-	var indexChoice = make(map[string][]string)
+	var (
+		breakIndexColumnType = []string{"NUMBER", "INTEGER", "SMALLINT", "DECIMAL", "BINARY_FLOAT", "BINARY_DOUBLE", "FLOAT", "INT", "CHAR", "VARCHAR2", "YEAR", "DATE", "TIME"}
+		a, c                 = make(map[string][]string), make(map[string][]int)
+		indexChoice          = make(map[string][]string)
+		tmpSliceNum          = 100
+		tmpSliceNumMap       = make(map[string]int)
+		z                    string
+		choseSeq             = 1000000
+		intCharMax           int
+		indexChoisName       string
+	)
 	// ----- 处理唯一索引列，根据选择规则选择一个单列索引，（选择次序：int<--char<--year<--date<-time<-其他）
-	infoStr := fmt.Sprintf("Greatdbcheck Checks whether table %s.%s has a unique key index", or.Schema, or.Table)
-	global.Wlog.Info(infoStr)
-	var tmpSliceNum = 100
-	var tmpSliceNumMap = make(map[string]int)
+	//infoStr := fmt.Sprintf("Greatdbcheck Checks whether table %s.%s has a unique key index", or.Schema, or.Table)
+	//global.Wlog.Debug(infoStr)
 	//先找出唯一联合索引数量最少的
-	var z string
 	for k, i := range IndexColumnMap {
 		if len(i) <= tmpSliceNum {
 			if len(i) < tmpSliceNum {
@@ -380,7 +368,6 @@ func (or *QueryTable) keyChoiceDispos(IndexColumnMap map[string][]string, indexT
 		}
 	}
 	//单列唯一索引处理，选择最短的且最合适的索引列（选择次序：int<--char<--year<--date<-time）
-	var choseSeq int = 1000000
 	for k, v := range tmpSliceNumMap {
 		if v == 1 {
 			d := strings.Split(strings.Join(IndexColumnMap[k], ""), " /*actions Column Type*/ ")
@@ -410,8 +397,6 @@ func (or *QueryTable) keyChoiceDispos(IndexColumnMap map[string][]string, indexT
 		}
 	}
 
-	var intCharMax int
-	var indexChoisName string
 	for k, v := range c {
 		if v[0] > intCharMax {
 			intCharMax = v[0]
@@ -430,6 +415,9 @@ func (or *QueryTable) keyChoiceDispos(IndexColumnMap map[string][]string, indexT
 	return indexChoice
 }
 
+/*
+	Oracle 表的索引选择
+*/
 func (or *QueryTable) TableIndexChoice(queryData []map[string]interface{}, logThreadSeq int64) map[string][]string {
 	var (
 		indexChoice                           = make(map[string][]string)
@@ -437,11 +425,15 @@ func (or *QueryTable) TableIndexChoice(queryData []map[string]interface{}, logTh
 		multiseriateIndexColumnMap            = make(map[string][]string)
 		PriIndexCol, uniIndexCol, mulIndexCol []string
 		indexName                             string
+		Event                                 = "Q_Table_Index_Choice"
 	)
+	if len(queryData) == 0 {
+		return nil
+	}
 	//索引列处理，联合索引进行列合并
 	//去除主键索引列、唯一索引列、普通索引列的所有列明
-	alog := fmt.Sprintf("(%d) Oracle DB starts to merge and process primary key index,unique index, and common index.", logThreadSeq)
-	global.Wlog.Info(alog)
+	vlog = fmt.Sprintf("(%d) [%s] Start to select the appropriate index column in the following table %s.%s of the %s database.", logThreadSeq, Event, or.Schema, or.Table, DBType)
+	global.Wlog.Debug(vlog)
 	for _, v := range queryData {
 		if v["nonUnique"].(string) == "UNIQUE" {
 			//处理主键索引
@@ -470,66 +462,72 @@ func (or *QueryTable) TableIndexChoice(queryData []map[string]interface{}, logTh
 			}
 		}
 	}
-	blog := fmt.Sprintf("(%d) Oracle DB index merge processing complete. The index merged data is {primary key: %v,unique key: %v,nounique key: %v}", logThreadSeq, PriIndexCol, nultiseriateIndexColumnMap, multiseriateIndexColumnMap)
-	global.Wlog.Info(blog)
+	//vlog = fmt.Sprintf("(%d) Oracle DB index merge processing complete. The index merged data is {primary key: %v,unique key: %v,nounique key: %v}", logThreadSeq, PriIndexCol, nultiseriateIndexColumnMap, multiseriateIndexColumnMap)
+	//global.Wlog.Debug(vlog)
 	//处理主键索引列
 	//判断是否存在主键索引,每个表的索引只有一个
-	clog := fmt.Sprintf("(%d) MySQL DB primary key index starts to choose the best.", logThreadSeq)
-	global.Wlog.Info(clog)
+	//vlog = fmt.Sprintf("(%d) MySQL DB primary key index starts to choose the best.", logThreadSeq)
+	//global.Wlog.Debug(vlog)
 	if len(PriIndexCol) == 1 { //单列主键索引
 		indexChoice["pri_single"] = PriIndexCol
 	} else if len(PriIndexCol) > 1 { //联合主键索引
 		indexChoice["pri_multiseriate"] = PriIndexCol
 	}
-	dlog := fmt.Sprintf("(%d) MySQL DB unique key index starts to choose the best.", logThreadSeq)
-	global.Wlog.Info(dlog)
+	//vlog = fmt.Sprintf("(%d) MySQL DB unique key index starts to choose the best.", logThreadSeq)
+	//global.Wlog.Debug(vlog)
 	g := or.keyChoiceDispos(nultiseriateIndexColumnMap, "uni")
 	for k, v := range g {
 		if len(v) > 0 {
 			indexChoice[k] = v
 		}
 	}
-	elog := fmt.Sprintf("(%d) MySQL DB nounique key index starts to choose the best.", logThreadSeq)
-	global.Wlog.Info(elog)
+	//vlog = fmt.Sprintf("(%d) MySQL DB nounique key index starts to choose the best.", logThreadSeq)
+	//global.Wlog.Debug(vlog)
 	f := or.keyChoiceDispos(multiseriateIndexColumnMap, "mui")
 	for k, v := range f {
 		if len(v) > 0 {
 			indexChoice[k] = v
 		}
 	}
+	vlog = fmt.Sprintf("(%s) [%s] Complete the selection of the appropriate index column in the following table %s.%s of the %s database.", logThreadSeq, Event, or.Schema, or.Table, DBType)
+	global.Wlog.Debug(vlog)
 	return indexChoice
 }
 
+/*
+	Oracle 查询触发器信息
+*/
 func (or *QueryTable) Trigger(db *sql.DB, logThreadSeq int64) (map[string]string, error) {
-	var tmpb = make(map[string]string)
-	sqlStr := fmt.Sprintf("select TRIGGER_name as triggerName,TABLE_NAME as tableName from all_triggers where owner = '%s'", or.Schema)
-	alog := fmt.Sprintf("(%d) Oracle DB query table query Trigger info exec sql is {%s}", logThreadSeq, sqlStr)
-	global.Wlog.Info(alog)
-
-	sqlRows, err := db.Query(sqlStr)
-	if err != nil {
-		blog := fmt.Sprintf("(%d) Oracle DB exec sql fail. sql message is {%s} Error info is {%s}.", logThreadSeq, sqlStr, err)
-		global.Wlog.Error(blog)
+	var (
+		tmpb = make(map[string]string)
+		//sqlStr                string
+		triggerOn, triggerTRX string
+		Event                 = "Q_Table_Index_Choice"
+	)
+	vlog = fmt.Sprintf("(%d) [%s] Start to query the trigger information under the %s database.", logThreadSeq, Event, DBType)
+	global.Wlog.Debug(vlog)
+	strsql = fmt.Sprintf("select TRIGGER_name as triggerName,TABLE_NAME as tableName from all_triggers where owner = '%s'", or.Schema)
+	//vlog = fmt.Sprintf("(%d) Oracle DB query table query Trigger info exec sql is {%s}", logThreadSeq, sqlStr)
+	//global.Wlog.Debug(vlog)
+	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
+	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return nil, err
 	}
-	triggerName, _ := rowDataDisposMap(sqlRows, "Trigger", logThreadSeq)
+	triggerName, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
+	if err != nil {
+		return nil, err
+	}
 	for _, v := range triggerName {
-		sqlStr = fmt.Sprintf(" SELECT DBMS_METADATA.GET_DDL('TRIGGER','%s','%s') AS CREATE_TRIGGER FROM DUAL", v["TRIGGERNAME"], or.Schema)
-		elog := fmt.Sprintf("(%d) Oracle DB query create Trigger databases %s info, exec sql is {%s}", logThreadSeq, or.Schema, sqlStr)
-		global.Wlog.Info(elog)
-		sqlRows, err = db.Query(sqlStr)
-		if err != nil {
-			blog := fmt.Sprintf("(%d) Oracle DB exec sql fail. sql message is {%s} Error info is {%s}.", logThreadSeq, sqlStr, err)
-			global.Wlog.Error(blog)
-			return tmpb, err
+		strsql = fmt.Sprintf(" SELECT DBMS_METADATA.GET_DDL('TRIGGER','%s','%s') AS CREATE_TRIGGER FROM DUAL", v["TRIGGERNAME"], or.Schema)
+		//vlog = fmt.Sprintf("(%d) Oracle DB query create Trigger databases %s info, exec sql is {%s}", logThreadSeq, or.Schema, sqlStr)
+		//global.Wlog.Debug(vlog)
+		if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
+			return nil, err
 		}
-		flog := fmt.Sprintf("(%d) start dispos Oracle DB databases %s create Trigger info.", logThreadSeq, or.Schema)
-		global.Wlog.Info(flog)
-		createTrigger, _ := rowDataDisposMap(sqlRows, "TRIGGER", logThreadSeq)
-		glog := fmt.Sprintf("(%d) Oracle DB query databases %s create Trigger completion.", logThreadSeq, or.Schema)
-		global.Wlog.Info(glog)
-		hlog := fmt.Sprintf("(%d) Oracle DB query databases %s dispos Trigger data info. to dispos it ...", logThreadSeq, or.Schema)
-		global.Wlog.Info(hlog)
+		createTrigger, err1 := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
+		if err1 != nil {
+			return nil, err
+		}
 
 		for _, b := range createTrigger {
 			c := strings.TrimSpace(strings.ReplaceAll(fmt.Sprintf("%s", b["CREATE_TRIGGER"]), "\n", " "))
@@ -541,7 +539,6 @@ func (or *QueryTable) Trigger(db *sql.DB, logThreadSeq int64) (map[string]string
 			//获取trigger action
 			triggerAction := strings.TrimSpace(d[triNend+1 : onI])
 			//获取trigger 作用的表
-			var triggerOn, triggerTRX string
 			if strings.Contains(d, "BEGIN") && strings.Contains(d, "END") {
 				e := d[onI+1 : strings.Index(d, "BEGIN")]
 				triActionTend := strings.LastIndexAny(e, "\"")
@@ -556,77 +553,96 @@ func (or *QueryTable) Trigger(db *sql.DB, logThreadSeq int64) (map[string]string
 			}
 			tmpb[triggerN] = fmt.Sprintf("%s %s %s", triggerAction, triggerOn, triggerTRX)
 		}
-		zlog := fmt.Sprintf("(%d) Oracle DB query databases %s Trigger data completion...", logThreadSeq, or.Schema)
-		global.Wlog.Info(zlog)
+		//vlog = fmt.Sprintf("(%d) Oracle DB query databases %s Trigger data completion...", logThreadSeq, or.Schema)
+		//global.Wlog.Debug(vlog)
 	}
+	vlog = fmt.Sprintf("(%s) [%s] Complete the trigger information query under the %s database.", logThreadSeq, Event, DBType)
+	global.Wlog.Debug(vlog)
+	defer dispos.SqlRows.Close()
 	return tmpb, nil
 }
+
+/*
+	存储过程校验
+*/
 func (or *QueryTable) Proc(db *sql.DB, logThreadSeq int64) (map[string]string, error) {
-	var tmpb = make(map[string]string)
-	sqlStr := fmt.Sprintf(" select object_name as ROUTINE_NAME from all_procedures where object_type='PROCEDURE' and owner = '%s'", or.Schema)
-	alog := fmt.Sprintf("(%d) Oracle DB query table query Stored Procedure info exec sql is {%s}", logThreadSeq, sqlStr)
-	global.Wlog.Info(alog)
-	sqlRows, err := db.Query(sqlStr)
-	if err != nil {
-		blog := fmt.Sprintf("(%d) Oracle DB exec sql fail. sql message is {%s} Error info is {%s}.", logThreadSeq, sqlStr, err)
-		global.Wlog.Error(blog)
+	var (
+		tmpb  = make(map[string]string)
+		Event = "Q_Proc"
+	)
+	vlog = fmt.Sprintf("(%d) [%s] Start to query the stored procedure information under the %s database.", logThreadSeq, Event, DBType)
+	global.Wlog.Debug(vlog)
+	strsql = fmt.Sprintf(" select object_name as ROUTINE_NAME from all_procedures where object_type='PROCEDURE' and owner = '%s'", or.Schema)
+	//vlog = fmt.Sprintf("(%d) Oracle DB query table query Stored Procedure info exec sql is {%s}", logThreadSeq, sqlStr)
+	//global.Wlog.Debug(vlog)
+	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
+	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
+		return nil, err
 	}
-	flog := fmt.Sprintf("(%d) start dispos Oracle DB databases %s create Stored Procedure info.", logThreadSeq, or.Schema)
-	global.Wlog.Info(flog)
-	routineName, _ := rowDataDisposMap(sqlRows, "Proc", logThreadSeq)
-	hlog := fmt.Sprintf("(%d) Oracle DB query databases %s dispos Stored Procedure data info. to dispos it ...", logThreadSeq, or.Schema)
-	global.Wlog.Info(hlog)
+	routineName, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
+	if err != nil {
+		return nil, err
+	}
 	for _, v := range routineName {
-		sqlStr = fmt.Sprintf(" SELECT DBMS_METADATA.GET_DDL('PROCEDURE','%s','%s') AS CREATE_PROCEDURE FROM DUAL", v["ROUTINE_NAME"], or.Schema)
-		ilog := fmt.Sprintf("(%d) Oracle DB query table create Stored Procedure info exec sql is {%s}", logThreadSeq, sqlStr)
-		global.Wlog.Info(ilog)
-		sqlRows, err = db.Query(sqlStr)
-		if err != nil {
-			blog := fmt.Sprintf("(%d) Oracle DB exec sql fail. sql message is {%s} Error info is {%s}.", logThreadSeq, sqlStr, err)
-			global.Wlog.Error(blog)
-			return tmpb, err
+		strsql = fmt.Sprintf(" SELECT DBMS_METADATA.GET_DDL('PROCEDURE','%s','%s') AS CREATE_PROCEDURE FROM DUAL", v["ROUTINE_NAME"], or.Schema)
+		//vlog = fmt.Sprintf("(%d) Oracle DB query table create Stored Procedure info exec sql is {%s}", logThreadSeq, sqlStr)
+		//global.Wlog.Debug(vlog)
+
+		//vlog = fmt.Sprintf("(%d) Oracle DB query databases %s dispos Stored Procedure data info. to dispos it ...", logThreadSeq, or.Schema)
+		//global.Wlog.Debug(vlog)
+		if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
+			return nil, err
 		}
-		jlog := fmt.Sprintf("(%d) start dispos Oracle DB databases %s create Stored Procedure info.", logThreadSeq, or.Schema)
-		global.Wlog.Info(jlog)
-		createFunc, _ := rowDataDisposMap(sqlRows, "Proc", logThreadSeq)
-		klog := fmt.Sprintf("(%d) Oracle DB query databases %s dispos Stored Procedure data info. to dispos it ...", logThreadSeq, or.Schema)
-		global.Wlog.Info(klog)
+		createFunc, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
+		if err != nil {
+			return nil, err
+		}
 		for _, b := range createFunc {
 			tmpb[strings.ToUpper(fmt.Sprintf("%s", v["ROUTINE_NAME"]))] = strings.ReplaceAll(fmt.Sprintf("%s", b["CREATE_PROCEDURE"]), "\n", "")
 		}
-		zlog := fmt.Sprintf("(%d) Oracle DB query databases %s Stored Procedure data completion...", logThreadSeq, or.Schema)
-		global.Wlog.Info(zlog)
+		vlog = fmt.Sprintf("(%d) Oracle DB query databases %s Stored Procedure data completion...", logThreadSeq, or.Schema)
+		global.Wlog.Debug(vlog)
 	}
+	vlog = fmt.Sprintf("(%d) [%s] Complete the stored procedure information query under the %s database.", logThreadSeq, Event, DBType)
+	global.Wlog.Debug(vlog)
+	defer dispos.SqlRows.Close()
 	return tmpb, nil
 }
+
+/*
+	Oracle 存储函数或自定义函数校验
+*/
 func (or *QueryTable) Func(db *sql.DB, logThreadSeq int64) (map[string]string, error) {
-	var tmpb = make(map[string]string)
-	sqlStr := fmt.Sprintf("select OBJECT_NAME as ROUTINE_NAME  from all_procedures where object_type='FUNCTION' and owner = '%s'", or.Schema)
-	alog := fmt.Sprintf("(%d) Oracle DB query table query Stored Function info exec sql is {%s}", logThreadSeq, sqlStr)
-	global.Wlog.Info(alog)
-	sqlRows, err := db.Query(sqlStr)
-	routineName, err := rowDataDisposMap(sqlRows, "Func", logThreadSeq)
+	var (
+		//sqlStr string
+		//vlog   string
+		tmpb  = make(map[string]string)
+		Event = "Q_Proc"
+	)
+	vlog = fmt.Sprintf("(%d) [%s] Start to query the stored Func information under the %s database.", logThreadSeq, Event, DBType)
+	global.Wlog.Debug(vlog)
+	strsql = fmt.Sprintf("select OBJECT_NAME as ROUTINE_NAME  from all_procedures where object_type='FUNCTION' and owner = '%s'", or.Schema)
+	//vlog = fmt.Sprintf("(%d) Oracle DB query table query Stored Function info exec sql is {%s}", logThreadSeq, sqlStr)
+	//global.Wlog.Debug(vlog)
+	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
+	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
+		return nil, err
+	}
+	routineName, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
 	if err != nil {
-		blog := fmt.Sprintf("(%d) Oracle DB exec sql fail. sql message is {%s} Error info is {%s}.", logThreadSeq, sqlStr, err)
-		global.Wlog.Error(blog)
+		return nil, err
 	}
 	for _, v := range routineName {
-		sqlStr = fmt.Sprintf(" SELECT DBMS_METADATA.GET_DDL('FUNCTION','%s','%s') AS CREATE_FUNCTION FROM DUAL", v["ROUTINE_NAME"], or.Schema)
-		elog := fmt.Sprintf("(%d) Oracle DB query create Stored Function databases %s info, exec sql is {%s}", logThreadSeq, or.Schema, sqlStr)
-		global.Wlog.Info(elog)
-		sqlRows, err = db.Query(sqlStr)
-		if err != nil {
-			blog := fmt.Sprintf("(%d) Oracle DB exec sql fail. sql message is {%s} Error info is {%s}.", logThreadSeq, sqlStr, err)
-			global.Wlog.Error(blog)
+		strsql = fmt.Sprintf(" SELECT DBMS_METADATA.GET_DDL('FUNCTION','%s','%s') AS CREATE_FUNCTION FROM DUAL", v["ROUTINE_NAME"], or.Schema)
+		//vlog = fmt.Sprintf("(%d) Oracle DB query create Stored Function databases %s info, exec sql is {%s}", logThreadSeq, or.Schema, sqlStr)
+		//global.Wlog.Debug(vlog)
+		if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
+			return nil, err
 		}
-		flog := fmt.Sprintf("(%d) start dispos Oracle DB databases %s create Stored Function info.", logThreadSeq, or.Schema)
-		global.Wlog.Info(flog)
-		createFunc, _ := rowDataDisposMap(sqlRows, "Func", logThreadSeq)
-		glog := fmt.Sprintf("(%d) Oracle DB query databases %s create Stored Function completion.", logThreadSeq, or.Schema)
-		global.Wlog.Info(glog)
-		hlog := fmt.Sprintf("(%d) Oracle DB query databases %s dispos Stored Function data info. to dispos it ...", logThreadSeq, or.Schema)
-		global.Wlog.Info(hlog)
-
+		createFunc, err1 := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
+		if err1 != nil {
+			return nil, err1
+		}
 		for _, b := range createFunc {
 			d := strings.Join(strings.Fields(strings.ReplaceAll(fmt.Sprintf("%s", b["CREATE_FUNCTION"]), "\n", " ")), " ")
 			if strings.Contains(strings.ToUpper(d), "BEGIN") && strings.Contains(strings.ToUpper(d), "END") {
@@ -634,49 +650,87 @@ func (or *QueryTable) Func(db *sql.DB, logThreadSeq int64) (map[string]string, e
 			}
 			tmpb[strings.ToUpper(fmt.Sprintf("%s", v["ROUTINE_NAME"]))] = strings.ReplaceAll(fmt.Sprintf("%s", b["CREATE_FUNCTION"]), "\n", "")
 		}
-		zlog := fmt.Sprintf("(%d) Oracle DB query databases %s Stored Function data completion...", logThreadSeq, or.Schema)
-		global.Wlog.Info(zlog)
+		//vlog = fmt.Sprintf("(%d) Oracle DB query databases %s Stored Function data completion...", logThreadSeq, or.Schema)
+		//global.Wlog.Debug(vlog)
 	}
+	defer dispos.SqlRows.Close()
+	vlog = fmt.Sprintf("(%d) [%s] Complete the stored Func information query under the %s database.", logThreadSeq, Event, DBType)
+	global.Wlog.Debug(vlog)
 	return tmpb, nil
 }
+
+/*
+	Oracle 外键检查
+*/
 func (or *QueryTable) Foreign(db *sql.DB, logThreadSeq int64) (map[string]string, error) {
 	var (
 		routineNameM = make(map[string]int)
 		tmpb         = make(map[string]string)
+		Event        = "Q_Foreign"
 	)
-	sqlStr := fmt.Sprintf(" select c.OWNER as DATABASE,c.table_name as TABLENAME, c.r_constraint_name,c.delete_rule,cc.column_name,cc.position from user_constraints c join user_cons_columns cc on c.constraint_name=cc.constraint_name and c.table_name=cc.table_name  where c.constraint_type='R' and c.validated='VALIDATED' and c.OWNER = '%s' and c.table_name='%s'", strings.ToUpper(or.Schema), or.Table)
-	alog := fmt.Sprintf("(%d) Oracle DB query table query Foreign info exec sql is {%s}", logThreadSeq, sqlStr)
-	global.Wlog.Info(alog)
-	sqlRows, err := db.Query(sqlStr)
-	foreignName, err := rowDataDisposMap(sqlRows, "Foreign", logThreadSeq)
-	if err != nil {
-		blog := fmt.Sprintf("(%d) Oracle DB exec sql fail. sql message is {%s} Error info is {%s}.", logThreadSeq, sqlStr, err)
-		global.Wlog.Error(blog)
+	vlog = fmt.Sprintf("(%d) [%s] Start to query the Foreign information under the %s database.", logThreadSeq, Event, DBType)
+	global.Wlog.Debug(vlog)
+	strsql = fmt.Sprintf(" select c.OWNER as DATABASE,c.table_name as TABLENAME, c.r_constraint_name,c.delete_rule,cc.column_name,cc.position from user_constraints c join user_cons_columns cc on c.constraint_name=cc.constraint_name and c.table_name=cc.table_name  where c.constraint_type='R' and c.validated='VALIDATED' and c.OWNER = '%s' and c.table_name='%s'", strings.ToUpper(or.Schema), or.Table)
+	//vlog = fmt.Sprintf("(%d) Oracle DB query table query Foreign info exec sql is {%s}", logThreadSeq, sqlStr)
+	//global.Wlog.Debug(vlog)
+	//sqlRows, err := db.Query(sqlStr)
+	//if err != nil {
+	//	vlog = fmt.Sprintf("(%d) Oracle DB exec sql fail. sql message is {%s} Error info is {%s}.", logThreadSeq, sqlStr, err)
+	//	global.Wlog.Error(vlog)
+	//	return nil, err
+	//}
+	//if sqlRows == nil {
+	//	return nil, nil
+	//}
+	//foreignName, err := rowDataDisposMap(sqlRows, "Foreign", logThreadSeq)
+	//if err != nil {
+	//	vlog = fmt.Sprintf("(%d) Oracle DB exec sql fail. sql message is {%s} Error info is {%s}.", logThreadSeq, sqlStr, err)
+	//	global.Wlog.Error(vlog)
+	//	return nil, err
+	//}
+	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
+	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
+		return nil, err
 	}
-
+	foreignName, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
+	if err != nil {
+		return nil, err
+	}
 	for _, v := range foreignName {
 		routineNameM[fmt.Sprintf("%s.%s", v["DATABASE"], v["TABLENAME"])]++
 	}
 	for k, _ := range routineNameM {
 		schema, table := strings.Split(k, ".")[0], strings.Split(k, ".")[1]
-		sqlStr = fmt.Sprintf("SELECT DBMS_METADATA.GET_DDL('TABLE','%s','%s') as CREATE_FOREIGN FROM DUAL", table, schema)
-		elog := fmt.Sprintf("(%d) MySQL DB query create Foreign table %s.%s info, exec sql is {%s}", logThreadSeq, or.Schema, or.Table, sqlStr)
-		global.Wlog.Info(elog)
-		sqlRows, err = db.Query(sqlStr)
-		if err != nil {
-			blog := fmt.Sprintf("(%d) Oracle DB exec sql fail. sql message is {%s} Error info is {%s}.", logThreadSeq, sqlStr, err)
-			global.Wlog.Error(blog)
-			tmpb[k] = ""
-			return tmpb, err
+		strsql = fmt.Sprintf("SELECT DBMS_METADATA.GET_DDL('TABLE','%s','%s') as CREATE_FOREIGN FROM DUAL", table, schema)
+		//vlog = fmt.Sprintf("(%d) MySQL DB query create Foreign table %s.%s info, exec sql is {%s}", logThreadSeq, or.Schema, or.Table, sqlStr)
+		//global.Wlog.Debug(vlog)
+		//sqlRows, err = db.Query(sqlStr)
+		//if err != nil {
+		//	vlog = fmt.Sprintf("(%d) Oracle DB exec sql fail. sql message is {%s} Error info is {%s}.", logThreadSeq, sqlStr, err)
+		//	global.Wlog.Error(vlog)
+		//	tmpb[k] = ""
+		//	return tmpb, err
+		//}
+		//if sqlRows == nil {
+		//	return nil, nil
+		//}
+		//vlog = fmt.Sprintf("(%d) start dispos Oracle DB create table %s.%s create Foreign info.", logThreadSeq, or.Schema, or.Table)
+		//global.Wlog.Debug(vlog)
+		//createForeign, err1 := rowDataDisposMap(sqlRows, "Foreign", logThreadSeq)
+		//if err1 != nil {
+		//	return nil, err
+		//}
+		//vlog = fmt.Sprintf("(%d) Oracle DB query table %s.%s create Foreign completion.", logThreadSeq, or.Schema, or.Table)
+		//global.Wlog.Debug(vlog)
+		//vlog = fmt.Sprintf("(%d) Oracle DB query table %s.%s dispos Foreign data info. to dispos it ...", logThreadSeq, or.Schema, or.Table)
+		//global.Wlog.Debug(vlog)
+		if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
+			return nil, err
 		}
-		flog := fmt.Sprintf("(%d) start dispos Oracle DB create table %s.%s create Foreign info.", logThreadSeq, or.Schema, or.Table)
-		global.Wlog.Info(flog)
-		createForeign, _ := rowDataDisposMap(sqlRows, "Foreign", logThreadSeq)
-		glog := fmt.Sprintf("(%d) Oracle DB query table %s.%s create Foreign completion.", logThreadSeq, or.Schema, or.Table)
-		global.Wlog.Info(glog)
-		hlog := fmt.Sprintf("(%d) Oracle DB query table %s.%s dispos Foreign data info. to dispos it ...", logThreadSeq, or.Schema, or.Table)
-		global.Wlog.Info(hlog)
-
+		createForeign, err1 := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
+		if err1 != nil {
+			return nil, err1
+		}
 		for _, b := range createForeign {
 			var p, q, o string
 			d := fmt.Sprintf("%s", b["CREATE_FOREIGN"])
@@ -697,33 +751,57 @@ func (or *QueryTable) Foreign(db *sql.DB, logThreadSeq int64) (map[string]string
 			}
 			tmpb[k] = strings.ToUpper(strings.ReplaceAll(o, "\"", "!"))
 		}
-		zlog := fmt.Sprintf("(%d) Oracle DB query table %s.%s Foreign data completion...", logThreadSeq, or.Schema, or.Table)
-		global.Wlog.Info(zlog)
+		//vlog = fmt.Sprintf("(%d) Oracle DB query table %s.%s Foreign data completion...", logThreadSeq, or.Schema, or.Table)
+		//global.Wlog.Debug(vlog)
 	}
+	defer dispos.SqlRows.Close()
+	vlog = fmt.Sprintf("(%d) [%s] Complete the Foreign information query under the %s database.", logThreadSeq, Event, DBType)
+	global.Wlog.Debug(vlog)
 	return tmpb, nil
 }
+
+/*
+	分区表校验
+*/
 func (or *QueryTable) Partitions(db *sql.DB, logThreadSeq int64) (map[string]string, error) {
 	var (
 		routineNameM = make(map[string]int)
 		tmpb         = make(map[string]string)
+		Event        = "Q_Partitions"
 	)
-	sqlStr := fmt.Sprintf("select OWNER,TABLE_NAME from all_tables  where owner='%s' and TABLE_NAME='%s' and partitioned='YES'", or.Schema, or.Table)
-	alog := fmt.Sprintf("(%d) Oracle DB query table query partitions info exec sql is {%s}", logThreadSeq, sqlStr)
-	global.Wlog.Info(alog)
-	sqlRows, err := db.Query(sqlStr)
-	if err != nil {
-		blog := fmt.Sprintf("(%d) Oracle DB exec sql fail. sql message is {%s} Error info is {%s}.", logThreadSeq, sqlStr, err)
-		global.Wlog.Error(blog)
+	vlog = fmt.Sprintf("(%d) [%s] Start to query the Partitions information under the %s database.", logThreadSeq, Event, DBType)
+	global.Wlog.Debug(vlog)
+	strsql = fmt.Sprintf("select OWNER,TABLE_NAME from all_tables  where owner='%s' and TABLE_NAME='%s' and partitioned='YES'", or.Schema, or.Table)
+	//vlog = fmt.Sprintf("(%d) Oracle DB query table query partitions info exec sql is {%s}", logThreadSeq, sqlStr)
+	//global.Wlog.Debug(vlog)
+	//sqlRows, err := db.Query(sqlStr)
+	//if err != nil {
+	//	vlog = fmt.Sprintf("(%d) Oracle DB exec sql fail. sql message is {%s} Error info is {%s}.", logThreadSeq, sqlStr, err)
+	//	global.Wlog.Error(vlog)
+	//	return nil, err
+	//}
+	//if sqlRows == nil {
+	//	return nil, nil
+	//}
+	//vlog = fmt.Sprintf("(%d) start dispos Oracle DB query table %s.%s query Partitions info.", logThreadSeq, or.Schema, or.Table)
+	//global.Wlog.Debug(vlog)
+	//partitionsName, err := rowDataDisposMap(sqlRows, "Partitions", 10)
+	//if err != nil {
+	//	return nil, err
+	//}
+	//vlog = fmt.Sprintf("(%d) Oracle DB query table %s.%s query Partitions completion.", logThreadSeq, or.Schema, or.Table)
+	//global.Wlog.Debug(vlog)
+	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
+	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
+		return nil, err
 	}
-	clog := fmt.Sprintf("(%d) start dispos Oracle DB query table %s.%s query Partitions info.", logThreadSeq, or.Schema, or.Table)
-	global.Wlog.Info(clog)
-	partitionsName, _ := rowDataDisposMap(sqlRows, "Partitions", 10)
-	dlog := fmt.Sprintf("(%d) Oracle DB query table %s.%s query Partitions completion.", logThreadSeq, or.Schema, or.Table)
-	global.Wlog.Info(dlog)
+	partitionsName, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
+	if err != nil {
+		return nil, err
+	}
 	for _, v := range partitionsName {
 		routineNameM[fmt.Sprintf("%s.%s", v["OWNER"], v["TABLE_NAME"])]++
 	}
-
 	for k, _ := range routineNameM {
 		var zi string
 		if strings.EqualFold(k, fmt.Sprintf("%s.%s", or.Schema, or.Table)) {
@@ -732,23 +810,36 @@ func (or *QueryTable) Partitions(db *sql.DB, logThreadSeq int64) (map[string]str
 			zi = k
 		}
 		schema, table := strings.Split(k, ".")[0], strings.Split(k, ".")[1]
-		sqlStr = fmt.Sprintf("SELECT DBMS_METADATA.GET_DDL('TABLE','%s','%s') AS CREATE_PARTITIONS FROM DUAL", table, schema)
-		elog := fmt.Sprintf("(%d) Oracle DB query create partitions table %s.%s info, exec sql is {%s}", logThreadSeq, or.Schema, or.Table, sqlStr)
-		global.Wlog.Info(elog)
-		sqlRows, err = db.Query(sqlStr)
-		if err != nil {
-			blog := fmt.Sprintf("(%d) Oracle DB exec sql fail. sql message is {%s} Error info is {%s}.", logThreadSeq, sqlStr, err)
-			global.Wlog.Error(blog)
-			tmpb[k] = ""
-			return tmpb, err
+		strsql = fmt.Sprintf("SELECT DBMS_METADATA.GET_DDL('TABLE','%s','%s') AS CREATE_PARTITIONS FROM DUAL", table, schema)
+		//vlog = fmt.Sprintf("(%d) Oracle DB query create partitions table %s.%s info, exec sql is {%s}", logThreadSeq, or.Schema, or.Table, sqlStr)
+		//global.Wlog.Debug(vlog)
+		//sqlRows, err = db.Query(sqlStr)
+		//if err != nil {
+		//	vlog = fmt.Sprintf("(%d) Oracle DB exec sql fail. sql message is {%s} Error info is {%s}.", logThreadSeq, sqlStr, err)
+		//	global.Wlog.Error(vlog)
+		//	tmpb[k] = ""
+		//	return tmpb, err
+		//}
+		//if sqlRows == nil {
+		//	return nil, nil
+		//}
+		//vlog = fmt.Sprintf("(%d) start dispos Oracle DB create table %s.%s create Partitions info.", logThreadSeq, or.Schema, or.Table)
+		//global.Wlog.Debug(vlog)
+		//createPartitions, err1 := rowDataDisposMap(sqlRows, "Partitions", logThreadSeq)
+		//if err1 != nil {
+		//	return nil, err1
+		//}
+		//vlog = fmt.Sprintf("(%d) Oracle DB query table %s.%s create Partitions completion.", logThreadSeq, or.Schema, or.Table)
+		//global.Wlog.Debug(vlog)
+		//vlog = fmt.Sprintf("(%d) Oracle DB query table %s.%s dispos Partitions data info. to dispos it ...", logThreadSeq, or.Schema, or.Table)
+		//global.Wlog.Debug(vlog)
+		if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
+			return nil, err
 		}
-		flog := fmt.Sprintf("(%d) start dispos Oracle DB create table %s.%s create Partitions info.", logThreadSeq, or.Schema, or.Table)
-		global.Wlog.Info(flog)
-		createPartitions, _ := rowDataDisposMap(sqlRows, "Partitions", logThreadSeq)
-		glog := fmt.Sprintf("(%d) Oracle DB query table %s.%s create Partitions completion.", logThreadSeq, or.Schema, or.Table)
-		global.Wlog.Info(glog)
-		hlog := fmt.Sprintf("(%d) Oracle DB query table %s.%s dispos Partitions data info. to dispos it ...", logThreadSeq, or.Schema, or.Table)
-		global.Wlog.Info(hlog)
+		createPartitions, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
+		if err != nil {
+			return nil, err
+		}
 		for _, b := range createPartitions {
 			z := strings.Split(fmt.Sprintf("%s", b["CREATE_PARTITIONS"]), "\n")
 			var a, c []string
@@ -779,9 +870,11 @@ func (or *QueryTable) Partitions(db *sql.DB, logThreadSeq int64) (map[string]str
 			}
 			tmpb[zi] = strings.ReplaceAll(xs, "\"", "!")
 		}
-		zlog := fmt.Sprintf("(%d) Oracle DB query table %s.%s partitions data completion...", logThreadSeq, or.Schema, or.Table)
-		global.Wlog.Info(zlog)
+		//vlog = fmt.Sprintf("(%d) Oracle DB query table %s.%s partitions data completion...", logThreadSeq, or.Schema, or.Table)
+		//global.Wlog.Debug(vlog)
 	}
+	vlog = fmt.Sprintf("(%d) [%s] Complete the Partitions information query under the %s database.", logThreadSeq, Event, DBType)
+	global.Wlog.Debug(vlog)
 	return tmpb, nil
 }
 func (or *QueryTable) Struct(db *sql.DB) (map[string]string, error) {

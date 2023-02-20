@@ -46,32 +46,34 @@ func (or *GlobalCS) fushTableReadLock(db *sql.DB, logThreadSeq int) error {
    创建源、目并发查询数据时需要的 快照会话，防止数据修改查询数据不对
 */
 func (or *GlobalCS) sessionRR(logThreadSeq int) ([]*sql.DB, error) {
-	var cisoRRsession []*sql.DB //设置有全局一致性事务的事务快照的db连接id管道
-	alog := fmt.Sprintf("(%d) Oracle DB init database conn Pool ...", logThreadSeq)
-	global.Wlog.Info(alog)
+	var (
+		vlog          string
+		cisoRRsession []*sql.DB //设置有全局一致性事务的事务快照的db连接id管道
+	)
+	vlog = fmt.Sprintf("(%d) Oracle DB init database conn Pool ...", logThreadSeq)
+	global.Wlog.Debug(vlog)
 	for i := 1; i <= or.ConnPoolMin; i++ {
 		db1, err := sql.Open(or.Drive, or.Jdbc)
 		if err != nil {
-			blog := fmt.Sprintf("(%d) Oracle DB database open fail. Error Info is {%s}.", logThreadSeq, err)
-			global.Wlog.Error(blog)
+			vlog = fmt.Sprintf("(%d) Oracle DB database open fail. Error Info is {%s}.", logThreadSeq, err)
+			global.Wlog.Error(vlog)
 			return nil, err
 		}
 		if err = db1.Ping(); err != nil {
-			clog := fmt.Sprintf("(%d) Oracle DB database connection fail. conn jdbc is {%s} Error Info is {%s}.", logThreadSeq, or.Jdbc, err)
-			global.Wlog.Error(clog)
+			vlog = fmt.Sprintf("(%d) Oracle DB database connection fail. conn jdbc is {%s} Error Info is {%s}.", logThreadSeq, or.Jdbc, err)
+			global.Wlog.Error(vlog)
 			return nil, err
 		}
 		db1.SetMaxIdleConns(1000)
 		db1.SetMaxOpenConns(1000)
 		db1.SetConnMaxLifetime(-1)
-		//db1.SetConnMaxIdleTime(time.Second * 86400)
 		db1.SetConnMaxIdleTime(-1)
-		hlog := fmt.Sprintf("(%d) Oracle DB starts a transaction", logThreadSeq)
-		global.Wlog.Info(hlog)
+		vlog = fmt.Sprintf("(%d) Oracle DB starts a transaction", logThreadSeq)
+		global.Wlog.Debug(vlog)
 		tx, err2 := db1.Begin()
 		if err2 != nil {
-			dlog := fmt.Sprintf("(%d) Oracle DB database create session connection fail. conn jdbc is {%s} Error Info is {%s}.", logThreadSeq, or.Jdbc, err)
-			global.Wlog.Error(dlog)
+			vlog = fmt.Sprintf("(%d) Oracle DB database create session connection fail. conn jdbc is {%s} Error Info is {%s}.", logThreadSeq, or.Jdbc, err)
+			global.Wlog.Error(vlog)
 		}
 		//strsql := "set session wait_timeout=86400;"
 		//if _, err = tx.Exec(strsql); err != nil {
@@ -92,11 +94,11 @@ func (or *GlobalCS) sessionRR(logThreadSeq int) ([]*sql.DB, error) {
 		//	return nil, err
 		//}
 		if err = tx.Commit(); err != nil {
-			ilog := fmt.Sprintf("(%d) MySQL DB commit a transaction fail.", logThreadSeq)
-			global.Wlog.Error(ilog)
+			vlog = fmt.Sprintf("(%d) MySQL DB commit a transaction fail.", logThreadSeq)
+			global.Wlog.Error(vlog)
 		} else {
-			ilog := fmt.Sprintf("(%d) Oracle DB commit a transaction", logThreadSeq)
-			global.Wlog.Info(ilog)
+			vlog = fmt.Sprintf("(%d) Oracle DB commit a transaction", logThreadSeq)
+			global.Wlog.Debug(vlog)
 		}
 
 		cisoRRsession = append(cisoRRsession, db1)
@@ -184,10 +186,18 @@ func (or *GlobalCS) NewConnPool(logThreadSeq int) (*global.Pool, bool) {
 	//	if err := recover(); err != nil {
 	//	}
 	//}()
-	db, err := sql.Open(or.Drive, or.Jdbc)
+	var (
+		vlog string
+		err  error
+		db   *sql.DB
+	)
+	vlog = fmt.Sprintf("(%d) Start to initialize the connection pool of the original target...", logThreadSeq)
+	global.Wlog.Info(vlog)
+
+	db, err = sql.Open(or.Drive, or.Jdbc)
 	if err != nil {
-		alog := fmt.Sprintf("(%d) Oracle DB connection failed. The error message is {%s}", logThreadSeq, err)
-		global.Wlog.Error(alog)
+		vlog = fmt.Sprintf("(%d) Oracle DB connection failed. The error message is {%s}", logThreadSeq, err)
+		global.Wlog.Error(vlog)
 		return nil, false
 	}
 	if err = db.Ping(); err != nil {
@@ -209,5 +219,8 @@ func (or *GlobalCS) NewConnPool(logThreadSeq int) (*global.Pool, bool) {
 		return nil, false
 	}
 	db.Close()
-	return global.NewPool(or.ConnPoolMin, session, logThreadSeq, "Oracle"), true
+	C := global.NewPool(or.ConnPoolMin, session, logThreadSeq, "Oracle")
+	vlog = fmt.Sprintf("(%d) The connection pool initialization of the Oracle target is completed !!!", logThreadSeq)
+	global.Wlog.Info(vlog)
+	return C, true
 }
