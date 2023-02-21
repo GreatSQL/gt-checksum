@@ -24,9 +24,9 @@ type (
 
 var (
 	//wg                    sync.WaitGroup
-	lock                  sync.Mutex
-	breakIndexColumnMq    = false
-	querySqlWhereSliceMap = make([]map[string]string, 0)
+	lock sync.Mutex
+	//breakIndexColumnMq    = false
+	//querySqlWhereSliceMap = make([]map[string]string, 0)
 )
 
 /*
