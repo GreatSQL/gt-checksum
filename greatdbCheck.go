@@ -17,12 +17,12 @@ func main() {
 	//获取配置文件
 	m := inputArg.NewConfigInit(0)
 	if !actions.SchemaTableInit(m).GlobalAccessPriCheck(1, 2) {
-		fmt.Println("GreatSQL report: Missing global permissions, please check the log for details.")
+		fmt.Println("gt-checksum report: Missing global permissions, please check the log for details.")
 		os.Exit(1)
 	}
 
 	//获取待校验表信息
-	fmt.Println("-- GreatSQLCheck init check table name -- ")
+	fmt.Println("-- gt-checksum init check table name -- ")
 	tableList := actions.SchemaTableInit(m).SchemaTableFilter(3, 4)
 
 	if m.CheckObject != "data" {
@@ -56,21 +56,21 @@ func main() {
 		//校验表结构
 		tableList, _ = actions.SchemaTableInit(m).TableColumnNameCheck(tableList, 9, 10)
 		if len(tableList) == 0 {
-			fmt.Println("GreatSQL report: No checklist, please check the log for details.")
+			fmt.Println("gt-checksum report: No checklist, please check the log for details.")
 			os.Exit(1)
 		}
 		//19、20
 		tableList, _ = actions.SchemaTableInit(m).TableAccessPriCheck(tableList, 19, 20)
 		if len(tableList) == 0 {
-			fmt.Println("GreatSQL report: Insufficient permissions for the verification table, please check the log for details.")
+			fmt.Println("gt-checksum report: Insufficient permissions for the verification table, please check the log for details.")
 			os.Exit(1)
 		}
 		if len(tableList) > 0 {
 			//根据要校验的表，获取该表的全部列信息
-			fmt.Println("-- GreatSQLCheck init check table column --")
+			fmt.Println("-- gt-checksum init check table column --")
 			tableAllCol := actions.SchemaTableInit(m).SchemaTableAllCol(tableList, 21, 22)
 			//根据要校验的表，筛选查询数据时使用到的索引列信息
-			fmt.Println("-- GreatSQLCheck init check table index column --")
+			fmt.Println("-- gt-checksum init check table index column --")
 			tableIndexColumnMap := actions.SchemaTableInit(m).TableIndexColumn(tableList, 23, 24)
 			//获取全局一致 x性位点
 			//fmt.Println("-- GreatdbCheck Obtain global consensus sites --")
@@ -98,12 +98,12 @@ func main() {
 			//}
 
 			//初始化数据库连接池
-			fmt.Println("-- GreatSQLCheck init source and dest transaction snapshoot conn pool --")
+			fmt.Println("-- gt-checksum init source and dest transaction snapshoot conn pool --")
 			sdc, _ := dbExec.GCN().GcnObject(m.PoolMin, m.SourceJdbc, m.SourceDrive).NewConnPool(27)
 			ddc, _ := dbExec.GCN().GcnObject(m.PoolMin, m.DestJdbc, m.DestDrive).NewConnPool(28)
 
 			//针对待校验表生成查询条件计划清单
-			fmt.Println("-- GreatSQLCheck init cehck table query plan and check data --")
+			fmt.Println("-- gt-checksum init cehck table query plan and check data --")
 			switch m.CheckMode {
 			case "rows":
 				actions.CheckTableQuerySchedule(sdc, ddc, tableIndexColumnMap, tableAllCol, *m).Schedulingtasks()
@@ -118,10 +118,10 @@ func main() {
 		}
 	}
 
-	global.Wlog.Info("GreatSQLCheck check object {", m.CheckObject, "} complete !!!")
+	global.Wlog.Info("gt-checksum check object {", m.CheckObject, "} complete !!!")
 	//输出结果信息
 	fmt.Println("")
-	fmt.Println("** GreatSQLCheck Overview of verification results **")
+	fmt.Println("** gt-checksum Overview of results **")
 	fmt.Println("Check time: ", fmt.Sprintf("%.2fs", time.Since(beginTime).Seconds()), "(Seconds)")
 	actions.CheckResultOut(m)
 }
