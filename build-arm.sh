@@ -11,7 +11,7 @@ if [ ! -d "/usr/lcoal/$OracleDrive" ];then
   cp -rpf Oracle/$OracleDrive /usr/lcoal/
 fi
 export LD_LIBRARY_PATH=/usr/local/$OracleDrive:$LD_LIBRARY_PATH
-
+ 
 go build -o gt-checksum greatdbCheck.go
 mkdir gt-checksum-${vs}-linux-arm-64
 cp -rpf gt-checksum gc.conf gt-checksum-${vs}-linux-arm-64
