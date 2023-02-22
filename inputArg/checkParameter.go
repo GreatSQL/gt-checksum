@@ -233,7 +233,7 @@ func (rc *readConf) checkPar(cp *ConfigParameter, logThreadSeq int64) {
 	global.Wlog.Debug(vlog)
 	if cp.Datafix == "file" {
 		if cp.FixFileName == "" {
-			cp.FixFileName = "./greatdbCheckDataFix.sql"
+			cp.FixFileName = "./gt-checksum-DataFix.sql"
 		} else {
 			fileExsit(rc, cp.LogFile)
 		}
@@ -355,7 +355,7 @@ func NewConfigInit(logThreadSeq int64) *ConfigParameter {
 		cp = &ConfigParameter{}
 	)
 	cliHelp(cp)
-	fmt.Println("-- GreatSQLCheck init configuration files -- ")
+	fmt.Println("-- gt-checksum init configuration files -- ")
 	if cp.config != "" {
 		if !strings.Contains(cp.config, "/") {
 			sysType := runtime.GOOS
@@ -368,10 +368,10 @@ func NewConfigInit(logThreadSeq int64) *ConfigParameter {
 		rc.getConfig(cp.config, cp)
 	}
 	//初始化日志文件
-	fmt.Println("-- GreatSQLCheck init log files -- ")
+	fmt.Println("-- gt-checksum init log files -- ")
 	global.Wlog = log.NewWlog(cp.LogFile, cp.LogLevel)
 
-	fmt.Println("-- GreatSQLCheck init check parameter --")
+	fmt.Println("-- gt-checksum init check parameter --")
 	rc.checkPar(cp, logThreadSeq)
 	return cp
 }
