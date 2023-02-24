@@ -313,17 +313,17 @@ func (sp *SchedulePlan) queryTableData(selectSql chanMap, diffQueryData chanDiff
 			if sp.tableMaxRows%uint64(sp.chanrowCount) > 0 {
 				barTotal += 1
 			}
-			sp.bar.NewOption(0, barTotal)
+			sp.bar.NewOption(0, barTotal, "task")
 		}
 	}
 	if sp.checkMod == "sample" {
-		sp.bar.NewOption(0, sp.sampDataGroupNumber)
+		sp.bar.NewOption(0, sp.sampDataGroupNumber, "task")
 	}
 	for {
 		select {
 		case d, ok := <-sc:
 			if ok {
-				sp.bar.NewOption(0, d)
+				sp.bar.NewOption(0, d, "task")
 			}
 		case c, ok := <-selectSql:
 			if !ok {
@@ -474,7 +474,6 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 									if sqlstr != "" {
 										cc <- sqlstr
 									}
-									//strsqlSliect = append(strsqlSliect, sqlstr)
 								}
 								vlog = fmt.Sprintf("(%d) The delete repair statement verifying table %s.%s is complete.", logThreadSeq, c1.Schema, c1.Table)
 								global.Wlog.Debug(vlog)
@@ -491,7 +490,6 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 									if sqlstr != "" {
 										cc <- sqlstr
 									}
-									//strsqlSliect = append(strsqlSliect, sqlstr)
 								}
 								vlog = fmt.Sprintf("(%d) The insert repair statement verifying table %s.%s is complete. ", logThreadSeq, c1.Schema, c1.Table)
 								global.Wlog.Debug(vlog)
@@ -554,6 +552,7 @@ func (sp SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 			}
 		}
 	}
+
 }
 
 /*

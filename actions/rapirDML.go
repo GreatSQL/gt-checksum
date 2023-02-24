@@ -86,44 +86,13 @@ func (rs rapirSqlStruct) execRapirSql(sqlstr []string, dbType string, logThreadS
 func (rs rapirSqlStruct) SqlFile(sfile *os.File, sql []string, logThreadSeq int64) error { //在/tmp/下创建数据修复文件，将在目标端数据修复的语句写入到文件中
 	var (
 		vlog string
-		//keyS  []int
-		//sqls  = make([]string, len(sql))
-		//sqlss []string
 	)
 	vlog = fmt.Sprintf("(%d) Start writing repair statements to the repair file.", logThreadSeq)
 	global.Wlog.Info(vlog)
-	//for k, _ := range sql {
-	//	keyS = append(keyS, k)
-	//}
-	//sort.Ints(keyS)
-	//for _, i := range keyS {
-	//	sqls = append(sqls, sql[i])
-	//}
-	//for _, i := range sqls {
-	//	if len(i) > 0 {
-	//		sqlss = append(sqlss, i)
-	//	}
-	//}
-	FileOperate{File: sfile, BufSize: 1024 * 4 * 1024, SqlType: "sql"}.ConcurrencyWriteFile(sql)
-
-	//_, err := write.WriteString(sql)
-	//if err != nil {
-	//	vlog = fmt.Sprintf("(%d) Failed to write repair statement to repair file {%s}.The sql message is {%s} The error message is {%s}", logThreadSeq, sql, err)
-	//	global.Wlog.Error(vlog)
-	//	return err
-	//}
-	//_, err = write.WriteString("\n")
-	//if err != nil {
-	//	vlog = fmt.Sprintf("(%d) Failed to write repair statement to repair file {%s}.The sql message is {%s} The error message is {%s}", logThreadSeq, "\n", err)
-	//	global.Wlog.Error(vlog)
-	//	return err
-	//}
-	//err = write.Flush()
-	//if err != nil {
-	//	vlog = fmt.Sprintf("(%d) Flush file buffer to repair file {%s} failed. The error message is {%s}", logThreadSeq, err)
-	//	global.Wlog.Error(vlog)
-	//	return err
-	//}
+	sqlCommit := []string{"begin;"}
+	sqlCommit = append(sqlCommit, sql...)
+	sqlCommit = append(sqlCommit, "commit;")
+	FileOperate{File: sfile, BufSize: 1024 * 4 * 1024, SqlType: "sql"}.ConcurrencyWriteFile(sqlCommit)
 	vlog = fmt.Sprintf("(%d) Write the repair statement to the repair file successfully.", logThreadSeq)
 	global.Wlog.Info(vlog)
 	return nil

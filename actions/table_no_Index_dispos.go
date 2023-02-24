@@ -87,45 +87,44 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 					for ki, vi := range v {
 						rowData = ki
 						sqlType = vi
-						noIndexD <- struct{}{}
+						//noIndexD <- struct{}{}
 						pods.Differences = "yes"
 						dbf.IndexType = "mui"
-						go func() {
-							defer func() {
-								<-noIndexD
-							}()
-							ddb := sp.ddbPool.Get(logThreadSeq)
-							if sqlType == "delete" {
-								vlog = fmt.Sprintf("(%d) Start to generate the delete of table %s.%s to repair the sql statement.", logThreadSeq, sp.schema, sp.table)
-								global.Wlog.Debug(vlog)
-								dbf.RowData = rowData
-								sqlstr, err := dbf.DataAbnormalFix().FixDeleteSqlExec(ddb, sp.ddrive, logThreadSeq)
-								if err != nil {
-									return
-								}
-								if sqlstr != "" {
-									sqlStrExec <- sqlstr
-								}
-								vlog = fmt.Sprintf("(%d) The delete repair sql statements of table %s.%s are generated.", logThreadSeq, sp.schema, sp.table)
-								global.Wlog.Debug(vlog)
+						//go func() {
+						//	defer func() {
+						//		<-noIndexD
+						//	}()
+						ddb := sp.ddbPool.Get(logThreadSeq)
+						if sqlType == "delete" {
+							vlog = fmt.Sprintf("(%d) Start to generate the delete of table %s.%s to repair the sql statement.", logThreadSeq, sp.schema, sp.table)
+							global.Wlog.Debug(vlog)
+							dbf.RowData = rowData
+							sqlstr, err := dbf.DataAbnormalFix().FixDeleteSqlExec(ddb, sp.ddrive, logThreadSeq)
+							if err != nil {
+								return
 							}
-							if sqlType == "insert" {
-								vlog = fmt.Sprintf("(%d) Start to generate the insert of table %s.%s to repair the sql statement.", logThreadSeq, sp.schema, sp.table)
-								global.Wlog.Debug(vlog)
-								dbf.RowData = rowData
-
-								sqlstr, err := dbf.DataAbnormalFix().FixInsertSqlExec(ddb, sp.ddrive, logThreadSeq)
-								if err != nil {
-									return
-								}
-								if sqlstr != "" {
-									sqlStrExec <- sqlstr
-								}
-								vlog = fmt.Sprintf("(%d) The insert repair sql statements of table %s.%s are generated.", logThreadSeq, sp.schema, sp.table)
-								global.Wlog.Debug(vlog)
+							if sqlstr != "" {
+								sqlStrExec <- sqlstr
 							}
-							sp.ddbPool.Put(ddb, logThreadSeq)
-						}()
+							vlog = fmt.Sprintf("(%d) The delete repair sql statements of table %s.%s are generated.", logThreadSeq, sp.schema, sp.table)
+							global.Wlog.Debug(vlog)
+						}
+						if sqlType == "insert" {
+							vlog = fmt.Sprintf("(%d) Start to generate the insert of table %s.%s to repair the sql statement.", logThreadSeq, sp.schema, sp.table)
+							global.Wlog.Debug(vlog)
+							dbf.RowData = rowData
+							sqlstr, err := dbf.DataAbnormalFix().FixInsertSqlExec(ddb, sp.ddrive, logThreadSeq)
+							if err != nil {
+								return
+							}
+							if sqlstr != "" {
+								sqlStrExec <- sqlstr
+							}
+							vlog = fmt.Sprintf("(%d) The insert repair sql statements of table %s.%s are generated.", logThreadSeq, sp.schema, sp.table)
+							global.Wlog.Debug(vlog)
+						}
+						sp.ddbPool.Put(ddb, logThreadSeq)
+						//}()
 					}
 				}
 			}
@@ -222,7 +221,7 @@ func (sp *SchedulePlan) QueryTableData(beginSeq uint64, chunkSeq uint64, chanrow
 /*
 	针对查询的字符串进行md5校验，字符串不一致则进行差异处理
 */
-func (sp *SchedulePlan) QueryDataCheckSum(stt, dtt string, md5chan chan<- map[string]string, chunkSeq uint64, logThreadSeq int64) {
+func (sp *SchedulePlan) QueryDataCheckSum(stt, dtt string, md5chan chan<- map[string]string, FileOpen FileOperate, chunkSeq uint64, logThreadSeq int64) {
 	var (
 		vlog         string
 		aa           = &CheckSumTypeStruct{}
@@ -238,7 +237,9 @@ func (sp *SchedulePlan) QueryDataCheckSum(stt, dtt string, md5chan chan<- map[st
 			tmpAnDateMap = make(map[string]string)
 			vlog = fmt.Sprintf("(%d) Start generating the redundant data in the difference data for table %s.%s.", logThreadSeq, sp.schema, sp.table)
 			global.Wlog.Debug(vlog)
-			md5Slice := FileOperate{File: sp.file, BufSize: 1024 * 4 * 1024, SqlType: "delete"}.ConcurrencyWriteFile(del)
+			FileOpen.SqlType = "delete"
+			md5Slice := FileOpen.ConcurrencyWriteFile(del)
+			//md5Slice := FileOperate{File: sp.file, BufSize: 1024 * 4 * 1024, SqlType: "delete"}.ConcurrencyWriteFile(del)
 			for _, deli := range md5Slice {
 				tmpAnDateMap[deli] = "delete"
 			}
@@ -250,7 +251,9 @@ func (sp *SchedulePlan) QueryDataCheckSum(stt, dtt string, md5chan chan<- map[st
 			tmpAnDateMap = make(map[string]string)
 			vlog = fmt.Sprintf("(%d) The missing data in the difference data that starts generating table %s.%s.", logThreadSeq, sp.schema, sp.table)
 			global.Wlog.Debug(vlog)
-			md5Slice := FileOperate{File: sp.file, BufSize: 1024 * 4 * 1024, SqlType: "insert", fileName: sp.TmpFileName}.ConcurrencyWriteFile(add)
+			//md5Slice := FileOperate{File: sp.file, BufSize: 1024 * 4 * 1024, SqlType: "insert", fileName: sp.TmpFileName}.ConcurrencyWriteFile(add)
+			FileOpen.SqlType = "insert"
+			md5Slice := FileOpen.ConcurrencyWriteFile(add)
 			for _, addi := range md5Slice {
 				tmpAnDateMap[addi] = "insert"
 			}
@@ -309,7 +312,7 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 		Differences: "no",
 		Datafix:     sp.datafixType,
 	}
-	sp.bar.NewOption(0, barTableRow)
+	sp.bar.NewOption(0, barTableRow, "rows")
 	//统计表的总行数
 	go func() {
 		var cc int
@@ -330,6 +333,7 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 	//根据去重后的数据读取文件，找出差异数据
 	dataFixC := sp.noIndexTableAbdataRead(uniqMD5C, logThreadSeq)
 	sqlStrExec := sp.DataFixSql(dataFixC, &pods, logThreadSeq)
+	FileOper := FileOperate{File: sp.file, BufSize: 1024 * 4 * 1024, fileName: sp.TmpFileName}
 	//循环读取表行数，并进行数据校验
 	for {
 		if rowEnd && len(noIndexC) == 0 {
@@ -362,7 +366,7 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 			} else {
 				tableRow <- dlength
 			}
-			sp.QueryDataCheckSum(stt, dtt, md5Chan, Cycles, logThreadSeq)
+			sp.QueryDataCheckSum(stt, dtt, md5Chan, FileOper, Cycles, logThreadSeq)
 			vlog = fmt.Sprintf("(%d) There is currently no index table %s.%s The %d round of data cycle verification is complete.", logThreadSeq, sp.schema, sp.table, Cycles)
 			global.Wlog.Debug(vlog)
 		}(Cycles, beginSeq)

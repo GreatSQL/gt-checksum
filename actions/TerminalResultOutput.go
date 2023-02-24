@@ -10,11 +10,12 @@ import (
 
 //进度条
 type Bar struct {
-	percent int64  //百分比
-	cur     int64  //当前进度位置
-	total   int64  //总进度
-	rate    string //进度条
-	graph   string //显示符号
+	percent  int64  //百分比
+	cur      int64  //当前进度位置
+	total    int64  //总进度
+	rate     string //进度条
+	graph    string //显示符号
+	taskUnit string //task单位
 }
 
 type Pod struct {
@@ -118,9 +119,10 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 	}
 }
 
-func (bar *Bar) NewOption(start, total int64) {
+func (bar *Bar) NewOption(start, total int64, taskUnit string) {
 	bar.cur = start
 	bar.total = total
+	bar.taskUnit = taskUnit
 	if bar.graph == "" {
 		bar.graph = "█"
 	}
@@ -133,9 +135,9 @@ func (bar *Bar) NewOption(start, total int64) {
 func (bar *Bar) getPercent() int64 {
 	return int64(float32(bar.cur) / float32(bar.total) * 100)
 }
-func (bar *Bar) NewOptionWithGraph(start, total int64, graph string) {
+func (bar *Bar) NewOptionWithGraph(start, total int64, graph, taskUnit string) {
 	bar.graph = graph
-	bar.NewOption(start, total)
+	bar.NewOption(start, total, taskUnit)
 }
 
 //显示进度条需要放在循环中执行，循环中展示每轮循环当前的进度状态，fmt.Pringf打印的那句话通过\r控制打印效果，在构建rate进度条时
@@ -152,9 +154,13 @@ func (bar *Bar) Play(cur int64) {
 		bar.rate += bar.graph
 	}
 	//if bar.total >= 100
-	fmt.Printf("\r[%-21s]%3d%%  %8d/%d", bar.rate, bar.percent, bar.cur, bar.total)
+	//if bar.taskUnit == "task"{
+	//	fmt.Printf("\r[%-21s]%3d%%  %s%8d/%d", bar.rate, bar.percent, "task:", bar.cur, bar.total)
 	//}
-
+	//if bar.taskUnit == "rows"{
+	//	fmt.Printf("\r[%-21s]%3d%%  %s%8d/%d", bar.rate, bar.percent, "rows:", bar.cur, bar.total)
+	//}
+	fmt.Printf("\r[%-21s]%3d%%  %s%8d/%d", bar.rate, bar.percent, fmt.Sprintf("%s:", bar.taskUnit), bar.cur, bar.total)
 }
 
 //由于上面的打印没有打印换行符，因此，在进度全部结束之后（也就是跳出循环之外时），需要打印一个换行符，因此，封装了一个Finish函数，该函数纯粹的打印一个换行，表示进度条已经完成。
