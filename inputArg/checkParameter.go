@@ -233,35 +233,35 @@ func (rc *readConf) checkPar(cp *ConfigParameter, logThreadSeq int64) {
 	global.Wlog.Debug(vlog)
 	if cp.Datafix == "file" {
 		if cp.FixFileName == "" {
-			cp.FixFileName = "./greatdbCheckDataFix.sql"
+			cp.FixFileName = "./gt-checksum-DataFix.sql"
 		} else {
 			fileExsit(rc, cp.LogFile)
 		}
 	}
 
-	vlog = fmt.Sprintf("(%d) [%s]  Open repair file {%s} handle.", logThreadSeq, Event, cp.FixFileName)
-	global.Wlog.Debug(vlog)
-	if _, err := os.Stat(cp.FixFileName); err == nil {
-		os.Remove(cp.FixFileName)
+	if strings.EqualFold(cp.Datafix, "file") {
+		vlog = fmt.Sprintf("(%d) [%s]  Open repair file {%s} handle.", logThreadSeq, Event, cp.FixFileName)
+		global.Wlog.Debug(vlog)
+		if _, err := os.Stat(cp.FixFileName); err == nil {
+			os.Remove(cp.FixFileName)
+		}
+		sfile, err := os.OpenFile(cp.FixFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+		if err != nil {
+			fmt.Println("GreatSQL report: fix file open fail, please check the log for details.")
+			vlog = fmt.Sprintf("(%d) [%s]  Repair the file {%s} handle opening failure, the failure information is {%s}.", logThreadSeq, Event, cp.FixFileName, err)
+			global.Wlog.Error(vlog)
+			os.Exit(1)
+		}
+		cp.Sfile = sfile
+		fileExsit(rc, cp.FixFileName)
+		vlog = fmt.Sprintf("(%d) [%s]  check data fix file parameter message is {%s}.", logThreadSeq, Event, cp.FixFileName)
+		global.Wlog.Debug(vlog)
 	}
-	sfile, err := os.OpenFile(cp.FixFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
-	if err != nil {
-		fmt.Println("GreatSQL report: fix file open fail, please check the log for details.")
-		vlog = fmt.Sprintf("(%d) [%s]  Repair the file {%s} handle opening failure, the failure information is {%s}.", logThreadSeq, Event, cp.FixFileName, err)
-		global.Wlog.Error(vlog)
-		os.Exit(1)
-	}
-	cp.Sfile = sfile
-
-	fileExsit(rc, cp.FixFileName)
-	vlog = fmt.Sprintf("(%d) [%s]  check data fix file parameter message is {%s}.", logThreadSeq, Event, cp.FixFileName)
-	global.Wlog.Debug(vlog)
-
 	vlog = fmt.Sprintf("(%d) [%s]  start init parallel-thds values.", logThreadSeq, Event)
 	global.Wlog.Debug(vlog)
 	if cp.Concurrency < int(1) {
 		fmt.Println("GreatSQL report: table Parameter setting error, please check the log for details.")
-		vlog = fmt.Sprintf("(%d) [%s]  parallel-thds parameter must be greater than 0.", logThreadSeq, Event, err)
+		vlog = fmt.Sprintf("(%d) [%s]  parallel-thds parameter must be greater than 0.", logThreadSeq, Event)
 		global.Wlog.Error(vlog)
 		os.Exit(1)
 	}
@@ -276,10 +276,6 @@ func (rc *readConf) checkPar(cp *ConfigParameter, logThreadSeq int64) {
 		global.Wlog.Error(vlog)
 		os.Exit(1)
 	}
-	////oracle的where 条件中使用in 关联条件最大不能超过1000个，所以需要在此处进行限制单列索引的in数量，报错信息： dpiStmt_execute: ORA-01795: maximum number of expressions in a list is 1000
-	//if cp.SingleIndexChanRowCount > 1000 && (cp.DestDrive == "godror" || cp.SourceDrive == "godror") {
-	//	cp.SingleIndexChanRowCount = 1000
-	//}
 	vlog = fmt.Sprintf("(%d) [%s]  check singleIndexChanRowCount parameter message is {%d}.", logThreadSeq, Event, cp.SingleIndexChanRowCount)
 	global.Wlog.Debug(vlog)
 
@@ -355,7 +351,7 @@ func NewConfigInit(logThreadSeq int64) *ConfigParameter {
 		cp = &ConfigParameter{}
 	)
 	cliHelp(cp)
-	fmt.Println("-- GreatSQLCheck init configuration files -- ")
+	fmt.Println("-- gt-checksum init configuration files -- ")
 	if cp.config != "" {
 		if !strings.Contains(cp.config, "/") {
 			sysType := runtime.GOOS
@@ -368,10 +364,10 @@ func NewConfigInit(logThreadSeq int64) *ConfigParameter {
 		rc.getConfig(cp.config, cp)
 	}
 	//初始化日志文件
-	fmt.Println("-- GreatSQLCheck init log files -- ")
+	fmt.Println("-- gt-checksum init log files -- ")
 	global.Wlog = log.NewWlog(cp.LogFile, cp.LogLevel)
 
-	fmt.Println("-- GreatSQLCheck init check parameter --")
+	fmt.Println("-- gt-checksum init check parameter --")
 	rc.checkPar(cp, logThreadSeq)
 	return cp
 }

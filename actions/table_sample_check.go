@@ -710,7 +710,7 @@ func (sp *SchedulePlan) sampSingleTableCheckProcessing(chanrowCount int, sampDat
 			}
 		}
 	}()
-
+	FileOper := FileOperate{File: sp.file, BufSize: 1024 * 4 * 1024, fileName: sp.TmpFileName}
 	for {
 		if rowEnd && len(noIndexC) == 0 {
 			md5Chan <- map[string]string{"END": "end"}
@@ -746,7 +746,7 @@ func (sp *SchedulePlan) sampSingleTableCheckProcessing(chanrowCount int, sampDat
 			} else {
 				tableRow <- dlength
 			}
-			sp.QueryDataCheckSum(stt, dtt, md5Chan, Cycles, logThreadSeq)
+			sp.QueryDataCheckSum(stt, dtt, md5Chan, FileOper, Cycles, logThreadSeq)
 			vlog = fmt.Sprintf("(%d) There is currently no index table %s.%s The %d round of data cycle verification is complete.", logThreadSeq, sp.schema, sp.table, Cycles)
 			global.Wlog.Debug(vlog)
 		}(Cycles, beginSeq)

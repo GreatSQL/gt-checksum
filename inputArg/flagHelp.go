@@ -40,143 +40,143 @@ var jdbcDispos = func(jdbc string) (string, string) {
 
 func cliHelp(q *ConfigParameter) {
 	app := cli.NewApp()
-	app.Name = "gt-checksum"                           //应用名称
-	app.Usage = "mysql Oracle table data verification" //应用功能说明
-	app.Author = "GreatSQL"                            //作者
-	app.Email = "GreatSQL <greatsql@greatdb.com>"      //邮箱
-	app.Version = "1.1.10"                             //版本
+	app.Name = "gt-checksum"                                             //应用名称
+	app.Usage = "An opensource table and data checksum tool by GreatSQL" //应用功能说明
+	app.Author = "GreatSQL"                                              //作者
+	app.Email = "GreatSQL <greatsql@greatdb.com>"                        //邮箱
+	app.Version = "1.1.11"                                               //版本
 	app.Flags = []cli.Flag{
 		cli.StringFlag{
-			Name:        "config,f",                                                                      //命令名称
-			Usage:       "Specifies the configuration file. for example: --config gc.conf or -f gc.conf", //命令说明
-			Value:       "",                                                                              //默认值
-			Destination: &q.config,                                                                       //赋值
+			Name:        "config,f",                                                           //命令名称
+			Usage:       "Specifies config file. For example: --config gc.conf or -f gc.conf", //命令说明
+			Value:       "",                                                                   //默认值
+			Destination: &q.config,                                                            //赋值
 		},
 		cli.StringFlag{
 			Name:        "srcDSN,S",
-			Usage:       "Configures source connection information. for example: -S type=oracle,user=root,passwd=abc123,host=127.0.0.1,port=1521,sid=helowin",
+			Usage:       "Set source DSN. For example: -S type=oracle,user=root,passwd=abc123,host=127.0.0.1,port=1521,sid=helowin",
 			Value:       "",
 			Destination: &q.SourceJdbc,
 		},
 		cli.StringFlag{
 			Name:        "dstDSN,D",
-			Usage:       "Configures dest connection information. for example: -D type=mysql,user=root,passwd=abc123,host=127.0.0.1,port=3306,charset=jbk",
+			Usage:       "Set destination DSN. For example: -D type=mysql,user=root,passwd=abc123,host=127.0.0.1,port=3306,charset=utf8",
 			Value:       "",
 			Destination: &q.DestJdbc,
 		},
 		cli.StringFlag{
 			Name:        "tables,t",
-			Usage:       "configure the check table. for example: --tables nil",
+			Usage:       "Specify which tables to check. For example: --tables db1.*",
 			Value:       "nil",
 			EnvVar:      "nil,schema.table,...",
 			Destination: &q.Table,
 		},
 		cli.StringFlag{
 			Name:        "ignore-table,it",
-			Usage:       "configure the ignore check table. for example: -it nil",
+			Usage:       "Specify which tables ignore to check. For example: -it nil",
 			Value:       "nil",
 			EnvVar:      "nil,database.table,...",
 			Destination: &q.Igtable,
 		},
 		cli.StringFlag{
 			Name:        "noIndexTable,nit",
-			Usage:       "Specifies whether to verify non-indexed tables. for example: --nit no",
+			Usage:       "Specify whether to check non-indexed tables. For example: --nit no",
 			Value:       "no",
 			EnvVar:      "yes,no",
 			Destination: &q.CheckNoIndexTable,
 		},
 		cli.StringFlag{
 			Name:        "lowerCase,lc",
-			Usage:       "Configures whether the checklist ignores case. for example: --lc no",
+			Usage:       "Specify whether to use lowercase table names. For example: --lc no",
 			Value:       "no",
 			EnvVar:      "yes,no",
 			Destination: &q.LowerCaseTableNames,
 		},
 		cli.StringFlag{
 			Name:        "logFile,lf",
-			Usage:       "configures the log output file. for example: --lf /tmp/greatdb.log",
+			Usage:       "Specify output log file name. For example: --lf ./gt-checksum.log",
 			Value:       "./gt-checksum.log",
 			Destination: &q.LogFile,
 		},
 		cli.StringFlag{
 			Name:        "logLevel,ll",
-			Usage:       "configures the log output level. for example: --ll info",
+			Usage:       "Specify output log level. For example: --ll info",
 			Value:       "info",
 			EnvVar:      "debug,info,warn,error",
 			Destination: &q.LogLevel,
 		},
 		cli.IntFlag{
 			Name:        "parallel-thds,cc",
-			Usage:       "configures the number of concurrent checks to check data blocks. for example: --cc 5",
+			Usage:       "Specify the number of parallel threads for data checksum. For example: --cc 5",
 			Value:       5,
 			Destination: &q.Concurrency,
 		},
 		cli.IntFlag{
 			Name:        "singleIndexChanRowCount,sicr",
-			Usage:       "configure a single column index single check database. for example: --sicr 1000",
+			Usage:       "Specifies how many rows are retrieved to check each time for single column index. For example: --sicr 10000",
 			Value:       10000,
 			Destination: &q.SingleIndexChanRowCount,
 		},
 		cli.IntFlag{
 			Name:        "jointIndexChanRowCount,jicr",
-			Usage:       "configures single-check data blocks with multi-column indexes. for example: --jicr 100",
+			Usage:       "Specifies how many rows are retrieved to check each time for multi-column index. For example: --jicr 1000",
 			Value:       1000,
 			Destination: &q.JointIndexChanRowCount,
 		},
 		cli.StringFlag{
 			Name:        "checkMode,cm",
-			Usage:       "Select the method for verifying data. for example: --cm count",
+			Usage:       "Specify data check mode. For example: --cm count",
 			EnvVar:      "count,rows,sample",
 			Value:       "rows",
 			Destination: &q.CheckMode,
 		},
 		cli.StringFlag{
 			Name:        "checkObject,co",
-			Usage:       "xample Query the parity object of data. for example: --co struct",
+			Usage:       "Specify data check object. For example: --co struct",
 			EnvVar:      "data,struct,index,partitions,foreign,trigger,func,proc",
 			Value:       "data",
 			Destination: &q.CheckObject,
 		},
 		cli.IntFlag{
 			Name:        "ratio,r",
-			Usage:       "When checkmod is set to sample, you can set the percentage of spot checks ranging from 1 to 100%. for example: -r 1",
+			Usage:       "When checkMode is set to sample, specify the data sampling rate, set the range of 1-100, in percentage. For example: -r 10",
 			Value:       10,
 			Destination: &q.Ratio,
 		},
 		cli.IntFlag{
 			Name:        "queue-size,qs",
-			Usage:       "configure queue depth. for example: --qs 100",
+			Usage:       "Specify data check queue depth. for example: --qs 100",
 			Value:       100,
 			Destination: &q.QueueDepth,
 		},
 
 		cli.StringFlag{
 			Name:        "datafix,df",
-			Usage:       "configures repair statements. for example: --df table",
+			Usage:       "Specify data repair mode. For example: --df table",
 			Value:       "file",
 			EnvVar:      "file,table",
 			Destination: &q.Datafix,
 		},
 		cli.StringFlag{
 			Name:        "fixFileName,ffn",
-			Usage:       "configuration repair file name. for example: --ffn /tmp/greatdbCheckDataFix.sql",
-			Value:       "./gt-checkOutDataFix.sql",
+			Usage:       "Set data repair SQL file name. For example: --ffn ./gt-checksum-DataFix.sql",
+			Value:       "./gt-checksum-DataFix.sql",
 			Destination: &q.FixFileName,
 		},
 		cli.IntFlag{
 			Name:        "fixTrxNum,ftn",
-			Usage:       "configuration repair trx bumber. for example: --ftn 30",
+			Usage:       "Maximum number of concurrent transactions when repairing data. For example: --ftn 20",
 			Value:       20,
 			Destination: &q.FixTrxNum,
 		},
 	}
 	app.Action = func(c *cli.Context) { //应用执行函数
 		if (q.SourceJdbc != "" || q.DestJdbc != "") && q.config != "" {
-			fmt.Println("The command line parameter transmission conflicts with the configuration file parameter transmission. Select either method, use --help or -h")
+			fmt.Println("Specify the config, srcDSN and dstDSN options at the same time, causing conflicts, run gt-checksum with option --help or -h")
 			os.Exit(0)
 		}
 		if (q.SourceJdbc == "" || q.DestJdbc == "") && q.config == "" {
-			fmt.Println("If no parameters are loaded, view the command with --help or -h")
+			fmt.Println("If no options are specified, run gt-checksum with option --help or -h")
 			os.Exit(0)
 		}
 		q.SourceDrive, q.SourceJdbc = jdbcDispos(q.SourceJdbc)

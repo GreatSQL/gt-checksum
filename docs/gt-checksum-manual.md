@@ -27,11 +27,11 @@ shell> ./gt-checksum -f ./gc.conf
 -- gt-checksum init configuration files --
 -- gt-checksum init log files --
 -- gt-checksum check parameter --
--- GreatSQLCheck init check table --
--- GreatSQLCheck init check table column --
--- GreatSQLCheck init check table index column --
--- GreatSQLCheck init source and dest transaction snapshoot conn pool --
--- GreatSQLCheck init cehck table query plan and check data --
+-- gt-checksum init check table --
+-- gt-checksum init check table column --
+-- gt-checksum init check table index column --
+-- gt-checksum init source and dest transaction snapshoot conn pool --
+-- gt-checksum init cehck table query plan and check data --
 begin checkSum index table TEST.T2
 table Index Column Data done! 2023-01-05 13:45:36
 table QuerySql Where Data Generate done! 2023-01-05 13:45:36
