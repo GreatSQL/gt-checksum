@@ -26,25 +26,20 @@ gt-checksum --config=./gc.conf
 shell> ./gt-checksum -f ./gc.conf
 -- gt-checksum init configuration files --
 -- gt-checksum init log files --
--- gt-checksum check parameter --
--- gt-checksum init check table --
+-- gt-checksum init check parameter --
+-- gt-checksum init check table name --
 -- gt-checksum init check table column --
 -- gt-checksum init check table index column --
 -- gt-checksum init source and dest transaction snapshoot conn pool --
 -- gt-checksum init cehck table query plan and check data --
-begin checkSum index table TEST.T2
-table Index Column Data done! 2023-01-05 13:45:36
-table QuerySql Where Data Generate done! 2023-01-05 13:45:36
-table query sql Product done! 2023-01-05 13:45:36
-table All Measured Data CheckSum done! 2023-01-05 13:45:36
-table Differences in Data CheckSum done! 2023-01-05 13:45:36
-table Differences in Data fix done!! 2023-01-05 13:45:36
-TEST.T2 校验完成
+begin checkSum index table db1.t1
+[█████████████████████████████████████████████████████████████████████████████████████████████████████████████████]113%  task:     678/600
+table db1.t1 checksum complete
 
 ** gt-checksum Overview of results **
-Check time:  1.51s (Seconds)
-Schema  Table   IndexCol        checkMod        Rows    Differences     Datafix
-TEST    T2      id              rows            3,3     yes             table
+Check time:  73.81s (Seconds)
+Schema  Table                   IndexCol                                checkMod        Rows            Differences     Datafix
+db1     t1                      ol_w_id,ol_d_id,ol_o_id,ol_number       rows            5995934,5995918 yes             file
 ```
 
 ### 快速使用案例2
@@ -87,6 +82,21 @@ gt-checksum命令行参数选项详细解释如下：
 shell> ./gt-checksum -f ./gc.conf
 shell> ./gt-checksum --config ./gc.conf
 ```
+gt-checksum支持极简配置文件工作方式，即只需要最少的几个参数就能工作，例如：
+```shell
+#
+shell> cat gc.conf-simple
+[DSNs]
+srcDSN = mysql|pcms:abc123@tcp(172.17.16.1:3306)/information_schema?charset=utf8
+dstDSN = mysql|pcms:abc123@tcp(172.17.16.2:3306)/information_schema?charset=utf8
+
+[Schema]
+tables = db1.t1
+```
+**注意**：
+
+1. 极简配置文件名必须是 `gc.conf-simple`。
+2. 配置文件中仅需指定源和目标端的DSN，以及要校验的表名即可。
 
 - --srcDSN / -S
   Type: String. Default: port=3306,charset=utf8mb4.
@@ -138,7 +148,7 @@ shell> ./gt-checksum --config ./gc.conf
 shell> gt-checksum -S srcDSN -D dstDSN -t db1.*
 ```
 
---igtable / -it
+- --ignore-table / -it
   Type: String. Default: nil.
 
   定义不要执行数据校验的数据表对象列表，支持通配符"%"和"*"。
@@ -196,7 +206,7 @@ shell> gt-checksum -S srcDSN -D dstDSN -t db1.* -lf ./gt-checksum.log
 shell> gt-checksum -S srcDSN -D dstDSN -t db1.* -lf ./gt-checksum.log -ll info
 ```
 
--- --parallel-thds / -thds
+- --parallel-thds / -thds
   Type: Int. Default: 5.
 
   设置数据校验并行线程数。该值必须设置大于0，并行线程数越高，数据校验速度越快，系统负载也会越高，网络连接通信也可能会成为瓶颈。
@@ -293,17 +303,26 @@ or
 ```
 
 - --fixFileName / -ffn
-  Type: String. Default: ./gt-checksumDataFix.sql
+  Type: String. Default: ./gt-checksum-DataFix.sql
 
   当 datafix = file 时，设置生成的SQL文件名，可以指定为绝对路径或相对路径。
 
   当 datafix = table 时，可以不用设置 fixFileName 参数。
 
-./gt-checksum -S DSN -D DSN -ffn gt-checksumDataFix.sql
+./gt-checksum -S DSN -D DSN -ffn gt-checksum-DataFix.sql
 
   案例：
 ```shell
 ./gt-checksum -S DSN -D DSN -t db1.* -df file -ffn ./gt-checksumDataFix.sql
+```
+- --fixTrxNum / -ftn
+  Type: Int. Default: 100.
+
+  设置执行数据修复时一个事务中最多运行多少条SQL，或者生成数据修复的SQL文件时，显式在SQL文件中添加 begin + commit 事务起止符中间的SQL语句数量。
+
+  案例：
+```shell
+./gt-checksum -S DSN -D DSN -t db1.* -ftn=100
 ```
 
 - --help / -h
