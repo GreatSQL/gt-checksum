@@ -90,4 +90,4 @@ datafix = file
 
 ; 当 datafix = file 时，设置生成的SQL文件名，可以指定为绝对路径或相对路径
 ; 当 datafix = table 时，可以不用设置 fixFileName 参数
-fixFileName = ./gt-checkOutDataFix.sql
+fixFileName = ./gt-checksum-DataFix.sql
