@@ -374,6 +374,67 @@ shell> chmod +x gt-checksum
 shell> mv gt-checksum /usr/local/bin
 ```
 
+## 已知缺陷
+截止最新的1.2.0版本中，当表中有多行数据是完全重复的话，可能会导致校验结果不准确。
+
+源端有个表t1，表结构及数据如下：
+```
+mysql> show create table t1\G
+*************************** 1. row ***************************
+       Table: t1
+Create Table: CREATE TABLE `t1` (
+  `id` float(10,2) DEFAULT NULL,
+  `code` varchar(10) DEFAULT NULL,
+  KEY `idx_1` (`id`,`code`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+mysql> select * from t1;
++-------+------+
+| id    | code |
++-------+------+
+|  1.01 | a    |
+|  1.50 | b    |
+|  2.30 | c    |
+|  3.40 | d    |
+|  4.30 | NULL |
+|  4.30 | NULL |
+|  4.30 | NULL |
+|  4.30 |      |
+|  4.30 | f    |
+| 10.10 | e    |
++-------+------+
+10 rows in set (0.00 sec)
+```
+**注意**：上述10行数据中，有3行数据是完全一致的。
+
+目标端中同样也有t1表，表结构完全一样，但数据不一样：
+```
+mysql> select * from t1;
++-------+------+
+| id    | code |
++-------+------+
+|  1.01 | a    |
+|  1.50 | b    |
+|  2.30 | c    |
+|  3.40 | d    |
+|  4.30 | NULL |
+|  4.30 |      |
+|  4.30 | f    |
+| 10.10 | e    |
++-------+------+
+8 rows in set (0.00 sec)
+```
+
+可以看到，目标端中的t1表只有8行数据，如果除去重复数据，两个表是一致的，这也会导致校验的结果显示为一致。
+```
+...
+** gt-checksum Overview of results **
+Check time:  0.30s (Seconds)
+Schema  Table   IndexCol        checkMod        Rows    Differences     Datafix
+t1      T1      id,code         rows            10,8    no              file
+```
+这个问题我们会在未来某个版本中尽快修复。
+
 ## BUGS
 ---
 可以 [戳此](https://gitee.com/GreatSQL/gt-checksum/issues) 查看 gt-checksum 相关bug列表。
