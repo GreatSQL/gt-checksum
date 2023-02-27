@@ -136,7 +136,7 @@ shell> mv gt-checksum /usr/local/bin
 
 # 已知缺陷
 ---
-当表中有多行数据是完全重复的话，可能会导致校验结果不准确，详见 [已知缺陷](https://gitee.com/GreatSQL/gt-checksum/blob/master/docs/gt-checksum-manual.md#已知缺陷) 。
+截止最新的1.2.0版本中，当表中有多行数据是完全重复的话，可能会导致校验结果不准确，详见 [已知缺陷](https://gitee.com/GreatSQL/gt-checksum/blob/master/docs/gt-checksum-manual.md#已知缺陷) 。
 
 # 问题反馈
 ---
