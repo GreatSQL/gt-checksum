@@ -52,50 +52,40 @@ USAGE:
 shell> ./gt-checksum -f ./gc.conf
 -- gt-checksum init configuration files --
 -- gt-checksum init log files --
--- gt-checksum check parameter --
--- gt-checksum init check table --
+-- gt-checksum init check parameter --
+-- gt-checksum init check table name --
 -- gt-checksum init check table column --
 -- gt-checksum init check table index column --
 -- gt-checksum init source and dest transaction snapshoot conn pool --
 -- gt-checksum init cehck table query plan and check data --
-begin checkSum index table TEST.T2
-table Index Column Data done! 2023-01-05 13:45:36
-table QuerySql Where Data Generate done! 2023-01-05 13:45:36
-table query sql Product done! 2023-01-05 13:45:36
-table All Measured Data CheckSum done! 2023-01-05 13:45:36
-table Differences in Data CheckSum done! 2023-01-05 13:45:36
-table Differences in Data fix done!! 2023-01-05 13:45:36
-TEST.T2 校验完成
+begin checkSum index table db1.t1
+[█████████████████████████████████████████████████████████████████████████████████████████████████████████████████]113%  task:     678/600
+table db1.t1 checksum complete
 
 ** gt-checksum Overview of results **
-Check time:  1.51s (Seconds)
-Schema  Table   IndexCol        checkMod        Rows    Differences     Datafix
-TEST    T2      id              rows            3,3     yes             table
+Check time:  73.81s (Seconds)
+Schema  Table                   IndexCol                                checkMod        Rows            Differences     Datafix
+db1     t1                      ol_w_id,ol_d_id,ol_o_id,ol_number       rows            5995934,5995918 yes             file
+
 
 # 使用命令行传参方式执行数据校验
-#shell> ./gt-checksum -S type=mysql,user=yejr,passwd=yejr,host=127.0.0.1,port=3306,charset=latin1 -D type=mysql,user=yejr,passwd=yejr,host=127.0.0.1,port=4306,charset=utf8 -t test.t2 -nit yes
 shell> ./gt-checksum -S type=mysql,user=checksum,passwd=Checksum@123,host=172.16.0.1,port=3306,charset=utf8 -D type=mysql,user=checksum,passwd=Checksum@123,host=172.16.0.2,port=3306,charset=utf8 -t test.t2 -nit yes
 -- gt-checksum init configuration files --
 -- gt-checksum init log files --
--- gt-checksum check parameter --
--- gt-checksum init check table --
+-- gt-checksum init check parameter --
+-- gt-checksum init check table name --
 -- gt-checksum init check table column --
 -- gt-checksum init check table index column --
 -- gt-checksum init source and dest transaction snapshoot conn pool --
 -- gt-checksum init cehck table query plan and check data --
-begin checkSum index table TEST.T2
-table Index Column Data done! 2023-01-05 13:54:33
-table QuerySql Where Data Generate done! 2023-01-05 13:54:33
-table query sql Product done! 2023-01-05 13:54:33
-table All Measured Data CheckSum done! 2023-01-05 13:54:33
-table Differences in Data CheckSum done! 2023-01-05 13:54:33
-table Differences in Data fix done!! 2023-01-05 13:54:33
-TEST.T2 校验完成
+begin checkSum index table SCOTT.A5
+[█                    ]100%  task:       1/1
+table SCOTT.A5 checksum complete
 
 ** gt-checksum Overview of results **
-Check time:  1.37s (Seconds)
+Check time:  0.29s (Seconds)
 Schema  Table   IndexCol        checkMod        Rows    Differences     Datafix
-TEST    T2      id              rows            3,3     no              file
+test    t2      id              rows            10,10   no              file
 ```
 
 # 下载配置Oracle驱动程序
@@ -141,8 +131,12 @@ shell> mv gt-checksum /usr/local/bin
 
 # 版本历史
 ---
-- [gt-checksum 更新说明 1.1.10(2023-1-10)](https://gitee.com/GreatSQL/gt-checksum/blob/master/relnotes/changes-gt-checksum-1110-20230110.md)
+- [版本历史)](https://gitee.com/GreatSQL/gt-checksum/blob/master/relnotes/CHANGELOG.zh-CN.md)
 
+
+# 已知缺陷
+---
+当表中有多行数据是完全重复的话，可能会导致校验结果不准确，详见 [已知缺陷](https://gitee.com/GreatSQL/gt-checksum/blob/master/docs/gt-checksum-manual.md#已知缺陷) 。
 
 # 问题反馈
 ---
