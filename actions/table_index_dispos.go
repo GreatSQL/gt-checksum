@@ -538,16 +538,16 @@ func (sp SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 						sqlSlice1 = append(sqlSlice1, i)
 					}
 					sqlSlice = []string{}
-					noIndexD <- struct{}{}
+					//noIndexD <- struct{}{}
 					increSeq = 0
-					go func(a []string) {
-						defer func() {
-							<-noIndexD
-						}()
-						ApplyDataFix(a, sp.datafixType, sp.sfile, sp.ddrive, sp.djdbc, logThreadSeq)
+					//go func(a []string) {
+					//	defer func() {
+					//		<-noIndexD
+					//	}()
+						ApplyDataFix(sqlSlice1, sp.datafixType, sp.sfile, sp.ddrive, sp.djdbc, logThreadSeq)
 						vlog = fmt.Sprintf("(%d) The delete repair sql statements of table %s.%s are generated.", logThreadSeq, sp.schema, sp.table)
 						global.Wlog.Debug(vlog)
-					}(sqlSlice1)
+					//}(sqlSlice1)
 				}
 			}
 		}
