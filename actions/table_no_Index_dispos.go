@@ -2,8 +2,8 @@ package actions
 
 import (
 	"fmt"
-	"greatdbCheck/dbExec"
-	"greatdbCheck/global"
+	"gt-checksum/dbExec"
+	"gt-checksum/global"
 	"strings"
 	"time"
 )

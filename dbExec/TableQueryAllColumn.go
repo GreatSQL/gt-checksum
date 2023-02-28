@@ -4,7 +4,7 @@ package dbExec
 //import (
 //	"database/sql"
 //	"fmt"
-//	"greatdbCheck/global"
+//	"gt-checksum/global"
 //	"strings"
 //)
 //

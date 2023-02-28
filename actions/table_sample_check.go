@@ -3,8 +3,8 @@ package actions
 import (
 	"database/sql"
 	"fmt"
-	"greatdbCheck/dbExec"
-	"greatdbCheck/global"
+	"gt-checksum/dbExec"
+	"gt-checksum/global"
 	"math/rand"
 	"strings"
 	"time"

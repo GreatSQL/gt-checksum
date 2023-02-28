@@ -1,9 +1,9 @@
 package dbExec
 
 import (
-	mysql "greatdbCheck/MySQL"
-	oracle "greatdbCheck/Oracle"
-	"greatdbCheck/global"
+	mysql "gt-checksum/MySQL"
+	oracle "gt-checksum/Oracle"
+	"gt-checksum/global"
 )
 
 type GlobalSNStruct struct {

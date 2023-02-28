@@ -5,7 +5,7 @@ import (
 	"fmt"
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/godror/godror"
-	"greatdbCheck/global"
+	"gt-checksum/global"
 	"os"
 	"strings"
 	"time"

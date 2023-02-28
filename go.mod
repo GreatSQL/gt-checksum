@@ -1,4 +1,4 @@
-module greatdbCheck
+module gt-checksum
 
 go 1.17
 

@@ -4,7 +4,7 @@ import (
 	"crypto/md5"
 	"encoding/json"
 	"fmt"
-	dbExec "greatdbCheck/MySQL"
+	dbExec "gt-checksum/MySQL"
 	"strings"
 )
 
