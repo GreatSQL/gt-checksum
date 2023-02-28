@@ -2,8 +2,8 @@ package actions
 
 import (
 	"fmt"
-	"greatdbCheck/global"
-	"greatdbCheck/inputArg"
+	"gt-checksum/global"
+	"gt-checksum/inputArg"
 	"math/rand"
 	"os"
 	"strings"

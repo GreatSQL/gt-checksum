@@ -2,10 +2,10 @@ package main
 
 import (
 	"fmt"
-	"greatdbCheck/actions"
-	"greatdbCheck/dbExec"
-	"greatdbCheck/global"
-	"greatdbCheck/inputArg"
+	"gt-checksum/actions"
+	"gt-checksum/dbExec"
+	"gt-checksum/global"
+	"gt-checksum/inputArg"
 	"os"
 	"time"
 )

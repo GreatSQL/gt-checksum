@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"github.com/fatih/color"
 	"github.com/gosuri/uitable"
-	"greatdbCheck/inputArg"
+	"gt-checksum/inputArg"
 	"strings"
 )
 

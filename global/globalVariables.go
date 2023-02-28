@@ -1,7 +1,7 @@
 package global
 
 import (
-	"greatdbCheck/go-log/log"
+	"gt-checksum/go-log/log"
 )
 
 /*

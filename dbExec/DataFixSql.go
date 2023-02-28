@@ -2,8 +2,8 @@ package dbExec
 
 import (
 	"database/sql"
-	mysql "greatdbCheck/MySQL"
-	oracle "greatdbCheck/Oracle"
+	mysql "gt-checksum/MySQL"
+	oracle "gt-checksum/Oracle"
 )
 
 type DataAbnormalFixStruct struct {

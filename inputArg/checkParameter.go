@@ -3,9 +3,9 @@ package inputArg
 import (
 	"errors"
 	"fmt"
-	"greatdbCheck/dbExec"
-	"greatdbCheck/global"
-	"greatdbCheck/go-log/log"
+	"gt-checksum/dbExec"
+	"gt-checksum/global"
+	"gt-checksum/go-log/log"
 	"os"
 	"regexp"
 	"runtime"

@@ -3,8 +3,8 @@ package mysql
 import (
 	"database/sql"
 	"fmt"
-	"greatdbCheck/dataDispos"
-	"greatdbCheck/global"
+	"gt-checksum/dataDispos"
+	"gt-checksum/global"
 	"sort"
 	"strconv"
 	"strings"

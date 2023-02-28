@@ -3,7 +3,7 @@ package dataDispos
 import (
 	"database/sql"
 	"fmt"
-	"greatdbCheck/global"
+	"gt-checksum/global"
 	"sort"
 	"strconv"
 	"strings"

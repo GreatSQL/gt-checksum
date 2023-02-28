@@ -3,8 +3,8 @@ package oracle
 import (
 	"database/sql"
 	"fmt"
-	"greatdbCheck/dataDispos"
-	"greatdbCheck/global"
+	"gt-checksum/dataDispos"
+	"gt-checksum/global"
 	"strings"
 )
 

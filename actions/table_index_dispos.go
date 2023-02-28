@@ -3,9 +3,9 @@ package actions
 import (
 	"database/sql"
 	"fmt"
-	"greatdbCheck/dataDispos"
-	"greatdbCheck/dbExec"
-	"greatdbCheck/global"
+	"gt-checksum/dataDispos"
+	"gt-checksum/dbExec"
+	"gt-checksum/global"
 	"math/rand"
 	"strconv"
 	"strings"
@@ -544,9 +544,9 @@ func (sp SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 					//	defer func() {
 					//		<-noIndexD
 					//	}()
-						ApplyDataFix(sqlSlice1, sp.datafixType, sp.sfile, sp.ddrive, sp.djdbc, logThreadSeq)
-						vlog = fmt.Sprintf("(%d) The delete repair sql statements of table %s.%s are generated.", logThreadSeq, sp.schema, sp.table)
-						global.Wlog.Debug(vlog)
+					ApplyDataFix(sqlSlice1, sp.datafixType, sp.sfile, sp.ddrive, sp.djdbc, logThreadSeq)
+					vlog = fmt.Sprintf("(%d) The delete repair sql statements of table %s.%s are generated.", logThreadSeq, sp.schema, sp.table)
+					global.Wlog.Debug(vlog)
 					//}(sqlSlice1)
 				}
 			}

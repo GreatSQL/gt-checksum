@@ -3,7 +3,7 @@ package mysql
 import (
 	"database/sql"
 	"fmt"
-	"greatdbCheck/global"
+	"gt-checksum/global"
 	"strconv"
 	"strings"
 )

@@ -2,8 +2,8 @@ package dbExec
 
 import (
 	"database/sql"
-	"greatdbCheck/MySQL"
-	"greatdbCheck/Oracle"
+	"gt-checksum/MySQL"
+	"gt-checksum/Oracle"
 )
 
 type TableColumnNameStruct struct {

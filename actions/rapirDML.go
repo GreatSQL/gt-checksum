@@ -3,7 +3,7 @@ package actions
 import (
 	"context"
 	"fmt"
-	"greatdbCheck/global"
+	"gt-checksum/global"
 	"os"
 )
 
