@@ -98,7 +98,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 		vlog = fmt.Sprintf("(%d) complete checksum source dest db table columns name.", logThreadSeq)
 		global.Wlog.Debug(vlog)
 	}
-	vlog = fmt.Sprintf("(%d) The consistency information check of the source and target table structure and column information is completed !!!", logThreadSeq)
+	vlog = fmt.Sprintf("(%d) The consistency information check of the source and target table structure and column information is completed", logThreadSeq)
 	global.Wlog.Info(vlog)
 	return newCheckTableList, abnormalTableList
 }
@@ -370,8 +370,8 @@ func (stcls *schemaTable) SchemaTableFilter(logThreadSeq1, logThreadSeq2 int64) 
 	global.Wlog.Debug(vlog)
 	//判断校验的库是否为空，为空则退出
 	if len(dbCheckNameList) == 0 {
-		fmt.Println("GreatSQL report: check Schema.table is emty, please check the log for details!")
-		vlog = fmt.Sprintf("(%d) check Schema.table is emty, will exit!", logThreadSeq1)
+		fmt.Println("gt-checksum report: check Schema.table is empty, please check the log for details!")
+		vlog = fmt.Sprintf("(%d) check Schema.table is empty, exit", logThreadSeq1)
 		global.Wlog.Error(vlog)
 		os.Exit(1)
 	}
@@ -386,8 +386,8 @@ func (stcls *schemaTable) SchemaTableFilter(logThreadSeq1, logThreadSeq2 int64) 
 		f = append(f, k)
 	}
 	if len(f) == 0 {
-		fmt.Println("GreatSQL report: check table is emty,please check the log for details!")
-		vlog = fmt.Sprintf("(%d) check table is emty, will exit!", logThreadSeq1)
+		fmt.Println("gt-checksum report: check table is empty,please check the log for details!")
+		vlog = fmt.Sprintf("(%d) check table is empty, exit", logThreadSeq1)
 		global.Wlog.Error(vlog)
 		os.Exit(1)
 	}
@@ -450,7 +450,7 @@ func (stcls *schemaTable) SchemaTableAllCol(tableList []string, logThreadSeq, lo
 			global.Wlog.Debug(vlog)
 		}
 	}
-	vlog = fmt.Sprintf("(%d) The metadata information of the source target verification table has been obtained !!!", logThreadSeq)
+	vlog = fmt.Sprintf("(%d) The metadata information of the source target verification table has been obtained", logThreadSeq)
 	global.Wlog.Info(vlog)
 	return tableCol
 }
@@ -497,7 +497,7 @@ func (stcls *schemaTable) TableIndexColumn(dtabS []string, logThreadSeq, logThre
 			global.Wlog.Debug(vlog)
 		}
 	}
-	zlog := fmt.Sprintf("(%d) Table index listing information and appropriate index completion !!!", logThreadSeq)
+	zlog := fmt.Sprintf("(%d) Table index listing information and appropriate index completion", logThreadSeq)
 	global.Wlog.Info(zlog)
 	return tableIndexColumnMap
 }
@@ -577,7 +577,7 @@ func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 in
 			}
 			vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment databases %s Trigger. normal databases message is {%s} num [%d] abnormal databases message is {%s} num [%d]", logThreadSeq, stcls.schema, c, len(c), d, len(d))
 			global.Wlog.Debug(vlog)
-			vlog = fmt.Sprintf("(%d) The source target segment databases %s Trigger data verification is completed.!!!", logThreadSeq, stcls.schema)
+			vlog = fmt.Sprintf("(%d) The source target segment databases %s Trigger data verification is completed", logThreadSeq, stcls.schema)
 			global.Wlog.Debug(vlog)
 			measuredDataPods = append(measuredDataPods, pods)
 		}
@@ -673,7 +673,7 @@ func (stcls *schemaTable) Proc(dtabS []string, logThreadSeq, logThreadSeq2 int64
 			}
 			vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment databases %s Stored Procedure. normal databases message is {%s} num [%d] abnormal databases message is {%s} num [%d]", logThreadSeq, stcls.schema, c, len(c), d, len(d))
 			global.Wlog.Debug(vlog)
-			vlog = fmt.Sprintf("(%d) The source target segment databases %s Stored Procedure data verification is completed.!!!", logThreadSeq, stcls.schema)
+			vlog = fmt.Sprintf("(%d) The source target segment databases %s Stored Procedure data verification is completed", logThreadSeq, stcls.schema)
 			global.Wlog.Debug(vlog)
 			measuredDataPods = append(measuredDataPods, pods)
 		}
@@ -768,7 +768,7 @@ func (stcls *schemaTable) Func(dtabS []string, logThreadSeq, logThreadSeq2 int64
 			}
 			vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment databases %s Stored Function. normal databases message is {%s} num [%d] abnormal databases message is {%s} num [%d]", logThreadSeq, stcls.schema, c, len(c), d, len(d))
 			global.Wlog.Debug(vlog)
-			vlog = fmt.Sprintf("(%d) The source target segment databases %s Stored Function data verification is completed.!!!", logThreadSeq, stcls.schema)
+			vlog = fmt.Sprintf("(%d) The source target segment databases %s Stored Function data verification is completed", logThreadSeq, stcls.schema)
 			global.Wlog.Debug(vlog)
 			measuredDataPods = append(measuredDataPods, pods)
 		}
@@ -883,7 +883,7 @@ func (stcls *schemaTable) Foreign(dtabS []string, logThreadSeq, logThreadSeq2 in
 		}
 		vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment table %s.%s Foreign. normal table message is {%s} num [%d] abnormal table message is {%s} num [%d]", logThreadSeq, stcls.schema, stcls.table, c, len(c), d, len(d))
 		global.Wlog.Debug(vlog)
-		vlog = fmt.Sprintf("(%d) The source target segment table %s.%s Foreign data verification is completed.!!!", logThreadSeq, stcls.schema, stcls.table)
+		vlog = fmt.Sprintf("(%d) The source target segment table %s.%s Foreign data verification is completed", logThreadSeq, stcls.schema, stcls.table)
 		global.Wlog.Debug(vlog)
 		measuredDataPods = append(measuredDataPods, pods)
 	}
@@ -957,7 +957,7 @@ func (stcls *schemaTable) Partitions(dtabS []string, logThreadSeq, logThreadSeq2
 		}
 		vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment table %s.%s partitions. normal table message is {%s} num [%d] abnormal table message is {%s} num [%d]", logThreadSeq, stcls.schema, stcls.table, c, len(c), d, len(d))
 		global.Wlog.Debug(vlog)
-		vlog = fmt.Sprintf("(%d) The source target segment table %s.%s partitions data verification is completed.!!!", logThreadSeq, stcls.schema, stcls.table)
+		vlog = fmt.Sprintf("(%d) The source target segment table %s.%s partitions data verification is completed", logThreadSeq, stcls.schema, stcls.table)
 		global.Wlog.Debug(vlog)
 		measuredDataPods = append(measuredDataPods, pods)
 	}
@@ -1038,7 +1038,7 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 		//}
 		ApplyDataFix(sqlS, stcls.datefix, stcls.sfile, stcls.destDrive, stcls.djdbc, logThreadSeq)
 		measuredDataPods = append(measuredDataPods, pods)
-		vlog = fmt.Sprintf("(%d) The source target segment table %s.%s index column data verification is completed.!!!", logThreadSeq, stcls.schema, stcls.table)
+		vlog = fmt.Sprintf("(%d) The source target segment table %s.%s index column data verification is completed", logThreadSeq, stcls.schema, stcls.table)
 		global.Wlog.Info(vlog)
 	}
 }
@@ -1075,7 +1075,7 @@ func (stcls *schemaTable) Struct(dtabS []string, logThreadSeq, logThreadSeq2 int
 		pods.Differences = "yes"
 		measuredDataPods = append(measuredDataPods, pods)
 	}
-	clog := fmt.Sprintf("(%d) check source and target DB table struct complete!!!", logThreadSeq)
+	clog := fmt.Sprintf("(%d) check source and target DB table struct complete", logThreadSeq)
 	global.Wlog.Info(clog)
 }
 
