@@ -1,0 +1,23 @@
+;
+; gc.cnf-simple
+;
+; 极简配置文件模板，只需要最少的几个参数即可
+;
+[DSNs]
+;oracle的连接串为 oracle|user/password@ip:port/sid
+;mysql的连接串为 mysql|usr:password@tcp(ip:port)/dbname?charset=xxx
+srcDSN = mysql|u1:p1@tcp(172.17.0.1:3307)/information_schema?charset=utf8mb4
+dstDSN = mysql|u1:p1@tcp(172.17.0.2:3307)/information_schema?charset=utf8mb4
+
+[Schema]
+; 选项tables用来定义校验数据表对象，支持通配符"%"和"*"
+; 例如：
+; *.* 表示所有库表对象（MySQL不包含 information_schema\mysql\performance_schema\sys）
+; test.* 表示test库下的所有表
+; test.t% 表示test库下所有表名中包含字母"t"开头的表
+; db%.* 表示所有库名中包含字母"db"开头的数据库中的所有表
+; %db.* 表示所有库名中包含字母"db"结尾的数据库中的所有表
+;
+; 如果已经设置为 "*.*"，则不能再增加其他的规则，例如：设置 "*.*,pcms%.*" 则会报告规则错误
+; 如果 table 和 ignore-tables 设置的值相同的话也会报告规则错误
+tables = db1.t1
