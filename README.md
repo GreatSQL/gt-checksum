@@ -37,7 +37,7 @@ If no parameters are loaded, view the command with --help or -h
 
 # 查看版本号
 shell> ./gt-checksum -v
-gt-checksum version 1.1.11
+gt-checksum version 1.2.0
 
 # 查看使用帮助
 shell> ./gt-checksum -h
@@ -123,6 +123,29 @@ shell> go build -o gt-checksum gt-checksum.go
 shell> chmod +x gt-checksum
 shell> mv gt-checksum /usr/local/bin
 ```
+
+也可以直接利用Docker环境编译，在已经准备好Docker运行环境的基础上，执行如下操作即可：
+```shell
+shell> git clone https://gitee.com/GreatSQL/gt-checksum.git
+shell> cd gt-checksum
+
+#构建Docker编译环境
+shell> docker build -t gt-checksum .
+
+#查看Docker镜像列表
+shell> docker images | grep gt-checksum
+gt-checksum                                                       latest    a716d9d018b3   27 minutes ago   1.38GB
+
+#创建一个新容器，编译gt-checksum
+shell> docker run -itd --name=gt-checksum gt-checksum
+
+#将编译好的二进制文件copy到宿主机
+shell> docker cp gt-checksum:/go/release/gt-checksum-v1.2.0 .
+shell> cd gt-checksum-v1.2.0
+shell> ./gt-checksum -v
+gt-checksum version 1.2.0
+```
+这就编译完成并可以开始愉快地玩耍了。
 
 # 使用文档
 ---
