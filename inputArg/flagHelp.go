@@ -106,8 +106,8 @@ func cliHelp(q *ConfigParameter) {
 			Destination: &q.LogLevel,
 		},
 		cli.IntFlag{
-			Name:        "parallel-thds,cc",
-			Usage:       "Specify the number of parallel threads for data checksum. For example: --cc 5",
+			Name:        "parallel-thds,thds",
+			Usage:       "Specify the number of parallel threads for data checksum. For example: --thds 5",
 			Value:       5,
 			Destination: &q.Concurrency,
 		},
