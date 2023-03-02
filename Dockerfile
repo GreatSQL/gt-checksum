@@ -15,3 +15,4 @@ COPY go.sum ./
 COPY  . .
 RUN go mod download
 RUN go build -o gt-checksum greatdbCheck.go
+RUN mkdir -p ./gt-checksum-v1.2.0 && cp -rf docs gc.conf gc.conf-simple gt-checksum README.md relnotes gt-checksum-v1.2.0
