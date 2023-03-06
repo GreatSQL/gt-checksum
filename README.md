@@ -48,6 +48,30 @@ USAGE:
    gt-checksum [global options] command [command options] [arguments...]
 ...
 
+# 数据库授权
+# 想要运行gt-checksum工具，需要至少授予以下几个权限
+# MySQL端
+# 1.全局权限
+#  a.`REPLICATION CLIENT`
+#  b.`SESSION_VARIABLES_ADMIN`，如果是MySQL 8.0版本的话，MySQL 5.7版本不做这个要求
+# 2.校验数据对象
+#  a.如果`datafix=file`，则只需要`SELECT`权限
+#  b.如果`datafix=table`，则需要`SELECT、INSERT、DELETE`权限
+#
+# 假设现在要对db1.t1做校验和修复，则可授权如下
+```
+mysql> GRANT REPLICATION CLIENT, SESSION_VARIABLES_ADMIN ON *.* to ...;
+mysql> GRANT SELECT, INSERT, DELETE ON db1.t1 to ...;
+```
+
+# Oracle端
+# 1.全局权限
+#  a.`SELECT ANY DICTIONARY`
+# 2.校验数据对象
+#  a.如果`datafix=file`，则只需要`SELECT ANY TABLE`权限
+#  b.如果`datafix=table`，则需要`SELECT ANY TABLE、INSERT ANY TABLE、DELETE ANY TABLE`权限
+
+
 # 指定配置文件，开始执行数据校验，示例：
 shell> ./gt-checksum -f ./gc.conf
 -- gt-checksum init configuration files --
