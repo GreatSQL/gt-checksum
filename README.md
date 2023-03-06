@@ -26,7 +26,7 @@ gt-checksum工具支持以下几种常见业务需求场景：
 ---
 可以 [这里](https://gitee.com/GreatSQL/gt-checksum/releases) 下载预编译好的二进制文件包，已经在Ubuntu、CentOS、RHEL等多个下测试通过。
 
-如果需要校验Oracle数据库，则还需要先下载Oracle数据库相应版本的驱动程序，并配置驱动程序使之生效。例如：待校验的数据库为Oracle 11-2，则要下载Oracle 11-2的驱动程序，并使之生效，否则连接Oracle会报错。详细方法请见下方内容：[**下载配置Oracle驱动程序**](x) 。
+如果需要校验Oracle数据库，则还需要先下载Oracle数据库相应版本的驱动程序，并配置驱动程序使之生效。例如：待校验的数据库为Oracle 11-2，则要下载Oracle 11-2的驱动程序，并使之生效，否则连接Oracle会报错。详细方法请见下方内容：[**下载配置Oracle驱动程序**](#%E4%B8%8B%E8%BD%BD%E9%85%8D%E7%BD%AEoracle%E9%A9%B1%E5%8A%A8%E7%A8%8B%E5%BA%8F) 。
 
 # 快速运行
 ---
@@ -154,7 +154,7 @@ gt-checksum version 1.2.0
 
 # 版本历史
 ---
-- [版本历史)](https://gitee.com/GreatSQL/gt-checksum/blob/master/relnotes/CHANGELOG.zh-CN.md)
+- [版本历史](https://gitee.com/GreatSQL/gt-checksum/blob/master/relnotes/CHANGELOG.zh-CN.md)
 
 
 # 已知缺陷
