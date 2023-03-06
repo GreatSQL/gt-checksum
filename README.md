@@ -59,10 +59,9 @@ USAGE:
 #  b.如果`datafix=table`，则需要`SELECT、INSERT、DELETE`权限
 #
 # 假设现在要对db1.t1做校验和修复，则可授权如下
-```
+
 mysql> GRANT REPLICATION CLIENT, SESSION_VARIABLES_ADMIN ON *.* to ...;
 mysql> GRANT SELECT, INSERT, DELETE ON db1.t1 to ...;
-```
 
 # Oracle端
 # 1.全局权限

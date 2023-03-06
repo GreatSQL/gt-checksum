@@ -19,7 +19,7 @@ or
 gt-checksum --config=./gc.conf
 ```
 
-### 0. 数据库授权
+### 数据库授权
 想要运行gt-checksum工具，需要至少授予以下几个权限：
 - 在MySQL端
 	- 1.全局权限
