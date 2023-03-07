@@ -78,7 +78,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, checkmod
 		newCheckTableList, abnormalTableList []string
 		aa                                   = &CheckSumTypeStruct{}
 		err                                  error
-		tableAbnormalBool                    = true
+		tableAbnormalBool                    = false
 		event                                string
 	)
 	vlog = fmt.Sprintf("(%d) %s Start to check the consistency information of source and target table structure and column information ...", logThreadSeq, event)
@@ -172,7 +172,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, checkmod
 				}
 				if _, ok := destColumnMap[v1]; ok {
 					if CheckSum().CheckMd5(strings.Join(sourceColumnMap[v1], "")) == CheckSum().CheckMd5(strings.Join(destColumnMap[v1], "")) && sourceColumnSeq[v1] == destColumnSeq[v1] {
-						tableAbnormalBool = false
+
 					} else {
 						tableAbnormalBool = true
 						modifySql := dbf.DataAbnormalFix().FixAlterColumnSqlDispos("modify", sourceColumnMap[v1], k1, lastcolumn, v1, logThreadSeq)
