@@ -573,6 +573,7 @@ func (sp SchedulePlan) sampQueryTableSql(sqlWhere chanString, selectSql chanMap,
 		count      uint64
 		autoSeq    int64
 		sampleList = make(map[int64]int)
+		err        error
 	)
 	vlog = fmt.Sprintf("(%d) Start processing the block data verification query sql of the verification table ...", logThreadSeq)
 	global.Wlog.Debug(vlog)

@@ -113,11 +113,13 @@ func (rs rapirSqlStruct) SqlFile(sfile *os.File, sql []string, logThreadSeq int6
 	return nil
 }
 func ApplyDataFix(fixSql []string, datafixType string, sfile *os.File, ddrive, jdbc string, logThreadSeq int64) error {
-	var rapirdml = rapirSqlStruct{
-		Drive: ddrive,
-		JDBC:  jdbc,
-	}
-	//var err error
+	var (
+		err      error
+		rapirdml = rapirSqlStruct{
+			Drive: ddrive,
+			JDBC:  jdbc,
+		}
+	)
 	if datafixType == "file" {
 		if err = rapirdml.SqlFile(sfile, fixSql, logThreadSeq); err != nil {
 			return err
