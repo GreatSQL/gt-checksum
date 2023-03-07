@@ -190,29 +190,6 @@ func (my *QueryTable) GlobalAccessPri(db *sql.DB, logThreadSeq int64) (bool, err
 		currentUser string
 		rows        *sql.Rows
 		Event       = "Q_Table_Global_Access_Pri"
-
-		//sqlQuery = func(logseq int64, sql, logKeyword string) ([]map[string]interface{}, error) {
-
-		//vlog = fmt.Sprintf("(%d) MySQL DB query %s info exec sql is {%s}", logseq, logKeyword, sql)
-		//global.Wlog.Debug(vlog)
-		//rows, err := db.Query(sql)
-		//if err != nil {
-		//	vlog = fmt.Sprintf("(%d) MySQL DB exec sql fail. sql message is {%s} Error info is {%s}.", logseq, sql, err)
-		//	global.Wlog.Error(vlog)
-		//	return nil, err
-		//}
-		//if rows == nil {
-		//	return nil, nil
-		//}
-		//vlog = fmt.Sprintf("(%d) start dispos MySQL DB query %s.", logseq, logKeyword)
-		//global.Wlog.Debug(vlog)
-		//a, err := rowDataDisposMap(rows, "Privileges", logseq)
-		//dispos := dataDispos.DBdataDispos{DBtype: "MySQL", Logseq: logseq, SqlRows: rows, Event: "Privileges"}
-
-		//vlog = fmt.Sprintf("(%d) MySQL DB query %s data completion.", logseq, logKeyword)
-		//global.Wlog.Debug(vlog)
-		//	return a, nil
-		//}
 	)
 	//要确定MySQL的版本，5.7和8.0
 	if version, err = my.DatabaseVersion(db, logThreadSeq); err != nil {
@@ -300,32 +277,7 @@ func (my *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 		A                 = make(map[string]int)
 		PT, abPT          = make(map[string]int), make(map[string]int)
 		Event             = "Q_Table_Access_Pri"
-		//sqlQuery          = func(logseq int64, sql, logKeyword string) ([]map[string]interface{}, error) {
-		//	vlog = fmt.Sprintf("(%d) MySQL DB query %s info exec sql is {%s}", logseq, logKeyword, sql)
-		//	global.Wlog.Debug(vlog)
-		//	rows, err := db.Query(sql)
-		//	if err != nil {
-		//		vlog = fmt.Sprintf("(%d) MySQL DB exec sql fail. sql message is {%s} Error info is {%s}.", logseq, sql, err)
-		//		global.Wlog.Error(vlog)
-		//		return nil, err
-		//	}
-		//	if rows == nil {
-		//		return nil, nil
-		//	}
-		//	vlog = fmt.Sprintf("(%d) start dispos MySQL DB query %s.", logseq, logKeyword)
-		//	global.Wlog.Debug(vlog)
-		//	//a, err := rowDataDisposMap(rows, "Privileges", logseq)
-		//	dispos := dataDispos.DBdataDispos{DBtype: "MySQL", Logseq: logseq, SqlRows: rows, Event: "Privileges"}
-		//	a, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
-		//	rows.Close()
-		//	if err != nil {
-		//		return nil, err
-		//	}
-		//	vlog = fmt.Sprintf("(%d) MySQL DB query %s data completion.", logseq, logKeyword)
-		//	global.Wlog.Debug(vlog)
-		//	return a, nil
-		//}
-		globalPriS []string
+		globalPriS        []string
 	)
 
 	//针对要校验的库做去重（库级别的）
@@ -333,6 +285,7 @@ func (my *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 	if strings.ToUpper(datefix) == "TABLE" {
 		globalPri["INSERT"] = 0
 		globalPri["DELETE"] = 0
+		globalPri["ALTER"] = 0
 	}
 	for k, _ := range globalPri {
 		globalPriS = append(globalPriS, k)
@@ -359,13 +312,6 @@ func (my *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 	if err != nil {
 		return nil, err
 	}
-	//CC, err := sqlQuery(logThreadSeq, strsql, "current user")
-	//if err != nil {
-	//	return nil, err
-	//}
-	//if len(CC) == 0 {
-	//	return nil, nil
-	//}
 	currentUser = fmt.Sprintf("'%s'", strings.ReplaceAll(fmt.Sprintf("%s", CC[0]["user"]), "@", "'@'"))
 	//vlog = fmt.Sprintf("(%d) The user account corresponding to the currently connected MySQL DB user is message {%s}", logThreadSeq, currentUser)
 	//global.Wlog.Debug(vlog)
@@ -373,10 +319,6 @@ func (my *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 	vlog = fmt.Sprintf("(%d) [%s] Query the current %s DB global dynamic grants permission, to query it...", logThreadSeq, Event, DBType)
 	global.Wlog.Debug(vlog)
 	strsql = fmt.Sprintf("select PRIVILEGE_TYPE as privileges from information_schema.USER_PRIVILEGES where PRIVILEGE_TYPE in('%s') and grantee = \"%s\";", strings.Join(globalPriS, "','"), currentUser)
-	//globalDynamic, err := sqlQuery(logThreadSeq, strsql, "Global Dynamic Grants")
-	//if err != nil {
-	//	return nil, err
-	//}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return nil, err
 	}
@@ -404,10 +346,6 @@ func (my *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 		var cc []string
 		var intseq int
 		strsql = fmt.Sprintf("select TABLE_SCHEMA as databaseName,PRIVILEGE_TYPE as privileges from information_schema.schema_PRIVILEGES where PRIVILEGE_TYPE in ('%s') and TABLE_SCHEMA = '%s' and grantee = \"%s\";", strings.Join(globalPriS, "','"), AC, currentUser)
-		//schemaPri, err1 := sqlQuery(logThreadSeq, strsql, "SCHEMA PRIVILEGES")
-		//if err1 != nil {
-		//	return nil, err
-		//}
 		if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 			return nil, err
 		}
@@ -449,11 +387,7 @@ func (my *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 
 	for B, _ := range A {
 		//按照每个库，查询table pri权限
-		strsql = fmt.Sprintf("select table_name as tableName,PRIVILEGE_TYPE as privileges from information_schema.table_PRIVILEGES where PRIVILEGE_TYPE in('SELECT','DELETE','INSERT') and TABLE_SCHEMA = '%s' and grantee = \"%s\";", B, currentUser)
-		//tablePri, err1 := sqlQuery(logThreadSeq, strsql, "TABLE PRIVILEGES")
-		//if err1 != nil {
-		//	return nil, err
-		//}
+		strsql = fmt.Sprintf("select table_name as tableName,PRIVILEGE_TYPE as privileges from information_schema.table_PRIVILEGES where PRIVILEGE_TYPE in('%s') and TABLE_SCHEMA = '%s' and grantee = \"%s\";", strings.Join(globalPriS, "','"), B, currentUser)
 		if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 			return nil, err
 		}
