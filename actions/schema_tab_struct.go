@@ -183,6 +183,8 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, checkmod
 					lastcolumn := ""
 					if k1 == 0 {
 						lastcolumn = sourceColumnSlice[k1]
+					}else {
+						lastcolumn = sourceColumnSlice[k1-1]
 					}
 					tableAbnormalBool = true
 					addSql := dbf.DataAbnormalFix().FixAlterColumnSqlDispos("add", sourceColumnMap[v1], k1, lastcolumn, v1, logThreadSeq)
