@@ -100,7 +100,6 @@ func (rs rapirSqlStruct) SqlFile(sfile *os.File, sql []string, logThreadSeq int6
 	)
 	vlog = fmt.Sprintf("(%d) Start writing repair statements to the repair file.", logThreadSeq)
 	global.Wlog.Info(vlog)
-	fmt.Println(sql)
 	if strings.HasPrefix(strings.ToUpper(strings.Join(sql, ";")), "ALTER TABLE") {
 		sqlCommit = sql
 	} else {
