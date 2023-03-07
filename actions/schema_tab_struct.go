@@ -112,7 +112,8 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, checkmod
 		alterSlice := []string{}
 		var sourceColumnSlice, destColumnSlice []string
 		var sourceColumnMap, destColumnMap = make(map[string][]string), make(map[string][]string)
-		for _, v1 := range sColumn {
+		var sourceColumnSeq, destColumnSeq = make(map[string]int), make(map[string]int)
+		for k1, v1 := range sColumn {
 			v1k := ""
 			v2 := []string{}
 			for k, v22 := range v1 {
@@ -123,9 +124,10 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, checkmod
 				v2 = v22
 			}
 			sourceColumnMap[v1k] = v2
+			sourceColumnSeq[v1k] = k1
 			sourceColumnSlice = append(sourceColumnSlice, v1k)
 		}
-		for _, v1 := range dColumn {
+		for k1, v1 := range dColumn {
 			v1k := ""
 			v2 := []string{}
 			for k, v22 := range v1 {
@@ -136,6 +138,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, checkmod
 				v2 = v22
 			}
 			destColumnMap[v1k] = v2
+			destColumnSeq[v1k] = k1
 			destColumnSlice = append(destColumnSlice, v1k)
 		}
 		addColumn, delColumn := aa.Arrcmp(sourceColumnSlice, destColumnSlice)
@@ -159,38 +162,32 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, checkmod
 				}
 			}
 			vlog = fmt.Sprintf("(%d) %s The statement to delete a column in %s table %s.%s on the target side is {%v}", logThreadSeq, event, stcls.destDrive, stcls.schema, stcls.table, alterSlice)
-			global.Wlog.Debug()
-
+			global.Wlog.Debug(vlog)
 			for k1, v1 := range sourceColumnSlice {
+				lastcolumn := ""
+				if k1 == 0 {
+					lastcolumn = sourceColumnSlice[k1]
+				} else {
+					lastcolumn = sourceColumnSlice[k1-1]
+				}
 				if _, ok := destColumnMap[v1]; ok {
-					if CheckSum().CheckMd5(strings.Join(sourceColumnMap[v1], "")) != CheckSum().CheckMd5(strings.Join(destColumnMap[v1], "")) {
-						lastcolumn := ""
-						if k1 == 0 {
-							lastcolumn = sourceColumnSlice[k1]
-						} else {
-							lastcolumn = sourceColumnSlice[k1-1]
-						}
+					if CheckSum().CheckMd5(strings.Join(sourceColumnMap[v1], "")) == CheckSum().CheckMd5(strings.Join(destColumnMap[v1], "")) && sourceColumnSeq[v1] == destColumnSeq[v1] {
+						tableAbnormalBool = false
+					} else {
 						tableAbnormalBool = true
 						modifySql := dbf.DataAbnormalFix().FixAlterColumnSqlDispos("modify", sourceColumnMap[v1], k1, lastcolumn, v1, logThreadSeq)
 						vlog = fmt.Sprintf("(%d) %s The column name of column %s of the source and target table %s.%s is the same, but the definition of the column is inconsistent, and a modify statement is generated, and the modification statement is {%v}", logThreadSeq, v1, stcls.schema, stcls.table, modifySql)
 						global.Wlog.Warn(vlog)
 						alterSlice = append(alterSlice, modifySql)
-					} else {
-						tableAbnormalBool = false
 					}
 					delete(destColumnMap, v1)
 				} else {
-					lastcolumn := ""
-					if k1 == 0 {
-						lastcolumn = sourceColumnSlice[k1]
-					}else {
-						lastcolumn = sourceColumnSlice[k1-1]
-					}
 					tableAbnormalBool = true
 					addSql := dbf.DataAbnormalFix().FixAlterColumnSqlDispos("add", sourceColumnMap[v1], k1, lastcolumn, v1, logThreadSeq)
 					vlog = fmt.Sprintf("(%d) %s The column %s is missing in the %s table %s.%s on the target side, and the add statement is generated, and the add statement is {%v}", logThreadSeq, v1, stcls.destDrive, stcls.schema, stcls.table, addSql)
 					global.Wlog.Warn(vlog)
 					alterSlice = append(alterSlice, addSql)
+					delete(destColumnMap, v1)
 				}
 			}
 			if tableAbnormalBool {
@@ -1012,6 +1009,7 @@ func (stcls *schemaTable) Foreign(dtabS []string, logThreadSeq, logThreadSeq2 in
 func (stcls *schemaTable) Partitions(dtabS []string, logThreadSeq, logThreadSeq2 int64) {
 	var (
 		vlog                             string
+		err                              error
 		c, d                             []string
 		sourcePartitions, destPartitions map[string]string
 		pods                             = Pod{

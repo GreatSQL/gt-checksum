@@ -17,7 +17,6 @@ import (
 */
 
 var (
-	err   error
 	mutex sync.Mutex
 )
 
@@ -104,6 +103,7 @@ func ProcessChunk(chunk []byte, linesPool *sync.Pool, stringPool *sync.Pool, m m
 //}
 
 func (f FileOperate) ConcurrencyReadFile(F map[string]string, c chan map[string]string) error {
+	var err error
 	//sync pools to reuse the memory and decrease the preassure on //Garbage Collector
 	linesPool := sync.Pool{New: func() interface{} {
 		lines := make([]byte, 500*1024)
@@ -155,6 +155,7 @@ func (f FileOperate) ConcurrencyReadFile(F map[string]string, c chan map[string]
 
 //写文件内容之前需要判断一下文件内容中是否存在，不存在则写入
 func (f FileOperate) ReadWriteFile(F ...interface{}) ([]string, []string) {
+	var err error
 	var exist, noexit []string
 	//sync pools to reuse the memory and decrease the preassure on //Garbage Collector
 	linesPool := sync.Pool{New: func() interface{} {

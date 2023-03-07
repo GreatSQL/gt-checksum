@@ -23,10 +23,7 @@ type (
 )
 
 var (
-	//wg                    sync.WaitGroup
 	lock sync.Mutex
-	//breakIndexColumnMq    = false
-	//querySqlWhereSliceMap = make([]map[string]string, 0)
 )
 
 /*
@@ -244,6 +241,7 @@ func (sp *SchedulePlan) queryTableSql(sqlWhere chanString, selectSql chanMap, cc
 		vlog    string
 		curry   = make(chanStruct, sp.concurrency)
 		autoSeq int64
+		err     error
 	)
 	vlog = fmt.Sprintf("(%d) Start processing the block data verification query sql of the verification table ...", logThreadSeq)
 	global.Wlog.Debug(vlog)

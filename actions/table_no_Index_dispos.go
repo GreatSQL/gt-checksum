@@ -41,15 +41,24 @@ func (sp *SchedulePlan) AbDataMd5Unique(md5Chan <-chan map[string]string, logThr
 	无索引表的表统计信息行数
 */
 func (sp *SchedulePlan) NoIndexTableCount(logThreadSeq int64) int64 {
-	var A, B uint64
+	var (
+		A, B uint64
+		err  error
+	)
 	idxc := dbExec.IndexColumnStruct{Drivce: sp.sdrive, Schema: sp.schema, Table: sp.table, ColumnName: sp.columnName, ChanrowCount: sp.chanrowCount}
 	sdb := sp.sdbPool.Get(int64(logThreadSeq))
 	A, err = idxc.TableIndexColumn().TableRows(sdb, int64(logThreadSeq))
+	if err != nil {
+		return 0
+	}
 	sp.sdbPool.Put(sdb, int64(logThreadSeq))
 
 	ddb := sp.ddbPool.Get(int64(logThreadSeq))
 	idxc.Drivce = sp.ddrive
 	B, err = idxc.TableIndexColumn().TableRows(ddb, int64(logThreadSeq))
+	if err != nil {
+		return 0
+	}
 	sp.ddbPool.Put(ddb, int64(logThreadSeq))
 	var barTableRow int64
 	if A >= B {
