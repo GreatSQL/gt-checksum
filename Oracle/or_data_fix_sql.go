@@ -162,7 +162,7 @@ func (or *OracleDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive 
 	return deleteSql, nil
 }
 
-func (or *OracleDataAbnormalFixStruct) FixAlterSqlExec(e, f []string, si map[string][]string, sourceDrive string, logThreadSeq int64) ([]string, error) {
+func (or *OracleDataAbnormalFixStruct) FixAlterIndexSqlExec(e, f []string, si map[string][]string, sourceDrive string, logThreadSeq int64) ([]string, error) {
 	var sqlS []string
 	for _, v := range e {
 		var c []string
@@ -191,4 +191,41 @@ func (or *OracleDataAbnormalFixStruct) FixAlterSqlExec(e, f []string, si map[str
 		sqlS = append(sqlS, strsql)
 	}
 	return sqlS, nil
+}
+func (or *OracleDataAbnormalFixStruct) FixAlterColumnSqlDispos(alterType string, columnDataType []string, columnSeq int, lastColumn, curryColumn string, logThreadSeq int64) string {
+	//var sqlS []string
+	//for _, v := range e {
+	//	var c []string
+	//	for _, vi := range si[v] {
+	//		c = append(c, strings.TrimSpace(strings.Split(vi, "/*actions Column Type*/")[0]))
+	//	}
+	//	switch or.IndexType {
+	//	case "pri":
+	//		strsql = fmt.Sprintf("alter table %s.%s add primary key(`%s`);", or.Schema, or.Table, strings.Join(c, "`,`"))
+	//	case "uni":
+	//		strsql = fmt.Sprintf("alter table %s.%s add unique index %s(`%s`);", or.Schema, or.Table, v, strings.Join(c, "`,`"))
+	//	case "mul":
+	//		strsql = fmt.Sprintf("alter table %s.%s add index %s(`%s`);", or.Schema, or.Table, v, strings.Join(c, "`,`"))
+	//	}
+	//	sqlS = append(sqlS, strsql)
+	//}
+	//for _, v := range f {
+	//	switch or.IndexType {
+	//	case "pri":
+	//		strsql = fmt.Sprintf("alter table %s.%s drop primary key;", or.Schema, or.Table)
+	//	case "uni":
+	//		strsql = fmt.Sprintf("alter table %s.%s drop index %s;", or.Schema, or.Table, v)
+	//	case "mul":
+	//		strsql = fmt.Sprintf("alter table %s.%s drop index %s;", or.Schema, or.Table, v)
+	//	}
+	//	sqlS = append(sqlS, strsql)
+	//}
+	return ""
+}
+func (or *OracleDataAbnormalFixStruct) FixAlterColumnSqlGenerate(modifyColumn []string, logThreadSeq int64) []string {
+	var alterSql []string
+	if len(modifyColumn) > 0 {
+		alterSql = append(alterSql, fmt.Sprintf("alter table `%s`.`%s` %s", or.Schema, or.Table, strings.Join(modifyColumn, ",")))
+	}
+	return alterSql
 }

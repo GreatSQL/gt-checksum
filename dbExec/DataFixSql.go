@@ -22,7 +22,9 @@ type DataAbnormalFixStruct struct {
 type DataAbnormalFixInterface interface {
 	FixInsertSqlExec(db *sql.DB, sourceDrive string, logThreadSeq int64) (string, error)
 	FixDeleteSqlExec(db *sql.DB, sourceDrive string, logThreadSeq int64) (string, error)
-	FixAlterSqlExec(e, f []string, si map[string][]string, sourceDrive string, logThreadSeq int64) ([]string, error)
+	FixAlterIndexSqlExec(e, f []string, si map[string][]string, sourceDrive string, logThreadSeq int64) ([]string, error)
+	FixAlterColumnSqlDispos(alterType string, columnDataType []string, columnSeq int, lastColumn, curryColumn string, logThreadSeq int64) string
+	FixAlterColumnSqlGenerate(modifyColumn []string, logThreadSeq int64) []string
 }
 
 func (dafs DataAbnormalFixStruct) DataAbnormalFix() DataAbnormalFixInterface {

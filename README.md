@@ -37,7 +37,7 @@ If no parameters are loaded, view the command with --help or -h
 
 # 查看版本号
 shell> ./gt-checksum -v
-gt-checksum version 1.2.0
+gt-checksum version 1.2.1
 
 # 查看使用帮助
 shell> ./gt-checksum -h
