@@ -31,7 +31,7 @@ func main() {
 		switch m.CheckObject {
 		case "struct":
 			//5、6
-			if err := actions.SchemaTableInit(m).Struct(tableList, "rigorous", 5, 6); err != nil {
+			if err = actions.SchemaTableInit(m).Struct(tableList, "rigorous", 5, 6); err != nil {
 				fmt.Println("-- gt-checksum report: The table structure verification failed, please refer to the log file for details, enable debug to get more information -- ")
 				os.Exit(1)
 			}

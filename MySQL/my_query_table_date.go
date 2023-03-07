@@ -372,19 +372,19 @@ func (my *QueryTable) GeneratingQuerySql(db *sql.DB, logThreadSeq int64) (string
 	//处理mysql查询时间列时数据带时区问题  2021-01-23 10:16:29 +0800 CST
 	for _, i := range my.TableColumn {
 		var tmpcolumnName string
-		tmpcolumnName = i["columnName"]
+		tmpcolumnName = fmt.Sprintf("`%s`", i["columnName"])
 		if strings.ToUpper(i["dataType"]) == "DATETIME" {
-			tmpcolumnName = fmt.Sprintf("date_format(%s,'%%Y-%%m-%%d %%H:%%i:%%s')", i["columnName"])
+			tmpcolumnName = fmt.Sprintf("date_format(%s,'%%Y-%%m-%%d %%H:%%i:%%s')", tmpcolumnName)
 		}
 		if strings.Contains(strings.ToUpper(i["dataType"]), "TIMESTAMP") {
-			tmpcolumnName = fmt.Sprintf("date_format(%s,'%%Y-%%m-%%d %%H:%%i:%%s')", i["columnName"])
+			tmpcolumnName = fmt.Sprintf("date_format(%s,'%%Y-%%m-%%d %%H:%%i:%%s')", tmpcolumnName)
 		}
 		if strings.HasPrefix(strings.ToUpper(i["dataType"]), "DOUBLE(") {
 			dianAfter := strings.ReplaceAll(strings.Split(i["dataType"], ",")[1], ")", "")
 			bb, _ := strconv.Atoi(dianAfter)
 			dianBefer := strings.Split(strings.Split(i["dataType"], ",")[0], "(")[1]
 			bbc, _ := strconv.Atoi(dianBefer)
-			tmpcolumnName = fmt.Sprintf("CAST(%s AS DECIMAL(%d,%d))", i["columnName"], bbc, bb)
+			tmpcolumnName = fmt.Sprintf("CAST(%s AS DECIMAL(%d,%d))", tmpcolumnName, bbc, bb)
 		}
 		columnNameSeq = append(columnNameSeq, tmpcolumnName)
 	}
@@ -397,6 +397,7 @@ func (my *QueryTable) GeneratingQuerySql(db *sql.DB, logThreadSeq int64) (string
 		}
 	}
 	selectSql = fmt.Sprintf("select %s from `%s`.`%s` %s", queryColumn, my.Schema, my.Table, my.Sqlwhere)
+	fmt.Println(selectSql)
 	vlog = fmt.Sprintf("(%d) [%s] Complete the data query sql of table %s.%s in the %s database.", logThreadSeq, Event, my.Schema, my.Table, DBType)
 	global.Wlog.Debug(vlog)
 	return selectSql, nil

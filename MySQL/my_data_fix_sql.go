@@ -219,7 +219,7 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterColumnSqlDispos(alterType string, 
 	if columnSeq == 0 {
 		columnLocation = "first"
 	} else {
-		columnLocation = fmt.Sprintf("after %s", lastColumn)
+		columnLocation = fmt.Sprintf("after `%s`", lastColumn)
 	}
 	switch alterType {
 	case "add":
