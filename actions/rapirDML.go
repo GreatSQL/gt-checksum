@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"gt-checksum/global"
 	"os"
+	"strings"
 )
 
 type rapirSqlStruct struct {
@@ -63,12 +64,21 @@ func (rs rapirSqlStruct) execRapirSql(sqlstr []string, dbType string, logThreadS
 
 	}
 	for _, i := range sqlstr {
-		if _, err = conn.ExecContext(ctx, i); err != nil {
-			vlog = fmt.Sprintf("(%d) prepare dataFix SQL fail.start rollback! sql is {%s}, error info is {%s}.", logThreadSeq, i, err)
-			global.Wlog.Error(vlog)
-			conn.ExecContext(ctx, "rollback")
-			return err
+		if strings.HasPrefix(strings.ToUpper(i), "ALTER TABLE") {
+			if _, err = db.Exec(i); err != nil {
+				vlog = fmt.Sprintf("(%d) commit dataFix SQL fail. error info is {%s}", logThreadSeq, err)
+				global.Wlog.Error(vlog)
+				return err
+			}
+		} else {
+			if _, err = conn.ExecContext(ctx, i); err != nil {
+				vlog = fmt.Sprintf("(%d) prepare dataFix SQL fail.start rollback! sql is {%s}, error info is {%s}.", logThreadSeq, i, err)
+				global.Wlog.Error(vlog)
+				conn.ExecContext(ctx, "rollback")
+				return err
+			}
 		}
+
 	}
 	vlog = fmt.Sprintf("(%d) start commit dataFix SQL.", logThreadSeq)
 	global.Wlog.Info(vlog)
@@ -85,13 +95,19 @@ func (rs rapirSqlStruct) execRapirSql(sqlstr []string, dbType string, logThreadS
 */
 func (rs rapirSqlStruct) SqlFile(sfile *os.File, sql []string, logThreadSeq int64) error { //在/tmp/下创建数据修复文件，将在目标端数据修复的语句写入到文件中
 	var (
-		vlog string
+		vlog      string
+		sqlCommit []string
 	)
 	vlog = fmt.Sprintf("(%d) Start writing repair statements to the repair file.", logThreadSeq)
 	global.Wlog.Info(vlog)
-	sqlCommit := []string{"begin;"}
-	sqlCommit = append(sqlCommit, sql...)
-	sqlCommit = append(sqlCommit, "commit;")
+	fmt.Println(sql)
+	if strings.HasPrefix(strings.ToUpper(strings.Join(sql, ";")), "ALTER TABLE") {
+		sqlCommit = sql
+	} else {
+		sqlCommit = []string{"begin;"}
+		sqlCommit = append(sqlCommit, sql...)
+		sqlCommit = append(sqlCommit, "commit;")
+	}
 	FileOperate{File: sfile, BufSize: 1024 * 4 * 1024, SqlType: "sql"}.ConcurrencyWriteFile(sqlCommit)
 	vlog = fmt.Sprintf("(%d) Write the repair statement to the repair file successfully.", logThreadSeq)
 	global.Wlog.Info(vlog)

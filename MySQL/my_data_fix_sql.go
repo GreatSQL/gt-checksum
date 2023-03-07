@@ -158,7 +158,7 @@ func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive s
 	}
 	return deleteSql, nil
 }
-func (my *MysqlDataAbnormalFixStruct) FixAlterSqlExec(e, f []string, si map[string][]string, sourceDrive string, logThreadSeq int64) ([]string, error) {
+func (my *MysqlDataAbnormalFixStruct) FixAlterIndexSqlExec(e, f []string, si map[string][]string, sourceDrive string, logThreadSeq int64) ([]string, error) {
 	var sqlS []string
 	for _, v := range e {
 		var c []string
@@ -167,24 +167,74 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterSqlExec(e, f []string, si map[stri
 		}
 		switch my.IndexType {
 		case "pri":
-			strsql = fmt.Sprintf("alter table %s.%s add primary key(`%s`);", my.Schema, my.Table, strings.Join(c, "`,`"))
+			strsql = fmt.Sprintf("alter table `%s`.`%s` add primary key(`%s`);", my.Schema, my.Table, strings.Join(c, "`,`"))
 		case "uni":
-			strsql = fmt.Sprintf("alter table %s.%s add unique index %s(`%s`);", my.Schema, my.Table, v, strings.Join(c, "`,`"))
+			strsql = fmt.Sprintf("alter table `%s`.`%s` add unique index %s(`%s`);", my.Schema, my.Table, v, strings.Join(c, "`,`"))
 		case "mul":
-			strsql = fmt.Sprintf("alter table %s.%s add index %s(`%s`);", my.Schema, my.Table, v, strings.Join(c, "`,`"))
+			strsql = fmt.Sprintf("alter table `%s`.`%s` add index %s(`%s`);", my.Schema, my.Table, v, strings.Join(c, "`,`"))
 		}
 		sqlS = append(sqlS, strsql)
 	}
 	for _, v := range f {
 		switch my.IndexType {
 		case "pri":
-			strsql = fmt.Sprintf("alter table %s.%s drop primary key;", my.Schema, my.Table)
+			strsql = fmt.Sprintf("alter table `%s`.`%s` drop primary key;", my.Schema, my.Table)
 		case "uni":
-			strsql = fmt.Sprintf("alter table %s.%s drop index %s;", my.Schema, my.Table, v)
+			strsql = fmt.Sprintf("alter table `%s.`%s drop index %s;", my.Schema, my.Table, v)
 		case "mul":
-			strsql = fmt.Sprintf("alter table %s.%s drop index %s;", my.Schema, my.Table, v)
+			strsql = fmt.Sprintf("alter table `%s`.`%s` drop index %s;", my.Schema, my.Table, v)
 		}
 		sqlS = append(sqlS, strsql)
 	}
 	return sqlS, nil
+}
+
+func (my *MysqlDataAbnormalFixStruct) FixAlterColumnSqlDispos(alterType string, columnDataType []string, columnSeq int, lastColumn, curryColumn string, logThreadSeq int64) string {
+	var sqlS string
+	charsetN := ""
+	if columnDataType[1] != "null" {
+		charsetN = fmt.Sprintf("character set %s", columnDataType[1])
+	}
+	collationN := ""
+	if columnDataType[2] != "null" {
+		collationN = fmt.Sprintf("collate %s", columnDataType[2])
+	}
+	nullS := ""
+	if strings.ToUpper(columnDataType[3]) == "NO" {
+		nullS = "not null"
+	}
+	collumnDefaultN := ""
+	if columnDataType[4] == "empty" {
+		collumnDefaultN = fmt.Sprintf("default ''")
+	} else if columnDataType[4] == "null" {
+		collumnDefaultN = ""
+	} else {
+		collumnDefaultN = fmt.Sprintf("default '%s'", columnDataType[4])
+	}
+	commantS := ""
+	if columnDataType[5] != "empty" {
+		commantS = fmt.Sprintf("comment '%s'", columnDataType[5])
+	}
+	columnLocation := ""
+	if columnSeq == 0 {
+		columnLocation = "first"
+	} else {
+		columnLocation = fmt.Sprintf("after %s", lastColumn)
+	}
+	switch alterType {
+	case "add":
+		sqlS = fmt.Sprintf(" add column `%s` %s %s %s %s %s %s %s", curryColumn, columnDataType[0], charsetN, collationN, nullS, collumnDefaultN, commantS, columnLocation)
+	case "modify":
+		sqlS = fmt.Sprintf(" modify column `%s` %s %s %s %s %s %s %s", curryColumn, columnDataType[0], charsetN, collationN, nullS, collumnDefaultN, commantS, columnLocation)
+	case "drop":
+		sqlS = fmt.Sprintf(" drop column `%s` ", curryColumn)
+	}
+	return sqlS
+}
+func (my *MysqlDataAbnormalFixStruct) FixAlterColumnSqlGenerate(modifyColumn []string, logThreadSeq int64) []string {
+	var alterSql []string
+	if len(modifyColumn) > 0 {
+		alterSql = append(alterSql, fmt.Sprintf("alter table `%s`.`%s` %s;", my.Schema, my.Table, strings.Join(modifyColumn, ",")))
+	}
+	return alterSql
 }

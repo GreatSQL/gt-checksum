@@ -10,6 +10,8 @@ import (
 	"time"
 )
 
+var err error
+
 func main() {
 	//获取当前时间
 	beginTime := time.Now()
@@ -29,7 +31,10 @@ func main() {
 		switch m.CheckObject {
 		case "struct":
 			//5、6
-			actions.SchemaTableInit(m).Struct(tableList, 5, 6)
+			if err := actions.SchemaTableInit(m).Struct(tableList, "rigorous", 5, 6); err != nil {
+				fmt.Println("-- gt-checksum report: The table structure verification failed, please refer to the log file for details, enable debug to get more information -- ")
+				os.Exit(1)
+			}
 		case "index":
 			//7、8
 			actions.SchemaTableInit(m).Index(tableList, 7, 8)
@@ -54,7 +59,11 @@ func main() {
 		}
 	} else {
 		//校验表结构
-		tableList, _ = actions.SchemaTableInit(m).TableColumnNameCheck(tableList, 9, 10)
+		tableList, _, err = actions.SchemaTableInit(m).TableColumnNameCheck(tableList, "loose", 9, 10)
+		if err != nil {
+			fmt.Println("-- gt-checksum report: The table structure verification failed, please refer to the log file for details, enable debug to get more information -- ")
+			os.Exit(1)
+		}
 		if len(tableList) == 0 {
 			fmt.Println("gt-checksum report: No checklist, please check the log for details.")
 			os.Exit(1)
