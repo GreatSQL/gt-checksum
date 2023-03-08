@@ -32,12 +32,15 @@ func main() {
 		case "struct":
 			//5、6
 			if err = actions.SchemaTableInit(m).Struct(tableList, "rigorous", 5, 6); err != nil {
-				fmt.Println("-- gt-checksum report: The table structure verification failed, please refer to the log file for details, enable debug to get more information -- ")
+				fmt.Println("-- gt-checksum report: The table Struct verification failed, please refer to the log file for details, enable debug to get more information -- ")
 				os.Exit(1)
 			}
 		case "index":
 			//7、8
-			actions.SchemaTableInit(m).Index(tableList, 7, 8)
+			if err = actions.SchemaTableInit(m).Index(tableList, 7, 8); err != nil {
+				fmt.Println("-- gt-checksum report: The table Index verification failed, please refer to the log file for details, enable debug to get more information -- ")
+				os.Exit(1)
+			}
 		case "partitions":
 			//9、10
 			actions.SchemaTableInit(m).Partitions(tableList, 9, 10)

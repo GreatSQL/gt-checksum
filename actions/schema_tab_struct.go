@@ -1080,12 +1080,12 @@ func (stcls *schemaTable) Partitions(dtabS []string, logThreadSeq, logThreadSeq2
 	global.Wlog.Info(vlog)
 }
 
-func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int64) {
+func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int64) error {
 	var (
-		vlog string
-		sqlS []string
-		aa   = &CheckSumTypeStruct{}
-		//sqlM          = make(map[int]string)
+		vlog          string
+		sqlS          []string
+		aa            = &CheckSumTypeStruct{}
+		event         string
 		indexGenerate = func(smu, dmu map[string][]string, a *CheckSumTypeStruct, indexType string) []string {
 			var cc, c, d []string
 			for k, _ := range smu {
@@ -1096,22 +1096,26 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 			}
 			if a.CheckMd5(strings.Join(c, ",")) != a.CheckMd5(strings.Join(d, ",")) {
 				e, f := a.Arrcmp(c, d)
-				dbf := dbExec.DataAbnormalFixStruct{Schema: stcls.schema, Table: stcls.table, SourceDevice: stcls.sourceDrive, IndexType: indexType, DatafixType: stcls.datefix}
+				dbf := dbExec.DataAbnormalFixStruct{Schema: stcls.schema, Table: stcls.table, SourceDevice: stcls.sourceDrive, DestDevice: stcls.destDrive, IndexType: indexType, DatafixType: stcls.datefix}
 				cc, _ = dbf.DataAbnormalFix().FixAlterIndexSqlExec(e, f, smu, stcls.sourceDrive, logThreadSeq)
 			}
 			return cc
 		}
 	)
+	event = fmt.Sprintf("[%s]", "check_table_index")
 	//校验索引
-	vlog = fmt.Sprintf("(%d) start init check source and target DB index Column. to check it...", logThreadSeq)
+	vlog = fmt.Sprintf("(%d) %s start init check source and target DB index Column. to check it...", logThreadSeq, event)
 	global.Wlog.Info(vlog)
 	for _, i := range dtabS {
 		stcls.schema = strings.Split(i, ".")[0]
 		stcls.table = strings.Split(i, ".")[1]
 		idxc := dbExec.IndexColumnStruct{Schema: stcls.schema, Table: stcls.table, Drivce: stcls.sourceDrive}
-		vlog = fmt.Sprintf("(%d) Start processing source DB %s data table %s.%s index column data. to dispos it...", logThreadSeq, stcls.sourceDrive, stcls.schema, stcls.table)
+		vlog = fmt.Sprintf("(%d) %s Start processing source DB %s data table %s.%s index column data. to dispos it...", logThreadSeq, event, stcls.sourceDrive, stcls.schema, stcls.table)
 		global.Wlog.Debug(vlog)
-		squeryData, _ := idxc.TableIndexColumn().QueryTableIndexColumnInfo(stcls.sourceDB, logThreadSeq2)
+		squeryData, err := idxc.TableIndexColumn().QueryTableIndexColumnInfo(stcls.sourceDB, logThreadSeq2)
+		if err != nil {
+
+		}
 		spri, suni, smul := idxc.TableIndexColumn().IndexDisposF(squeryData, logThreadSeq2)
 
 		idxc.Drivce = stcls.destDrive
@@ -1153,6 +1157,7 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 		vlog = fmt.Sprintf("(%d) The source target segment table %s.%s index column data verification is completed", logThreadSeq, stcls.schema, stcls.table)
 		global.Wlog.Info(vlog)
 	}
+	return nil
 }
 
 /*
