@@ -627,8 +627,6 @@ func (my *QueryTable) TableIndexChoice(queryData []map[string]interface{}, logTh
 			indexChoice[k] = v
 		}
 	}
-	//vlog = fmt.Sprintf("(%d) MySQL DB nounique key index starts to choose the best.", logThreadSeq)
-	//global.Wlog.Debug(vlog)
 	f := my.keyChoiceDispos(multiseriateIndexColumnMap, "mui")
 	for k, v := range f {
 		if len(v) > 0 {
@@ -651,53 +649,23 @@ func (my *QueryTable) Trigger(db *sql.DB, logThreadSeq int64) (map[string]string
 	vlog = fmt.Sprintf("(%d) [%s] Start to query the trigger information under the %s database.", logThreadSeq, Event, DBType)
 	global.Wlog.Debug(vlog)
 	strsql = fmt.Sprintf("select TRIGGER_NAME as triggerName,EVENT_OBJECT_TABLE as tableName from INFORMATION_SCHEMA.TRIGGERS where TRIGGER_SCHEMA in ('%s');", my.Schema)
-	//sqlRows, err := db.Query(strsql)
-	//if err != nil {
-	//	vlog = fmt.Sprintf("(%d) MySQL DB exec sql fail. sql message is {%s} Error info is {%s}.", logThreadSeq, strsql, err)
-	//	global.Wlog.Error(vlog)
-	//	return nil, err
-	//}
-	//if sqlRows == nil {
-	//	return nil, nil
-	//}
-	//triggerName, err := rowDataDisposMap(sqlRows, "Trigger", logThreadSeq)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return nil, err
 	}
-	//dispos := dataDispos.DBdataDispos{DBtype: "MySQL", Logseq: logThreadSeq, SqlRows: sqlRows, Event: "Trigger"}
 	triggerName, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
 	if err != nil {
 		return nil, err
 	}
 	for _, v := range triggerName {
 		strsql = fmt.Sprintf("show create trigger %s.%s", my.Schema, v["triggerName"])
-		//vlog = fmt.Sprintf("(%d) MySQL DB query create Trigger databases %s info, exec sql is {%s}", logThreadSeq, my.Schema, sqlStr)
-		//global.Wlog.Debug(vlog)
-		//sqlRows, err = db.Query(strsql)
-		//if err != nil {
-		//	vlog = fmt.Sprintf("(%d) MySQL DB exec sql fail. sql message is {%s} Error info is {%s}.", logThreadSeq, sqlStr, err)
-		//	global.Wlog.Error(vlog)
-		//	return tmpb, err
-		//}
-		//if sqlRows == nil {
-		//	return nil, nil
-		//}
 		if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 			return nil, err
 		}
-		//vlog = fmt.Sprintf("(%d) start dispos MySQL DB databases %s create Trigger info.", logThreadSeq, my.Schema)
-		//global.Wlog.Debug(vlog)
-		//createTrigger, err1 := rowDataDisposMap(sqlRows, "TRIGGER", logThreadSeq)
-		//dispos = dataDispos.DBdataDispos{DBtype: "MySQL", Logseq: logThreadSeq, SqlRows: sqlRows, Event: "Trigger"}
 		createTrigger, err1 := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
 		if err1 != nil {
 			return nil, err
 		}
-		//vlog = fmt.Sprintf("(%d) MySQL db query databases %s create Trigger completion.", logThreadSeq, my.Schema)
-		//global.Wlog.Debug(vlog)
-		//vlog = fmt.Sprintf("(%d) MySQL db query databases %s dispos Trigger data info. to dispos it ...", logThreadSeq, my.Schema)
-		//global.Wlog.Debug(vlog)
 		for _, b := range createTrigger {
 			//获取trigger name
 			triggerNa := strings.ToUpper(fmt.Sprintf("\"%s\".\"%s\"", my.Schema, b["Trigger"]))
@@ -732,51 +700,20 @@ func (my *QueryTable) Trigger(db *sql.DB, logThreadSeq int64) (map[string]string
 */
 func (my *QueryTable) Proc(db *sql.DB, logThreadSeq int64) (map[string]string, error) {
 	var (
-		//vlog   string
-		//sqlStr string
 		Event = "Q_Proc"
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start to query the stored procedure information under the %s database.", logThreadSeq, Event, DBType)
 	global.Wlog.Debug(vlog)
 	strsql = fmt.Sprintf("select SPECIFIC_SCHEMA,SPECIFIC_NAME,ORDINAL_POSITION,PARAMETER_MODE,PARAMETER_NAME,DTD_IDENTIFIER from information_schema.PARAMETERS where SPECIFIC_SCHEMA in ('%s') and ROUTINE_TYPE='PROCEDURE' order by ORDINAL_POSITION;", my.Schema)
-	//vlog = fmt.Sprintf("(%d) MySQL DB query table query Stored Procedure info exec sql is {%s}", logThreadSeq, sqlStr)
-	//global.Wlog.Debug(vlog)
-	//sqlRows, err := db.Query(sqlStr)
-	//if err != nil {
-	//	vlog = fmt.Sprintf("(%d) MySQL DB exec sql fail. sql message is {%s} Error info is {%s}.", logThreadSeq, sqlStr, err)
-	//	global.Wlog.Error(vlog)
-	//	return nil, err
-	//}
-	//if sqlRows == nil {
-	//	return nil, nil
-	//}
-	//inout, err := rowDataDisposMap(sqlRows, "Proc", logThreadSeq)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return nil, err
 	}
-	//dispos := dataDispos.DBdataDispos{DBtype: "MySQL", Logseq: logThreadSeq, SqlRows: sqlRows, Event: "Proc"}
 	inout, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
 	if err != nil {
 		return nil, err
 	}
 	strsql = fmt.Sprintf("select ROUTINE_SCHEMA,ROUTINE_NAME,ROUTINE_DEFINITION,DEFINER from information_schema.ROUTINES where routine_schema in ('%s') and ROUTINE_TYPE='PROCEDURE';", my.Schema)
-	//vlog = fmt.Sprintf("(%d) MySQL DB query table query Stored Procedure info exec sql is {%s}", logThreadSeq, sqlStr)
-	//global.Wlog.Debug(vlog)
-	//sqlRows, err = db.Query(sqlStr)
-	//if err != nil {
-	//	blog := fmt.Sprintf("(%d) MySQL DB exec sql fail. sql message is {%s} Error info is {%s}.", logThreadSeq, sqlStr, err)
-	//	global.Wlog.Error(blog)
-	//	return nil, err
-	//}
-	//if sqlRows == nil {
-	//	return nil, nil
-	//}
-	//vlog = fmt.Sprintf("(%d) start dispos MySQL DB databases %s create Stored Procedure info.", logThreadSeq, my.Schema)
-	//global.Wlog.Debug(vlog)
-	//createProc, err := rowDataDisposMap(sqlRows, "Proc", logThreadSeq)
-	//dispos := dataDispos.DBdataDispos{DBtype: "MySQL", Logseq: logThreadSeq, SqlRows: sqlRows, Event: "Proc"}
-	//dispos = dataDispos.DBdataDispos{DBtype: "MySQL", Logseq: logThreadSeq, SqlRows: sqlRows, Event: "Proc"}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return nil, err
 	}
@@ -795,25 +732,12 @@ func (my *QueryTable) Proc(db *sql.DB, logThreadSeq int64) (map[string]string, e
 */
 func (my *QueryTable) Func(db *sql.DB, logThreadSeq int64) (map[string]string, error) {
 	var (
-		//sqlStr string
 		tmpb  = make(map[string]string)
 		Event = "Q_Proc"
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start to query the stored Func information under the %s database.", logThreadSeq, Event, DBType)
 	global.Wlog.Debug(vlog)
 	strsql = fmt.Sprintf("select DEFINER,ROUTINE_NAME from information_schema.ROUTINES where routine_schema in ('%s') and ROUTINE_TYPE='FUNCTION';", my.Schema)
-	//vlog = fmt.Sprintf("(%d) MySQL DB query table query Stored Function info exec sql is {%s}", logThreadSeq, sqlStr)
-	//global.Wlog.Debug(vlog)
-	//sqlRows, err := db.Query(sqlStr)
-	//if err != nil {
-	//	vlog = fmt.Sprintf("(%d) MySQL DB exec sql fail. sql message is {%s} Error info is {%s}.", logThreadSeq, sqlStr, err)
-	//	global.Wlog.Error(vlog)
-	//	return nil, err
-	//}
-	//if sqlRows == nil {
-	//	return nil, nil
-	//}
-	//routineName, err := rowDataDisposMap(sqlRows, "Func", logThreadSeq)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return nil, err
@@ -825,20 +749,6 @@ func (my *QueryTable) Func(db *sql.DB, logThreadSeq int64) (map[string]string, e
 	}
 	for _, v := range routineName {
 		strsql = fmt.Sprintf("SHOW CREATE FUNCTION %s.%s;", my.Schema, v["ROUTINE_NAME"])
-		//vlog = fmt.Sprintf("(%d) MySQL DB query create Stored Function databases %s info, exec sql is {%s}", logThreadSeq, my.Schema, sqlStr)
-		//global.Wlog.Debug(vlog)
-		//sqlRows, err = db.Query(sqlStr)
-		//if err != nil {
-		//	vlog = fmt.Sprintf("(%d) MySQL DB exec sql fail. sql message is {%s} Error info is {%s}.", logThreadSeq, sqlStr, err)
-		//	global.Wlog.Error(vlog)
-		//	return tmpb, err
-		//}
-		//if sqlRows == nil {
-		//	return nil, nil
-		//}
-		//vlog = fmt.Sprintf("(%d) start dispos MySQL DB databases %s create Stored Function info.", logThreadSeq, my.Schema)
-		//global.Wlog.Debug(vlog)
-		//createFunc, err1 := rowDataDisposMap(sqlRows, "Func", logThreadSeq)
 		if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 			return nil, err
 		}
@@ -846,11 +756,6 @@ func (my *QueryTable) Func(db *sql.DB, logThreadSeq int64) (map[string]string, e
 		if err1 != nil {
 			return nil, err1
 		}
-		//vlog = fmt.Sprintf("(%d) MySQL db query databases %s create Stored Function completion.", logThreadSeq, my.Schema)
-		//global.Wlog.Debug(vlog)
-		//vlog = fmt.Sprintf("(%d) MySQL db query databases %s dispos Stored Function data info. to dispos it ...", logThreadSeq, my.Schema)
-		//global.Wlog.Debug(vlog)
-
 		for _, b := range createFunc {
 			d := strings.Join(strings.Fields(strings.ReplaceAll(fmt.Sprintf("%s", b["CREATE_FUNCTION"]), "\n", " ")), " ")
 			if strings.Contains(strings.ToUpper(d), "BEGIN") && strings.Contains(strings.ToUpper(d), "END") {
@@ -858,8 +763,6 @@ func (my *QueryTable) Func(db *sql.DB, logThreadSeq int64) (map[string]string, e
 			}
 			tmpb[strings.ToUpper(fmt.Sprintf("%s", v["ROUTINE_NAME"]))] = fmt.Sprintf("%s/*proc*/delimiter $\n%s$\ndelimiter ;\n", v["DEFINER"], b["Create Function"])
 		}
-		//vlog = fmt.Sprintf("(%d) MySQL db query databases %s Stored Function data completion...", logThreadSeq, my.Schema)
-		//global.Wlog.Debug(vlog)
 	}
 	defer dispos.SqlRows.Close()
 	vlog = fmt.Sprintf("(%d) [%s] Complete the stored Func information query under the %s database.", logThreadSeq, Event, DBType)
