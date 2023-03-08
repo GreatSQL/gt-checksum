@@ -151,19 +151,7 @@ shell> mv gt-checksum /usr/local/bin
 ```shell
 shell> git clone https://gitee.com/GreatSQL/gt-checksum.git
 shell> cd gt-checksum
-
-#构建Docker编译环境
-shell> docker build -t gt-checksum .
-
-#查看Docker镜像列表
-shell> docker images | grep gt-checksum
-gt-checksum                                                       latest    a716d9d018b3   27 minutes ago   1.38GB
-
-#创建一个新容器，编译gt-checksum
-shell> docker run -itd --name=gt-checksum gt-checksum
-
-#将编译好的二进制文件copy到宿主机
-shell> docker cp gt-checksum:/go/release/gt-checksum-v1.2.0 .
+shell> DOCKER_BUILDKIT=1 docker build --build-arg VERSION=v1.2.0 -f Dockerfile -o ./ .
 shell> cd gt-checksum-v1.2.0
 shell> ./gt-checksum -v
 gt-checksum version 1.2.0
