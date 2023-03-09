@@ -1,196 +1,185 @@
 package inputArg
 
 import (
+	"fmt"
 	"gopkg.in/ini.v1"
 	"strings"
 )
 
-type readConf struct{}
+//一级、二级参数标签合法性校验
+func (rc *ConfigParameter) LevelParameterCheck() {
+	var (
+		err error
+	)
+	if rc.FirstL.DSNs, err = rc.ConfFine.GetSection("DSNs"); rc.FirstL.DSNs == nil && err != nil {
+		rc.getErr("Failed to get DSNs parameters", err)
+	}
+	if rc.FirstL.Schema, err = rc.ConfFine.GetSection("Schema"); rc.FirstL.Schema == nil && err != nil {
+		rc.getErr("Failed to get Schema parameters", err)
+	}
+	//Source Destination connection 获取jdbc连接信息
+	for _, i := range []string{"srcDSN", "dstDSN"} {
+		if _, err = rc.FirstL.DSNs.GetKey(i); err != nil {
+			rc.getErr(fmt.Sprintf("Failed to get %s parameters", i), err)
+		}
+	}
+	//Schema 获取校验库表信息
+	for _, i := range []string{"tables"} {
+		if _, err = rc.FirstL.Schema.GetKey(i); err != nil {
+			rc.getErr(fmt.Sprintf("Failed to get %s parameters", i), err)
+		}
+	}
+	if rc.ParametersSwitch {
+		if rc.FirstL.Logs, err = rc.ConfFine.GetSection("Logs"); rc.FirstL.Logs == nil && err != nil {
+			rc.getErr("Failed to get Logs parameters", err)
+		}
+		if rc.FirstL.Rules, err = rc.ConfFine.GetSection("Rules"); rc.FirstL.Rules == nil && err != nil {
+			rc.getErr("Failed to get Rules parameters", err)
+		}
+		if rc.FirstL.Repair, err = rc.ConfFine.GetSection("Repair"); rc.FirstL.Repair == nil && err != nil {
+			rc.getErr("Failed to get Repair parameters", err)
+		}
+		if rc.FirstL.Struct, err = rc.ConfFine.GetSection("Struct"); rc.FirstL.Repair == nil && err != nil {
+			rc.getErr("Failed to get Struct parameters", err)
+		}
+		//Schema 获取校验库表信息
+		for _, i := range []string{"checkNoIndexTable", "lowerCaseTableNames"} {
+			if _, err = rc.FirstL.Schema.GetKey(i); err != nil {
+				rc.getErr(fmt.Sprintf("Failed to get %s parameters", i), err)
+			}
+		}
+		//Logs 二级参数信息
+		for _, i := range []string{"log", "logLevel"} {
+			if _, err = rc.FirstL.Logs.GetKey(i); err != nil {
+				rc.getErr(fmt.Sprintf("Failed to get %s parameters", i), err)
+			}
+		}
+		//Rules 二级参数检测
+		for _, i := range []string{"parallel-thds", "queue-size", "checkMode", "checkObject", "ratio", "chanRowCount"} {
+			if _, err = rc.FirstL.Rules.GetKey(i); err != nil {
+				rc.getErr(fmt.Sprintf("Failed to get %s parameters", i), err)
+			}
+		}
+		//Struct 二级参数检测
+		for _, i := range []string{"ScheckMod", "ScheckOrder", "ScheckFixRule"} {
+			if _, err = rc.FirstL.Struct.GetKey(i); err != nil {
+				rc.getErr(fmt.Sprintf("Failed to get %s parameters", i), err)
+			}
+		}
+		//Repair 二级参数校验
+		for _, i := range []string{"datafix", "fixTrxNum", "fixFileName"} {
+			if _, err = rc.FirstL.Repair.GetKey(i); err != nil {
+				rc.getErr(fmt.Sprintf("Failed to get %s parameters", i), err)
+			}
+		}
+	}
+}
+
+/*
+	二级参数值获取校验
+*/
+func (rc *ConfigParameter) secondaryLevelParameterCheck() {
+	var (
+		err error
+	)
+	//Source Destination connection 获取jdbc连接信息
+	rc.SecondaryL.DsnsV.SrcDSN = rc.FirstL.DSNs.Key("srcDSN").String() // 将结果转为string
+	if strings.Contains(rc.SecondaryL.DsnsV.SrcDSN, "|") {
+		rc.SecondaryL.DsnsV.SrcDrive = strings.Split(rc.SecondaryL.DsnsV.SrcDSN, "|")[0]
+		rc.SecondaryL.DsnsV.SrcJdbc = strings.Split(rc.SecondaryL.DsnsV.SrcDSN, "|")[1]
+	} else {
+		rc.SecondaryL.DsnsV.SrcJdbc = rc.SecondaryL.DsnsV.SrcDSN
+	}
+	rc.SecondaryL.DsnsV.DstDSN = rc.FirstL.DSNs.Key("dstDSN").String()
+	if strings.Contains(rc.SecondaryL.DsnsV.DstDSN, "|") {
+		rc.SecondaryL.DsnsV.DestDrive = strings.Split(rc.SecondaryL.DsnsV.DstDSN, "|")[0]
+		rc.SecondaryL.DsnsV.DestJdbc = strings.Split(rc.SecondaryL.DsnsV.DstDSN, "|")[1]
+	} else {
+		rc.SecondaryL.DsnsV.DestJdbc = rc.SecondaryL.DsnsV.DstDSN
+	}
+
+	//校验库表设置
+	rc.SecondaryL.SchemaV.Tables = strings.TrimSpace(rc.FirstL.Schema.Key("tables").String())
+	rc.SecondaryL.SchemaV.IgnoreTables = strings.TrimSpace(rc.FirstL.Schema.Key("ignore-tables").String())
+	if rc.SecondaryL.SchemaV.IgnoreTables == "" {
+		rc.SecondaryL.SchemaV.IgnoreTables = "nil"
+	}
+	if rc.ParametersSwitch {
+		rc.SecondaryL.SchemaV.LowerCaseTableNames = rc.FirstL.Schema.Key("lowerCaseTableNames").In("no", []string{"yes", "no"})
+		rc.SecondaryL.SchemaV.CheckNoIndexTable = rc.FirstL.Schema.Key("checkNoIndexTable").In("no", []string{"yes", "no"})
+		//Struct
+		rc.SecondaryL.StructV.ScheckMod = rc.FirstL.Struct.Key("ScheckMod").In("rigorous", []string{"loose", "rigorous"})
+		rc.SecondaryL.StructV.ScheckOrder = rc.FirstL.Struct.Key("ScheckOrder").In("no", []string{"yes", "no"})
+		rc.SecondaryL.StructV.ScheckFixRule = rc.FirstL.Struct.Key("ScheckFixRule").In("src", []string{"src", "dst"})
+
+		//Logs 获取相关参数
+		rc.SecondaryL.LogV.LogFile = rc.FirstL.Logs.Key("log").String()
+		if rc.SecondaryL.LogV.LogFile == "" {
+			rc.getErr("Failed to convert log parameter to int", err)
+		}
+		rc.SecondaryL.LogV.LogLevel = rc.FirstL.Logs.Key("logLevel").In("info", []string{"debug", "info", "warn", "error"})
+
+		if rc.SecondaryL.RulesV.ParallelThds, err = rc.FirstL.Rules.Key("parallel-thds").Int(); err != nil {
+			rc.getErr("Failed to convert parallel-thds parameter to int", err)
+		}
+		if rc.SecondaryL.RulesV.ChanRowCount, err = rc.FirstL.Rules.Key("chanRowCount").Int(); err != nil {
+			rc.getErr("Failed to convert chanRowCount parameter to int", err)
+		}
+		if rc.SecondaryL.RulesV.QueueSize, err = rc.FirstL.Rules.Key("queue-size").Int(); err != nil {
+			rc.getErr("Failed to convert queue-size parameter to int", err)
+		}
+		if rc.SecondaryL.RulesV.Ratio, err = rc.FirstL.Rules.Key("ratio").Int(); err != nil {
+			rc.getErr("Failed to convert Ratio parameter to int", err)
+		}
+		rc.SecondaryL.RulesV.CheckMode = rc.FirstL.Rules.Key("checkMode").In("rows", []string{"count", "rows", "sample"})
+		rc.SecondaryL.RulesV.CheckObject = rc.FirstL.Rules.Key("checkObject").In("data", []string{"data", "struct", "index", "partitions", "foreign", "trigger", "func", "proc"})
+
+		if rc.SecondaryL.RepairV.FixTrxNum, err = rc.FirstL.Repair.Key("fixTrxNum").Int(); err != nil {
+			rc.getErr("Failed to convert fixTrxNum parameter to int", err)
+		}
+		rc.SecondaryL.RepairV.Datafix = rc.FirstL.Repair.Key("datafix").In("file", []string{"file", "table"})
+		if rc.SecondaryL.RepairV.Datafix == "file" {
+			if _, err = rc.FirstL.Repair.GetKey("fixFileName"); err != nil {
+				rc.getErr("Failed to get fixFileName parameters", err)
+			}
+			rc.SecondaryL.RepairV.FixFileName = rc.FirstL.Repair.Key("fixFileName").String()
+		}
+	} else {
+		rc.SecondaryL.RulesV.ChanRowCount = 10000
+		rc.SecondaryL.RulesV.ParallelThds = 10
+		rc.SecondaryL.RulesV.QueueSize = 100
+		rc.SecondaryL.RulesV.Ratio = 10
+		rc.SecondaryL.LogV.LogFile = "./gt-checksum.log"
+		rc.SecondaryL.LogV.LogLevel = "info"
+		rc.SecondaryL.SchemaV.LowerCaseTableNames = "no"
+		rc.SecondaryL.SchemaV.CheckNoIndexTable = "no"
+		rc.SecondaryL.RulesV.CheckMode = "rows"
+		rc.SecondaryL.RulesV.CheckObject = "data"
+		rc.SecondaryL.RepairV.Datafix = "file"
+		rc.SecondaryL.RepairV.FixFileName = "./gt-checksum-DataFix.sql"
+		rc.SecondaryL.RepairV.FixTrxNum = 100
+	}
+}
 
 /*
 该函数用于读取配置文件中的配置参数
 */
-func (rc *readConf) getConfig(configName string, q *ConfigParameter) {
+func (rc *ConfigParameter) getConfig() {
 	var (
-		sdc, do, ls, cr, sr *ini.Section
-		err1                error
-		parametersSwitch    bool
+		err error
 	)
 	//读取配置文件信息
-	//cfg, err := ini.Load(configName)
-	if strings.HasSuffix(configName, "gc.conf") {
-		parametersSwitch = true
+	if strings.HasSuffix(rc.Config, "gc.conf") {
+		rc.ParametersSwitch = true
 	}
-	if strings.HasSuffix(configName, "gc.conf-simple") {
-		parametersSwitch = false
+	if strings.HasSuffix(rc.Config, "gc.conf-simple") {
+		rc.ParametersSwitch = false
 	}
 	//处理配置文件中的特殊字符
-	cfg, err := ini.LoadSources(ini.LoadOptions{IgnoreInlineComment: true}, configName)
+	rc.ConfFine, err = ini.LoadSources(ini.LoadOptions{IgnoreInlineComment: true}, rc.Config)
 	if err != nil {
 		rc.getErr("configuration file error.", err)
 	}
-	//判断一级标题是否正确
-	if sdc, err1 = cfg.GetSection("DSNs"); sdc == nil && err1 != nil {
-		rc.getErr("Failed to get DSNs parameters", err1)
-	}
-	if do, err1 = cfg.GetSection("Schema"); do == nil && err1 != nil {
-		rc.getErr("Failed to get Schema parameters", err1)
-	}
-	if parametersSwitch {
-		if ls, err1 = cfg.GetSection("Logs"); ls == nil && err1 != nil {
-			rc.getErr("Failed to get Logs parameters", err1)
-		}
-		if cr, err1 = cfg.GetSection("Rules"); cr == nil && err1 != nil {
-			rc.getErr("Failed to get Rules parameters", err1)
-		}
-		//if idc, err1 = cfg.GetSection("increment Data Check"); idc == nil && err1 != nil {
-		//	rc.getErr("Failed to get increment Data Check parameters", err1)
-		//}
-		if sr, err1 = cfg.GetSection("Repair"); sr == nil && err1 != nil {
-			rc.getErr("Failed to get Repair parameters", err1)
-		}
-	}
-	//二级参数正确性验证
-	//Source Destination connection 获取jdbc连接信息
-	if _, err2 := sdc.GetKey("srcDSN"); err2 != nil {
-		rc.getErr("Failed to get srcDSN parameters", err2)
-	}
-	if _, err2 := sdc.GetKey("dstDSN"); err2 != nil {
-		rc.getErr("Failed to get dstDSN parameters", err2)
-	}
-
-	//Database Conn Pool Setting 获取一致性快照连接池大小
-	//Schema 获取校验库表信息
-	if _, err2 := do.GetKey("tables"); err2 != nil {
-		rc.getErr("Failed to get tables parameters", err2)
-	}
-	//if _, err2 := do.GetKey("ignore-tables"); err2 != nil {
-	//	rc.getErr("Failed to get ignore-tables parameters", err2)
-	//}
-	if parametersSwitch {
-		//Logs 二级参数信息
-		if _, err2 := ls.GetKey("log"); err2 != nil {
-			rc.getErr("Failed to get log parameters", err2)
-		}
-		if _, err2 := ls.GetKey("logLevel"); err2 != nil {
-			rc.getErr("Failed to get logLevel parameters", err2)
-		}
-		//Rules 二级参数检测
-		if _, err2 := cr.GetKey("parallel-thds"); err2 != nil {
-			rc.getErr("Failed to get parallel-thds parameters", err2)
-		}
-		if _, err2 := cr.GetKey("singleIndexChanRowCount"); err2 != nil {
-			rc.getErr("Failed to get singleIndexChanRowCount parameters", err2)
-		}
-		if _, err2 := cr.GetKey("jointIndexChanRowCount"); err2 != nil {
-			rc.getErr("Failed to get jointIndexChanRowCount parameters", err2)
-		}
-		if _, err2 := cr.GetKey("queue-size"); err2 != nil {
-			rc.getErr("Failed to get queue-size parameters", err2)
-		}
-		if _, err2 := cr.GetKey("checkMode"); err2 != nil {
-			rc.getErr("Failed to get checkMode parameters", err2)
-		}
-		if _, err2 := cr.GetKey("checkObject"); err2 != nil {
-			rc.getErr("Failed to get checkObject parameters", err2)
-		}
-		if _, err2 := cr.GetKey("ratio"); err2 != nil {
-			rc.getErr("Failed to get Ratio parameters", err2)
-		}
-		// increment Data Check 二级参数校验
-		//if _, err2 := idc.GetKey("incSwitch"); err2 != nil {
-		//	rc.getErr("Failed to get incSwitch parameters", err2)
-		//}
-		//Repair 二级参数校验
-		if _, err2 := sr.GetKey("datafix"); err2 != nil {
-			rc.getErr("Failed to get datafix parameters", err2)
-		}
-	}
-	//获取参数
-	//Source Destination connection 获取jdbc连接信息
-	sjdbc := sdc.Key("srcDSN").String() // 将结果转为string
-	if strings.Contains(sjdbc, "|") {
-		q.SourceDrive = strings.Split(sjdbc, "|")[0]
-		q.SourceJdbc = strings.Split(sjdbc, "|")[1]
-	} else {
-		q.SourceJdbc = sjdbc
-	}
-	djdbc := sdc.Key("dstDSN").String()
-	if strings.Contains(djdbc, "|") {
-		q.DestDrive = strings.Split(djdbc, "|")[0]
-		q.DestJdbc = strings.Split(djdbc, "|")[1]
-	} else {
-		q.DestJdbc = djdbc
-	}
-
-	//校验库表设置
-	q.Table = strings.TrimSpace(do.Key("tables").String())
-	q.Igtable = strings.TrimSpace(do.Key("ignore-tables").String())
-	if q.Igtable == "" {
-		q.Igtable = "nil"
-	}
-	//判断并发设置，并判断设置的是否正确
-	if parametersSwitch {
-		if _, err2 := do.GetKey("checkNoIndexTable"); err2 != nil {
-			rc.getErr("Failed to get checkNoIndexTable parameters", err2)
-		}
-		if _, err2 := do.GetKey("lowerCaseTableNames"); err2 != nil {
-			rc.getErr("Failed to get lowerCaseTableNames parameters", err2)
-		}
-		q.LowerCaseTableNames = do.Key("lowerCaseTableNames").In("no", []string{"yes", "no"})
-		q.CheckNoIndexTable = do.Key("checkNoIndexTable").In("no", []string{"yes", "no"})
-		//Logs 获取相关参数
-		q.LogFile = ls.Key("log").String()
-		if q.LogFile == "" {
-			rc.getErr("Failed to convert log parameter to int", err1)
-		}
-		q.LogLevel = ls.Key("logLevel").In("info", []string{"debug", "info", "warn", "error"})
-		if q.Concurrency, err1 = cr.Key("parallel-thds").Int(); err1 != nil {
-			rc.getErr("Failed to convert parallel-thds parameter to int", err1)
-		}
-		if q.SingleIndexChanRowCount, err1 = cr.Key("singleIndexChanRowCount").Int(); err1 != nil {
-			rc.getErr("Failed to convert singleIndexChanRowCount parameter to int", err1)
-		}
-		if q.JointIndexChanRowCount, err1 = cr.Key("jointIndexChanRowCount").Int(); err1 != nil {
-			rc.getErr("Failed to convert jointIndexChanRowCount parameter to int", err1)
-		}
-		if q.QueueDepth, err1 = cr.Key("queue-size").Int(); err1 != nil {
-			rc.getErr("Failed to convert queue-size parameter to int", err1)
-		}
-		if q.Ratio, err1 = cr.Key("ratio").Int(); err1 != nil {
-			rc.getErr("Failed to convert Ratio parameter to int", err1)
-		}
-		if q.FixTrxNum, err1 = sr.Key("fixTrxNum").Int(); err1 != nil {
-			rc.getErr("Failed to convert fixTrxNum parameter to int", err1)
-		}
-		q.CheckMode = cr.Key("checkMode").In("rows", []string{"count", "rows", "sample"})
-		q.CheckObject = cr.Key("checkObject").In("data", []string{"data", "struct", "index", "partitions", "foreign", "trigger", "func", "proc"})
-		q.Datafix = sr.Key("datafix").In("file", []string{"file", "table"})
-	} else {
-		q.JointIndexChanRowCount = 10000
-		q.SingleIndexChanRowCount = 10000
-		q.Concurrency = 10
-		q.QueueDepth = 100
-		q.Ratio = 10
-		q.FixTrxNum = 100
-		q.LogFile = "./gt-checksum.log"
-		q.LogLevel = "info"
-		q.LowerCaseTableNames = "no"
-		q.CheckNoIndexTable = "no"
-		q.CheckMode = "rows"
-		q.CheckObject = "data"
-		q.Datafix = "file"
-	}
-	//q.IncCheckSwitch = idc.Key("incSwitch").In("no", []string{"yes", "no"})
-
-	if q.Datafix == "file" {
-		if parametersSwitch {
-			if _, err2 := sr.GetKey("fixFileName"); err2 != nil {
-				rc.getErr("Failed to get fixFileName parameters", err2)
-			}
-			q.FixFileName = sr.Key("fixFileName").String()
-		} else {
-			q.FixFileName = "./gt-checksum-DataFix.sql"
-		}
-	}
+	rc.LevelParameterCheck()
+	rc.secondaryLevelParameterCheck()
 }

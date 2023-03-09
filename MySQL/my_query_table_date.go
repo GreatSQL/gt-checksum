@@ -15,7 +15,9 @@ import (
 */
 func (my *QueryTable) QueryTableIndexColumnInfo(db *sql.DB, logThreadSeq int64) ([]map[string]interface{}, error) {
 	var (
-		Event = "Q_Index_Statistics"
+		Event     = "Q_Index_Statistics"
+		tableData []map[string]interface{}
+		err       error
 	)
 	strsql = fmt.Sprintf("select isc.COLUMN_NAME as columnName,isc.COLUMN_TYPE as columnType,isc.COLUMN_KEY as columnKey,isc.EXTRA as autoIncrement,iss.NON_UNIQUE as nonUnique,iss.INDEX_NAME as indexName,iss.SEQ_IN_INDEX IndexSeq,isc.ORDINAL_POSITION columnSeq from information_schema.columns isc inner join (select NON_UNIQUE,INDEX_NAME,SEQ_IN_INDEX,COLUMN_NAME from information_schema.STATISTICS where table_schema='%s' and table_name='%s') as iss on isc.column_name =iss.column_name where isc.table_schema='%s' and isc.table_name='%s';", my.Schema, my.Table, my.Schema, my.Table)
 	vlog = fmt.Sprintf("(%d) [%s] Generate a sql statement to query the index statistics of table %s.%s under the %s database.sql messige is {%s}", logThreadSeq, Event, my.Schema, my.Table, DBType, strsql)
@@ -24,7 +26,7 @@ func (my *QueryTable) QueryTableIndexColumnInfo(db *sql.DB, logThreadSeq int64) 
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return nil, err
 	}
-	tableData, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
+	tableData, err = dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
 	if err != nil {
 		return nil, err
 	}
@@ -397,7 +399,6 @@ func (my *QueryTable) GeneratingQuerySql(db *sql.DB, logThreadSeq int64) (string
 		}
 	}
 	selectSql = fmt.Sprintf("select %s from `%s`.`%s` %s", queryColumn, my.Schema, my.Table, my.Sqlwhere)
-	fmt.Println(selectSql)
 	vlog = fmt.Sprintf("(%d) [%s] Complete the data query sql of table %s.%s in the %s database.", logThreadSeq, Event, my.Schema, my.Table, DBType)
 	global.Wlog.Debug(vlog)
 	return selectSql, nil

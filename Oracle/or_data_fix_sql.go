@@ -162,12 +162,14 @@ func (or *OracleDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive 
 	return deleteSql, nil
 }
 
-func (or *OracleDataAbnormalFixStruct) FixAlterIndexSqlExec(e, f []string, si map[string][]string, sourceDrive string, logThreadSeq int64) ([]string, error) {
+func (or *OracleDataAbnormalFixStruct) FixAlterIndexSqlExec(e, f []string, si map[string][]string, sourceDrive string, logThreadSeq int64) []string {
 	var sqlS []string
 	for _, v := range e {
 		var c []string
 		for _, vi := range si[v] {
-			c = append(c, strings.TrimSpace(strings.Split(vi, "/*actions Column Type*/")[0]))
+			if len(strings.Split(vi, "/*actions Column Type*/")) > 0 {
+				c = append(c, strings.TrimSpace(strings.Split(vi, "/*actions Column Type*/")[0]))
+			}
 		}
 		switch or.IndexType {
 		case "pri":
@@ -190,7 +192,7 @@ func (or *OracleDataAbnormalFixStruct) FixAlterIndexSqlExec(e, f []string, si ma
 		}
 		sqlS = append(sqlS, strsql)
 	}
-	return sqlS, nil
+	return sqlS
 }
 func (or *OracleDataAbnormalFixStruct) FixAlterColumnSqlDispos(alterType string, columnDataType []string, columnSeq int, lastColumn, curryColumn string, logThreadSeq int64) string {
 	//var sqlS []string

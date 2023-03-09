@@ -80,9 +80,7 @@ func (or *QueryTable) TableColumnName(db *sql.DB, logThreadSeq int64) ([]map[str
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start querying the metadata information of table %s.%s in the %s database and get all the column names", logThreadSeq, Event, or.Schema, or.Table, DBType)
 	global.Wlog.Debug(vlog)
-	//strsql = fmt.Sprintf("select column_name as \"columnName\" from all_tab_columns where owner='%s' and table_name='%s' order by 'column_id'", strings.ToUpper(or.Schema), or.Table)
 	strsql = fmt.Sprintf("select tc.column_name as \"columnName\",decode(tc.data_type,'NUMBER',NVL2(DATA_PRECISION,'NUMBER(' || tc.DATA_PRECISION || ',' || tc.DATA_SCALE || ')','NUMBER'),'VARCHAR2','VARCHAR2(' || tc.DATA_LENGTH || ')','CHAR','CHAR(' || tc.DATA_LENGTH || ')','RAW','RAW(' || tc.DATA_LENGTH || ')',tc.DATA_TYPE) as \"columnType\",NULLABLE as \"isNull\",'','',cc.comments as \"columnComment\",DATA_DEFAULT as \"columnDefault\" from dba_tab_columns tc join dba_col_comments cc on tc.OWNER = cc.owner and tc.TABLE_NAME = cc.table_name and tc.COLUMN_NAME = cc.column_name WHERE tc.owner = '%s' and tc.table_name = '%s' order by 'tc.COLUMN_ID'", strings.ToUpper(or.Schema), or.Table)
-	fmt.Println(strsql)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		if err != nil {
