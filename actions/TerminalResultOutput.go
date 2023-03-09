@@ -30,65 +30,58 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 	table.MaxColWidth = 200
 	table.RightAlign(20)
 
-	if m.CheckObject == "struct" {
+	switch m.SecondaryL.RulesV.CheckObject {
+	case "struct":
 		table.AddRow("Schema", "Table ", " CheckObject ", "Differences", "Datafix")
 		for _, pod := range measuredDataPods {
 			table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.CheckObject), color.GreenString(pod.Differences), color.YellowString(pod.Datafix))
 		}
 		fmt.Println(table)
-	}
-	if m.CheckObject == "index" {
+	case "index":
 		table.AddRow("Schema", "Table ", "CheckObject ", "Differences", "Datafix")
 		for _, pod := range measuredDataPods {
 			table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.CheckObject), color.GreenString(pod.Differences), color.YellowString(pod.Datafix))
 		}
 		fmt.Println(table)
-	}
-	if m.CheckObject == "partitions" {
+	case "partitions":
 		table.AddRow("Schema", "Table ", "checkObject ", "Differences", "Datafix")
 		for _, pod := range measuredDataPods {
 			table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.CheckObject), color.GreenString(pod.Differences), color.YellowString(pod.Datafix))
 		}
 		fmt.Println(table)
-	}
-	if m.CheckObject == "foreign" {
+	case "foreign":
 		table.AddRow("Schema", "Table ", "checkObject ", "Differences", "Datafix")
 		for _, pod := range measuredDataPods {
 			table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.CheckObject), color.GreenString(pod.Differences), color.YellowString(pod.Datafix))
 		}
 		fmt.Println(table)
-	}
-	if m.CheckObject == "func" {
+	case "func":
 		table.AddRow("Schema ", "funcName ", "checkObject ", "Differences ", "Datafix ")
 		for _, pod := range measuredDataPods {
 			table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.FuncName), color.RedString(pod.CheckObject), color.GreenString(pod.Differences), color.YellowString(pod.Datafix))
 		}
 		fmt.Println(table)
-	}
-	if m.CheckObject == "proc" {
+	case "proc":
 		table.AddRow("Schema ", "procName ", "checkObject ", "Differences ", "Datafix ")
 		for _, pod := range measuredDataPods {
 			table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.ProcName), color.RedString(pod.CheckObject), color.GreenString(pod.Differences), color.YellowString(pod.Datafix))
 		}
 		fmt.Println(table)
-	}
-	if m.CheckObject == "trigger" {
+	case "trigger":
 		table.AddRow("Schema ", "triggerName ", "checkObject ", "Differences ", "Datafix ")
 		for _, pod := range measuredDataPods {
 			table.AddRow(color.RedString(pod.Schema), color.GreenString(pod.TriggerName), color.RedString(pod.CheckObject), color.GreenString(pod.Differences), color.YellowString(pod.Datafix))
 		}
 		fmt.Println(table)
-	}
-	if m.CheckObject == "data" {
-		if m.CheckMode == "count" {
+	case "data":
+		switch m.SecondaryL.RulesV.CheckMode {
+		case "count":
 			table.AddRow("Schema", "Table ", "checkObject", "checkMod", "Rows", "Differences")
 			for _, pod := range measuredDataPods {
 				table.AddRow(color.RedString(pod.Schema), color.GreenString(pod.Table), color.RedString(pod.CheckObject), color.GreenString(pod.CheckMod), color.RedString(pod.Rows), color.YellowString(pod.Differences))
 			}
 			fmt.Println(table)
-		}
-		if m.CheckMode == "sample" {
-
+		case "sample":
 			for _, pod := range measuredDataPods {
 				if pod.Sample == "" {
 					table.AddRow("Schema", "Table ", "IndexCol ", "checkObject", "checkMod", "Rows", "Differences")
@@ -99,8 +92,7 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 				}
 			}
 			fmt.Println(table)
-		}
-		if m.CheckMode == "rows" {
+		case "rows":
 			table.AddRow("Schema", "Table ", "IndexCol ", "checkMod", "Rows", "Differences", "Datafix")
 			for _, pod := range measuredDataPods {
 				var differences = pod.Differences
@@ -116,6 +108,43 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 			}
 			fmt.Println(table)
 		}
+		//if m.CheckObject == "data" {
+		//if m.CheckMode == "count" {
+		//	table.AddRow("Schema", "Table ", "checkObject", "checkMod", "Rows", "Differences")
+		//	for _, pod := range measuredDataPods {
+		//		table.AddRow(color.RedString(pod.Schema), color.GreenString(pod.Table), color.RedString(pod.CheckObject), color.GreenString(pod.CheckMod), color.RedString(pod.Rows), color.YellowString(pod.Differences))
+		//	}
+		//	fmt.Println(table)
+		//}
+		//if m.CheckMode == "sample" {
+		//	for _, pod := range measuredDataPods {
+		//		if pod.Sample == "" {
+		//			table.AddRow("Schema", "Table ", "IndexCol ", "checkObject", "checkMod", "Rows", "Differences")
+		//			table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.IndexCol), color.YellowString(pod.CheckObject), color.BlueString(pod.CheckMod), color.BlueString(pod.Rows), color.GreenString(pod.Differences))
+		//		} else {
+		//			table.AddRow("Schema", "Table ", "IndexCol ", "checkObject", "checkMod", "Rows", "Samp", "Differences")
+		//			table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.IndexCol), color.YellowString(pod.CheckObject), color.BlueString(pod.CheckMod), color.BlueString(pod.Rows), color.RedString(pod.Sample), color.GreenString(pod.Differences))
+		//		}
+		//	}
+		//	fmt.Println(table)
+		//}
+		//if m.CheckMode == "rows" {
+		//	table.AddRow("Schema", "Table ", "IndexCol ", "checkMod", "Rows", "Differences", "Datafix")
+		//	for _, pod := range measuredDataPods {
+		//		var differences = pod.Differences
+		//		for k, _ := range differencesSchemaTable {
+		//			if k != "" {
+		//				KI := strings.Split(k, "greatdbCheck_greatdbCheck")
+		//				if pod.Schema == KI[0] && pod.Table == KI[1] {
+		//					differences = "yes"
+		//				}
+		//			}
+		//		}
+		//		table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.IndexCol), color.BlueString(pod.CheckMod), color.BlueString(pod.Rows), color.GreenString(differences), color.YellowString(pod.Datafix))
+		//	}
+		//	fmt.Println(table)
+		//}
+		//}
 	}
 }
 

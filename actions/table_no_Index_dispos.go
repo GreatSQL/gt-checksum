@@ -247,7 +247,10 @@ func (sp *SchedulePlan) QueryDataCheckSum(stt, dtt string, md5chan chan<- map[st
 			vlog = fmt.Sprintf("(%d) Start generating the redundant data in the difference data for table %s.%s.", logThreadSeq, sp.schema, sp.table)
 			global.Wlog.Debug(vlog)
 			FileOpen.SqlType = "delete"
-			md5Slice := FileOpen.ConcurrencyWriteFile(del)
+			md5Slice, err := FileOpen.ConcurrencyWriteFile(del)
+			if err != nil {
+				return
+			}
 			//md5Slice := FileOperate{File: sp.file, BufSize: 1024 * 4 * 1024, SqlType: "delete"}.ConcurrencyWriteFile(del)
 			for _, deli := range md5Slice {
 				tmpAnDateMap[deli] = "delete"
@@ -262,7 +265,10 @@ func (sp *SchedulePlan) QueryDataCheckSum(stt, dtt string, md5chan chan<- map[st
 			global.Wlog.Debug(vlog)
 			//md5Slice := FileOperate{File: sp.file, BufSize: 1024 * 4 * 1024, SqlType: "insert", fileName: sp.TmpFileName}.ConcurrencyWriteFile(add)
 			FileOpen.SqlType = "insert"
-			md5Slice := FileOpen.ConcurrencyWriteFile(add)
+			md5Slice, err := FileOpen.ConcurrencyWriteFile(add)
+			if err != nil {
+				return
+			}
 			for _, addi := range md5Slice {
 				tmpAnDateMap[addi] = "insert"
 			}

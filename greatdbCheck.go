@@ -17,57 +17,49 @@ func main() {
 	beginTime := time.Now()
 
 	//获取配置文件
-	m := inputArg.NewConfigInit(0)
+	m := inputArg.ConfigInit(0)
 	if !actions.SchemaTableInit(m).GlobalAccessPriCheck(1, 2) {
 		fmt.Println("gt-checksum report: Missing global permissions, please check the log for details.")
 		os.Exit(1)
 	}
-
 	//获取待校验表信息
 	fmt.Println("-- gt-checksum init check table name -- ")
 	tableList := actions.SchemaTableInit(m).SchemaTableFilter(3, 4)
 
-	if m.CheckObject != "data" {
-		switch m.CheckObject {
-		case "struct":
-			//5、6
-			if err = actions.SchemaTableInit(m).Struct(tableList, "rigorous", 5, 6); err != nil {
-				fmt.Println("-- gt-checksum report: The table Struct verification failed, please refer to the log file for details, enable debug to get more information -- ")
-				os.Exit(1)
-			}
-		case "index":
-			//7、8
-			if err = actions.SchemaTableInit(m).Index(tableList, 7, 8); err != nil {
-				fmt.Println("-- gt-checksum report: The table Index verification failed, please refer to the log file for details, enable debug to get more information -- ")
-				os.Exit(1)
-			}
-		case "partitions":
-			//9、10
-			actions.SchemaTableInit(m).Partitions(tableList, 9, 10)
-		case "foreign":
-			//11、12
-			actions.SchemaTableInit(m).Foreign(tableList, 11, 12)
-		case "func":
-			//13、14
-			fmt.Println("-- begin check func -- ")
-			actions.SchemaTableInit(m).Func(tableList, 13, 14)
-			fmt.Println("-- func check complete -- ")
-		case "proc":
-			//15、16
-			actions.SchemaTableInit(m).Proc(tableList, 15, 16)
-		case "trigger":
-			//17、18
-			// 部分ok，异构数据库需要部分内容进行手动验证，例如：触发器结构体中包含的sql语句不一致的情况
-			actions.SchemaTableInit(m).Trigger(tableList, 17, 18)
+	switch m.SecondaryL.RulesV.CheckObject {
+	case "struct":
+		if err = actions.SchemaTableInit(m).Struct(tableList, 5, 6); err != nil {
+			fmt.Println("-- gt-checksum report: The table Struct verification failed, please refer to the log file for details, enable debug to get more information -- ")
+			os.Exit(1)
 		}
-	} else {
+	case "index":
+		if err = actions.SchemaTableInit(m).Index(tableList, 7, 8); err != nil {
+			fmt.Println("-- gt-checksum report: The table Index verification failed, please refer to the log file for details, enable debug to get more information -- ")
+			os.Exit(1)
+		}
+	case "partitions":
+		//9、10
+		actions.SchemaTableInit(m).Partitions(tableList, 9, 10)
+	case "foreign":
+		//11、12
+		actions.SchemaTableInit(m).Foreign(tableList, 11, 12)
+	case "func":
+		//13、14
+		actions.SchemaTableInit(m).Func(tableList, 13, 14)
+	case "proc":
+		//15、16
+		actions.SchemaTableInit(m).Proc(tableList, 15, 16)
+	case "trigger":
+		//17、18
+		// 部分ok，异构数据库需要部分内容进行手动验证，例如：触发器结构体中包含的sql语句不一致的情况
+		actions.SchemaTableInit(m).Trigger(tableList, 17, 18)
+	case "data":
 		//校验表结构
-		tableList, _, err = actions.SchemaTableInit(m).TableColumnNameCheck(tableList, "loose", 9, 10)
+		tableList, _, err = actions.SchemaTableInit(m).TableColumnNameCheck(tableList, 9, 10)
 		if err != nil {
 			fmt.Println("-- gt-checksum report: The table structure verification failed, please refer to the log file for details, enable debug to get more information -- ")
 			os.Exit(1)
-		}
-		if len(tableList) == 0 {
+		} else if len(tableList) == 0 {
 			fmt.Println("gt-checksum report: No checklist, please check the log for details.")
 			os.Exit(1)
 		}
@@ -111,12 +103,12 @@ func main() {
 
 			//初始化数据库连接池
 			fmt.Println("-- gt-checksum init source and dest transaction snapshoot conn pool --")
-			sdc, _ := dbExec.GCN().GcnObject(m.PoolMin, m.SourceJdbc, m.SourceDrive).NewConnPool(27)
-			ddc, _ := dbExec.GCN().GcnObject(m.PoolMin, m.DestJdbc, m.DestDrive).NewConnPool(28)
+			sdc, _ := dbExec.GCN().GcnObject(m.ConnPoolV.PoolMin, m.SecondaryL.DsnsV.SrcJdbc, m.SecondaryL.DsnsV.SrcDrive).NewConnPool(27)
+			ddc, _ := dbExec.GCN().GcnObject(m.ConnPoolV.PoolMin, m.SecondaryL.DsnsV.DestJdbc, m.SecondaryL.DsnsV.DestDrive).NewConnPool(28)
 
 			//针对待校验表生成查询条件计划清单
 			fmt.Println("-- gt-checksum init cehck table query plan and check data --")
-			switch m.CheckMode {
+			switch m.SecondaryL.RulesV.CheckMode {
 			case "rows":
 				actions.CheckTableQuerySchedule(sdc, ddc, tableIndexColumnMap, tableAllCol, *m).Schedulingtasks()
 			case "count":
@@ -128,9 +120,11 @@ func main() {
 			sdc.Close(27)
 			ddc.Close(28)
 		}
+	default:
+		fmt.Println("-- gt-checksum report: checkObject parameter selection error, please refer to the log file for details, enable debug to get more information -- ")
+		os.Exit(1)
 	}
-
-	global.Wlog.Info("gt-checksum check object {", m.CheckObject, "} complete !!!")
+	global.Wlog.Info("gt-checksum check object {", m.SecondaryL.RulesV.CheckObject, "} complete !!!")
 	//输出结果信息
 	fmt.Println("")
 	fmt.Println("** gt-checksum Overview of results **")

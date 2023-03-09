@@ -5,6 +5,7 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"fmt"
+	"gt-checksum/global"
 	"io"
 	"math"
 	"os"
@@ -30,10 +31,15 @@ type FileOperate struct {
 /*
 	文件并发写入
 */
-func (f FileOperate) ConcurrencyWriteFile(writeString []string) []string {
-	var md5Slice []string
-	var c string
+func (f FileOperate) ConcurrencyWriteFile(writeString []string) ([]string, error) {
+	var (
+		c        string
+		md5Slice []string
+		event    string
+		vlog     string
+	)
 	bufWriter := bufio.NewWriterSize(f.File, f.BufSize)
+	event = fmt.Sprintf("[%s]", "write_file")
 	for _, i := range writeString {
 		sum := md5.Sum([]byte(i))
 		sumS := hex.EncodeToString(sum[:])
@@ -44,19 +50,26 @@ func (f FileOperate) ConcurrencyWriteFile(writeString []string) []string {
 			c = fmt.Sprintf("%s %s %s \n", sumS, f.SqlType, i)
 		}
 		mutex.Lock()
+		vlog = fmt.Sprintf("() %s Start to write data to file %s, the written content is {%v}", event, f.fileName, c)
+		global.Wlog.Debug(vlog)
 		wc, err := bufWriter.WriteString(c)
 		bufWriter.Flush()
 		if err != nil {
-			fmt.Println(err)
-			//return
+			vlog = fmt.Sprintf("() %s File %s failed to write content %s, the error message is {%v}", event, f.fileName, c, err)
+			global.Wlog.Error(vlog)
+			return nil, err
 		}
 		if wc != len(c) {
-			fmt.Println("--err-:", c)
+			vlog = fmt.Sprintf("() %s The number of written bytes of file %s does not match the number of successful bytes, the number of written bytes is {%v}, and the number of successful bytes is {%v}", event, f.fileName, len(c), wc)
+			global.Wlog.Error(vlog)
+			return nil, err
 		}
 		mutex.Unlock()
+		vlog = fmt.Sprintf("() %s The data in file %s is successfully written.", event, f.fileName)
+		global.Wlog.Debug(vlog)
 	}
 
-	return md5Slice
+	return md5Slice, nil
 }
 
 func ProcessChunk(chunk []byte, linesPool *sync.Pool, stringPool *sync.Pool, m map[string]string, c chan<- map[string]string) {

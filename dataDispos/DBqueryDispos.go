@@ -519,6 +519,7 @@ func (dbpos *DBdataDispos) DBSQLforExec(strsql string) (*sql.Rows, error) {
 			global.Wlog.Error(vlog)
 			if i == 3 {
 				vlog = fmt.Sprintf("(%d) [%s] Failed to connect to the %s database, unable to execute the sql statement.", dbpos.LogThreadSeq, dbpos.Event, dbpos.DBType)
+				global.Wlog.Error(vlog)
 				return nil, err
 			}
 			time.Sleep(5 * time.Second)

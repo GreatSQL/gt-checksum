@@ -85,6 +85,7 @@ func (rs rapirSqlStruct) execRapirSql(sqlstr []string, dbType string, logThreadS
 	if _, err = conn.ExecContext(ctx, "commit"); err != nil {
 		vlog = fmt.Sprintf("(%d) commit dataFix SQL fail. error info is {%s}", logThreadSeq, err)
 		global.Wlog.Error(vlog)
+		return err
 	}
 	defer db.Close()
 	return nil
@@ -107,7 +108,10 @@ func (rs rapirSqlStruct) SqlFile(sfile *os.File, sql []string, logThreadSeq int6
 		sqlCommit = append(sqlCommit, sql...)
 		sqlCommit = append(sqlCommit, "commit;")
 	}
-	FileOperate{File: sfile, BufSize: 1024 * 4 * 1024, SqlType: "sql"}.ConcurrencyWriteFile(sqlCommit)
+	_, err := FileOperate{File: sfile, BufSize: 1024 * 4 * 1024, SqlType: "sql"}.ConcurrencyWriteFile(sqlCommit)
+	if err != nil {
+		return err
+	}
 	vlog = fmt.Sprintf("(%d) Write the repair statement to the repair file successfully.", logThreadSeq)
 	global.Wlog.Info(vlog)
 	return nil

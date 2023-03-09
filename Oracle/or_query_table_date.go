@@ -15,7 +15,9 @@ import (
 
 func (or *QueryTable) QueryTableIndexColumnInfo(db *sql.DB, logThreadSeq int64) ([]map[string]interface{}, error) {
 	var (
-		Event = "Q_Index_Statistics"
+		Event     = "Q_Index_Statistics"
+		tableData []map[string]interface{}
+		err       error
 	)
 	strsql = fmt.Sprintf("select c.COLUMN_NAME as \"columnName\",decode(c.DATA_TYPE,'DATE',c.data_type,c.DATA_TYPE || '(' || c.data_LENGTH || ')') as \"columnType\", decode(co.constraint_type, 'P','1','0') as \"columnKey\",i.UNIQUENESS as \"nonUnique\", ic.INDEX_NAME as \"indexName\", ic.COLUMN_POSITION as \"IndexSeq\", c.COLUMN_ID as \"columnSeq\" from all_tab_cols c inner join all_ind_columns ic on c.TABLE_NAME = ic.TABLE_NAME and c.OWNER = ic.INDEX_OWNER and c.COLUMN_NAME = ic.COLUMN_NAME inner join all_indexes i on ic.INDEX_OWNER = i.OWNER and ic.INDEX_NAME = i.INDEX_NAME and ic.TABLE_NAME = i.TABLE_NAME left join all_constraints co on co.owner = c.owner and co.table_name = c.table_name and co.index_name = i.index_name where c.OWNER = '%s' and c.TABLE_NAME = '%s' ORDER BY I.INDEX_NAME, ic.COLUMN_POSITION", strings.ToUpper(or.Schema), or.Table)
 	vlog = fmt.Sprintf("(%d) [%s] Generate a sql statement to query the index statistics of table %s.%s under the %s database.sql messige is {%s}", logThreadSeq, Event, or.Schema, or.Table, DBType, strsql)
@@ -24,7 +26,7 @@ func (or *QueryTable) QueryTableIndexColumnInfo(db *sql.DB, logThreadSeq int64) 
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return nil, err
 	}
-	tableData, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
+	tableData, err = dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
 	if err != nil {
 		return nil, err
 	}
@@ -311,13 +313,12 @@ func (or *QueryTable) GeneratingQuerySql(db *sql.DB, logThreadSeq int64) (string
 	for _, i := range or.TableColumn {
 		mu := "9"
 		nu := "0"
-		var tmpcolumnName string
-		tmpcolumnName = i["columnName"]
+		tmpcolumnName := fmt.Sprintf("\"%s\"", i["columnName"])
 		if strings.ToUpper(i["dataType"]) == "DATE" {
-			tmpcolumnName = fmt.Sprintf("to_char(%s,'YYYY-MM-DD HH24:MI:SS')", i["columnName"])
+			tmpcolumnName = fmt.Sprintf("to_char(%s,'YYYY-MM-DD HH24:MI:SS')", tmpcolumnName)
 		}
 		if strings.Contains(strings.ToUpper(i["dataType"]), "TIMESTAMP") {
-			tmpcolumnName = fmt.Sprintf("to_char(%s,'YYYY-MM-DD HH24:MI:SS')", i["columnName"])
+			tmpcolumnName = fmt.Sprintf("to_char(%s,'YYYY-MM-DD HH24:MI:SS')", tmpcolumnName)
 		}
 		if strings.HasPrefix(strings.ToUpper(i["dataType"]), "NUMBER(") {
 			dianAfter := strings.ReplaceAll(strings.Split(i["dataType"], ",")[1], ")", "")
@@ -332,16 +333,15 @@ func (or *QueryTable) GeneratingQuerySql(db *sql.DB, logThreadSeq int64) (string
 				tmpb = append(tmpb, mu)
 			}
 			if bb == 0 {
-				tmpcolumnName = fmt.Sprintf("to_char(%s,'FM%s0')", i["columnName"], strings.Join(tmpb, ""))
+				tmpcolumnName = fmt.Sprintf("to_char(%s,'FM%s0')", tmpcolumnName, strings.Join(tmpb, ""))
 			} else {
-				tmpcolumnName = fmt.Sprintf("to_char(%s,'FM%s0.%s')", i["columnName"], strings.Join(tmpb, ""), strings.Join(tmpa, ""))
+				tmpcolumnName = fmt.Sprintf("to_char(%s,'FM%s0.%s')", tmpcolumnName, strings.Join(tmpb, ""), strings.Join(tmpa, ""))
 			}
 		}
 		columnNameSeq = append(columnNameSeq, tmpcolumnName)
 	}
 	queryColumn := strings.Join(columnNameSeq, ",")
 	//sqlstr := fmt.Sprintf("select %s from \"%s\".\"%s\" as of scn %s where %s", queryColumn, schema, table, oracleScn, sqlWhere)
-	//fmt.Println(fmt.Sprintf("select %s from \"%s\".\"%s\" where %s", queryColumn, strings.ToUpper(or.Schema), or.Table, or.Sqlwhere))
 	selectSql = fmt.Sprintf("select %s from \"%s\".\"%s\" where %s", queryColumn, strings.ToUpper(or.Schema), or.Table, or.Sqlwhere)
 	vlog = fmt.Sprintf("(%d) [%s] Complete the data query sql of table %s.%s in the %s database.", logThreadSeq, Event, or.Schema, or.Table, DBType)
 	global.Wlog.Debug(vlog)

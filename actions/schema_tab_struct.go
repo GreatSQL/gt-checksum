@@ -25,6 +25,7 @@ type schemaTable struct {
 	sfile               *os.File
 	djdbc               string
 	checkMode           string //列的校验模式，分为宽松模式和严格模式
+	structRul           inputArg.StructS
 }
 
 /*
@@ -72,7 +73,7 @@ func (stcls *schemaTable) tableColumnName(db *sql.DB, tc dbExec.TableColumnNameS
 /*
 	针对表的列名进行校验
 */
-func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, checkmod string, logThreadSeq, logThreadSeq2 int64) ([]string, []string, error) {
+func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThreadSeq, logThreadSeq2 int64) ([]string, []string, error) {
 	var (
 		vlog                                 string
 		newCheckTableList, abnormalTableList []string
@@ -141,169 +142,141 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, checkmod
 			destColumnSeq[v1k] = k1
 			destColumnSlice = append(destColumnSlice, v1k)
 		}
-		addColumn, delColumn := aa.Arrcmp(sourceColumnSlice, destColumnSlice)
-		switch checkmod {
-		case "loose": //宽松模式
-			if len(addColumn) == 0 && len(delColumn) == 0 && strings.Join(sourceColumnSlice, ",") == strings.Join(destColumnSlice, ",") {
-				newCheckTableList = append(newCheckTableList, fmt.Sprintf("%s.%s", stcls.schema, stcls.table))
-			} else {
-				abnormalTableList = append(abnormalTableList, fmt.Sprintf("%s.%s", stcls.schema, stcls.table))
+		_, delColumn := aa.Arrcmp(sourceColumnSlice, destColumnSlice)
+		vlog = fmt.Sprintf("(%d) %s The column that needs to be deleted in the target %s table %s.%s is {%v}", logThreadSeq, event, stcls.destDrive, stcls.schema, stcls.table, delColumn)
+		global.Wlog.Debug(vlog)
+		//先删除缺失的
+		if len(delColumn) > 0 {
+			for _, v1 := range delColumn {
+				dropSql := dbf.DataAbnormalFix().FixAlterColumnSqlDispos("drop", destColumnMap[v1], 1, "", v1, logThreadSeq)
+				alterSlice = append(alterSlice, dropSql)
+				delete(destColumnMap, v1)
 			}
-		case "rigorous": //严谨模式
-			vlog = fmt.Sprintf("(%d) %s The column that needs to be deleted in the target %s table %s.%s is {%v}", logThreadSeq, event, stcls.destDrive, stcls.schema, stcls.table, delColumn)
-			global.Wlog.Debug(vlog)
-			//先删除缺失的
-			if len(delColumn) > 0 {
-				for _, v1 := range delColumn {
-					dropSql := dbf.DataAbnormalFix().FixAlterColumnSqlDispos("drop", destColumnMap[v1], 1, "", v1, logThreadSeq)
-					alterSlice = append(alterSlice, dropSql)
-					delete(destColumnMap, v1)
-					tableAbnormalBool = true
-				}
-			}
-			vlog = fmt.Sprintf("(%d) %s The statement to delete a column in %s table %s.%s on the target side is {%v}", logThreadSeq, event, stcls.destDrive, stcls.schema, stcls.table, alterSlice)
-			global.Wlog.Debug(vlog)
-			for k1, v1 := range sourceColumnSlice {
-				lastcolumn := ""
+		}
+		vlog = fmt.Sprintf("(%d) %s The statement to delete a column in %s table %s.%s on the target side is {%v}", logThreadSeq, event, stcls.destDrive, stcls.schema, stcls.table, alterSlice)
+		global.Wlog.Debug(vlog)
+		for k1, v1 := range sourceColumnSlice {
+			lastcolumn := ""
+			var alterColumnData []string
+			switch stcls.structRul.ScheckFixRule {
+			case "src":
 				if k1 == 0 {
 					lastcolumn = sourceColumnSlice[k1]
 				} else {
 					lastcolumn = sourceColumnSlice[k1-1]
 				}
-				if _, ok := destColumnMap[v1]; ok {
-					if CheckSum().CheckMd5(strings.Join(sourceColumnMap[v1], "")) == CheckSum().CheckMd5(strings.Join(destColumnMap[v1], "")) && sourceColumnSeq[v1] == destColumnSeq[v1] {
-
-					} else {
-						tableAbnormalBool = true
-						modifySql := dbf.DataAbnormalFix().FixAlterColumnSqlDispos("modify", sourceColumnMap[v1], k1, lastcolumn, v1, logThreadSeq)
+				alterColumnData = sourceColumnMap[v1]
+			case "dst":
+				if k1 == 0 {
+					lastcolumn = destColumnSlice[k1]
+				} else {
+					lastcolumn = destColumnSlice[k1-1]
+				}
+				alterColumnData = destColumnMap[v1]
+			default:
+				err = errors.New(fmt.Sprintf("unknown parameters"))
+				vlog = fmt.Sprintf("(%d) %s The validation mode of the correct table structure is not selected. error message is {%v}", logThreadSeq, event, err)
+				global.Wlog.Error(vlog)
+				return nil, nil, err
+			}
+			if _, ok := destColumnMap[v1]; ok {
+				switch stcls.structRul.ScheckMod {
+				case "loose":
+					switch stcls.structRul.ScheckOrder {
+					case "yes":
+						if sourceColumnSeq[v1] != destColumnSeq[v1] {
+							tableAbnormalBool = true
+						} else {
+							tableAbnormalBool = false
+						}
+					case "no":
+						tableAbnormalBool = false
+					default:
+						err = errors.New(fmt.Sprintf("unknown parameters"))
+						vlog = fmt.Sprintf("(%d) %s The validation mode of the correct table structure is not selected. error message is {%v}", logThreadSeq, event, err)
+						global.Wlog.Error(vlog)
+						return nil, nil, err
+					}
+					if tableAbnormalBool {
+						modifySql := dbf.DataAbnormalFix().FixAlterColumnSqlDispos("modify", alterColumnData, k1, lastcolumn, v1, logThreadSeq)
 						vlog = fmt.Sprintf("(%d) %s The column name of column %s of the source and target table %s.%s is the same, but the definition of the column is inconsistent, and a modify statement is generated, and the modification statement is {%v}", logThreadSeq, v1, stcls.schema, stcls.table, modifySql)
 						global.Wlog.Warn(vlog)
 						alterSlice = append(alterSlice, modifySql)
 					}
-					delete(destColumnMap, v1)
-				} else {
-					tableAbnormalBool = true
-					addSql := dbf.DataAbnormalFix().FixAlterColumnSqlDispos("add", sourceColumnMap[v1], k1, lastcolumn, v1, logThreadSeq)
-					vlog = fmt.Sprintf("(%d) %s The column %s is missing in the %s table %s.%s on the target side, and the add statement is generated, and the add statement is {%v}", logThreadSeq, v1, stcls.destDrive, stcls.schema, stcls.table, addSql)
-					global.Wlog.Warn(vlog)
-					alterSlice = append(alterSlice, addSql)
-					delete(destColumnMap, v1)
+				case "rigorous":
+					switch stcls.structRul.ScheckOrder {
+					case "yes":
+						if CheckSum().CheckMd5(strings.Join(sourceColumnMap[v1], "")) != CheckSum().CheckMd5(strings.Join(destColumnMap[v1], "")) || sourceColumnSeq[v1] != destColumnSeq[v1] {
+							tableAbnormalBool = true
+						} else {
+							tableAbnormalBool = false
+						}
+					case "no":
+						if CheckSum().CheckMd5(strings.Join(sourceColumnMap[v1], "")) != CheckSum().CheckMd5(strings.Join(destColumnMap[v1], "")) {
+							tableAbnormalBool = true
+						} else {
+							tableAbnormalBool = false
+						}
+					default:
+						err = errors.New(fmt.Sprintf("unknown parameters"))
+						vlog = fmt.Sprintf("(%d) %s The validation mode of the correct table structure is not selected. error message is {%v}", logThreadSeq, event, err)
+						global.Wlog.Error(vlog)
+						return nil, nil, err
+					}
+					if tableAbnormalBool {
+						modifySql := dbf.DataAbnormalFix().FixAlterColumnSqlDispos("modify", alterColumnData, k1, lastcolumn, v1, logThreadSeq)
+						vlog = fmt.Sprintf("(%d) %s The column name of column %s of the source and target table %s.%s is the same, but the definition of the column is inconsistent, and a modify statement is generated, and the modification statement is {%v}", logThreadSeq, v1, stcls.schema, stcls.table, modifySql)
+						global.Wlog.Warn(vlog)
+						alterSlice = append(alterSlice, modifySql)
+					}
+				default:
+					err = errors.New(fmt.Sprintf("unknown parameters"))
+					vlog = fmt.Sprintf("(%d) %s The validation mode of the correct table structure is not selected. error message is {%v}", logThreadSeq, event, err)
+					global.Wlog.Error(vlog)
+					return nil, nil, err
 				}
-			}
-			if tableAbnormalBool {
-				abnormalTableList = append(abnormalTableList, fmt.Sprintf("%s.%s", stcls.schema, stcls.table))
+				delete(destColumnMap, v1)
 			} else {
-				newCheckTableList = append(newCheckTableList, fmt.Sprintf("%s.%s", stcls.schema, stcls.table))
+				switch stcls.structRul.ScheckOrder {
+				case "yes":
+					lastcolumn = lastcolumn
+				case "no":
+					lastcolumn = "alterNoAfter"
+				default:
+					err = errors.New(fmt.Sprintf("unknown parameters"))
+					vlog = fmt.Sprintf("(%d) %s The validation mode of the correct table structure is not selected. error message is {%v}", logThreadSeq, event, err)
+					global.Wlog.Error(vlog)
+					return nil, nil, err
+				}
+				addSql := dbf.DataAbnormalFix().FixAlterColumnSqlDispos("add", sourceColumnMap[v1], k1, lastcolumn, v1, logThreadSeq)
+				vlog = fmt.Sprintf("(%d) %s The column %s is missing in the %s table %s.%s on the target side, and the add statement is generated, and the add statement is {%v}", logThreadSeq, v1, stcls.destDrive, stcls.schema, stcls.table, addSql)
+				global.Wlog.Warn(vlog)
+				alterSlice = append(alterSlice, addSql)
+				delete(destColumnMap, v1)
 			}
-			sqlS := dbf.DataAbnormalFix().FixAlterColumnSqlGenerate(alterSlice, logThreadSeq)
-			vlog = fmt.Sprintf("(%d) %s The table structure consistency check of table %s is completed.", logThreadSeq, event, v)
+		}
+		if len(alterSlice) > 0 {
+			abnormalTableList = append(abnormalTableList, fmt.Sprintf("%s.%s", stcls.schema, stcls.table))
+		} else {
+			newCheckTableList = append(newCheckTableList, fmt.Sprintf("%s.%s", stcls.schema, stcls.table))
+		}
+		sqlS := dbf.DataAbnormalFix().FixAlterColumnSqlGenerate(alterSlice, logThreadSeq)
+		vlog = fmt.Sprintf("(%d) %s The table structure consistency check of table %s is completed.", logThreadSeq, event, v)
+		global.Wlog.Debug(vlog)
+		if len(sqlS) > 0 {
+			vlog = fmt.Sprintf("(%d) %s Start to repair the statement in %s table %s on the target side according to the specified repair method. The repair statement is {%v}.", logThreadSeq, event, stcls.destDrive, v, sqlS)
 			global.Wlog.Debug(vlog)
-			if len(sqlS) > 0 {
-				vlog = fmt.Sprintf("(%d) %s Start to repair the statement in %s table %s on the target side according to the specified repair method. The repair statement is {%v}.", logThreadSeq, event, stcls.destDrive, v, sqlS)
-				global.Wlog.Debug(vlog)
-				ApplyDataFix(sqlS, stcls.datefix, stcls.sfile, stcls.destDrive, stcls.djdbc, logThreadSeq)
-				vlog = fmt.Sprintf("(%d) %s Target side %s table %s repair statement application is completed.", logThreadSeq, event, stcls.destDrive, v)
-				global.Wlog.Debug(vlog)
+			if err = ApplyDataFix(sqlS, stcls.datefix, stcls.sfile, stcls.destDrive, stcls.djdbc, logThreadSeq); err != nil {
+				return nil, nil, err
 			}
-		default:
-			err = errors.New(fmt.Sprintf("unknown parameters"))
-			vlog = fmt.Sprintf("(%d) %s The validation mode of the correct table structure is not selected. error message is {%v}", logThreadSeq, event, err)
-			global.Wlog.Error(vlog)
-			return nil, nil, err
+			vlog = fmt.Sprintf("(%d) %s Target side %s table %s repair statement application is completed.", logThreadSeq, event, stcls.destDrive, v)
+			global.Wlog.Debug(vlog)
 		}
 	}
 	vlog = fmt.Sprintf("(%d) %s The consistency information check of the source and target table structure and column information is completed", logThreadSeq, event)
 	global.Wlog.Info(vlog)
+
 	return newCheckTableList, abnormalTableList, nil
-}
-
-/*
-	检查当前用户对该库表是否有响应的权限（权限包括：查询权限，flush_tables,session_variables_admin）
-*/
-func (stcls *schemaTable) GlobalAccessPriCheck(logThreadSeq, logThreadSeq2 int64) bool {
-	var (
-		vlog                   string
-		err                    error
-		StableList, DtableList bool
-	)
-	vlog = fmt.Sprintf("(%d) Start to get the source and target Global Access Permissions information and check whether they are consistent", logThreadSeq)
-	global.Wlog.Info(vlog)
-	tc := dbExec.TableColumnNameStruct{Schema: stcls.schema, Table: stcls.table, Drive: stcls.sourceDrive, Datafix: stcls.datefix}
-	vlog = fmt.Sprintf("(%d) Start to get the source Global Access Permissions information and check whether they are consistent", logThreadSeq)
-	global.Wlog.Debug(vlog)
-	if StableList, err = tc.Query().GlobalAccessPri(stcls.sourceDB, logThreadSeq2); err != nil {
-		return false
-	}
-	vlog = fmt.Sprintf("(%d) The Global Access Permission verification of the source DB is completed, and the status of the global access permission is {%v}.", logThreadSeq, StableList)
-	global.Wlog.Debug(vlog)
-	tc.Drive = stcls.destDrive
-	vlog = fmt.Sprintf("(%d) Start to get the dest Global Access Permissions information and check whether they are consistent", logThreadSeq)
-	global.Wlog.Debug(vlog)
-
-	if DtableList, err = tc.Query().GlobalAccessPri(stcls.destDB, logThreadSeq2); err != nil {
-		return false
-	}
-
-	vlog = fmt.Sprintf("(%d) The Global Access Permission verification of the dest DB is completed, and the status of the global access permission is {%v}.", logThreadSeq, DtableList)
-	global.Wlog.Debug(vlog)
-	if StableList && DtableList {
-		vlog = fmt.Sprintf("(%d) The verification of the global access permission of the source and destination is completed", logThreadSeq)
-		global.Wlog.Info(vlog)
-		return true
-	}
-	vlog = fmt.Sprintf("(%d) Some global access permissions are missing at the source and destination, and verification cannot continue.", logThreadSeq)
-	global.Wlog.Error(vlog)
-	return false
-}
-func (stcls *schemaTable) TableAccessPriCheck(checkTableList []string, logThreadSeq, logThreadSeq2 int64) ([]string, []string) {
-	var (
-		vlog                                 string
-		err                                  error
-		StableList, DtableList               map[string]int
-		newCheckTableList, abnormalTableList []string
-	)
-	vlog = fmt.Sprintf("(%d) Start to get the source and target table access permissions information and check whether they are consistent", logThreadSeq)
-	global.Wlog.Info(vlog)
-	tc := dbExec.TableColumnNameStruct{Schema: stcls.schema, Table: stcls.table, Drive: stcls.sourceDrive}
-	vlog = fmt.Sprintf("(%d) Start to get the source table access permissions information and check whether they are consistent", logThreadSeq)
-	global.Wlog.Debug(vlog)
-
-	if StableList, err = tc.Query().TableAccessPriCheck(stcls.sourceDB, checkTableList, stcls.datefix, logThreadSeq2); err != nil {
-		return nil, nil
-	}
-	if len(StableList) == 0 {
-		vlog = fmt.Sprintf("(%d) Complete the verification table permission verification of the source DB, the current verification table with permission is {%v}.", logThreadSeq, StableList)
-		global.Wlog.Error(vlog)
-	} else {
-		vlog = fmt.Sprintf("(%d) Complete the verification table permission verification of the source DB, the current verification table with permission is {%v}.", logThreadSeq, StableList)
-		global.Wlog.Debug(vlog)
-	}
-
-	tc.Drive = stcls.destDrive
-	vlog = fmt.Sprintf("(%d) Start to get the dest table access permissions information and check whether they are consistent", logThreadSeq)
-	global.Wlog.Debug(vlog)
-	if DtableList, err = tc.Query().TableAccessPriCheck(stcls.destDB, checkTableList, stcls.datefix, logThreadSeq2); err != nil {
-		return nil, nil
-	}
-	if len(DtableList) == 0 {
-		vlog = fmt.Sprintf("(%d) Complete the verification table permission verification of the source DB, the current verification table with permission is {%v}.", logThreadSeq, DtableList)
-		global.Wlog.Error(vlog)
-	} else {
-		vlog = fmt.Sprintf("(%d) Complete the verification table permission verification of the source DB, the current verification table with permission is {%v}.", logThreadSeq, DtableList)
-		global.Wlog.Debug(vlog)
-	}
-	vlog = fmt.Sprintf("(%d) Start processing the difference of the table to be checked at the source and target.", logThreadSeq)
-	global.Wlog.Debug(vlog)
-	for k, _ := range StableList {
-		if _, ok := DtableList[k]; ok {
-			newCheckTableList = append(newCheckTableList, k)
-		} else {
-			abnormalTableList = append(abnormalTableList, k)
-		}
-	}
-	vlog = fmt.Sprintf("(%d) The difference processing of the table to be checked at the source and target ends is completed. normal table message is {%s} num [%d] abnormal table message is {%s} num [%d]", logThreadSeq, newCheckTableList, len(newCheckTableList), abnormalTableList, len(abnormalTableList))
-	global.Wlog.Info(vlog)
-	return newCheckTableList, abnormalTableList
 }
 
 /*
@@ -1097,7 +1070,7 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 			if a.CheckMd5(strings.Join(c, ",")) != a.CheckMd5(strings.Join(d, ",")) {
 				e, f := a.Arrcmp(c, d)
 				dbf := dbExec.DataAbnormalFixStruct{Schema: stcls.schema, Table: stcls.table, SourceDevice: stcls.sourceDrive, DestDevice: stcls.destDrive, IndexType: indexType, DatafixType: stcls.datefix}
-				cc, _ = dbf.DataAbnormalFix().FixAlterIndexSqlExec(e, f, smu, stcls.sourceDrive, logThreadSeq)
+				cc = dbf.DataAbnormalFix().FixAlterIndexSqlExec(e, f, smu, stcls.sourceDrive, logThreadSeq)
 			}
 			return cc
 		}
@@ -1114,15 +1087,26 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 		global.Wlog.Debug(vlog)
 		squeryData, err := idxc.TableIndexColumn().QueryTableIndexColumnInfo(stcls.sourceDB, logThreadSeq2)
 		if err != nil {
-
+			vlog = fmt.Sprintf("(%d) %s Querying the index column data of source %s database table %s failed, and the error message is {%v}", logThreadSeq, event, stcls.sourceDrive, i, err)
+			global.Wlog.Error(vlog)
+			return err
 		}
 		spri, suni, smul := idxc.TableIndexColumn().IndexDisposF(squeryData, logThreadSeq2)
+		vlog = fmt.Sprintf("(%d) %s The index column data of the source %s database table %s is {primary:%v,unique key:%v,index key:%v}", logThreadSeq, event, stcls.sourceDrive, i, spri, suni, smul)
+		global.Wlog.Debug(vlog)
 
 		idxc.Drivce = stcls.destDrive
-		vlog = fmt.Sprintf("(%d) Start processing dest DB %s data table %s.%s index column data. to dispos it...", logThreadSeq, stcls.destDrive, stcls.schema, stcls.table)
+		vlog = fmt.Sprintf("(%d) %s Start processing dest DB %s data table %s.%s index column data. to dispos it...", logThreadSeq, event, stcls.destDrive, stcls.schema, stcls.table)
 		global.Wlog.Debug(vlog)
-		dqueryData, _ := idxc.TableIndexColumn().QueryTableIndexColumnInfo(stcls.destDB, logThreadSeq2)
+		dqueryData, err := idxc.TableIndexColumn().QueryTableIndexColumnInfo(stcls.destDB, logThreadSeq2)
+		if err != nil {
+			vlog = fmt.Sprintf("(%d) %s Querying the index column data of dest %s database table %s failed, and the error message is {%v}", logThreadSeq, event, stcls.destDrive, i, err)
+			global.Wlog.Error(vlog)
+			return err
+		}
 		dpri, duni, dmul := idxc.TableIndexColumn().IndexDisposF(dqueryData, logThreadSeq2)
+		vlog = fmt.Sprintf("(%d) %s The index column data of the source %s database table %s is {primary:%v,unique key:%v,index key:%v}", logThreadSeq, event, stcls.destDrive, i, dpri, duni, dmul)
+		global.Wlog.Debug(vlog)
 
 		var pods = Pod{
 			Datafix:     stcls.datefix,
@@ -1132,29 +1116,31 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 			Table:       stcls.table,
 		}
 		//先比较主键索引
-		vlog = fmt.Sprintf("(%d) Start to compare whether the primary key index is consistent.", logThreadSeq)
+		vlog = fmt.Sprintf("(%d) %s Start to compare whether the primary key index is consistent.", logThreadSeq, event)
 		global.Wlog.Debug(vlog)
 		sqlS = append(sqlS, indexGenerate(spri, dpri, aa, "pri")...)
-		vlog = fmt.Sprintf("(%d) Compare whether the primary key index is consistent and verified.", logThreadSeq)
+		vlog = fmt.Sprintf("(%d) %s Compare whether the primary key index is consistent and verified.", logThreadSeq, event)
 		global.Wlog.Debug(vlog)
 		//再比较唯一索引
-		vlog = fmt.Sprintf("(%d) Start to compare whether the unique key index is consistent.", logThreadSeq)
+		vlog = fmt.Sprintf("(%d) %s Start to compare whether the unique key index is consistent.", logThreadSeq, event)
 		global.Wlog.Debug(vlog)
 		sqlS = append(sqlS, indexGenerate(suni, duni, aa, "uni")...)
-		vlog = fmt.Sprintf("(%d) Compare whether the unique key index is consistent and verified.", logThreadSeq)
+		vlog = fmt.Sprintf("(%d) %s Compare whether the unique key index is consistent and verified.", logThreadSeq, event)
 		global.Wlog.Info(vlog)
 		//后比较普通索引
-		vlog = fmt.Sprintf("(%d) Start to compare whether the no-unique key index is consistent.", logThreadSeq)
+		vlog = fmt.Sprintf("(%d) %s Start to compare whether the no-unique key index is consistent.", logThreadSeq, event)
 		global.Wlog.Debug(vlog)
 		sqlS = append(sqlS, indexGenerate(smul, dmul, aa, "mul")...)
-		vlog = fmt.Sprintf("(%d) Compare whether the no-unique key index is consistent and verified.", logThreadSeq)
+		vlog = fmt.Sprintf("(%d) %s Compare whether the no-unique key index is consistent and verified.", logThreadSeq, event)
 		global.Wlog.Debug(vlog)
 		if len(sqlS) > 0 {
 			pods.Differences = "yes"
 		}
-		ApplyDataFix(sqlS, stcls.datefix, stcls.sfile, stcls.destDrive, stcls.djdbc, logThreadSeq)
+		if err = ApplyDataFix(sqlS, stcls.datefix, stcls.sfile, stcls.destDrive, stcls.djdbc, logThreadSeq); err != nil {
+			return err
+		}
 		measuredDataPods = append(measuredDataPods, pods)
-		vlog = fmt.Sprintf("(%d) The source target segment table %s.%s index column data verification is completed", logThreadSeq, stcls.schema, stcls.table)
+		vlog = fmt.Sprintf("(%d) %s The source target segment table %s.%s index column data verification is completed", logThreadSeq, event, stcls.schema, stcls.table)
 		global.Wlog.Info(vlog)
 	}
 	return nil
@@ -1163,7 +1149,7 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 /*
 	校验表结构是否正确
 */
-func (stcls *schemaTable) Struct(dtabS []string, checkmode string, logThreadSeq, logThreadSeq2 int64) error {
+func (stcls *schemaTable) Struct(dtabS []string, logThreadSeq, logThreadSeq2 int64) error {
 	//校验列名
 	var (
 		vlog  string
@@ -1173,7 +1159,7 @@ func (stcls *schemaTable) Struct(dtabS []string, checkmode string, logThreadSeq,
 	fmt.Println("-- gt-checksum checksum table strcut info -- ")
 	vlog = fmt.Sprintf("(%d) %s begin check source and target struct. check object is {%v} num[%d]", logThreadSeq, event, dtabS, len(dtabS))
 	global.Wlog.Info(vlog)
-	normal, abnormal, err := stcls.TableColumnNameCheck(dtabS, checkmode, logThreadSeq, logThreadSeq2)
+	normal, abnormal, err := stcls.TableColumnNameCheck(dtabS, logThreadSeq, logThreadSeq2)
 	if err != nil {
 		return err
 	}
@@ -1227,18 +1213,19 @@ func dbOpenTest(drive, jdbc string) *sql.DB {
 	库表的初始化
 */
 func SchemaTableInit(m *inputArg.ConfigParameter) *schemaTable {
-	sdb := dbOpenTest(m.SourceDrive, m.SourceJdbc)
-	ddb := dbOpenTest(m.DestDrive, m.DestJdbc)
+	sdb := dbOpenTest(m.SecondaryL.DsnsV.SrcDrive, m.SecondaryL.DsnsV.SrcJdbc)
+	ddb := dbOpenTest(m.SecondaryL.DsnsV.DestDrive, m.SecondaryL.DsnsV.DestJdbc)
 	return &schemaTable{
-		ignoreTable:         m.Igtable,
-		table:               m.Table,
-		sourceDrive:         m.SourceDrive,
-		destDrive:           m.DestDrive,
+		ignoreTable:         m.SecondaryL.SchemaV.IgnoreTables,
+		table:               m.SecondaryL.SchemaV.Tables,
+		sourceDrive:         m.SecondaryL.DsnsV.SrcDrive,
+		destDrive:           m.SecondaryL.DsnsV.DestDrive,
 		sourceDB:            sdb,
 		destDB:              ddb,
-		lowerCaseTableNames: m.LowerCaseTableNames,
-		datefix:             m.Datafix,
-		sfile:               m.Sfile,
-		djdbc:               m.DestJdbc,
+		lowerCaseTableNames: m.SecondaryL.SchemaV.LowerCaseTableNames,
+		datefix:             m.SecondaryL.RepairV.Datafix,
+		sfile:               m.SecondaryL.RepairV.FixFileFINE,
+		djdbc:               m.SecondaryL.DsnsV.DestJdbc,
+		structRul:           m.SecondaryL.StructV,
 	}
 }

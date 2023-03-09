@@ -158,12 +158,14 @@ func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive s
 	}
 	return deleteSql, nil
 }
-func (my *MysqlDataAbnormalFixStruct) FixAlterIndexSqlExec(e, f []string, si map[string][]string, sourceDrive string, logThreadSeq int64) ([]string, error) {
+func (my *MysqlDataAbnormalFixStruct) FixAlterIndexSqlExec(e, f []string, si map[string][]string, sourceDrive string, logThreadSeq int64) []string {
 	var sqlS []string
 	for _, v := range e {
 		var c []string
 		for _, vi := range si[v] {
-			c = append(c, strings.TrimSpace(strings.Split(vi, "/*actions Column Type*/")[0]))
+			if len(strings.Split(vi, "/*actions Column Type*/")) > 0 {
+				c = append(c, strings.TrimSpace(strings.Split(vi, "/*actions Column Type*/")[0]))
+			}
 		}
 		switch my.IndexType {
 		case "pri":
@@ -186,7 +188,7 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterIndexSqlExec(e, f []string, si map
 		}
 		sqlS = append(sqlS, strsql)
 	}
-	return sqlS, nil
+	return sqlS
 }
 
 func (my *MysqlDataAbnormalFixStruct) FixAlterColumnSqlDispos(alterType string, columnDataType []string, columnSeq int, lastColumn, curryColumn string, logThreadSeq int64) string {
@@ -219,7 +221,10 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterColumnSqlDispos(alterType string, 
 	if columnSeq == 0 {
 		columnLocation = "first"
 	} else {
-		columnLocation = fmt.Sprintf("after `%s`", lastColumn)
+		if lastColumn != "alterNoAfter" {
+			columnLocation = fmt.Sprintf("after `%s`", lastColumn)
+		}
+
 	}
 	switch alterType {
 	case "add":
