@@ -43,7 +43,7 @@ func (stcls *schemaTable) GlobalAccessPriCheck(logThreadSeq, logThreadSeq2 int64
 	global.Wlog.Error(vlog)
 	return false
 }
-func (stcls *schemaTable) TableAccessPriCheck(checkTableList []string, logThreadSeq, logThreadSeq2 int64) ([]string, []string) {
+func (stcls *schemaTable) TableAccessPriCheck(checkTableList []string, logThreadSeq, logThreadSeq2 int64) ([]string, []string, error) {
 	var (
 		vlog                                 string
 		err                                  error
@@ -55,9 +55,8 @@ func (stcls *schemaTable) TableAccessPriCheck(checkTableList []string, logThread
 	tc := dbExec.TableColumnNameStruct{Schema: stcls.schema, Table: stcls.table, Drive: stcls.sourceDrive}
 	vlog = fmt.Sprintf("(%d) Start to get the source table access permissions information and check whether they are consistent", logThreadSeq)
 	global.Wlog.Debug(vlog)
-
 	if StableList, err = tc.Query().TableAccessPriCheck(stcls.sourceDB, checkTableList, stcls.datefix, logThreadSeq2); err != nil {
-		return nil, nil
+		return nil, nil, err
 	}
 	if len(StableList) == 0 {
 		vlog = fmt.Sprintf("(%d) Complete the verification table permission verification of the source DB, the current verification table with permission is {%v}.", logThreadSeq, StableList)
@@ -71,7 +70,7 @@ func (stcls *schemaTable) TableAccessPriCheck(checkTableList []string, logThread
 	vlog = fmt.Sprintf("(%d) Start to get the dest table access permissions information and check whether they are consistent", logThreadSeq)
 	global.Wlog.Debug(vlog)
 	if DtableList, err = tc.Query().TableAccessPriCheck(stcls.destDB, checkTableList, stcls.datefix, logThreadSeq2); err != nil {
-		return nil, nil
+		return nil, nil, err
 	}
 	if len(DtableList) == 0 {
 		vlog = fmt.Sprintf("(%d) Complete the verification table permission verification of the source DB, the current verification table with permission is {%v}.", logThreadSeq, DtableList)
@@ -91,5 +90,5 @@ func (stcls *schemaTable) TableAccessPriCheck(checkTableList []string, logThread
 	}
 	vlog = fmt.Sprintf("(%d) The difference processing of the table to be checked at the source and target ends is completed. normal table message is {%s} num [%d] abnormal table message is {%s} num [%d]", logThreadSeq, newCheckTableList, len(newCheckTableList), abnormalTableList, len(abnormalTableList))
 	global.Wlog.Info(vlog)
-	return newCheckTableList, abnormalTableList
+	return newCheckTableList, abnormalTableList, nil
 }

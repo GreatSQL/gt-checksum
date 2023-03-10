@@ -26,6 +26,7 @@ type schemaTable struct {
 	djdbc               string
 	checkMode           string //列的校验模式，分为宽松模式和严格模式
 	structRul           inputArg.StructS
+	checkRules          inputArg.RulesS
 }
 
 /*
@@ -142,7 +143,19 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 			destColumnSeq[v1k] = k1
 			destColumnSlice = append(destColumnSlice, v1k)
 		}
-		_, delColumn := aa.Arrcmp(sourceColumnSlice, destColumnSlice)
+		addColumn, delColumn := aa.Arrcmp(sourceColumnSlice, destColumnSlice)
+		if stcls.checkRules.CheckObject == "data" {
+			if len(addColumn) == 0 && len(delColumn) == 0 {
+				newCheckTableList = append(newCheckTableList, fmt.Sprintf("%s.%s", stcls.schema, stcls.table))
+			} else {
+				vlog = fmt.Sprintf("(%d) %s The %s table structure of the current source and destination is inconsistent, please check whether the current table structure is consistent. add:{%v} del:{%v}", logThreadSeq, event, fmt.Sprintf("%s.%s", stcls.schema, stcls.table), addColumn, delColumn)
+				global.Wlog.Error(vlog)
+				abnormalTableList = append(abnormalTableList, fmt.Sprintf("%s.%s", stcls.schema, stcls.table))
+			}
+			continue
+		}
+		if len(addColumn) == 0 && len(delColumn) == 0 {
+		}
 		vlog = fmt.Sprintf("(%d) %s The column that needs to be deleted in the target %s table %s.%s is {%v}", logThreadSeq, event, stcls.destDrive, stcls.schema, stcls.table, delColumn)
 		global.Wlog.Debug(vlog)
 		//先删除缺失的
@@ -249,7 +262,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 					return nil, nil, err
 				}
 				addSql := dbf.DataAbnormalFix().FixAlterColumnSqlDispos("add", sourceColumnMap[v1], k1, lastcolumn, v1, logThreadSeq)
-				vlog = fmt.Sprintf("(%d) %s The column %s is missing in the %s table %s.%s on the target side, and the add statement is generated, and the add statement is {%v}", logThreadSeq, v1, stcls.destDrive, stcls.schema, stcls.table, addSql)
+				vlog = fmt.Sprintf("(%d) %s The column %s is missing in the %s table %s.%s on the target side, and the add statement is generated, and the add statement is {%v}", logThreadSeq, event, v1, stcls.destDrive, stcls.schema, stcls.table, addSql)
 				global.Wlog.Warn(vlog)
 				alterSlice = append(alterSlice, addSql)
 				delete(destColumnMap, v1)
@@ -334,6 +347,7 @@ func (stcls *schemaTable) FuzzyMatchingDispos(dbCheckNameList map[string]int, Ft
 		}
 		return f
 	}
+
 	//处理库的模糊查询
 	for _, i := range strings.Split(Ftable, ",") {
 		if !strings.Contains(i, ".") {
@@ -432,37 +446,37 @@ func (stcls *schemaTable) FuzzyMatchingDispos(dbCheckNameList map[string]int, Ft
 	处理需要校验的库表
 	将忽略的库表从校验列表中去除，如果校验列表为空则退出
 */
-func (stcls *schemaTable) SchemaTableFilter(logThreadSeq1, logThreadSeq2 int64) []string {
+func (stcls *schemaTable) SchemaTableFilter(logThreadSeq1, logThreadSeq2 int64) ([]string, error) {
 	var (
 		vlog            string
 		f               []string
 		dbCheckNameList map[string]int
 		err             error
 	)
+	fmt.Println("-- gt-checksum init check table name -- ")
 	vlog = fmt.Sprintf("(%d) Start to init schema.table info.", logThreadSeq1)
 	global.Wlog.Info(vlog)
-	//处理待校验的库数量
-	if stcls.table == "" {
-		return f
-	}
 	//获取当前数据库信息列表
 	tc := dbExec.TableColumnNameStruct{Table: stcls.table, Drive: stcls.sourceDrive, Db: stcls.sourceDB, IgnoreTable: stcls.ignoreTable, LowerCaseTableNames: stcls.lowerCaseTableNames}
 	vlog = fmt.Sprintf("(%d) query check database list info.", logThreadSeq1)
 	global.Wlog.Debug(vlog)
-	dbCheckNameList, err = tc.Query().DatabaseNameList(stcls.sourceDB, logThreadSeq2)
-	if err != nil {
-		return nil
+	if dbCheckNameList, err = tc.Query().DatabaseNameList(stcls.sourceDB, logThreadSeq2); err != nil {
+		return f, err
 	}
 	vlog = fmt.Sprintf("(%d) checksum database list message is {%s}", logThreadSeq1, dbCheckNameList)
 	global.Wlog.Debug(vlog)
 	//判断校验的库是否为空，为空则退出
 	if len(dbCheckNameList) == 0 {
-		fmt.Println("gt-checksum report: check Schema.table is empty, please check the log for details!")
-		vlog = fmt.Sprintf("(%d) check Schema.table is empty, exit", logThreadSeq1)
+		vlog = fmt.Sprintf("(%d) source %s query Schema list is empty", logThreadSeq1, stcls.sourceDrive)
 		global.Wlog.Error(vlog)
-		os.Exit(1)
+		return f, nil
 	}
 	schema := stcls.FuzzyMatchingDispos(dbCheckNameList, stcls.table, logThreadSeq1)
+	if len(schema) == 0 {
+		vlog = fmt.Sprintf("(%d) source %s check Schema list is empty,Please check whether the database parameter is enabled for the table case setting.", logThreadSeq1, stcls.sourceDrive)
+		global.Wlog.Error(vlog)
+		return f, nil
+	}
 	ignoreSchema := stcls.FuzzyMatchingDispos(dbCheckNameList, stcls.ignoreTable, logThreadSeq1)
 	for k, _ := range ignoreSchema {
 		if _, ok := schema[k]; ok {
@@ -472,15 +486,9 @@ func (stcls *schemaTable) SchemaTableFilter(logThreadSeq1, logThreadSeq2 int64) 
 	for k, _ := range schema {
 		f = append(f, k)
 	}
-	if len(f) == 0 {
-		fmt.Println("gt-checksum report: check table is empty,please check the log for details!")
-		vlog = fmt.Sprintf("(%d) check table is empty, exit", logThreadSeq1)
-		global.Wlog.Error(vlog)
-		os.Exit(1)
-	}
 	vlog = fmt.Sprintf("(%d) schema.table {%s} init sccessfully, num [%d].", logThreadSeq1, f, len(f))
 	global.Wlog.Info(vlog)
-	return f
+	return f, nil
 }
 
 /*
@@ -868,41 +876,41 @@ func (stcls *schemaTable) Func(dtabS []string, logThreadSeq, logThreadSeq2 int64
 	校验函数
 */
 
-func (stcls *schemaTable) IndexDisposF(queryData []map[string]interface{}) ([]string, map[string][]string, map[string][]string) {
-	nultiseriateIndexColumnMap := make(map[string][]string)
-	multiseriateIndexColumnMap := make(map[string][]string)
-	var PriIndexCol, uniIndexCol, mulIndexCol []string
-	var indexName string
-	for _, v := range queryData {
-		var currIndexName = strings.ToUpper(v["indexName"].(string))
-		//判断唯一索引（包含主键索引和普通索引）
-		if v["nonUnique"].(string) == "0" || v["nonUnique"].(string) == "UNIQUE" {
-			if currIndexName == "PRIMARY" || v["columnKey"].(string) == "1" {
-				if currIndexName != indexName {
-					indexName = currIndexName
-				}
-				PriIndexCol = append(PriIndexCol, fmt.Sprintf("%s", v["columnName"]))
-			} else {
-				if currIndexName != indexName {
-					indexName = currIndexName
-					nultiseriateIndexColumnMap[indexName] = append(uniIndexCol, fmt.Sprintf("%s /*actions Column Type*/ %s", v["columnName"], v["columnType"]))
-				} else {
-					nultiseriateIndexColumnMap[indexName] = append(nultiseriateIndexColumnMap[indexName], fmt.Sprintf("%s /*actions Column Type*/ %s", v["columnName"], v["columnType"]))
-				}
-			}
-		}
-		//处理普通索引
-		if v["nonUnique"].(string) == "1" || (v["nonUnique"].(string) == "NONUNIQUE" && v["columnKey"].(string) == "0") {
-			if currIndexName != indexName {
-				indexName = currIndexName
-				multiseriateIndexColumnMap[indexName] = append(mulIndexCol, fmt.Sprintf("%s /*actions Column Type*/ %s", v["columnName"], v["columnType"]))
-			} else {
-				multiseriateIndexColumnMap[indexName] = append(multiseriateIndexColumnMap[indexName], fmt.Sprintf("%s /*actions Column Type*/ %s", v["columnName"], v["columnType"]))
-			}
-		}
-	}
-	return PriIndexCol, nultiseriateIndexColumnMap, multiseriateIndexColumnMap
-}
+//func (stcls *schemaTable) IndexDisposF(queryData []map[string]interface{}) ([]string, map[string][]string, map[string][]string) {
+//	nultiseriateIndexColumnMap := make(map[string][]string)
+//	multiseriateIndexColumnMap := make(map[string][]string)
+//	var PriIndexCol, uniIndexCol, mulIndexCol []string
+//	var indexName string
+//	for _, v := range queryData {
+//		var currIndexName = strings.ToUpper(v["indexName"].(string))
+//		//判断唯一索引（包含主键索引和普通索引）
+//		if v["nonUnique"].(string) == "0" || v["nonUnique"].(string) == "UNIQUE" {
+//			if currIndexName == "PRIMARY" || v["columnKey"].(string) == "1" {
+//				if currIndexName != indexName {
+//					indexName = currIndexName
+//				}
+//				PriIndexCol = append(PriIndexCol, fmt.Sprintf("%s", v["columnName"]))
+//			} else {
+//				if currIndexName != indexName {
+//					indexName = currIndexName
+//					nultiseriateIndexColumnMap[indexName] = append(uniIndexCol, fmt.Sprintf("%s /*actions Column Type*/ %s", v["columnName"], v["columnType"]))
+//				} else {
+//					nultiseriateIndexColumnMap[indexName] = append(nultiseriateIndexColumnMap[indexName], fmt.Sprintf("%s /*actions Column Type*/ %s", v["columnName"], v["columnType"]))
+//				}
+//			}
+//		}
+//		//处理普通索引
+//		if v["nonUnique"].(string) == "1" || (v["nonUnique"].(string) == "NONUNIQUE" && v["columnKey"].(string) == "0") {
+//			if currIndexName != indexName {
+//				indexName = currIndexName
+//				multiseriateIndexColumnMap[indexName] = append(mulIndexCol, fmt.Sprintf("%s /*actions Column Type*/ %s", v["columnName"], v["columnType"]))
+//			} else {
+//				multiseriateIndexColumnMap[indexName] = append(multiseriateIndexColumnMap[indexName], fmt.Sprintf("%s /*actions Column Type*/ %s", v["columnName"], v["columnType"]))
+//			}
+//		}
+//	}
+//	return PriIndexCol, nultiseriateIndexColumnMap, multiseriateIndexColumnMap
+//}
 
 func (stcls *schemaTable) Foreign(dtabS []string, logThreadSeq, logThreadSeq2 int64) {
 	var (
@@ -1075,6 +1083,7 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 			return cc
 		}
 	)
+	fmt.Println("-- gt-checksum checksum table index info -- ")
 	event = fmt.Sprintf("[%s]", "check_table_index")
 	//校验索引
 	vlog = fmt.Sprintf("(%d) %s start init check source and target DB index Column. to check it...", logThreadSeq, event)
@@ -1143,6 +1152,7 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 		vlog = fmt.Sprintf("(%d) %s The source target segment table %s.%s index column data verification is completed", logThreadSeq, event, stcls.schema, stcls.table)
 		global.Wlog.Info(vlog)
 	}
+	fmt.Println("-- gt-checksum report: Table index verification completed -- ")
 	return nil
 }
 
@@ -1227,5 +1237,6 @@ func SchemaTableInit(m *inputArg.ConfigParameter) *schemaTable {
 		sfile:               m.SecondaryL.RepairV.FixFileFINE,
 		djdbc:               m.SecondaryL.DsnsV.DestJdbc,
 		structRul:           m.SecondaryL.StructV,
+		checkRules:          m.SecondaryL.RulesV,
 	}
 }

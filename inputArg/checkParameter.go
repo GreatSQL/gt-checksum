@@ -191,6 +191,10 @@ func (rc *ConfigParameter) checkPar() {
 		rc.SecondaryL.SchemaV.Tables = strings.ToUpper(strings.TrimSpace(rc.SecondaryL.SchemaV.Tables))
 		rc.SecondaryL.SchemaV.IgnoreTables = strings.ToUpper(strings.TrimSpace(rc.SecondaryL.SchemaV.IgnoreTables))
 	}
+	if rc.SecondaryL.SchemaV.Tables == "" {
+		fmt.Println("GreatSQL report: table Parameter setting error, please check the log for details.")
+		os.Exit(1)
+	}
 	vlog = fmt.Sprintf("(%d) [%s]  check table parameter message is {table: %s ignore table: %s}", rc.LogThreadSeq, Event, rc.SecondaryL.SchemaV.Tables, rc.SecondaryL.SchemaV.IgnoreTables)
 	global.Wlog.Debug(vlog)
 
@@ -276,7 +280,7 @@ func (rc *ConfigParameter) checkPar() {
 	rc.NoIndexTableTmpFile = "tmp_file"
 	if rc.SecondaryL.RulesV.CheckObject == "data" {
 		rc.SecondaryL.StructV.ScheckMod = "loose"
-		
+
 	}
 	vlog = fmt.Sprintf("(%d) [%s]  Validity verification of configuration parameters completed !!!", rc.LogThreadSeq, Event)
 	global.Wlog.Info(vlog)

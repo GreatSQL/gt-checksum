@@ -52,7 +52,10 @@ func (or *QueryTable) IndexDisposF(queryData []map[string]interface{}, logThread
 	vlog = fmt.Sprintf("(%d) [%s] Start to filter the primary key index, unique index, and common index based on the index information of the specified table %s.%s under the %s library", logThreadSeq, Event, or.Schema, or.Table, DBType)
 	global.Wlog.Debug(vlog)
 	for _, v := range queryData {
-		currIndexName = strings.ToUpper(v["indexName"].(string))
+		currIndexName = fmt.Sprintf("%s", v["indexName"])
+		if or.LowerCaseTableNames == "no" {
+			currIndexName = strings.ToUpper(fmt.Sprintf("%s", v["indexName"]))
+		}
 		//判断唯一索引（包含主键索引和普通索引）
 		if v["nonUnique"].(string) == "UNIQUE" {
 			if v["columnKey"].(string) == "1" {

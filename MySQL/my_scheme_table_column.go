@@ -91,7 +91,6 @@ func (my *QueryTable) DatabaseNameList(db *sql.DB, logThreadSeq int64) (map[stri
 	vlog = fmt.Sprintf("(%d) [%s] Start to query the metadata of the %s database and obtain library and table information.", logThreadSeq, Event, DBType)
 	global.Wlog.Debug(vlog)
 	strsql = fmt.Sprintf("select TABLE_SCHEMA as databaseName,TABLE_NAME as tableName from information_Schema.TABLES where TABLE_SCHEMA not in (%s);", excludeSchema)
-
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return nil, err
@@ -295,13 +294,20 @@ func (my *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 
 	//校验库.表由切片改为map
 	for _, AA := range checkTableList {
-		newCheckTableList[strings.ToUpper(AA)]++
+		newCheckTableList[AA]++
+		if my.LowerCaseTableNames == "no" {
+			newCheckTableList[strings.ToUpper(AA)]++
+		}
 	}
 	//校验库做去重处理
 	for _, aa := range checkTableList {
-		A[strings.ToUpper(strings.Split(aa, ".")[0])]++
+		if strings.Contains(aa, ".") {
+			A[strings.Split(aa, ".")[0]]++
+			if my.LowerCaseTableNames == "no" {
+				A[strings.ToUpper(strings.Split(aa, ".")[0])]++
+			}
+		}
 	}
-
 	//获取当前匹配的用户
 	strsql = fmt.Sprintf("select current_user() as user;")
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
@@ -313,8 +319,6 @@ func (my *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 		return nil, err
 	}
 	currentUser = fmt.Sprintf("'%s'", strings.ReplaceAll(fmt.Sprintf("%s", CC[0]["user"]), "@", "'@'"))
-	//vlog = fmt.Sprintf("(%d) The user account corresponding to the currently connected MySQL DB user is message {%s}", logThreadSeq, currentUser)
-	//global.Wlog.Debug(vlog)
 	//查找全局权限 类似于grant all privileges on *.* 或 grant select on *.*
 	vlog = fmt.Sprintf("(%d) [%s] Query the current %s DB global dynamic grants permission, to query it...", logThreadSeq, Event, DBType)
 	global.Wlog.Debug(vlog)
@@ -382,9 +386,11 @@ func (my *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 	//遍历没有schema pri权限的剩余库
 	var DM = make(map[string]int)
 	for _, D := range checkTableList {
-		DM[strings.ToUpper(D)]++
+		DM[D]++
+		if my.LowerCaseTableNames == "no" {
+			DM[strings.ToUpper(D)]++
+		}
 	}
-
 	for B, _ := range A {
 		//按照每个库，查询table pri权限
 		strsql = fmt.Sprintf("select table_name as tableName,PRIVILEGE_TYPE as privileges from information_schema.table_PRIVILEGES where PRIVILEGE_TYPE in('%s') and TABLE_SCHEMA = '%s' and grantee = \"%s\";", strings.Join(globalPriS, "','"), B, currentUser)
@@ -403,7 +409,11 @@ func (my *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 		var N string
 		var dd []string
 		for _, C := range tablePri {
-			E := strings.ToUpper(fmt.Sprintf("%s.%s", B, C["tableName"]))
+			var E string
+			E = fmt.Sprintf("%s.%s", B, C["tableName"])
+			if my.LowerCaseTableNames == "no" {
+				E = strings.ToUpper(fmt.Sprintf("%s.%s", B, C["tableName"]))
+			}
 			if E != N {
 				N = E
 				dd = []string{}
