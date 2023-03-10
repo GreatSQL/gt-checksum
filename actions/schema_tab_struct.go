@@ -171,20 +171,15 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 		for k1, v1 := range sourceColumnSlice {
 			lastcolumn := ""
 			var alterColumnData []string
+			if k1 == 0 {
+				lastcolumn = sourceColumnSlice[k1]
+			} else {
+				lastcolumn = sourceColumnSlice[k1-1]
+			}
 			switch stcls.structRul.ScheckFixRule {
 			case "src":
-				if k1 == 0 {
-					lastcolumn = sourceColumnSlice[k1]
-				} else {
-					lastcolumn = sourceColumnSlice[k1-1]
-				}
 				alterColumnData = sourceColumnMap[v1]
 			case "dst":
-				if k1 == 0 {
-					lastcolumn = destColumnSlice[k1]
-				} else {
-					lastcolumn = destColumnSlice[k1-1]
-				}
 				alterColumnData = destColumnMap[v1]
 			default:
 				err = errors.New(fmt.Sprintf("unknown parameters"))
@@ -216,6 +211,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 						global.Wlog.Warn(vlog)
 						alterSlice = append(alterSlice, modifySql)
 					}
+
 				case "rigorous":
 					switch stcls.structRul.ScheckOrder {
 					case "yes":
