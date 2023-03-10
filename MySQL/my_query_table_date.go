@@ -399,7 +399,7 @@ func (my *QueryTable) GeneratingQuerySql(db *sql.DB, logThreadSeq int64) (string
 		if err != nil {
 			return "", err
 		}
-	} else if strings.Contains(version, "8.") {
+	} else {
 		if !strings.HasPrefix(strings.TrimSpace(my.Sqlwhere), "where") {
 			my.Sqlwhere = fmt.Sprintf(" where %s ", my.Sqlwhere)
 		}
