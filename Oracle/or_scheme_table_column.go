@@ -80,7 +80,7 @@ func (or *QueryTable) TableColumnName(db *sql.DB, logThreadSeq int64) ([]map[str
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start querying the metadata information of table %s.%s in the %s database and get all the column names", logThreadSeq, Event, or.Schema, or.Table, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("select tc.column_name as \"columnName\",decode(tc.data_type,'NUMBER',NVL2(DATA_PRECISION,'NUMBER(' || tc.DATA_PRECISION || ',' || tc.DATA_SCALE || ')','NUMBER'),'VARCHAR2','VARCHAR2(' || tc.DATA_LENGTH || ')','CHAR','CHAR(' || tc.DATA_LENGTH || ')','RAW','RAW(' || tc.DATA_LENGTH || ')',tc.DATA_TYPE) as \"columnType\",NULLABLE as \"isNull\",'','',cc.comments as \"columnComment\",DATA_DEFAULT as \"columnDefault\" from dba_tab_columns tc join dba_col_comments cc on tc.OWNER = cc.owner and tc.TABLE_NAME = cc.table_name and tc.COLUMN_NAME = cc.column_name WHERE tc.owner = '%s' and tc.table_name = '%s' order by 'tc.COLUMN_ID'", strings.ToUpper(or.Schema), or.Table)
+	strsql = fmt.Sprintf("select tc.column_name as \"columnName\",decode(tc.data_type,'NUMBER',NVL2(DATA_PRECISION,'NUMBER(' || tc.DATA_PRECISION || ',' || tc.DATA_SCALE || ')','NUMBER'),'VARCHAR2','VARCHAR2(' || tc.DATA_LENGTH || ')','CHAR','CHAR(' || tc.DATA_LENGTH || ')','RAW','RAW(' || tc.DATA_LENGTH || ')',tc.DATA_TYPE) as \"columnType\",NULLABLE as \"isNull\",'','',cc.comments as \"columnComment\",DATA_DEFAULT as \"columnDefault\" from dba_tab_columns tc join dba_col_comments cc on tc.OWNER = cc.owner and tc.TABLE_NAME = cc.table_name and tc.COLUMN_NAME = cc.column_name WHERE tc.owner = '%s' and tc.table_name = '%s' order by 'tc.COLUMN_ID'", or.Schema, or.Table)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		if err != nil {
@@ -218,23 +218,27 @@ func (or *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 	//针对要校验的库做去重（库级别的）
 	//校验库.表由切片改为map
 	for _, AA := range checkTableList {
-		newCheckTableList[strings.ToUpper(AA)]++
+		newCheckTableList[AA]++
+		if or.LowerCaseTableNames == "no" {
+			newCheckTableList[strings.ToUpper(AA)]++
+		}
 	}
 	//vlog = fmt.Sprintf("(%d) The current Oracle DB needs to check the permission table is message {%v}, to check it...", logThreadSeq, newCheckTableList)
 	//global.Wlog.Debug(vlog)
 	//校验库做去重处理
 	for _, aa := range checkTableList {
-		A[strings.ToUpper(strings.Split(aa, ".")[0])]++
+		if strings.Contains(aa, ".") {
+			A[strings.Split(aa, ".")[0]]++
+			if or.LowerCaseTableNames == "no" {
+				A[strings.ToUpper(strings.Split(aa, ".")[0])]++
+			}
+		}
 	}
-	//vlog = fmt.Sprintf("(%d) The current Oracle DB needs to check the authority of the library is message {%v},to check it...", logThreadSeq, A)
-	//global.Wlog.Debug(vlog)
-
 	//处理oracle用户角色，该用户角色拥有insert、select 、delete any table的权限
 	//查找全局权限 类似于grant all privileges on *.* 或 grant select on *.*
 	vlog = fmt.Sprintf("(%d) [%s] Query the current %s DB global dynamic grants permission, to query it...", logThreadSeq, Event, DBType)
 	global.Wlog.Debug(vlog)
 	strsql = fmt.Sprintf("SELECT PRIVILEGE as \"privileges\" FROM ROLE_SYS_PRIVS WHERE PRIVILEGE IN ('%s') group by PRIVILEGE", strings.Join(priAllTableS, "','"))
-	//globalDynamic, err := sqlQuery(logThreadSeq, strsql, "Global Dynamic Grants")
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return nil, err
@@ -277,7 +281,10 @@ func (or *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 	//遍历没有schema pri权限的剩余库
 	var DM = make(map[string]int)
 	for _, D := range checkTableList {
-		DM[strings.ToUpper(D)]++
+		DM[D]++
+		if or.LowerCaseTableNames == "no" {
+			DM[strings.ToUpper(D)]++
+		}
 	}
 	strsql = fmt.Sprintf("select owner||'.'||table_name AS \"tablesName\",PRIVILEGE as \"privileges\" from user_tab_privs")
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
@@ -290,7 +297,10 @@ func (or *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 	DD := columnMerge(tablePri, "tablesName", "privileges")
 	for K, V := range DD {
 		var aaaseq int
-		if _, ok := DM[strings.ToUpper(K)]; ok {
+		if or.LowerCaseTableNames == "no" {
+			strings.ToUpper(K)
+		}
+		if _, ok := DM[K]; ok {
 			for _, vi := range V {
 				if _, ok1 := globalPriAllTab[fmt.Sprintf("%s ANY TABLE", strings.ToUpper(vi))]; ok1 {
 					aaaseq++
@@ -322,7 +332,7 @@ func (or *QueryTable) TableAllColumn(db *sql.DB, logThreadSeq int64) ([]map[stri
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start to query the metadata of all the columns of table %s.%s in the %s database", logThreadSeq, Event, or.Schema, or.Table, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("SELECT column_name as \"columnName\",case when data_type='NUMBER' AND DATA_PRECISION is null THEN DATA_TYPE when data_type='NUMBER' AND DATA_PRECISION is not null then DATA_TYPE || '(' || DATA_PRECISION || ',' || NVL(DATA_SCALE,0) || ')' when data_type='VARCHAR2' THEN DATA_TYPE||'('||DATA_LENGTH||')' ELSE DATA_TYPE END AS \"dataType\",COLUMN_id as \"columnSeq\",NULLABLE as \"isNull\" FROM all_tab_columns WHERE owner='%s' and TABLE_NAME = '%s' order by 'column_id'", strings.ToUpper(or.Schema), or.Table)
+	strsql = fmt.Sprintf("SELECT column_name as \"columnName\",case when data_type='NUMBER' AND DATA_PRECISION is null THEN DATA_TYPE when data_type='NUMBER' AND DATA_PRECISION is not null then DATA_TYPE || '(' || DATA_PRECISION || ',' || NVL(DATA_SCALE,0) || ')' when data_type='VARCHAR2' THEN DATA_TYPE||'('||DATA_LENGTH||')' ELSE DATA_TYPE END AS \"dataType\",COLUMN_id as \"columnSeq\",NULLABLE as \"isNull\" FROM all_tab_columns WHERE owner='%s' and TABLE_NAME = '%s' order by 'column_id'", or.Schema, or.Table)
 
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
@@ -670,7 +680,7 @@ func (or *QueryTable) Foreign(db *sql.DB, logThreadSeq int64) (map[string]string
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start to query the Foreign information under the %s database.", logThreadSeq, Event, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf(" select c.OWNER as DATABASE,c.table_name as TABLENAME, c.r_constraint_name,c.delete_rule,cc.column_name,cc.position from user_constraints c join user_cons_columns cc on c.constraint_name=cc.constraint_name and c.table_name=cc.table_name  where c.constraint_type='R' and c.validated='VALIDATED' and c.OWNER = '%s' and c.table_name='%s'", strings.ToUpper(or.Schema), or.Table)
+	strsql = fmt.Sprintf(" select c.OWNER as DATABASE,c.table_name as TABLENAME, c.r_constraint_name,c.delete_rule,cc.column_name,cc.position from user_constraints c join user_cons_columns cc on c.constraint_name=cc.constraint_name and c.table_name=cc.table_name  where c.constraint_type='R' and c.validated='VALIDATED' and c.OWNER = '%s' and c.table_name='%s'", or.Schema, or.Table)
 	//vlog = fmt.Sprintf("(%d) Oracle DB query table query Foreign info exec sql is {%s}", logThreadSeq, sqlStr)
 	//global.Wlog.Debug(vlog)
 	//sqlRows, err := db.Query(sqlStr)

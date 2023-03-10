@@ -52,7 +52,10 @@ func (my *QueryTable) IndexDisposF(queryData []map[string]interface{}, logThread
 	vlog = fmt.Sprintf("(%d) [%s] Start to filter the primary key index, unique index, and common index based on the index information of the specified table %s.%s under the %s library", logThreadSeq, Event, my.Schema, my.Table, DBType)
 	global.Wlog.Debug(vlog)
 	for _, v := range queryData {
-		currIndexName = strings.ToUpper(v["indexName"].(string))
+		currIndexName = fmt.Sprintf("%s", v["indexName"])
+		if my.LowerCaseTableNames == "no" {
+			currIndexName = strings.ToUpper(fmt.Sprintf("%s", v["indexName"]))
+		}
 		//判断唯一索引（包含主键索引和普通索引）
 		if v["nonUnique"].(string) == "0" {
 			if currIndexName == "PRIMARY" {
@@ -201,7 +204,6 @@ func (my QueryTable) FloatTypeQueryDispos(db *sql.DB, where string, logThreadSeq
 		if V, ok := C[strings.ToUpper(fmt.Sprintf("%v", i["columnName"]))]; ok {
 			if strings.Contains(fmt.Sprintf("%v", i["dataType"]), "float") {
 				D := strings.Split(fmt.Sprintf("%v", i["dataType"]), ",")
-				//onesPlace := D[0][strings.Index(D[0], "(")+1:]
 				Place := D[1][:strings.Index(D[1], ")")]
 				whereExist = fmt.Sprintf("where %s ", strings.ReplaceAll(where, fmt.Sprintf("%v = %v", i["columnName"], V), fmt.Sprintf("format(%v,%v) = format(%v,%v)", i["columnName"], Place, V, Place)))
 			}
@@ -396,6 +398,10 @@ func (my *QueryTable) GeneratingQuerySql(db *sql.DB, logThreadSeq int64) (string
 		my.Sqlwhere, err = my.FloatTypeQueryDispos(db, my.Sqlwhere, logThreadSeq)
 		if err != nil {
 			return "", err
+		}
+	} else if strings.Contains(version, "8.") {
+		if !strings.HasPrefix(strings.TrimSpace(my.Sqlwhere), "where") {
+			my.Sqlwhere = fmt.Sprintf(" where %s ", my.Sqlwhere)
 		}
 	}
 	selectSql = fmt.Sprintf("select %s from `%s`.`%s` %s", queryColumn, my.Schema, my.Table, my.Sqlwhere)

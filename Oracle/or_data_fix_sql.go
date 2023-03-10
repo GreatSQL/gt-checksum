@@ -78,10 +78,10 @@ func (or *OracleDataAbnormalFixStruct) FixInsertSqlExec(db *sql.DB, sourceDrive 
 	if len(valuesNameSeq) > 0 {
 		queryColumn := strings.Join(valuesNameSeq, ",")
 		if or.DatafixType == "file" {
-			insertSql = fmt.Sprintf("insert into \"%s\".\"%s\" values(%s);", strings.ToUpper(or.Schema), or.Table, queryColumn)
+			insertSql = fmt.Sprintf("insert into \"%s\".\"%s\" values(%s);", or.Schema, or.Table, queryColumn)
 		}
 		if or.DatafixType == "table" {
-			insertSql = fmt.Sprintf("insert into \"%s\".\"%s\" values(%s)", strings.ToUpper(or.Schema), or.Table, queryColumn)
+			insertSql = fmt.Sprintf("insert into \"%s\".\"%s\" values(%s)", or.Schema, or.Table, queryColumn)
 		}
 	}
 	return insertSql, nil
