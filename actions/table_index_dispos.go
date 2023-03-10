@@ -347,7 +347,11 @@ func (sp *SchedulePlan) queryTableData(selectSql chanMap, diffQueryData chanDiff
 					vlog = fmt.Sprintf("(%d) Start to query the block data of check table %s.%s ...", logThreadSeq, sp.schema, sp.table)
 					global.Wlog.Debug(vlog)
 					sdb := sp.sdbPool.Get(logThreadSeq)
+					vlog = fmt.Sprintf("%v", c1)
+					global.Wlog.Debug(vlog)
 					stt, err := idxc.TableIndexColumn().GeneratingQueryCriteria(sdb, logThreadSeq)
+					vlog = fmt.Sprintf("(%d) check source %s table %s.%s query data is {%v}", logThreadSeq, sp.sdrive, sp.schema, sp.table, stt)
+					global.Wlog.Debug(vlog)
 					sp.sdbPool.Put(sdb, logThreadSeq)
 					if err != nil {
 						return
@@ -357,6 +361,8 @@ func (sp *SchedulePlan) queryTableData(selectSql chanMap, diffQueryData chanDiff
 					idxc.TableColumn = cc1.DColumnInfo
 					ddb := sp.ddbPool.Get(logThreadSeq)
 					dtt, err := idxc.TableIndexColumn().GeneratingQueryCriteria(ddb, logThreadSeq)
+					vlog = fmt.Sprintf("(%d) check dest %s table %s.%s query data is {%v}", logThreadSeq, sp.ddrive, sp.schema, sp.table, dtt)
+					global.Wlog.Debug(vlog)
 					sp.ddbPool.Put(ddb, logThreadSeq)
 					if err != nil {
 						return
