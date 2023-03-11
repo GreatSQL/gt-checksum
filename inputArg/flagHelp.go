@@ -146,9 +146,9 @@ func (rc *ConfigParameter) cliHelp() {
 		},
 		cli.StringFlag{
 			Name:        "ScheckMod,scm",
-			Usage:       "column check mode. For example: --scm rigorous",
-			Value:       "rigorous",
-			EnvVar:      "rigorous,loose",
+			Usage:       "column check mode. For example: --scm strict",
+			Value:       "strict",
+			EnvVar:      "strict,loose",
 			Destination: &rc.SecondaryL.StructV.ScheckMod,
 		},
 		cli.StringFlag{
