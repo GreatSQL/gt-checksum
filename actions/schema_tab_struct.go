@@ -212,7 +212,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 						alterSlice = append(alterSlice, modifySql)
 					}
 
-				case "rigorous":
+				case "strict":
 					switch stcls.structRul.ScheckOrder {
 					case "yes":
 						if CheckSum().CheckMd5(strings.Join(sourceColumnMap[v1], "")) != CheckSum().CheckMd5(strings.Join(destColumnMap[v1], "")) || sourceColumnSeq[v1] != destColumnSeq[v1] {
