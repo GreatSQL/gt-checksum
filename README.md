@@ -2,7 +2,7 @@
 [![](https://img.shields.io/badge/GreatSQL-论坛-brightgreen.svg)](https://greatsql.cn/forum.php)
 [![](https://img.shields.io/badge/GreatSQL-博客-brightgreen.svg)](https://greatsql.cn/home.php?mod=space&uid=10&do=blog&view=me&from=space)
 [![](https://img.shields.io/badge/License-Apache_v2.0-blue.svg)](https://gitee.com/GreatSQL/GreatSQL/blob/master/LICENSE)
-[![](https://img.shields.io/badge/release-1.2.0-blue.svg)](https://gitee.com/GreatSQL/gt-checksum/releases/tag/1.2.0)
+[![](https://img.shields.io/badge/release-1.2.1-blue.svg)](https://gitee.com/GreatSQL/gt-checksum/releases/tag/1.2.1)
 
 # 关于 gt-checksum
 gt-checksum是GreatSQL社区开源的一款静态数据库校验修复工具，支持MySQL、Oracle等主流数据库。
@@ -26,7 +26,7 @@ gt-checksum工具支持以下几种常见业务需求场景：
 ---
 可以 [这里](https://gitee.com/GreatSQL/gt-checksum/releases) 下载预编译好的二进制文件包，已经在Ubuntu、CentOS、RHEL等多个下测试通过。
 
-如果需要校验Oracle数据库，则还需要先下载Oracle数据库相应版本的驱动程序，并配置驱动程序使之生效。例如：待校验的数据库为Oracle 11-2，则要下载Oracle 11-2的驱动程序，并使之生效，否则连接Oracle会报错。详细方法请见下方内容：[**下载配置Oracle驱动程序**](x) 。
+如果需要校验Oracle数据库，则还需要先下载Oracle数据库相应版本的驱动程序，并配置驱动程序使之生效。例如：待校验的数据库为Oracle 11-2，则要下载Oracle 11-2的驱动程序，并使之生效，否则连接Oracle会报错。详细方法请见下方内容：[**下载配置Oracle驱动程序**](#%E4%B8%8B%E8%BD%BD%E9%85%8D%E7%BD%AEoracle%E9%A9%B1%E5%8A%A8%E7%A8%8B%E5%BA%8F)。
 
 # 快速运行
 ---
@@ -47,6 +47,28 @@ NAME:
 USAGE:
    gt-checksum [global options] command [command options] [arguments...]
 ...
+
+# 数据库授权
+# 想要运行gt-checksum工具，需要至少授予以下几个权限
+# MySQL端
+# 1.全局权限
+#  a.`REPLICATION CLIENT`
+#  b.`SESSION_VARIABLES_ADMIN`，如果是MySQL 8.0版本的话，MySQL 5.7版本不做这个要求
+# 2.校验数据对象
+#  a.如果`datafix=file`，则只需要`SELECT`权限
+#  b.如果`datafix=table`，则需要`SELECT、INSERT、DELETE`权限
+#
+# 假设现在要对db1.t1做校验和修复，则可授权如下
+
+mysql> GRANT REPLICATION CLIENT, SESSION_VARIABLES_ADMIN ON *.* to ...;
+mysql> GRANT SELECT, INSERT, DELETE ON db1.t1 to ...;
+
+# Oracle端
+# 1.全局权限
+#  a.`SELECT ANY DICTIONARY`
+# 2.校验数据对象
+#  a.如果`datafix=file`，则只需要`SELECT ANY TABLE`权限
+#  b.如果`datafix=table`，则需要`SELECT ANY TABLE、INSERT ANY TABLE、DELETE ANY TABLE`权限
 
 # 指定配置文件，开始执行数据校验，示例：
 shell> ./gt-checksum -f ./gc.conf
@@ -128,22 +150,10 @@ shell> mv gt-checksum /usr/local/bin
 ```shell
 shell> git clone https://gitee.com/GreatSQL/gt-checksum.git
 shell> cd gt-checksum
-
-#构建Docker编译环境
-shell> docker build -t gt-checksum .
-
-#查看Docker镜像列表
-shell> docker images | grep gt-checksum
-gt-checksum                                                       latest    a716d9d018b3   27 minutes ago   1.38GB
-
-#创建一个新容器，编译gt-checksum
-shell> docker run -itd --name=gt-checksum gt-checksum
-
-#将编译好的二进制文件copy到宿主机
-shell> docker cp gt-checksum:/go/release/gt-checksum-v1.2.0 .
-shell> cd gt-checksum-v1.2.0
+shell> DOCKER_BUILDKIT=1 docker build --build-arg VERSION=v1.2.1 -f Dockerfile -o ./ .
+shell> cd gt-checksum-v1.2.1
 shell> ./gt-checksum -v
-gt-checksum version 1.2.0
+gt-checksum version 1.2.1
 ```
 这就编译完成并可以开始愉快地玩耍了。
 
@@ -154,12 +164,12 @@ gt-checksum version 1.2.0
 
 # 版本历史
 ---
-- [版本历史)](https://gitee.com/GreatSQL/gt-checksum/blob/master/relnotes/CHANGELOG.zh-CN.md)
+- [版本历史](https://gitee.com/GreatSQL/gt-checksum/blob/master/relnotes/CHANGELOG.zh-CN.md)
 
 
 # 已知缺陷
 ---
-截止最新的1.2.0版本中，当表中有多行数据是完全重复的话，可能会导致校验结果不准确，详见 [已知缺陷](https://gitee.com/GreatSQL/gt-checksum/blob/master/docs/gt-checksum-manual.md#已知缺陷) 。
+截止最新的1.2.1版本中，当表中有多行数据是完全重复的话，可能会导致校验结果不准确，详见 [已知缺陷](https://gitee.com/GreatSQL/gt-checksum/blob/master/docs/gt-checksum-manual.md#已知缺陷) 。
 
 # 问题反馈
 ---
