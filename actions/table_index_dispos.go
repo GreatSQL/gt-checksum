@@ -591,14 +591,14 @@ func (sp SchedulePlan) doIndexDataCheck() {
 	}
 	idxc.Drivce = sp.sdrive
 	sdb := sp.sdbPool.Get(logThreadSeq)
-	A, err := idxc.TableIndexColumn().TmpTableIndexColumnRowsCount(sdb, int64(logThreadSeq))
+	A, err := idxc.TableIndexColumn().TableRows(sdb, int64(logThreadSeq))
 	sp.sdbPool.Put(sdb, logThreadSeq)
 	if err != nil {
 		return
 	}
 	idxc.Drivce = sp.ddrive
 	ddb := sp.ddbPool.Get(logThreadSeq)
-	B, err := idxc.TableIndexColumn().TmpTableIndexColumnRowsCount(ddb, int64(logThreadSeq))
+	B, err := idxc.TableIndexColumn().TableRows(ddb, int64(logThreadSeq))
 	if err != nil {
 		return
 	}
