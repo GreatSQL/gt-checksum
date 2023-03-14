@@ -228,15 +228,7 @@ func (my *QueryTable) GlobalAccessPri(db *sql.DB, logThreadSeq int64) (bool, err
 	//查找全局权限 类似于grant all privileges on *.* 或 grant select on *.*
 	vlog = fmt.Sprintf("(%d) [%s] Query the current %s DB global dynamic grants permission, to query it...", logThreadSeq, Event, DBType)
 	global.Wlog.Debug(vlog)
-	var currentU,currentH string
-	if strings.Contains(currentUser,"@"){
-		currentU = strings.Split(currentUser,"@")[0]
-		currentH = strings.Split(currentUser,"@")[1]
-		strsql = fmt.Sprintf("select PRIVILEGE_TYPE as privileges from information_schema.USER_PRIVILEGES where PRIVILEGE_TYPE in('%s') and grantee = \"'%s'@'%s'\";", strings.Join(globalPriS, "','"), currentU,currentH)
-	}else{
-		strsql = fmt.Sprintf("select PRIVILEGE_TYPE as privileges from information_schema.USER_PRIVILEGES where PRIVILEGE_TYPE in('%s') and grantee = \"%s\";", strings.Join(globalPriS, "','"), currentUser)
-	}
-	#strsql = fmt.Sprintf("select PRIVILEGE_TYPE as privileges from information_schema.USER_PRIVILEGES where PRIVILEGE_TYPE in('%s') and grantee = \"%s\";", strings.Join(globalPriS, "','"), currentUser)
+	strsql = fmt.Sprintf("select PRIVILEGE_TYPE as privileges from information_schema.USER_PRIVILEGES where PRIVILEGE_TYPE in('%s') and grantee = \"%s\";", strings.Join(globalPriS, "','"), currentUser)
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return false, err
 	}
