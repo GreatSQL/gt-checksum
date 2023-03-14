@@ -332,6 +332,10 @@ shell> gt-checksum -S srcDSN -D dstDSN -t db1.* -thds 5
 
   设置表结构校验时采用严格还是宽松模式。
 
+  宽松模式，只匹配数据列名。
+
+  严格模式，严格匹配数据列的属性，列的属性包括数据类型、是否允许为null、默认值、字符集、校验集、comment等。
+
   TODO案例：
 
 - --datafix / -df
