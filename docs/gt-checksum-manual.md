@@ -313,6 +313,26 @@ shell> gt-checksum -S srcDSN -D dstDSN -t db1.* -thds 5
 ```shell
 ./gt-checksum -S DSN -D DSN -t db1.* -co data
 ```
+- --ScheckFixRule value, --sfr value       column to fix based on. For example: --sfr src (default: "src") [$src, $dst]
+  Type: enum, src/dst
+  
+  设置表结构校验时，数据修复时的对准原则，选择源端 或 目标端作为数据修复的依据。
+
+  TODO案例
+
+- --ScheckOrder value, --sco value         The positive sequence check of column. For example: --sco yes (default: "yes") [$yes, $no]
+  Type: Bool, yes/no. Default: no.
+
+  设置表结构数据校验时，是否要检查数据列的顺序。
+
+  TODO案例：
+
+- --ScheckMod value, --scm value           column check mode. For example: --scm strict (default: "strict") [$strict, $loose]
+  Type: enum, strict/loose
+
+  设置表结构校验时采用严格还是宽松模式。
+
+  TODO案例：
 
 - --datafix / -df
   Type: enum, table/file. Default: file.
