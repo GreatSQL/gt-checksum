@@ -324,7 +324,6 @@ shell> gt-checksum -S srcDSN -D dstDSN -t db1.* -thds 5
 ```shell
 ./gt-checksum -S DSN -D DSN -t db1.* -sfr=src
 ```
-- --ScheckFixRule value, --sfr value       column to fix based on. For example: --sfr src (default: "src") [$src, $dst]
 
 - --ScheckOrder value, --sco value         The positive sequence check of column. For example: --sco yes (default: "yes") [$yes, $no]
   Type: Bool, yes/no. Default: no.
@@ -335,7 +334,6 @@ shell> gt-checksum -S srcDSN -D dstDSN -t db1.* -thds 5
 ```shell
 ./gt-checksum -S DSN -D DSN -t db1.* -sco=yes
 ```
-- --ScheckFixRule value, --sfr value       column to fix based on. For example: --sfr src (default: "src") [$src, $dst]
 
 - --ScheckMod value, --scm value           column check mode. For example: --scm strict (default: "strict") [$strict, $loose]
   Type: enum, strict/loose
@@ -350,7 +348,6 @@ shell> gt-checksum -S srcDSN -D dstDSN -t db1.* -thds 5
 ```shell
 ./gt-checksum -S DSN -D DSN -t db1.* -scm=strict
 ```
-- --ScheckFixRule value, --sfr value       column to fix based on. For example: --sfr src (default: "src") [$src, $dst]
 
 - --datafix / -df
   Type: enum, table/file. Default: file.
