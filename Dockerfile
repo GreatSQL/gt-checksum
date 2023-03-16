@@ -1,6 +1,6 @@
 ## Build
 # This dockerfile uses the linux image
-# VERSION 1.2.0
+# VERSION 1.2.1
 # Author: greatsql
 # Command format: Instruction [arguments / command] …
 
@@ -30,4 +30,4 @@ ARG VERSION
 
 COPY --from=builder /go/release/gt-checksum-${VERSION} ./gt-checksum-${VERSION}
 
-# DOCKER_BUILDKIT=1 docker build --build-arg VERSION=v1.2.0 -f Dockerfile -o ./ .
+# DOCKER_BUILDKIT=1 docker build --build-arg VERSION=v1.2.1 -f Dockerfile -o ./ .
