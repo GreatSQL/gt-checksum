@@ -56,7 +56,7 @@ USAGE:
 #  b.`SESSION_VARIABLES_ADMIN`，如果是MySQL 8.0版本的话，MySQL 5.7版本不做这个要求
 # 2.校验数据对象
 #  a.如果`datafix=file`，则只需要`SELECT`权限
-#  b.如果`datafix=table`，则需要`SELECT、INSERT、DELETE`权限
+#  b.如果`datafix=table`，则需要`SELECT、INSERT、DELETE`权限，如果还需要修复表结构不一致的情况，则需要`ALTER`权限
 #
 # 假设现在要对db1.t1做校验和修复，则可授权如下
 
