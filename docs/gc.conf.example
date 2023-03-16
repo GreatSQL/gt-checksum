@@ -37,7 +37,9 @@ ignore-tables =
 ; checkNoIndexTable = yes | no
 checkNoIndexTable = yes
 
-; 设置是否忽略表名大小写，统一使用小写表名，可设置为：yes/no，默认值为：no
+; 设置是否忽略表名大小写，可设置为：yes/no，默认值为：no
+; yes => 会按照配置的大小写进行匹配
+; no => 统一用大写表名
 ; lowerCaseTableNames = yes | no
 lowerCaseTableNames = no
 

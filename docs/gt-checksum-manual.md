@@ -27,7 +27,7 @@ gt-checksum --config=./gc.conf
 		b.`SESSION_VARIABLES_ADMIN`，如果是MySQL 8.0版本的话，MySQL 5.7版本不做这个要求
   - 2.校验数据对象
 		- a.如果`datafix=file`，则只需要`SELECT`权限
-		- b.如果`datafix=table`，则需要`SELECT、INSERT、DELETE`权限
+		- b.如果`datafix=table`，则需要`SELECT、INSERT、DELETE`权限，如果还需要修复表结构不一致的情况，则需要`ALTER`权限
 
 假设现在要对db1.t1做校验和修复，则可授权如下
 
@@ -201,7 +201,9 @@ shell> gt-checksum -S srcDSN -D dstDSN -t db1.* -nit yes
 - --lowerCase / -lc
   Type: Bool, yes/no. Default: no.
 
-  设置是否忽略表名大小写，可统一使用小写表名，设置为：yes/no，默认值为：no。
+  设置是否忽略表名大小写，设置为：yes/no，默认值为：no。
+
+  yes => 会按照配置的大小写进行匹配；no => 统一用大写表名。
 
   案例：
 ```shell
@@ -318,14 +320,22 @@ shell> gt-checksum -S srcDSN -D dstDSN -t db1.* -thds 5
   
   设置表结构校验时，数据修复时的对准原则，选择源端 或 目标端作为数据修复的依据。
 
-  TODO案例
+  案例
+```shell
+./gt-checksum -S DSN -D DSN -t db1.* -sfr=src
+```
+- --ScheckFixRule value, --sfr value       column to fix based on. For example: --sfr src (default: "src") [$src, $dst]
 
 - --ScheckOrder value, --sco value         The positive sequence check of column. For example: --sco yes (default: "yes") [$yes, $no]
   Type: Bool, yes/no. Default: no.
 
   设置表结构数据校验时，是否要检查数据列的顺序。
 
-  TODO案例：
+  案例：
+```shell
+./gt-checksum -S DSN -D DSN -t db1.* -sco=yes
+```
+- --ScheckFixRule value, --sfr value       column to fix based on. For example: --sfr src (default: "src") [$src, $dst]
 
 - --ScheckMod value, --scm value           column check mode. For example: --scm strict (default: "strict") [$strict, $loose]
   Type: enum, strict/loose
@@ -336,7 +346,11 @@ shell> gt-checksum -S srcDSN -D dstDSN -t db1.* -thds 5
 
   严格模式，严格匹配数据列的属性，列的属性包括数据类型、是否允许为null、默认值、字符集、校验集、comment等。
 
-  TODO案例：
+  案例：
+```shell
+./gt-checksum -S DSN -D DSN -t db1.* -scm=strict
+```
+- --ScheckFixRule value, --sfr value       column to fix based on. For example: --sfr src (default: "src") [$src, $dst]
 
 - --datafix / -df
   Type: enum, table/file. Default: file.
