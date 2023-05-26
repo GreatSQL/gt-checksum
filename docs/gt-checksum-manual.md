@@ -186,7 +186,7 @@ shell> gt-checksum -S srcDSN -D dstDSN -t db1.*
 shell> gt-checksum -S srcDSN -D dstDSN -t db1.* -it test.*
 ```
 
-- --noIndexTable / -nit
+- --CheckNoIndexTable / -nit
   Type: Bool, yes/no. Default: no.
 
   设置是否检查没有索引的表，可设置为：yes/no，默认值为：no。
