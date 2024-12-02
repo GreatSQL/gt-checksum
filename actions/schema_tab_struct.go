@@ -646,7 +646,7 @@ func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 in
 			global.Wlog.Debug(vlog)
 			continue
 		}
-		tmpM = nil
+		tmpM = make(map[string]int)
 		vlog = fmt.Sprintf("(%d) Start seeking the union of the source and target databases %s Trigger. to dispos it...", logThreadSeq, stcls.schema)
 		global.Wlog.Debug(vlog)
 		for k, _ := range sourceTrigger {
@@ -722,7 +722,7 @@ func (stcls *schemaTable) Proc(dtabS []string, logThreadSeq, logThreadSeq2 int64
 			continue
 		}
 
-		tmpM = nil
+		tmpM = make(map[string]int)
 		vlog = fmt.Sprintf("(%d) Start seeking the union of the source and target databases %s Stored Procedure. to dispos it...", logThreadSeq, stcls.schema)
 		global.Wlog.Debug(vlog)
 		for k, _ := range sourceProc {
@@ -821,7 +821,7 @@ func (stcls *schemaTable) Func(dtabS []string, logThreadSeq, logThreadSeq2 int64
 			continue
 		}
 
-		tmpM = nil
+		tmpM = make(map[string]int)
 		vlog = fmt.Sprintf("(%d) Start seeking the union of the source and target databases %s Stored Function. to dispos it...", logThreadSeq, stcls.schema)
 		global.Wlog.Debug(vlog)
 		for k, _ := range sourceFunc {
@@ -952,7 +952,7 @@ func (stcls *schemaTable) Foreign(dtabS []string, logThreadSeq, logThreadSeq2 in
 			global.Wlog.Debug(vlog)
 			continue
 		}
-		tmpM = nil
+		tmpM = make(map[string]int)
 		vlog = fmt.Sprintf("(%d) Start seeking the union of the source and target table %s.%s Foreign Name. to dispos it...", logThreadSeq, stcls.schema, stcls.table)
 		global.Wlog.Debug(vlog)
 		for k, _ := range sourceForeign {
@@ -1027,7 +1027,7 @@ func (stcls *schemaTable) Partitions(dtabS []string, logThreadSeq, logThreadSeq2
 			continue
 		}
 
-		tmpM = nil
+		tmpM = make(map[string]int)
 		vlog = fmt.Sprintf("(%d) Start seeking the union of the source and target table %s.%s Partitions Column. to dispos it...", logThreadSeq, stcls.schema, stcls.table)
 		global.Wlog.Debug(vlog)
 		for k, _ := range sourcePartitions {
@@ -1138,12 +1138,17 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 		sqlS = append(sqlS, indexGenerate(smul, dmul, aa, "mul")...)
 		vlog = fmt.Sprintf("(%d) %s Compare whether the no-unique key index is consistent and verified.", logThreadSeq, event)
 		global.Wlog.Debug(vlog)
+		// 应用并清空 sqlS
 		if len(sqlS) > 0 {
-			pods.Differences = "yes"
+		    pods.Differences = "yes"
+		    
+		    err := ApplyDataFix(sqlS, stcls.datefix, stcls.sfile, stcls.destDrive, stcls.djdbc, logThreadSeq)
+		    if err != nil {
+		        return err
+		    }
+		    sqlS = []string{}  // 清空 sqlS 以便下一个表使用
 		}
-		if err = ApplyDataFix(sqlS, stcls.datefix, stcls.sfile, stcls.destDrive, stcls.djdbc, logThreadSeq); err != nil {
-			return err
-		}
+    
 		measuredDataPods = append(measuredDataPods, pods)
 		vlog = fmt.Sprintf("(%d) %s The source target segment table %s.%s index column data verification is completed", logThreadSeq, event, stcls.schema, stcls.table)
 		global.Wlog.Info(vlog)
