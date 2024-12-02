@@ -191,7 +191,7 @@ func (or *QueryTable) TableRows(db *sql.DB, logThreadSeq int64) (uint64, error) 
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	vlog = fmt.Sprintf("(%d) [%s] Start querying the statistical information of table %s.%s in the %s database and get the number of rows in the table", logThreadSeq, Event, or.Schema, or.Table, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("exec dbms_stats.gather_table_stats('%s','%s');", or.Schema, or.Table)
+	strsql = fmt.Sprintf("BEGIN dbms_stats.gather_table_stats('%s','%s');END;", or.Schema, or.Table)
 	dispos.DBSQLforExec(strsql)
 	strsql = fmt.Sprintf("select num_rows as \"tableRows\" from dba_tables where owner='%s' and table_name='%s'", or.Schema, or.Table)
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
