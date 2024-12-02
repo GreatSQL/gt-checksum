@@ -186,25 +186,28 @@ func (or *QueryTable) TmpTableColumnGroupDataDispos(db *sql.DB, where string, co
 */
 func (or *QueryTable) TableRows(db *sql.DB, logThreadSeq int64) (uint64, error) {
 	var (
-		Event = "Q_I_S_tableRows"
+		tmpTableCount uint64
+		Event         = "Q_Index_Table_Count"
 	)
-	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
-	vlog = fmt.Sprintf("(%d) [%s] Start querying the statistical information of table %s.%s in the %s database and get the number of rows in the table", logThreadSeq, Event, or.Schema, or.Table, DBType)
+	vlog = fmt.Sprintf("(%d) [%s] Start to query the total number of rows in the following table %s.%s of the %s database.", logThreadSeq, Event, or.Schema, or.Table, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("exec dbms_stats.gather_table_stats('%s','%s');", or.Schema, or.Table)
-	dispos.DBSQLforExec(strsql)
-	strsql = fmt.Sprintf("select num_rows as \"tableRows\" from dba_tables where owner='%s' and table_name='%s'", or.Schema, or.Table)
+	strsql = fmt.Sprintf("select count(1) as \"sum\" from \"%s\".\"%s\"", or.Schema, or.Table)
+	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return 0, err
 	}
-	tableData, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
-	if err != nil {
+	if tableData, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{}); err != nil {
 		return 0, err
+	} else {
+		for _, i := range tableData {
+			d, _ := strconv.ParseUint(fmt.Sprintf("%s", i["sum"]), 10, 64)
+			tmpTableCount += d
+		}
 	}
-	defer dispos.SqlRows.Close()
-	vlog = fmt.Sprintf("(%d) [%s] The number of rows in table %s.%s in the %s database has been obtained.", logThreadSeq, Event, or.Schema, or.Table, DBType)
+	vlog = fmt.Sprintf("(%d) [%s] The query of the total number of rows in the following table %s.%s of the %s database is completed.", logThreadSeq, Event, or.Schema, or.Table, DBType)
 	global.Wlog.Debug(vlog)
-	return strconv.ParseUint(fmt.Sprintf("%s", tableData[0]["tableRows"]), 10, 64)
+	defer dispos.SqlRows.Close()
+	return tmpTableCount, nil
 }
 
 //处理无索引表查询select的order by列，防止原目标端查询的段不一致情况
