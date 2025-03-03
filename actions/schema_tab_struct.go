@@ -278,7 +278,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 			if err = ApplyDataFix(sqlS, stcls.datefix, stcls.sfile, stcls.destDrive, stcls.djdbc, logThreadSeq); err != nil {
 				return nil, nil, err
 			}
-			vlog = fmt.Sprintf("(%d) %s Target side %s table %s repair statement application is completed.", logThreadSeq, event, stcls.destDrive, v)
+			vlog = fmt.Sprintf("(%d) Target side %s table %s repair statement application is completed.", logThreadSeq, event, stcls.destDrive, v)
 			global.Wlog.Debug(vlog)
 		}
 	}
@@ -1065,17 +1065,52 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 		event         string
 		indexGenerate = func(smu, dmu map[string][]string, a *CheckSumTypeStruct, indexType string) []string {
 			var cc, c, d []string
+			
+			// 首先比较索引名称
 			for k, _ := range smu {
 				c = append(c, k)
 			}
 			for k, _ := range dmu {
 				d = append(d, k)
 			}
+			
+			// 如果索引名称不同，生成修复SQL
 			if a.CheckMd5(strings.Join(c, ",")) != a.CheckMd5(strings.Join(d, ",")) {
 				e, f := a.Arrcmp(c, d)
 				dbf := dbExec.DataAbnormalFixStruct{Schema: stcls.schema, Table: stcls.table, SourceDevice: stcls.sourceDrive, DestDevice: stcls.destDrive, IndexType: indexType, DatafixType: stcls.datefix}
 				cc = dbf.DataAbnormalFix().FixAlterIndexSqlExec(e, f, smu, stcls.sourceDrive, logThreadSeq)
+			} else {
+				// 即使索引名称相同，也要比较索引的具体内容
+				for k, sColumns := range smu {
+					if dColumns, exists := dmu[k]; exists {
+						// 比较同名索引的列及其顺序
+						if a.CheckMd5(strings.Join(sColumns, ",")) != a.CheckMd5(strings.Join(dColumns, ",")) {
+							// 索引内容不同，需要先删除旧索引，再创建新索引
+							dbf := dbExec.DataAbnormalFixStruct{
+								Schema: stcls.schema, 
+								Table: stcls.table, 
+								SourceDevice: stcls.sourceDrive, 
+								DestDevice: stcls.destDrive, 
+								IndexType: indexType, 
+								DatafixType: stcls.datefix,
+							}
+							
+							// 1. 先生成删除旧索引的SQL
+							// 注意：PRIMARY KEY需要特殊处理，不能直接DROP
+							if indexType == "pri" {
+								cc = append(cc, fmt.Sprintf("ALTER TABLE `%s`.`%s` DROP PRIMARY KEY;", stcls.schema, stcls.table))
+							} else {
+								cc = append(cc, fmt.Sprintf("ALTER TABLE `%s`.`%s` DROP INDEX `%s`;", stcls.schema, stcls.table, k))
+							}
+							
+							// 2. 再生成创建新索引的SQL
+							indexDiff := map[string][]string{k: sColumns}
+							cc = append(cc, dbf.DataAbnormalFix().FixAlterIndexSqlExec([]string{k}, []string{}, indexDiff, stcls.sourceDrive, logThreadSeq)...)
+						}
+					}
+				}
 			}
+			
 			return cc
 		}
 	)
