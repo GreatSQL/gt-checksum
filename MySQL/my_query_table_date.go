@@ -19,7 +19,7 @@ func (my *QueryTable) QueryTableIndexColumnInfo(db *sql.DB, logThreadSeq int64) 
 		tableData []map[string]interface{}
 		err       error
 	)
-	strsql = fmt.Sprintf("select isc.COLUMN_NAME as columnName,isc.COLUMN_TYPE as columnType,isc.COLUMN_KEY as columnKey,isc.EXTRA as autoIncrement,iss.NON_UNIQUE as nonUnique,iss.INDEX_NAME as indexName,iss.SEQ_IN_INDEX IndexSeq,isc.ORDINAL_POSITION columnSeq from information_schema.columns isc inner join (select NON_UNIQUE,INDEX_NAME,SEQ_IN_INDEX,COLUMN_NAME from information_schema.STATISTICS where table_schema='%s' and table_name='%s') as iss on isc.column_name =iss.column_name where isc.table_schema='%s' and isc.table_name='%s';", my.Schema, my.Table, my.Schema, my.Table)
+	strsql = fmt.Sprintf("select isc.COLUMN_NAME as columnName,isc.COLUMN_TYPE as columnType,isc.COLUMN_KEY as columnKey,isc.EXTRA as autoIncrement,iss.NON_UNIQUE as nonUnique,iss.INDEX_NAME as indexName,iss.SEQ_IN_INDEX as IndexSeq,isc.ORDINAL_POSITION as columnSeq from information_schema.columns isc inner join (select NON_UNIQUE,INDEX_NAME,SEQ_IN_INDEX,COLUMN_NAME from information_schema.STATISTICS where table_schema='%s' and table_name='%s') as iss on isc.column_name =iss.column_name where isc.table_schema='%s' and isc.table_name='%s';", my.Schema, my.Table, my.Schema, my.Table)
 	vlog = fmt.Sprintf("(%d) [%s] Generate a sql statement to query the index statistics of table %s.%s under the %s database.sql messige is {%s}", logThreadSeq, Event, my.Schema, my.Table, DBType, strsql)
 	global.Wlog.Debug(vlog)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
@@ -62,14 +62,14 @@ func (my *QueryTable) IndexDisposF(queryData []map[string]interface{}, logThread
 				if currIndexName != indexName {
 					indexName = currIndexName
 				}
-				PriIndexCol = append(PriIndexCol, fmt.Sprintf("%s", v["columnName"]))
+				PriIndexCol = append(PriIndexCol, fmt.Sprintf("%s:%s", v["columnName"], v["IndexSeq"]))
 				priIndexColumnMap["pri"] = PriIndexCol
 			} else {
 				if currIndexName != indexName {
 					indexName = currIndexName
-					nultiseriateIndexColumnMap[indexName] = append(uniIndexCol, fmt.Sprintf("%s /*actions Column Type*/ %s", v["columnName"], v["columnType"]))
+					nultiseriateIndexColumnMap[indexName] = append(uniIndexCol, fmt.Sprintf("%s:%s /*actions Column Type*/ %s", v["columnName"], v["IndexSeq"], v["columnType"]))
 				} else {
-					nultiseriateIndexColumnMap[indexName] = append(nultiseriateIndexColumnMap[indexName], fmt.Sprintf("%s /*actions Column Type*/ %s", v["columnName"], v["columnType"]))
+					nultiseriateIndexColumnMap[indexName] = append(nultiseriateIndexColumnMap[indexName], fmt.Sprintf("%s:%s /*actions Column Type*/ %s", v["columnName"], v["IndexSeq"], v["columnType"]))
 				}
 			}
 		}
@@ -77,14 +77,31 @@ func (my *QueryTable) IndexDisposF(queryData []map[string]interface{}, logThread
 		if v["nonUnique"].(string) != "0" {
 			if currIndexName != indexName {
 				indexName = currIndexName
-				multiseriateIndexColumnMap[indexName] = append(mulIndexCol, fmt.Sprintf("%s /*actions Column Type*/ %s", v["columnName"], v["columnType"]))
+				multiseriateIndexColumnMap[indexName] = append(mulIndexCol, fmt.Sprintf("%s:%s /*actions Column Type*/ %s", v["columnName"], v["IndexSeq"], v["columnType"]))
 			} else {
-				multiseriateIndexColumnMap[indexName] = append(multiseriateIndexColumnMap[indexName], fmt.Sprintf("%s /*actions Column Type*/ %s", v["columnName"], v["columnType"]))
+				multiseriateIndexColumnMap[indexName] = append(multiseriateIndexColumnMap[indexName], fmt.Sprintf("%s:%s /*actions Column Type*/ %s", v["columnName"], v["IndexSeq"], v["columnType"]))
 			}
 		}
 	}
 	vlog = fmt.Sprintf("(%d) [%s] The index information screening of the specified table %s.%s under the %s library is completed", logThreadSeq, Event, my.Schema, my.Table, DBType)
 	global.Wlog.Debug(vlog)
+	
+	// Log the values of the maps
+	if priVal, ok := priIndexColumnMap["pri"]; ok {
+		vlog = fmt.Sprintf("(%d) [%s] Primary index columns: %v", logThreadSeq, Event, priVal)
+		global.Wlog.Debug(vlog)
+	}
+	
+	for idxName, columns := range nultiseriateIndexColumnMap {
+		vlog = fmt.Sprintf("(%d) [%s] Unique index '%s' columns: %v", logThreadSeq, Event, idxName, columns)
+		global.Wlog.Debug(vlog)
+	}
+	
+	for idxName, columns := range multiseriateIndexColumnMap {
+		vlog = fmt.Sprintf("(%d) [%s] Non-unique index '%s' columns: %v", logThreadSeq, Event, idxName, columns)
+		global.Wlog.Debug(vlog)
+	}
+	
 	return priIndexColumnMap, nultiseriateIndexColumnMap, multiseriateIndexColumnMap
 }
 
