@@ -62,14 +62,14 @@ func (or *QueryTable) IndexDisposF(queryData []map[string]interface{}, logThread
 				if currIndexName != indexName {
 					indexName = currIndexName
 				}
-				PriIndexCol = append(PriIndexCol, fmt.Sprintf("%s", v["columnName"]))
+				PriIndexCol = append(PriIndexCol, fmt.Sprintf("%s:%s", v["columnName"], v["IndexSeq"]))
 				priIndexColumnMap["pri"] = PriIndexCol
 			} else {
 				if currIndexName != indexName {
 					indexName = currIndexName
-					nultiseriateIndexColumnMap[indexName] = append(uniIndexCol, fmt.Sprintf("%s /*actions Column Type*/ %s", v["columnName"], v["columnType"]))
+					nultiseriateIndexColumnMap[indexName] = append(uniIndexCol, fmt.Sprintf("%s:%s /*actions Column Type*/ %s", v["columnName"], v["IndexSeq"], v["columnType"]))
 				} else {
-					nultiseriateIndexColumnMap[indexName] = append(nultiseriateIndexColumnMap[indexName], fmt.Sprintf("%s /*actions Column Type*/ %s", v["columnName"], v["columnType"]))
+					nultiseriateIndexColumnMap[indexName] = append(nultiseriateIndexColumnMap[indexName], fmt.Sprintf("%s:%s /*actions Column Type*/ %s", v["columnName"], v["IndexSeq"], v["columnType"]))
 				}
 			}
 		}
@@ -77,9 +77,9 @@ func (or *QueryTable) IndexDisposF(queryData []map[string]interface{}, logThread
 		if v["nonUnique"].(string) == "NONUNIQUE" {
 			if currIndexName != indexName {
 				indexName = currIndexName
-				multiseriateIndexColumnMap[indexName] = append(mulIndexCol, fmt.Sprintf("%s /*actions Column Type*/ %s", v["columnName"], v["columnType"]))
+				multiseriateIndexColumnMap[indexName] = append(mulIndexCol, fmt.Sprintf("%s:%s /*actions Column Type*/ %s", v["columnName"], v["IndexSeq"], v["columnType"]))
 			} else {
-				multiseriateIndexColumnMap[indexName] = append(multiseriateIndexColumnMap[indexName], fmt.Sprintf("%s /*actions Column Type*/ %s", v["columnName"], v["columnType"]))
+				multiseriateIndexColumnMap[indexName] = append(multiseriateIndexColumnMap[indexName], fmt.Sprintf("%s:%s /*actions Column Type*/ %s", v["columnName"], v["IndexSeq"], v["columnType"]))
 			}
 		}
 	}
