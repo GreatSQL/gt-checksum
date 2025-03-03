@@ -278,7 +278,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 			if err = ApplyDataFix(sqlS, stcls.datefix, stcls.sfile, stcls.destDrive, stcls.djdbc, logThreadSeq); err != nil {
 				return nil, nil, err
 			}
-			vlog = fmt.Sprintf("(%d) Target side %s table %s repair statement application is completed.", logThreadSeq, event, stcls.destDrive, v)
+			vlog = fmt.Sprintf("(%d) %s Target side %s table %s repair statement application is completed.", logThreadSeq, event, stcls.destDrive, v)
 			global.Wlog.Debug(vlog)
 		}
 	}
