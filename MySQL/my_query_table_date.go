@@ -87,20 +87,20 @@ func (my *QueryTable) IndexDisposF(queryData []map[string]interface{}, logThread
 	global.Wlog.Debug(vlog)
 	
 	// Log the values of the maps
-	if priVal, ok := priIndexColumnMap["pri"]; ok {
-		vlog = fmt.Sprintf("(%d) [%s] Primary index columns: %v", logThreadSeq, Event, priVal)
-		global.Wlog.Debug(vlog)
-	}
+	// if priVal, ok := priIndexColumnMap["pri"]; ok {
+	// 	vlog = fmt.Sprintf("(%d) [%s] Primary index columns: %v", logThreadSeq, Event, priVal)
+	// 	global.Wlog.Debug(vlog)
+	// }
 	
-	for idxName, columns := range nultiseriateIndexColumnMap {
-		vlog = fmt.Sprintf("(%d) [%s] Unique index '%s' columns: %v", logThreadSeq, Event, idxName, columns)
-		global.Wlog.Debug(vlog)
-	}
+	// for idxName, columns := range nultiseriateIndexColumnMap {
+	// 	vlog = fmt.Sprintf("(%d) [%s] Unique index '%s' columns: %v", logThreadSeq, Event, idxName, columns)
+	// 	global.Wlog.Debug(vlog)
+	// }
 	
-	for idxName, columns := range multiseriateIndexColumnMap {
-		vlog = fmt.Sprintf("(%d) [%s] Non-unique index '%s' columns: %v", logThreadSeq, Event, idxName, columns)
-		global.Wlog.Debug(vlog)
-	}
+	// for idxName, columns := range multiseriateIndexColumnMap {
+	// 	vlog = fmt.Sprintf("(%d) [%s] Non-unique index '%s' columns: %v", logThreadSeq, Event, idxName, columns)
+	// 	global.Wlog.Debug(vlog)
+	// }
 	
 	return priIndexColumnMap, nultiseriateIndexColumnMap, multiseriateIndexColumnMap
 }
