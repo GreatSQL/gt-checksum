@@ -8,6 +8,8 @@ import (
 	"gt-checksum/global"
 	"gt-checksum/inputArg"
 	"os"
+	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -1063,57 +1065,109 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 		sqlS          []string
 		aa            = &CheckSumTypeStruct{}
 		event         string
+		// 辅助函数：提取列名和序号
+		extractColumnInfo = func(columnStr string) (string, int) {
+			// 从格式 "columnName/*seq*/1/*type*/columnType" 中提取信息
+			parts := strings.Split(columnStr, "/*seq*/")
+			colName := strings.TrimSpace(parts[0])
+			seqStr := strings.Split(parts[1], "/*type*/")[0]
+			seq, _ := strconv.Atoi(seqStr)
+			return colName, seq
+		}
+		
+		// 辅助函数：按序号排序列并返回纯列名
+		sortColumns = func(columns []string) []string {
+			type ColumnInfo struct {
+				name string
+				seq  int
+			}
+			var columnInfos []ColumnInfo
+			
+			// 提取列信息
+			for _, col := range columns {
+				name, seq := extractColumnInfo(col)
+				columnInfos = append(columnInfos, ColumnInfo{name: name, seq: seq})
+			}
+			
+			// 按序号排序
+			sort.Slice(columnInfos, func(i, j int) bool {
+				return columnInfos[i].seq < columnInfos[j].seq
+			})
+			
+			// 返回排序后的纯列名
+			var result []string
+			for _, col := range columnInfos {
+				result = append(result, fmt.Sprintf("%s", col.name))
+			}
+			return result
+		}
+		
 		indexGenerate = func(smu, dmu map[string][]string, a *CheckSumTypeStruct, indexType string) []string {
 			var cc, c, d []string
+			dbf := dbExec.DataAbnormalFixStruct{
+				Schema:       stcls.schema,
+				Table:        stcls.table,
+				SourceDevice: stcls.sourceDrive,
+				DestDevice:  stcls.destDrive,
+				IndexType:   indexType,
+				DatafixType: stcls.datefix,
+			}
 			
 			// 首先比较索引名称
-			for k, _ := range smu {
+			for k := range smu {
 				c = append(c, k)
 			}
-			for k, _ := range dmu {
+			for k := range dmu {
 				d = append(d, k)
 			}
 			
 			// 如果索引名称不同，生成修复SQL
 			if a.CheckMd5(strings.Join(c, ",")) != a.CheckMd5(strings.Join(d, ",")) {
 				e, f := a.Arrcmp(c, d)
-				dbf := dbExec.DataAbnormalFixStruct{Schema: stcls.schema, Table: stcls.table, SourceDevice: stcls.sourceDrive, DestDevice: stcls.destDrive, IndexType: indexType, DatafixType: stcls.datefix}
-				cc = dbf.DataAbnormalFix().FixAlterIndexSqlExec(e, f, smu, stcls.sourceDrive, logThreadSeq)
+				// 对于新增的索引，需要处理列顺序
+				newIndexMap := make(map[string][]string)
+				for _, idx := range e {
+					if cols, ok := smu[idx]; ok {
+						// 对列进行排序并去除序号信息
+						newIndexMap[idx] = sortColumns(cols)
+					}
+				}
+				cc = dbf.DataAbnormalFix().FixAlterIndexSqlExec(e, f, newIndexMap, stcls.sourceDrive, logThreadSeq)
 			} else {
 				// 即使索引名称相同，也要比较索引的具体内容
 				for k, sColumns := range smu {
 					if dColumns, exists := dmu[k]; exists {
-						// 比较同名索引的列及其顺序
+						// 比较同名索引的列及其顺序（包含序号信息的比较）
 						if a.CheckMd5(strings.Join(sColumns, ",")) != a.CheckMd5(strings.Join(dColumns, ",")) {
-							// 索引内容不同，需要先删除旧索引，再创建新索引
-							dbf := dbExec.DataAbnormalFixStruct{
-								Schema: stcls.schema, 
-								Table: stcls.table, 
-								SourceDevice: stcls.sourceDrive, 
-								DestDevice: stcls.destDrive, 
-								IndexType: indexType, 
-								DatafixType: stcls.datefix,
-							}
-							
 							// 1. 先生成删除旧索引的SQL
-							// 注意：PRIMARY KEY需要特殊处理，不能直接DROP
 							if indexType == "pri" {
 								cc = append(cc, fmt.Sprintf("ALTER TABLE `%s`.`%s` DROP PRIMARY KEY;", stcls.schema, stcls.table))
 							} else {
 								cc = append(cc, fmt.Sprintf("ALTER TABLE `%s`.`%s` DROP INDEX `%s`;", stcls.schema, stcls.table, k))
 							}
 							
-							// 2. 再生成创建新索引的SQL
-							indexDiff := map[string][]string{k: sColumns}
-							cc = append(cc, dbf.DataAbnormalFix().FixAlterIndexSqlExec([]string{k}, []string{}, indexDiff, stcls.sourceDrive, logThreadSeq)...)
+							// 2. 获取排序后的纯列名
+							sortedColumns := sortColumns(sColumns)
+							
+							// 3. 生成创建索引的SQL
+							if indexType == "pri" {
+								cc = append(cc, fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD PRIMARY KEY(%s);",
+									stcls.schema, stcls.table, strings.Join(sortedColumns, ",")))
+							} else if indexType == "uni" {
+								cc = append(cc, fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD UNIQUE INDEX `%s`(%s);",
+									stcls.schema, stcls.table, k, strings.Join(sortedColumns, ",")))
+							} else {
+								cc = append(cc, fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD INDEX `%s`(%s);",
+									stcls.schema, stcls.table, k, strings.Join(sortedColumns, ",")))
+							}
 						}
 					}
 				}
 			}
-			
 			return cc
 		}
 	)
+	
 	fmt.Println("-- gt-checksum checksum table index info -- ")
 	event = fmt.Sprintf("[%s]", "check_table_index")
 	//校验索引
@@ -1132,7 +1186,15 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 			return err
 		}
 		spri, suni, smul := idxc.TableIndexColumn().IndexDisposF(squeryData, logThreadSeq2)
-		vlog = fmt.Sprintf("(%d) %s The index column data of the source %s database table %s is {primary:%v,unique key:%v,index key:%v}", logThreadSeq, event, stcls.sourceDrive, i, spri, suni, smul)
+		vlog = fmt.Sprintf("(%d) %s The index column data of the source %s database table %s.%s is {primary:%v,unique key:%v,index key:%v}", 
+			logThreadSeq, 
+			event, 
+			stcls.sourceDrive, 
+			stcls.schema,
+			stcls.table,
+			spri, 
+			suni, 
+			smul)
 		global.Wlog.Debug(vlog)
 
 		idxc.Drivce = stcls.destDrive
@@ -1145,12 +1207,21 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 			return err
 		}
 		dpri, duni, dmul := idxc.TableIndexColumn().IndexDisposF(dqueryData, logThreadSeq2)
-		vlog = fmt.Sprintf("(%d) %s The index column data of the source %s database table %s is {primary:%v,unique key:%v,index key:%v}", logThreadSeq, event, stcls.destDrive, i, dpri, duni, dmul)
+		vlog = fmt.Sprintf("(%d) %s The index column data of the dest %s database table %s.%s is {primary:%v,unique key:%v,index key:%v}", 
+			logThreadSeq, 
+			event, 
+			stcls.destDrive, 
+			stcls.schema,
+			stcls.table,
+			dpri, 
+			duni, 
+			dmul)
 		global.Wlog.Debug(vlog)
 
 		var pods = Pod{
 			Datafix:     stcls.datefix,
 			CheckObject: "Index",
+			
 			Differences: "no",
 			Schema:      stcls.schema,
 			Table:       stcls.table,
