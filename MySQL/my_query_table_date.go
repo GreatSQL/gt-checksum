@@ -41,66 +41,83 @@ func (my *QueryTable) QueryTableIndexColumnInfo(db *sql.DB, logThreadSeq int64) 
 */
 func (my *QueryTable) IndexDisposF(queryData []map[string]interface{}, logThreadSeq int64) (map[string][]string, map[string][]string, map[string][]string) {
 	var (
-		nultiseriateIndexColumnMap            = make(map[string][]string)
-		multiseriateIndexColumnMap            = make(map[string][]string)
-		priIndexColumnMap                     = make(map[string][]string)
-		PriIndexCol, uniIndexCol, mulIndexCol []string
-		indexName                             string
-		currIndexName                         string
-		Event                                 = "E_Index_Filter"
+		nultiseriateIndexColumnMap = make(map[string][]string)
+		multiseriateIndexColumnMap = make(map[string][]string)
+		priIndexColumnMap          = make(map[string][]string)
+		indexName                  string
+		currIndexName             string
+		Event                     = "E_Index_Filter"
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start to filter the primary key index, unique index, and common index based on the index information of the specified table %s.%s under the %s library", logThreadSeq, Event, my.Schema, my.Table, DBType)
 	global.Wlog.Debug(vlog)
+	
+	// 用于临时存储每个索引的列顺序
+	indexColumns := make(map[string]map[string]string)
+	
 	for _, v := range queryData {
 		currIndexName = fmt.Sprintf("%s", v["indexName"])
 		if my.LowerCaseTableNames == "no" {
 			currIndexName = strings.ToUpper(fmt.Sprintf("%s", v["indexName"]))
 		}
-		//判断唯一索引（包含主键索引和普通索引）
-		if v["nonUnique"].(string) == "0" {
-			if currIndexName == "PRIMARY" {
-				if currIndexName != indexName {
-					indexName = currIndexName
-				}
-				PriIndexCol = append(PriIndexCol, fmt.Sprintf("%s:%s", v["columnName"], v["IndexSeq"]))
-				priIndexColumnMap["pri"] = PriIndexCol
-			} else {
-				if currIndexName != indexName {
-					indexName = currIndexName
-					nultiseriateIndexColumnMap[indexName] = append(uniIndexCol, fmt.Sprintf("%s:%s /*actions Column Type*/ %s", v["columnName"], v["IndexSeq"], v["columnType"]))
-				} else {
-					nultiseriateIndexColumnMap[indexName] = append(nultiseriateIndexColumnMap[indexName], fmt.Sprintf("%s:%s /*actions Column Type*/ %s", v["columnName"], v["IndexSeq"], v["columnType"]))
+		
+		columnName := fmt.Sprintf("%s", v["columnName"])
+		indexSeq := fmt.Sprintf("%s", v["IndexSeq"])
+		columnType := fmt.Sprintf("%s", v["columnType"])
+		
+		// 初始化map
+		if _, exists := indexColumns[currIndexName]; !exists {
+			indexColumns[currIndexName] = make(map[string]string)
+		}
+		
+		// 存储列的顺序信息
+		indexColumns[currIndexName][indexSeq] = columnName + "/*seq*/" + indexSeq + "/*type*/" + columnType
+		
+		// 更新当前索引名
+		if currIndexName != indexName {
+			indexName = currIndexName
+		}
+	}
+	
+	// 按照索引序号排序并添加到最终的map中
+	for idxName, columns := range indexColumns {
+		// 获取所有序号并排序
+		var seqNums []int
+		for seq := range columns {
+			seqNum, _ := strconv.Atoi(seq)
+			seqNums = append(seqNums, seqNum)
+		}
+		sort.Ints(seqNums)
+		
+		// 按序号顺序添加列
+		var orderedColumns []string
+		for _, seq := range seqNums {
+			seqStr := strconv.Itoa(seq)
+			orderedColumns = append(orderedColumns, columns[seqStr])
+		}
+		
+		// 根据索引类型添加到相应的map中
+		if idxName == "PRIMARY" {
+			priIndexColumnMap["pri"] = orderedColumns
+		} else {
+			// 检查第一个匹配的索引列来确定是否为唯一索引
+			isUnique := false
+			for _, v := range queryData {
+				if fmt.Sprintf("%s", v["indexName"]) == idxName {
+					isUnique = v["nonUnique"].(string) == "0"
+					break
 				}
 			}
-		}
-		//处理普通索引
-		if v["nonUnique"].(string) != "0" {
-			if currIndexName != indexName {
-				indexName = currIndexName
-				multiseriateIndexColumnMap[indexName] = append(mulIndexCol, fmt.Sprintf("%s:%s /*actions Column Type*/ %s", v["columnName"], v["IndexSeq"], v["columnType"]))
+			
+			if isUnique {
+				nultiseriateIndexColumnMap[idxName] = orderedColumns
 			} else {
-				multiseriateIndexColumnMap[indexName] = append(multiseriateIndexColumnMap[indexName], fmt.Sprintf("%s:%s /*actions Column Type*/ %s", v["columnName"], v["IndexSeq"], v["columnType"]))
+				multiseriateIndexColumnMap[idxName] = orderedColumns
 			}
 		}
 	}
+	
 	vlog = fmt.Sprintf("(%d) [%s] The index information screening of the specified table %s.%s under the %s library is completed", logThreadSeq, Event, my.Schema, my.Table, DBType)
 	global.Wlog.Debug(vlog)
-	
-	// Log the values of the maps
-	// if priVal, ok := priIndexColumnMap["pri"]; ok {
-	// 	vlog = fmt.Sprintf("(%d) [%s] Primary index columns: %v", logThreadSeq, Event, priVal)
-	// 	global.Wlog.Debug(vlog)
-	// }
-	
-	// for idxName, columns := range nultiseriateIndexColumnMap {
-	// 	vlog = fmt.Sprintf("(%d) [%s] Unique index '%s' columns: %v", logThreadSeq, Event, idxName, columns)
-	// 	global.Wlog.Debug(vlog)
-	// }
-	
-	// for idxName, columns := range multiseriateIndexColumnMap {
-	// 	vlog = fmt.Sprintf("(%d) [%s] Non-unique index '%s' columns: %v", logThreadSeq, Event, idxName, columns)
-	// 	global.Wlog.Debug(vlog)
-	// }
 	
 	return priIndexColumnMap, nultiseriateIndexColumnMap, multiseriateIndexColumnMap
 }
