@@ -19,7 +19,7 @@ func (my *QueryTable) QueryTableIndexColumnInfo(db *sql.DB, logThreadSeq int64) 
 		tableData []map[string]interface{}
 		err       error
 	)
-	strsql = fmt.Sprintf("select isc.COLUMN_NAME as columnName,isc.COLUMN_TYPE as columnType,isc.COLUMN_KEY as columnKey,isc.EXTRA as autoIncrement,iss.NON_UNIQUE as nonUnique,iss.INDEX_NAME as indexName,iss.SEQ_IN_INDEX IndexSeq,isc.ORDINAL_POSITION columnSeq from information_schema.columns isc inner join (select NON_UNIQUE,INDEX_NAME,SEQ_IN_INDEX,COLUMN_NAME from information_schema.STATISTICS where table_schema='%s' and table_name='%s') as iss on isc.column_name =iss.column_name where isc.table_schema='%s' and isc.table_name='%s';", my.Schema, my.Table, my.Schema, my.Table)
+	strsql = fmt.Sprintf("select isc.COLUMN_NAME as columnName,isc.COLUMN_TYPE as columnType,isc.COLUMN_KEY as columnKey,isc.EXTRA as autoIncrement,iss.NON_UNIQUE as nonUnique,iss.INDEX_NAME as indexName,iss.SEQ_IN_INDEX as IndexSeq,isc.ORDINAL_POSITION as columnSeq from information_schema.columns isc inner join (select NON_UNIQUE,INDEX_NAME,SEQ_IN_INDEX,COLUMN_NAME from information_schema.STATISTICS where table_schema='%s' and table_name='%s') as iss on isc.column_name =iss.column_name where isc.table_schema='%s' and isc.table_name='%s';", my.Schema, my.Table, my.Schema, my.Table)
 	vlog = fmt.Sprintf("(%d) [%s] Generate a sql statement to query the index statistics of table %s.%s under the %s database.sql messige is {%s}", logThreadSeq, Event, my.Schema, my.Table, DBType, strsql)
 	global.Wlog.Debug(vlog)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
@@ -41,50 +41,84 @@ func (my *QueryTable) QueryTableIndexColumnInfo(db *sql.DB, logThreadSeq int64) 
 */
 func (my *QueryTable) IndexDisposF(queryData []map[string]interface{}, logThreadSeq int64) (map[string][]string, map[string][]string, map[string][]string) {
 	var (
-		nultiseriateIndexColumnMap            = make(map[string][]string)
-		multiseriateIndexColumnMap            = make(map[string][]string)
-		priIndexColumnMap                     = make(map[string][]string)
-		PriIndexCol, uniIndexCol, mulIndexCol []string
-		indexName                             string
-		currIndexName                         string
-		Event                                 = "E_Index_Filter"
+		nultiseriateIndexColumnMap = make(map[string][]string)
+		multiseriateIndexColumnMap = make(map[string][]string)
+		priIndexColumnMap          = make(map[string][]string)
+		indexName                  string
+		currIndexName             string
+		Event                     = "E_Index_Filter"
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start to filter the primary key index, unique index, and common index based on the index information of the specified table %s.%s under the %s library", logThreadSeq, Event, my.Schema, my.Table, DBType)
 	global.Wlog.Debug(vlog)
+	
+	// 用于临时存储每个索引的列顺序
+	indexColumns := make(map[string]map[string]string)
+	
 	for _, v := range queryData {
 		currIndexName = fmt.Sprintf("%s", v["indexName"])
 		if my.LowerCaseTableNames == "no" {
 			currIndexName = strings.ToUpper(fmt.Sprintf("%s", v["indexName"]))
 		}
-		//判断唯一索引（包含主键索引和普通索引）
-		if v["nonUnique"].(string) == "0" {
-			if currIndexName == "PRIMARY" {
-				if currIndexName != indexName {
-					indexName = currIndexName
-				}
-				PriIndexCol = append(PriIndexCol, fmt.Sprintf("%s", v["columnName"]))
-				priIndexColumnMap["pri"] = PriIndexCol
-			} else {
-				if currIndexName != indexName {
-					indexName = currIndexName
-					nultiseriateIndexColumnMap[indexName] = append(uniIndexCol, fmt.Sprintf("%s /*actions Column Type*/ %s", v["columnName"], v["columnType"]))
-				} else {
-					nultiseriateIndexColumnMap[indexName] = append(nultiseriateIndexColumnMap[indexName], fmt.Sprintf("%s /*actions Column Type*/ %s", v["columnName"], v["columnType"]))
+		
+		columnName := fmt.Sprintf("%s", v["columnName"])
+		indexSeq := fmt.Sprintf("%s", v["IndexSeq"])
+		columnType := fmt.Sprintf("%s", v["columnType"])
+		
+		// 初始化map
+		if _, exists := indexColumns[currIndexName]; !exists {
+			indexColumns[currIndexName] = make(map[string]string)
+		}
+		
+		// 存储列的顺序信息
+		indexColumns[currIndexName][indexSeq] = columnName + "/*seq*/" + indexSeq + "/*type*/" + columnType
+		
+		// 更新当前索引名
+		if currIndexName != indexName {
+			indexName = currIndexName
+		}
+	}
+	
+	// 按照索引序号排序并添加到最终的map中
+	for idxName, columns := range indexColumns {
+		// 获取所有序号并排序
+		var seqNums []int
+		for seq := range columns {
+			seqNum, _ := strconv.Atoi(seq)
+			seqNums = append(seqNums, seqNum)
+		}
+		sort.Ints(seqNums)
+		
+		// 按序号顺序添加列
+		var orderedColumns []string
+		for _, seq := range seqNums {
+			seqStr := strconv.Itoa(seq)
+			orderedColumns = append(orderedColumns, columns[seqStr])
+		}
+		
+		// 根据索引类型添加到相应的map中
+		if idxName == "PRIMARY" {
+			priIndexColumnMap["pri"] = orderedColumns
+		} else {
+			// 检查第一个匹配的索引列来确定是否为唯一索引
+			isUnique := false
+			for _, v := range queryData {
+				if fmt.Sprintf("%s", v["indexName"]) == idxName {
+					isUnique = v["nonUnique"].(string) == "0"
+					break
 				}
 			}
-		}
-		//处理普通索引
-		if v["nonUnique"].(string) != "0" {
-			if currIndexName != indexName {
-				indexName = currIndexName
-				multiseriateIndexColumnMap[indexName] = append(mulIndexCol, fmt.Sprintf("%s /*actions Column Type*/ %s", v["columnName"], v["columnType"]))
+			
+			if isUnique {
+				nultiseriateIndexColumnMap[idxName] = orderedColumns
 			} else {
-				multiseriateIndexColumnMap[indexName] = append(multiseriateIndexColumnMap[indexName], fmt.Sprintf("%s /*actions Column Type*/ %s", v["columnName"], v["columnType"]))
+				multiseriateIndexColumnMap[idxName] = orderedColumns
 			}
 		}
 	}
+	
 	vlog = fmt.Sprintf("(%d) [%s] The index information screening of the specified table %s.%s under the %s library is completed", logThreadSeq, Event, my.Schema, my.Table, DBType)
 	global.Wlog.Debug(vlog)
+	
 	return priIndexColumnMap, nultiseriateIndexColumnMap, multiseriateIndexColumnMap
 }
 
