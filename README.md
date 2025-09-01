@@ -24,7 +24,7 @@ MySQL DBA最常用的数据校验及修复工具通常是 **pt-table-checksum** 
 
 可以 [这里](https://gitee.com/GreatSQL/gt-checksum/releases) 下载预编译好的二进制文件包，已经在Ubuntu、CentOS、RHEL等多个下测试通过。
 
-如果需要校验Oracle数据库，则还需要先下载Oracle数据库相应版本的驱动程序，并配置驱动程序使之生效。例如：待校验的数据库为Oracle 11-2，则要下载Oracle 11-2的驱动程序，并使之生效，否则连接Oracle会报错。详细方法请见下方内容：[**下载配置Oracle驱动程序**](#%E4%B8%8B%E8%BD%BD%E9%85%8D%E7%BD%AEoracle%E9%A9%B1%E5%8A%A8%E7%A8%8B%E5%BA%8F)。
+如果需要校验Oracle数据库，则还需要先下载Oracle数据库相应版本的驱动程序，并配置驱动程序使之生效。例如：待校验的数据库为Oracle 11-2，则要下载Oracle 11-2的驱动程序，并使之生效，否则连接Oracle会报错。详细方法请见下方内容：[**下载配置Oracle驱动程序**](./docs/gt-checksum-manual.md#下载配置Oracle驱动程序)。
 
 ## 快速运行
 - 不带任何参数
@@ -99,19 +99,19 @@ Schema  Table   IndexCol        checkMod        Rows    Differences     Datafix
 test    t2      id              rows            10,10   no              file
 ```
 
-> 开始执行数据校验钱，要先在源和目标数据库创建相应的专属账号并授权。详情参考：[**gt-checksum 手册**](https://gitee.com/GreatSQL/gt-checksum/blob/master/docs/gt-checksum-manual.md#数据库授权)。
+> 开始执行数据校验钱，要先在源和目标数据库创建相应的专属账号并授权。详情参考：[**gt-checksum 手册**](./docs/gt-checksum-manual.md#数据库授权)。
 
 ## 手册
 ---
-- [gt-checksum 手册](https://gitee.com/GreatSQL/gt-checksum/blob/master/docs/gt-checksum-manual.md)
+- [gt-checksum 手册](./docs/gt-checksum-manual.md)
 
 ## 版本历史
 ---
-- [版本历史](https://gitee.com/GreatSQL/gt-checksum/blob/master/relnotes/CHANGELOG.zh-CN.md)
+- [版本历史](./relnotes/CHANGELOG.zh-CN.md)
 
 ## 已知缺陷
 ---
-截止最新的1.2.1版本中，当数据表没有显式主键，且表中有多行数据是重复的，可能会导致校验结果不准确，详见 [已知缺陷](https://gitee.com/GreatSQL/gt-checksum/blob/master/docs/gt-checksum-manual.md#已知缺陷) 。
+截止最新的1.2.1版本中，当数据表没有显式主键，且表中有多行数据是重复的，可能会导致校验结果不准确，详见 [已知缺陷](./docs/gt-checksum-manual.md#已知缺陷) 。
 
 ## 问题反馈
 ---
