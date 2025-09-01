@@ -5,7 +5,7 @@
 [![](https://img.shields.io/badge/release-1.2.1-blue.svg)](https://gitee.com/GreatSQL/gt-checksum/releases/tag/1.2.1)
 
 # gt-checksum
-**`**gt-checksum** 是GreatSQL社区开源的数据库校验及修复工具，支持MySQL、Oracle等主流数据库。
+**gt-checksum** 是GreatSQL社区开源的数据库校验及修复工具，支持MySQL、Oracle等主流数据库。
 
 ## 简介
 
@@ -14,7 +14,7 @@ MySQL DBA最常用的数据校验及修复工具通常是 **pt-table-checksum** 
 因此，我们开发了 **gt-checksum** 工具，旨在解决MySQL目标是支持更多业务需求场景，解决一些痛点。
 
 **gt-checksum** 支持以下几种常见业务需求场景：
-1. **MySQL主从复制**：当主从复制中断较长时间后才发现，主从间数据差异太大。此时通常选择重建整个从库，如果利用**pt-table-checksum**、**pt-table-sync** 先校验后修复，这个过程通常特别久，时间代价太大。而 **gt-checksum** 工作效率更高，可以更快校验出主从间数据差异并修复，这个过程时间代价小很多。
+1. **MySQL主从复制**：当主从复制中断较长时间后才发现，主从间数据差异太大。此时通常选择重建整个从库，如果利用 **pt-table-checksum**、**pt-table-sync** 先校验后修复，这个过程通常特别久，时间代价太大。而 **gt-checksum** 工作效率更高，可以更快校验出主从间数据差异并修复，这个过程时间代价小很多。
 2. **MySQL MGR组复制**：MySQL MGR因故报错运行异常或某个节点异常退出时，在恢复时一般要先检查各节点间数据一致性，这时通常选择其中一个节点作为主节点，其余从节点直接复制数据重建，整个过程要特别久，时间代价大。在这种场景下选择使用 **gt-checksum** 效率更高。
 3. **企业上下云**：在企业上云下云过程中要进行大量的数据迁移及校验工作，可能存在字符集原因导致个别数据出现乱码或其他情况，在迁移结束后进行完整的数据校验就很有必要了。
 4. **异构迁移**：例如从Oracle迁移到MySQL等异构数据库迁移场景中，通常存在字符集不同、数据类型不同等多种复杂情况，也需要在迁移结束后进行完整的数据校验。
@@ -22,7 +22,7 @@ MySQL DBA最常用的数据校验及修复工具通常是 **pt-table-checksum** 
 
 ## 下载
 
-可以 [这里](https://gitee.com/GreatSQL/gt-checksum/releases) 下载预编译好的二进制文件包，已经在Ubuntu、CentOS、RHEL等多个下测试通过。
+可以 [这里](https://gitee.com/GreatSQL/gt-checksum/releases) 下载预编译好的二进制文件包，已经在 Ubuntu、CentOS、RHEL 等多个系统环境下测试通过。
 
 如果需要校验Oracle数据库，则还需要先下载Oracle数据库相应版本的驱动程序，并配置驱动程序使之生效。例如：待校验的数据库为Oracle 11-2，则要下载Oracle 11-2的驱动程序，并使之生效，否则连接Oracle会报错。详细方法请见下方内容：[**下载配置Oracle驱动程序**](./docs/gt-checksum-manual.md#下载配置Oracle驱动程序)。
 
@@ -30,21 +30,21 @@ MySQL DBA最常用的数据校验及修复工具通常是 **pt-table-checksum** 
 - 不带任何参数
 
 ```bash
-shell> ./gt-checksum
+$  ./gt-checksum
 If no parameters are loaded, run the command with -h or --help
 ```
 
 - 查看版本号
 
 ```bash
-shell> ./gt-checksum -v
+$  ./gt-checksum -v
 gt-checksum version 1.2.1
 ```
 
 - 查看使用帮助
 
 ```bash
-shell> ./gt-checksum -h
+$  ./gt-checksum -h
 NAME:
    gt-checksum - opensource database checksum and sync tool by GreatSQL
 
@@ -55,7 +55,7 @@ USAGE:
 - 指定配置文件方式，执行数据校验
 
 ```bash
-shell> ./gt-checksum -f ./gc.conf
+$  ./gt-checksum -f ./gc.conf
 -- gt-checksum init configuration files --
 -- gt-checksum init log files --
 -- gt-checksum init check parameter --
@@ -77,7 +77,7 @@ db1     t1                      ol_w_id,ol_d_id,ol_o_id,ol_number       rows    
 - 使用命令行传参方式，执行数据校验
 
 ```bash
-shell> ./gt-checksum -S driver=mysql,user=checksum,passwd=Checksum@123,\
+$  ./gt-checksum -S driver=mysql,user=checksum,passwd=Checksum@123,\
 host=172.16.0.1,port=3306,charset=utf8 \
 -D driver=mysql,user=checksum,passwd=Checksum@123,\
 host=172.16.0.2,port=3306,charset=utf8 -t test.t2 -nit yes
