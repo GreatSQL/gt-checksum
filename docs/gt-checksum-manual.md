@@ -8,13 +8,13 @@
 
 - 命令行传参方式
 ```bash
-gt-checksum -S srcDSN -D dstDSN -t TABLES
+$ gt-checksum -S srcDSN -D dstDSN -t TABLES
 ```
 
 - 指定配置文件方式
 
 ```bash
-gt-checksum -f ./gc.conf
+$ gt-checksum -f ./gc.conf
 ```
 
 ## 数据库授权
@@ -23,11 +23,19 @@ gt-checksum -f ./gc.conf
   
 - MySQL端
 
-  1.全局权限
+  1.创建专属账户
+
+    执行下面的SQL命令，创建专属账户：
+
+    ```sql
+    CREATE USER 'checksum'@'%' IDENTIFIED WITH mysql_native_password BY 'Checksum@3306';
+    ```
+
+  2.全局权限
 
     如果是MySQL 8.0及以上版本，需授予 `REPLICATION CLIENT` 和 `SESSION_VARIABLES_ADMIN` 权限。如果MySQL 5.7级以下版本，则无需授予 `SESSION_VARIABLES_ADMIN` 权限。
 
-  2.校验数据对象
+  3.校验数据对象
 
     a.如果参数设置 `datafix=file`，则只需授予 `SELECT`权限；
     b.如果参数设置 `datafix=table`，则需要授予 `SELECT、INSERT、DELETE` 权限，如果还需要修复表结构不一致的情况，则需要 `ALTER` 权限。
@@ -55,7 +63,7 @@ gt-checksum -f ./gc.conf
 提前修改配置文件 *gc.conf*，然后执行如下命令进行数据校验：
 
 ```bash
-$ ./gt-checksum -f ./gc.conf
+$ gt-checksum -f ./gc.conf
 -- gt-checksum init configuration files --
 -- gt-checksum init log files --
 -- gt-checksum init check parameter --
@@ -78,8 +86,8 @@ db1     t1                      ol_w_id,ol_d_id,ol_o_id,ol_number       rows    
 
 通过命令行传参方式进行数据校验，执行以下命令，实现目标：只校验 *db1* 库下的所有表，不校验 *test* 库下的所有表，并且没有索引的表也要校验：
 
-```
-./gt-checksum -S type=mysql,user=root,passwd=abc123,host=172.16.0.1,port=3306,charset=utf8 -D type=mysql,user=root,passwd=abc123,host=172.16.0.2,port=3306,charset=utf8 -t db1.* -it test.* -nit yes
+```bash
+$ gt-checksum -S type=mysql,user=checksum,passwd=Checksum@3306,host=172.16.0.1,port=3306,charset=utf8mb4 -D type=mysql,user=checksum,passwd=Checksum@3306,host=172.16.0.2,port=3306,charset=utf8mb4 -t db1.* -it test.* -nit yes
 ```
 
 ## 运行参数详解
@@ -100,11 +108,10 @@ db1     t1                      ol_w_id,ol_d_id,ol_o_id,ol_number       rows    
   还支持极简配置文件工作方式，即只需要最少的几个参数就能快速执行，例如：
 
   ```bash
-  #
   $ cat gc.conf-simple
   [DSNs]
-  srcDSN = mysql|pcms:abc123@tcp(172.17.16.1:3306)/information_schema?charset=utf8
-  dstDSN = mysql|pcms:abc123@tcp(172.17.16.2:3306)/information_schema?charset=utf8
+  srcDSN = mysql|checksum:Checksum@3306@tcp(172.17.16.1:3306)/information_schema?charset=utf8mb4
+  dstDSN = mysql|checksum:Checksum@3306@tcp(172.17.16.2:3306)/information_schema?charset=utf8mb4
 
   [Schema]
   tables = db1.t1
@@ -119,11 +126,11 @@ db1     t1                      ol_w_id,ol_d_id,ol_o_id,ol_number       rows    
   使用案例：
 
   ```bash
-  $ gt-checksum -S type=mysql,user=root,passwd=abc123,host=172.17.140.47,port=3306,charset=utf8mb4
+  $ gt-checksum -S type=mysql,user=checksum,passwd=Checksum@3306,host=172.17.140.47,port=3306,charset=utf8mb4
   ```
   目前DSN定义支持MySQL、Oracle两种数据库。
 
-  MySQL数据库的连接串格式为：`mysql|usr:password@tcp(ip:port)/dbname?charset=xxx`。例如：`dstDSN = mysql|pcms:abc123@tcp(172.16.0.1:3306)/information_schema?charset=utf8`。其中，`port`默认值是**3306**，`charset`默认值是**utf8mb4**。
+  MySQL数据库的连接串格式为：`mysql|usr:password@tcp(ip:port)/dbname?charset=xxx`。例如：`dstDSN = mysql|pcms:abc123@tcp(172.16.0.1:3306)/information_schema?charset=utf8mb4`。其中，`port`默认值是**3306**，`charset`默认值是**utf8mb4**。
 
   Oracle的连接串格式为：`oracle|user/password@ip:port/sid`。例如：`srcDSN=oracle|pcms/abc123@172.16.0.1:1521/helowin`。
     
@@ -132,7 +139,7 @@ db1     t1                      ol_w_id,ol_d_id,ol_o_id,ol_number       rows    
   使用案例：
 
   ```bash
-  $ gt-checksum -D type=mysql,user=root,passwd=abc123,host=172.17.140.47,port=3306,charset=utf8mb4
+  $ gt-checksum -D type=mysql,user=checksum,passwd=Checksum@3306,host=172.17.140.47,port=3306,charset=utf8mb4
   ```
 
   和参数 **srcDSN** 一样，只支持MySQL、Oracle两种数据库，字符串格式要求也一样。

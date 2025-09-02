@@ -8,10 +8,10 @@
 ;例如：srcDSN = oracle|scott/tiger@172.16.0.1:1521/helowin
 
 ;mysql的连接串格式为：mysql|usr:password@tcp(ip:port)/dbname?charset=xxx
-;例如：dstDSN = mysql|pcms:abc123@tcp(172.16.0.1:3306)/information_schema?charset=utf8
+;例如：dstDSN = mysql|checksum:Checksum@3306@tcp(172.16.0.1:3306)/information_schema?charset=utf8mb4
 
-srcDSN = mysql|pcms:abc123@tcp(172.16.0.1:3306)/information_schema?charset=utf8
-dstDSN = mysql|pcms:abc123@tcp(172.16.0.2:3306)/information_schema?charset=utf8
+srcDSN = mysql|checksum:Checksum@3306@tcp(172.16.0.1:3306)/information_schema?charset=utf8mb4
+dstDSN = mysql|checksum:Checksum@3306@tcp(172.16.0.2:3306)/information_schema?charset=utf8mb4
 
 ; 定义校验数据对象
 [Schema]
