@@ -3,6 +3,9 @@
 # VERSION 1.2.1
 # Author: greatsql
 # Command format: Instruction [arguments / command] …
+# 本Dockerfile适用于Docker 17.05及以上版本，如果你的Docker版本较低，请先升级你的Docker
+# 如果是podman则最后可能无法正常运行，因为podman不支持-o选项，可以改用buildah(4.x以上)实现，例如
+# DOCKER_BUILDKIT=1 buildah build-using-dockerfile -t greatsql/gt-checksum:1.2.1 -f Dockerfile .
 
 FROM golang:latest AS builder
 
@@ -21,7 +24,7 @@ COPY  . .
 ARG VERSION
 
 RUN go mod tidy
-RUN go build -o gt-checksum greatdbCheck.go
+RUN go build -o gt-checksum gt-checksum.go
 RUN mkdir -p ./gt-checksum-${VERSION} && cp -rf docs gc.conf gc.conf-simple gt-checksum Oracle/instantclient_11_2 README.md relnotes gt-checksum-${VERSION}
 
 FROM scratch AS exporter
