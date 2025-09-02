@@ -77,9 +77,9 @@ db1     t1                      ol_w_id,ol_d_id,ol_o_id,ol_number       rows    
 - 使用命令行传参方式，执行数据校验
 
 ```bash
-$  ./gt-checksum -S driver=mysql,user=checksum,passwd=Checksum@123,\
+$  ./gt-checksum -S driver=mysql,user=checksum,passwd=Checksum@3306,\
 host=172.16.0.1,port=3306,charset=utf8 \
--D driver=mysql,user=checksum,passwd=Checksum@123,\
+-D driver=mysql,user=checksum,passwd=Checksum@3306,\
 host=172.16.0.2,port=3306,charset=utf8 -t test.t2 -nit yes
 -- gt-checksum init configuration files --
 -- gt-checksum init log files --
