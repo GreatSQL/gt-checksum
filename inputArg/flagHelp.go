@@ -40,10 +40,10 @@ var jdbcDispos = func(jdbc string) (string, string) {
 func (rc *ConfigParameter) cliHelp() {
 	app := cli.NewApp()
 	app.Name = "gt-checksum"                                             //应用名称
-	app.Usage = "An opensource table and data checksum tool by GreatSQL" //应用功能说明
+	app.Usage = "opensource database checksum and sync tool by GreatSQL" //应用功能说明
 	app.Author = "GreatSQL"                                              //作者
 	app.Email = "GreatSQL <greatsql@greatdb.com>"                        //邮箱
-	app.Version = "1.2.1"
+	app.Version = "1.2.2"
 	app.Flags = []cli.Flag{
 		cli.StringFlag{
 			Name:        "config,f",                                                           //命令名称
@@ -53,13 +53,13 @@ func (rc *ConfigParameter) cliHelp() {
 		},
 		cli.StringFlag{
 			Name:        "srcDSN,S",
-			Usage:       "Set source DSN. For example: -S type=oracle,user=root,passwd=abc123,host=127.0.0.1,port=1521,sid=helowin",
+			Usage:       "Source database DSN. For example: -S type=oracle,user=checksum,passwd=Checksum@3306,host=127.0.0.1,port=1521,sid=helowin",
 			Value:       "",
 			Destination: &rc.SecondaryL.DsnsV.SrcDSN,
 		},
 		cli.StringFlag{
 			Name:        "dstDSN,D",
-			Usage:       "Set destination DSN. For example: -D type=mysql,user=root,passwd=abc123,host=127.0.0.1,port=3306,charset=utf8",
+			Usage:       "Destination database DSN. For example: -D type=mysql,user=checksum,passwd=Checksum@3306,host=127.0.0.1,port=3306,charset=utf8mb4",
 			Value:       "",
 			Destination: &rc.SecondaryL.DsnsV.DstDSN,
 		},
@@ -72,14 +72,14 @@ func (rc *ConfigParameter) cliHelp() {
 		},
 		cli.StringFlag{
 			Name:        "ignore-table,it",
-			Usage:       "Specify which tables ignore to check. For example: -it nil",
+			Usage:       "Specify tables to ignore during checksum. For example: -it db2.*",
 			Value:       "nil",
 			EnvVar:      "nil,database.table,...",
 			Destination: &rc.SecondaryL.SchemaV.IgnoreTables,
 		},
 		cli.StringFlag{
 			Name:        "checkNoIndexTable,nit",
-			Usage:       "Specify whether to check non-indexed tables. For example: --nit no",
+			Usage:       "Enable/disable checksum for tables without indexes. For example: --nit no",
 			Value:       "no",
 			EnvVar:      "yes,no",
 			Destination: &rc.SecondaryL.SchemaV.CheckNoIndexTable,
@@ -186,11 +186,11 @@ func (rc *ConfigParameter) cliHelp() {
 	}
 	app.Action = func(c *cli.Context) { //应用执行函数
 		if (rc.SecondaryL.DsnsV.SrcDSN != "" || rc.SecondaryL.DsnsV.DstDSN != "") && rc.Config != "" {
-			fmt.Println("Specify the config, srcDSN and dstDSN options at the same time, causing conflicts, run gt-checksum with option --help or -h")
+			fmt.Println("Specify the config, srcDSN and dstDSN options at the same time, causing conflicts, run the command with -h or --help")
 			os.Exit(0)
 		}
 		if (rc.SecondaryL.DsnsV.SrcDSN == "" || rc.SecondaryL.DsnsV.DstDSN == "") && rc.Config == "" {
-			fmt.Println("If no options are specified, run gt-checksum with option --help or -h")
+			fmt.Println("If no options are specified, run the command with -h or --help")
 			os.Exit(0)
 		}
 		rc.SecondaryL.DsnsV.SrcDrive, rc.SecondaryL.DsnsV.SrcJdbc = jdbcDispos(rc.SecondaryL.DsnsV.SrcDSN)

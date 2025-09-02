@@ -9,7 +9,7 @@
 
 ## 简介
 
-MySQL DBA最常用的数据校验及修复工具通常是 **pt-table-checksum** 和 **pt-table-sync**，但这两个工具并不支持MySQL MGR架构，以及国内常见的上云下云业务场景，还有MySQL、Oracle间的异构数据库等多种场景。
+MySQL DBA经常使用 **pt-table-checksum** 和 **pt-table-sync** 进行数据校验及修复，但这两个工具并不支持MySQL MGR架构，以及国内常见的上云下云业务场景，还有MySQL、Oracle间的异构数据库等多种场景。
 
 因此，我们开发了 **gt-checksum** 工具，旨在解决MySQL目标是支持更多业务需求场景，解决一些痛点。
 
