@@ -219,7 +219,7 @@ $ gt-checksum -S type=mysql,user=checksum,passwd=Checksum@3306,host=172.16.0.1,p
   $ gt-checksum -S srcDSN -D dstDSN -t db1.* -thds 5
   ```
 
-- `--singleIndexChanRowCount / -sicr`。类型：**Int**，默认值：**1000**。作用：设置单列索引每次检索多少条数据进行校验。
+- `--chunkSize / -cs`。类型：**Int**，默认值：**1000**。作用：设置每次检索多少条数据进行校验。
 
   **提醒**：参数值设置范围建议：1000 - 5000。该参数值设置太大时有可能会造成SQL查询效率反倒下降的情况发生，一般建议设置不超过5000。
 
@@ -227,16 +227,6 @@ $ gt-checksum -S type=mysql,user=checksum,passwd=Checksum@3306,host=172.16.0.1,p
     
   ```bash
   $ gt-checksum -S DSN -D DSN -t db1.* -sicr 1000
-  ```
-
-- `--jointIndexChanRowCount / -jicr`。类型：**Int**，默认值：**1000**。作用：设置多列索引每次检索多少条数据进行校验。
-
-  **提醒**：参数值设置范围建议：1000 - 5000。该参数值设置太大时有可能会造成SQL查询效率反倒下降的情况发生，一般建议设置不超过5000。
-
-  使用案例：
-
-  ```bash
-  $ gt-checksum -S DSN -D DSN -t db1.* -jicr 1000
   ```
 
 - `--queue-size / -qs`。类型：**Int**，默认值：**100**。作用：设置数据校验队列深度。

@@ -99,9 +99,9 @@ func (rc *ConfigParameter) cliHelp() {
 			Destination: &rc.SecondaryL.RulesV.ParallelThds,
 		},
 		cli.IntFlag{
-			Name:        "chanRowCount,cr",
-			Usage:       "Specifies how many rows are retrieved to check each time. For example: --cr 10000",
-			Value:       10000,
+			Name:        "chunkSize,cs",
+			Usage:       "Specifies how many rows are retrieved to check each time. For example: --cs 1000",
+			Value:       1000,
 			Destination: &rc.SecondaryL.RulesV.ChanRowCount,
 		},
 		cli.IntFlag{

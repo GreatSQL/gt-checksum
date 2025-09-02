@@ -30,21 +30,21 @@ MySQL DBA最常用的数据校验及修复工具通常是 **pt-table-checksum** 
 - 不带任何参数
 
 ```bash
-$  ./gt-checksum
+$  gt-checksum
 If no parameters are loaded, run the command with -h or --help
 ```
 
 - 查看版本号
 
 ```bash
-$  ./gt-checksum -v
+$  gt-checksum -v
 gt-checksum version 1.2.1
 ```
 
 - 查看使用帮助
 
 ```bash
-$  ./gt-checksum -h
+$  gt-checksum -h
 NAME:
    gt-checksum - opensource database checksum and sync tool by GreatSQL
 
@@ -55,7 +55,7 @@ USAGE:
 - 指定配置文件方式，执行数据校验
 
 ```bash
-$  ./gt-checksum -f ./gc.conf
+$  gt-checksum -f ./gc.conf
 -- gt-checksum init configuration files --
 -- gt-checksum init log files --
 -- gt-checksum init check parameter --
@@ -77,7 +77,7 @@ db1     t1                      ol_w_id,ol_d_id,ol_o_id,ol_number       rows    
 - 使用命令行传参方式，执行数据校验
 
 ```bash
-$  ./gt-checksum -S driver=mysql,user=checksum,passwd=Checksum@3306,\
+$  gt-checksum -S driver=mysql,user=checksum,passwd=Checksum@3306,\
 host=172.16.0.1,port=3306,charset=utf8 \
 -D driver=mysql,user=checksum,passwd=Checksum@3306,\
 host=172.16.0.2,port=3306,charset=utf8 -t test.t2 -nit yes

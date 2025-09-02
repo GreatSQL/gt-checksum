@@ -20,8 +20,7 @@ import (
 //	LowerCaseTableNames                          string   //是否忽略校验表的大小写
 //	LogFile, LogLevel                            string   //关于日志输出信息配置
 //	Concurrency                                  int      //查询并发度
-//	SingleIndexChanRowCount                      int      //单索引列校验数据块长度
-//	JointIndexChanRowCount                       int      //多列索引校验数据块长度
+//	ChunkSize                      				 int      //校验数据块长度
 //	QueueDepth                                   int      //数据块长度
 //	Datafix, FixFileName                         string   //差异数据修复的方式及配置
 //	IncCheckSwitch                               string   //增量数据校验
@@ -250,8 +249,8 @@ func (rc *ConfigParameter) checkPar() {
 	}
 	for _, v := range []int{rc.SecondaryL.RulesV.ChanRowCount, rc.SecondaryL.RulesV.QueueSize, rc.SecondaryL.RulesV.Ratio, rc.SecondaryL.RulesV.ParallelThds} {
 		if v < 1 {
-			fmt.Println("GreatSQL report: chanRowCount || queue-size || ratio || parallel-Thds Parameter setting error, please check the log for details.")
-			vlog = fmt.Sprintf("(%d) [%s]  chanRowCount || queue-size || ratio || parallel-Thds parameter must be greater than 0.", rc.LogThreadSeq, Event)
+			fmt.Println("GreatSQL report: chunkSize || queue-size || ratio || parallel-Thds Parameter setting error, please check the log for details.")
+			vlog = fmt.Sprintf("(%d) [%s]  chunkSize || queue-size || ratio || parallel-Thds parameter must be greater than 0.", rc.LogThreadSeq, Event)
 			global.Wlog.Error(vlog)
 			os.Exit(1)
 		}

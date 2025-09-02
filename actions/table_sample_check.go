@@ -817,18 +817,8 @@ func (sp *SchedulePlan) DoSampleDataCheck() {
 		sp.pods.Table = sp.table
 		fmt.Println(fmt.Sprintf("begin checkSum table %s.%s", sp.schema, sp.table))
 		tableColumn := sp.tableAllCol[fmt.Sprintf("%s_greatdbCheck_%s", sp.schema, sp.table)]
-		//根据索引列数量觉得chanrowCount数
-		if len(v) > 1 {
-			sp.chanrowCount = sp.jointIndexChanRowCount
-		} else if len(v) == 1 {
-			sp.chanrowCount = sp.singleIndexChanRowCount
-		} else {
-			if sp.singleIndexChanRowCount <= sp.jointIndexChanRowCount {
-				sp.chanrowCount = sp.singleIndexChanRowCount
-			} else {
-				sp.chanrowCount = sp.jointIndexChanRowCount
-			}
-		}
+		//根据索引列数量决定chanrowCount数
+		sp.chanrowCount = sp.chunkSize
 		sp.columnName = v
 		//统计表的总行数
 		sdb := sp.sdbPool.Get(logThreadSeq)
