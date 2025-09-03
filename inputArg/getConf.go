@@ -12,64 +12,64 @@ func (rc *ConfigParameter) LevelParameterCheck() {
 		err error
 	)
 	if rc.FirstL.DSNs, err = rc.ConfFine.GetSection("DSNs"); rc.FirstL.DSNs == nil && err != nil {
-		rc.getErr("Failed to get DSNs parameters", err)
+		rc.getErr("Failed to set [DSNs] options", err)
 	}
 	if rc.FirstL.Schema, err = rc.ConfFine.GetSection("Schema"); rc.FirstL.Schema == nil && err != nil {
-		rc.getErr("Failed to get Schema parameters", err)
+		rc.getErr("Failed to set [Schema] options", err)
 	}
 	//Source Destination connection 获取jdbc连接信息
 	for _, i := range []string{"srcDSN", "dstDSN"} {
 		if _, err = rc.FirstL.DSNs.GetKey(i); err != nil {
-			rc.getErr(fmt.Sprintf("Failed to get %s parameters", i), err)
+			rc.getErr(fmt.Sprintf("Failed to set option %s", i), err)
 		}
 	}
 	//Schema 获取校验库表信息
 	for _, i := range []string{"tables"} {
 		if _, err = rc.FirstL.Schema.GetKey(i); err != nil {
-			rc.getErr(fmt.Sprintf("Failed to get %s parameters", i), err)
+			rc.getErr(fmt.Sprintf("Failed to set option %s", i), err)
 		}
 	}
 	if rc.ParametersSwitch {
 		if rc.FirstL.Logs, err = rc.ConfFine.GetSection("Logs"); rc.FirstL.Logs == nil && err != nil {
-			rc.getErr("Failed to get Logs parameters", err)
+			rc.getErr("Failed to set [Logs] options", err)
 		}
 		if rc.FirstL.Rules, err = rc.ConfFine.GetSection("Rules"); rc.FirstL.Rules == nil && err != nil {
-			rc.getErr("Failed to get Rules parameters", err)
+			rc.getErr("Failed to set [Rules] options", err)
 		}
 		if rc.FirstL.Repair, err = rc.ConfFine.GetSection("Repair"); rc.FirstL.Repair == nil && err != nil {
-			rc.getErr("Failed to get Repair parameters", err)
+			rc.getErr("Failed to set [Repair] options", err)
 		}
 		if rc.FirstL.Struct, err = rc.ConfFine.GetSection("Struct"); rc.FirstL.Repair == nil && err != nil {
-			rc.getErr("Failed to get Struct parameters", err)
+			rc.getErr("Failed to set [Struct] options", err)
 		}
 		//Schema 获取校验库表信息
 		for _, i := range []string{"checkNoIndexTable", "lowerCaseTableNames"} {
 			if _, err = rc.FirstL.Schema.GetKey(i); err != nil {
-				rc.getErr(fmt.Sprintf("Failed to get %s parameters", i), err)
+				rc.getErr(fmt.Sprintf("Failed to set option %s", i), err)
 			}
 		}
 		//Logs 二级参数信息
 		for _, i := range []string{"log", "logLevel"} {
 			if _, err = rc.FirstL.Logs.GetKey(i); err != nil {
-				rc.getErr(fmt.Sprintf("Failed to get %s parameters", i), err)
+				rc.getErr(fmt.Sprintf("Failed to set option %s", i), err)
 			}
 		}
 		//Rules 二级参数检测
 		for _, i := range []string{"parallelThds", "queueSize", "checkMode", "checkObject", "ratio", "chanRowCount"} {
 			if _, err = rc.FirstL.Rules.GetKey(i); err != nil {
-				rc.getErr(fmt.Sprintf("Failed to get %s parameters", i), err)
+				rc.getErr(fmt.Sprintf("Failed to set option %s", i), err)
 			}
 		}
 		//Struct 二级参数检测
 		for _, i := range []string{"ScheckMod", "ScheckOrder", "ScheckFixRule"} {
 			if _, err = rc.FirstL.Struct.GetKey(i); err != nil {
-				rc.getErr(fmt.Sprintf("Failed to get %s parameters", i), err)
+				rc.getErr(fmt.Sprintf("Failed to set option %s", i), err)
 			}
 		}
 		//Repair 二级参数校验
 		for _, i := range []string{"datafix", "fixTrxNum", "fixFileName"} {
 			if _, err = rc.FirstL.Repair.GetKey(i); err != nil {
-				rc.getErr(fmt.Sprintf("Failed to get %s parameters", i), err)
+				rc.getErr(fmt.Sprintf("Failed to set option %s", i), err)
 			}
 		}
 	}
@@ -115,32 +115,32 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 		//Logs 获取相关参数
 		rc.SecondaryL.LogV.LogFile = rc.FirstL.Logs.Key("log").String()
 		if rc.SecondaryL.LogV.LogFile == "" {
-			rc.getErr("Failed to convert log parameter to int", err)
+			rc.getErr("Failed to set option LogFile", err)
 		}
 		rc.SecondaryL.LogV.LogLevel = rc.FirstL.Logs.Key("logLevel").In("info", []string{"debug", "info", "warn", "error"})
 
 		if rc.SecondaryL.RulesV.ParallelThds, err = rc.FirstL.Rules.Key("parallelThds").Int(); err != nil {
-			rc.getErr("Failed to convert parallelThds parameter to int", err)
+			rc.getErr("Failed to set option parallelThds, cannot convert to int", err)
 		}
 		if rc.SecondaryL.RulesV.ChanRowCount, err = rc.FirstL.Rules.Key("chanRowCount").Int(); err != nil {
-			rc.getErr("Failed to convert chanRowCount parameter to int", err)
+			rc.getErr("Failed to set option chanRowCount, cannot convert to int", err)
 		}
 		if rc.SecondaryL.RulesV.QueueSize, err = rc.FirstL.Rules.Key("queueSize").Int(); err != nil {
-			rc.getErr("Failed to convert queueSize parameter to int", err)
+			rc.getErr("Failed to set option queueSize, cannot convert to int", err)
 		}
 		if rc.SecondaryL.RulesV.Ratio, err = rc.FirstL.Rules.Key("ratio").Int(); err != nil {
-			rc.getErr("Failed to convert Ratio parameter to int", err)
+			rc.getErr("Failed to set option Ratio, cannot convert to int", err)
 		}
 		rc.SecondaryL.RulesV.CheckMode = rc.FirstL.Rules.Key("checkMode").In("rows", []string{"count", "rows", "sample"})
 		rc.SecondaryL.RulesV.CheckObject = rc.FirstL.Rules.Key("checkObject").In("data", []string{"data", "struct", "index", "partitions", "foreign", "trigger", "func", "proc"})
 
 		if rc.SecondaryL.RepairV.FixTrxNum, err = rc.FirstL.Repair.Key("fixTrxNum").Int(); err != nil {
-			rc.getErr("Failed to convert fixTrxNum parameter to int", err)
+			rc.getErr("Failed to set option fixTrxNum, cannot convert to int", err)
 		}
 		rc.SecondaryL.RepairV.Datafix = rc.FirstL.Repair.Key("datafix").In("file", []string{"file", "table"})
 		if rc.SecondaryL.RepairV.Datafix == "file" {
 			if _, err = rc.FirstL.Repair.GetKey("fixFileName"); err != nil {
-				rc.getErr("Failed to get fixFileName parameters", err)
+				rc.getErr("Failed to set option fixFileName", err)
 			}
 			rc.SecondaryL.RepairV.FixFileName = rc.FirstL.Repair.Key("fixFileName").String()
 		}
