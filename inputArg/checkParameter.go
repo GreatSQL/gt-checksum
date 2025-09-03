@@ -56,7 +56,7 @@ func (rc *ConfigParameter) rexPat(rex *regexp.Regexp, rexStr string, illegalPara
 		}
 	}
 	if illegalParameterStatus { //不法参数
-		rc.getErr("tables/ignoreTables option error.", errors.New("option error"))
+		rc.getErr("tables/ignoreTables option incorrect", errors.New("option error"))
 	}
 }
 
@@ -109,7 +109,7 @@ func (rc *ConfigParameter) getErr(msg string, err error) {
 func (rc *ConfigParameter) checkPar() {
 	var (
 		vlog  string
-		Event = "C_check_Parameter"
+		Event = "C_check_Options"
 		err   error
 	)
 
@@ -120,39 +120,41 @@ func (rc *ConfigParameter) checkPar() {
 	}
 
 	tmpDbc := dbExec.DBConnStruct{DBDevice: rc.SecondaryL.DsnsV.SrcDrive, JDBC: rc.SecondaryL.DsnsV.SrcJdbc}
-	vlog = fmt.Sprintf("(%d) [%s] Start to verify the legality of configuration parameters...", rc.LogThreadSeq, Event)
+	vlog = fmt.Sprintf("(%d) [%s] read and check if the options are correct", rc.LogThreadSeq, Event)
 	global.Wlog.Info(vlog)
 
-	vlog = fmt.Sprintf("(%d) [%s]  source DB node connection message {%s}, start to check it...", rc.LogThreadSeq, Event, rc.SecondaryL.DsnsV.SrcJdbc)
+	vlog = fmt.Sprintf("(%d) [%s] srcDSN is: {%s}", rc.LogThreadSeq, Event, rc.SecondaryL.DsnsV.SrcJdbc)
 	global.Wlog.Debug(vlog)
 	if _, err := tmpDbc.OpenDB(); err != nil {
-		fmt.Println("GreatSQL report: source DB connection fail, please check the log for details.")
-		vlog = fmt.Sprintf("(%d) [%s]  source DB connection message error! error message is {%s}", rc.LogThreadSeq, Event, err)
+		fmt.Println(fmt.Sprintf("gt-checksum report: Failed to connect to srcDSN. Please check %s or set option \"logLevel=debug\" to get more information.", rc.SecondaryL.LogV.LogFile))
+		vlog = fmt.Sprintf("(%d) [%s] srcDSN connect failed: {%s}", rc.LogThreadSeq, Event, err)
 		global.Wlog.Error(vlog)
 		os.Exit(0)
 	}
-	vlog = fmt.Sprintf("(%d) [%s]  source DB node connection message oK!", rc.LogThreadSeq, Event)
+	vlog = fmt.Sprintf("(%d) [%s] dstDSN connected", rc.LogThreadSeq, Event)
 	global.Wlog.Debug(vlog)
 
 	tmpDbc.DBDevice = rc.SecondaryL.DsnsV.DestDrive
 	tmpDbc.JDBC = rc.SecondaryL.DsnsV.DestJdbc
-	vlog = fmt.Sprintf("(%d) [%s]  dest DB node connection message {%s}, start to check it...", rc.LogThreadSeq, Event, rc.SecondaryL.DsnsV.DestJdbc)
+	vlog = fmt.Sprintf("(%d) [%s] dstDSN is: {%s}", rc.LogThreadSeq, Event, rc.SecondaryL.DsnsV.DestJdbc)
 	global.Wlog.Debug(vlog)
 	if _, err := tmpDbc.OpenDB(); err != nil {
-		fmt.Println("GreatSQL report: dest DB connection fail, please check the log for details.")
-		vlog = fmt.Sprintf("(%d) [%s]  dest DB connection message error!. error message is {%s}", rc.LogThreadSeq, Event, err)
+		fmt.Println(fmt.Sprintf("gt-checksum report: Failed to connect to dstDSN. Please check %s or set option \"logLevel=debug\" to get more information.", rc.SecondaryL.LogV.LogFile))
+		vlog = fmt.Sprintf("(%d) [%s] dstDSN connect failed: {%s}", rc.LogThreadSeq, Event, err)
 		global.Wlog.Error(vlog)
 		os.Exit(1)
 	}
-	vlog = fmt.Sprintf("(%d) [%s]  dest DB node connection message oK!", rc.LogThreadSeq, Event)
+	vlog = fmt.Sprintf("(%d) [%s] dstDSN connected", rc.LogThreadSeq, Event)
 	global.Wlog.Debug(vlog)
 
 	//表级别的正则匹配
-	vlog = fmt.Sprintf("(%d) [%s]  start check table Name and ignore table Name Legitimacy.", rc.LogThreadSeq, Event)
+	vlog = fmt.Sprintf("(%d) [%s] Check whether the options v1 and v2 are set correctly", rc.LogThreadSeq, Event)
+
+
 	global.Wlog.Debug(vlog)
 	if rc.SecondaryL.SchemaV.Tables == "" {
-		fmt.Println("GreatSQL report: table Parameter setting error, please check the log for details.")
-		vlog = fmt.Sprintf("(%d) [%s]  table cannot all be set to nil! ", rc.LogThreadSeq, Event)
+		fmt.Println(fmt.Sprintf("gt-checksum report: The option \"tables\" is set incorrectly. Please check %s.", rc.SecondaryL.LogV.LogFile))
+		vlog = fmt.Sprintf("(%d) [%s] the option \"tables\" cannot be empty", rc.LogThreadSeq, Event)
 		global.Wlog.Error(vlog)
 		os.Exit(1)
 	}
@@ -160,8 +162,8 @@ func (rc *ConfigParameter) checkPar() {
 	rc.rexPat(tabr, rc.SecondaryL.SchemaV.Tables, illegalParameterStatus)
 	rc.rexPat(tabr, rc.SecondaryL.SchemaV.Tables, illegalParameterStatus)
 	if rc.SecondaryL.SchemaV.Tables == rc.SecondaryL.SchemaV.IgnoreTables {
-		fmt.Println("GreatSQL report: table or ignoretable Parameter setting error, please check the log for details.")
-		vlog = fmt.Sprintf("(%d) [%s]  The test form and the skip form cannot be consistent! ", rc.LogThreadSeq, Event)
+		fmt.Println(fmt.Sprintf("gt-checksum report: The option \"tables\" or \"ignoreTables\" is set incorrectly. Please check %s.", rc.SecondaryL.LogV.LogFile))
+		vlog = fmt.Sprintf("(%d) [%s] The option \"table\" and \"ignoreTables\" cannot be the same", rc.LogThreadSeq, Event)
 		global.Wlog.Error(vlog)
 		os.Exit(1)
 	}
@@ -171,8 +173,8 @@ func (rc *ConfigParameter) checkPar() {
 		for _, i := range strings.Split(table, ",") {
 			ii := strings.TrimSpace(i)
 			if ii != "" {
-				fmt.Println("GreatSQL report: table Parameter setting error, please check the log for details.")
-				vlog = fmt.Sprintf("(%d) [%s]  The table parameter configures *.* and contains other values! ", rc.LogThreadSeq, Event)
+				fmt.Println(fmt.Sprintf("gt-checksum report: The option \"tables\" is set incorrectly. Please check %s or set option \"logLevel=debug\" to get more information.", rc.SecondaryL.LogV.LogFile))
+				vlog = fmt.Sprintf("(%d) [%s] The table parameter configures *.* and contains other values! ", rc.LogThreadSeq, Event)
 				global.Wlog.Error(vlog)
 				os.Exit(1)
 			}
@@ -191,22 +193,22 @@ func (rc *ConfigParameter) checkPar() {
 		rc.SecondaryL.SchemaV.IgnoreTables = strings.ToUpper(strings.TrimSpace(rc.SecondaryL.SchemaV.IgnoreTables))
 	}
 	if rc.SecondaryL.SchemaV.Tables == "" {
-		fmt.Println("GreatSQL report: table Parameter setting error, please check the log for details.")
+		fmt.Println(fmt.Sprintf("gt-checksum report: The option \"tables\" is set incorrectly. Please check %s or set option \"logLevel=debug\" to get more information.", rc.SecondaryL.LogV.LogFile))
 		os.Exit(1)
 	}
-	vlog = fmt.Sprintf("(%d) [%s]  check table parameter message is {table: %s ignore table: %s}", rc.LogThreadSeq, Event, rc.SecondaryL.SchemaV.Tables, rc.SecondaryL.SchemaV.IgnoreTables)
+	vlog = fmt.Sprintf("(%d) [%s] check table parameter message is {table: %s ignore table: %s}", rc.LogThreadSeq, Event, rc.SecondaryL.SchemaV.Tables, rc.SecondaryL.SchemaV.IgnoreTables)
 	global.Wlog.Debug(vlog)
 
-	vlog = fmt.Sprintf("(%d) [%s]  start init check object values.", rc.LogThreadSeq, Event)
+	vlog = fmt.Sprintf("(%d) [%s] start init check object values.", rc.LogThreadSeq, Event)
 	global.Wlog.Debug(vlog)
 	rc.SecondaryL.RulesV.CheckObject = strings.ToLower(rc.SecondaryL.RulesV.CheckObject)
-	vlog = fmt.Sprintf("(%d) [%s]  check object parameter message is {%s}.", rc.LogThreadSeq, Event, rc.SecondaryL.RulesV.CheckObject)
+	vlog = fmt.Sprintf("(%d) [%s] check object parameter message is {%s}.", rc.LogThreadSeq, Event, rc.SecondaryL.RulesV.CheckObject)
 	global.Wlog.Debug(vlog)
 
-	vlog = fmt.Sprintf("(%d) [%s]  start init check mode values.", rc.LogThreadSeq, Event)
+	vlog = fmt.Sprintf("(%d) [%s] start init check mode values.", rc.LogThreadSeq, Event)
 	global.Wlog.Debug(vlog)
 	rc.SecondaryL.RulesV.CheckMode = strings.ToLower(rc.SecondaryL.RulesV.CheckMode)
-	vlog = fmt.Sprintf("(%d) [%s]  check mode parameter message is {%s}.", rc.LogThreadSeq, Event, rc.SecondaryL.RulesV.CheckMode)
+	vlog = fmt.Sprintf("(%d) [%s] check mode parameter message is {%s}.", rc.LogThreadSeq, Event, rc.SecondaryL.RulesV.CheckMode)
 	global.Wlog.Debug(vlog)
 
 	vlog = fmt.Sprintf("(%d) [%s] start init no index table values.", rc.LogThreadSeq, Event)
@@ -215,23 +217,23 @@ func (rc *ConfigParameter) checkPar() {
 	vlog = fmt.Sprintf("(%d) [%s] check no index table parameter message is {%s}.", rc.LogThreadSeq, Event, rc.SecondaryL.SchemaV.CheckNoIndexTable)
 	global.Wlog.Debug(vlog)
 
-	vlog = fmt.Sprintf("(%d) [%s]  start init lower case table name values.", rc.LogThreadSeq, Event)
+	vlog = fmt.Sprintf("(%d) [%s] start init lower case table name values.", rc.LogThreadSeq, Event)
 	global.Wlog.Debug(vlog)
 	rc.SecondaryL.SchemaV.LowerCaseTableNames = strings.ToLower(rc.SecondaryL.SchemaV.LowerCaseTableNames)
-	vlog = fmt.Sprintf("(%d) [%s]  check lower case table name parameter message is {%s}.", rc.LogThreadSeq, Event, rc.SecondaryL.SchemaV.LowerCaseTableNames)
+	vlog = fmt.Sprintf("(%d) [%s] check lower case table name parameter message is {%s}.", rc.LogThreadSeq, Event, rc.SecondaryL.SchemaV.LowerCaseTableNames)
 	global.Wlog.Debug(vlog)
 
-	vlog = fmt.Sprintf("(%d) [%s]  start init log out values.", rc.LogThreadSeq, Event)
+	vlog = fmt.Sprintf("(%d) [%s] start init log out values.", rc.LogThreadSeq, Event)
 	global.Wlog.Debug(vlog)
 	//判断日志输入参数
 	rc.fileExsit(rc.SecondaryL.LogV.LogFile)
-	vlog = fmt.Sprintf("(%d) [%s]  check log out parameter message is {%s}.", rc.LogThreadSeq, Event, rc.SecondaryL.LogV.LogFile)
+	vlog = fmt.Sprintf("(%d) [%s] check log out parameter message is {%s}.", rc.LogThreadSeq, Event, rc.SecondaryL.LogV.LogFile)
 	global.Wlog.Debug(vlog)
 
-	vlog = fmt.Sprintf("(%d) [%s]  start init data fix file values.", rc.LogThreadSeq, Event)
+	vlog = fmt.Sprintf("(%d) [%s] start init data fix file values.", rc.LogThreadSeq, Event)
 	global.Wlog.Debug(vlog)
 	if rc.SecondaryL.RepairV.Datafix == "file" {
-		vlog = fmt.Sprintf("(%d) [%s]  Open repair file {%s} handle.", rc.LogThreadSeq, Event, rc.SecondaryL.RepairV.FixFileName)
+		vlog = fmt.Sprintf("(%d) [%s] Open repair file {%s} handle.", rc.LogThreadSeq, Event, rc.SecondaryL.RepairV.FixFileName)
 		global.Wlog.Debug(vlog)
 		if _, err = os.Stat(rc.SecondaryL.RepairV.FixFileName); err == nil {
 			os.Remove(rc.SecondaryL.RepairV.FixFileName)
@@ -239,25 +241,25 @@ func (rc *ConfigParameter) checkPar() {
 		rc.fileExsit(rc.SecondaryL.RepairV.FixFileName)
 		rc.SecondaryL.RepairV.FixFileFINE, err = os.OpenFile(rc.SecondaryL.RepairV.FixFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 		if err != nil {
-			fmt.Println("GreatSQL report: fix file open fail, please check the log for details.")
-			vlog = fmt.Sprintf("(%d) [%s]  Repair the file {%s} handle opening failure, the failure information is {%s}.", rc.LogThreadSeq, Event, rc.SecondaryL.RepairV.FixFileName, err)
+			fmt.Println(fmt.Sprintf("gt-checksum report: Failed to open the \"fixFileName\". Please check %s or set option \"logLevel=debug\" to get more information.", rc.SecondaryL.LogV.LogFile))
+			vlog = fmt.Sprintf("(%d) [%s] Repair the file {%s} handle opening failure, the failure information is {%s}.", rc.LogThreadSeq, Event, rc.SecondaryL.RepairV.FixFileName, err)
 			global.Wlog.Error(vlog)
 			os.Exit(1)
 		}
-		vlog = fmt.Sprintf("(%d) [%s]  check data fix file parameter message is {%s}.", rc.LogThreadSeq, Event, rc.SecondaryL.RepairV.FixFileName)
+		vlog = fmt.Sprintf("(%d) [%s] check data fix file parameter message is {%s}.", rc.LogThreadSeq, Event, rc.SecondaryL.RepairV.FixFileName)
 		global.Wlog.Debug(vlog)
 	}
 	for _, v := range []int{rc.SecondaryL.RulesV.ChanRowCount, rc.SecondaryL.RulesV.QueueSize, rc.SecondaryL.RulesV.Ratio, rc.SecondaryL.RulesV.ParallelThds} {
 		if v < 1 {
-			fmt.Println("GreatSQL report: chunkSize || queueSize || ratio || parallelThds Parameter setting error, please check the log for details.")
-			vlog = fmt.Sprintf("(%d) [%s]  chunkSize || queueSize || ratio || parallelThds parameter must be greater than 0.", rc.LogThreadSeq, Event)
+			fmt.Println(fmt.Sprintf("gt-checksum report: The options \"chunkSize || queueSize || ratio || parallelThds\" set incorrectly. Please check %s or set option \"logLevel=debug\" to get more information.", rc.SecondaryL.LogV.LogFile))
+			vlog = fmt.Sprintf("(%d) [%s] chunkSize || queueSize || ratio || parallelThds parameter must be greater than 0.", rc.LogThreadSeq, Event)
 			global.Wlog.Error(vlog)
 			os.Exit(1)
 		}
 	}
 	if rc.SecondaryL.RulesV.Ratio > 100 {
-		fmt.Println("GreatSQL report: Ratio Parameter setting error, please check the log for details.")
-		vlog = fmt.Sprintf("(%d) [%s]  Ratio value must be between 1 and 100.", rc.LogThreadSeq, Event)
+		fmt.Println(fmt.Sprintf("gt-checksum report: The option \"Ratio\" is set incorrectly.. Please check %s or set option \"logLevel=debug\" to get more information.", rc.SecondaryL.LogV.LogFile))
+		vlog = fmt.Sprintf("(%d) [%s] Ratio value must be between 1 and 100.", rc.LogThreadSeq, Event)
 		global.Wlog.Error(vlog)
 		os.Exit(1)
 	}
@@ -267,13 +269,13 @@ func (rc *ConfigParameter) checkPar() {
 	if rc.SecondaryL.RulesV.CheckMode == "count" {
 		rc.SecondaryL.RepairV.Datafix = "no"
 	}
-	vlog = fmt.Sprintf("(%d) [%s]  check check mode parameter message is {%s}.", rc.LogThreadSeq, Event, rc.SecondaryL.RulesV.CheckMode)
+	vlog = fmt.Sprintf("(%d) [%s] check check mode parameter message is {%s}.", rc.LogThreadSeq, Event, rc.SecondaryL.RulesV.CheckMode)
 	global.Wlog.Debug(vlog)
 
-	vlog = fmt.Sprintf("(%d) [%s]  start init trx conn pool values.", rc.LogThreadSeq, Event)
+	vlog = fmt.Sprintf("(%d) [%s] start init trx conn pool values.", rc.LogThreadSeq, Event)
 	global.Wlog.Debug(vlog)
 	rc.ConnPoolV.PoolMin = rc.SecondaryL.RulesV.ParallelThds*3 + 10
-	vlog = fmt.Sprintf("(%d) [%s]  check trx conn pool message is {%d}.", rc.LogThreadSeq, Event, rc.ConnPoolV.PoolMin)
+	vlog = fmt.Sprintf("(%d) [%s] check trx conn pool message is {%d}.", rc.LogThreadSeq, Event, rc.ConnPoolV.PoolMin)
 	global.Wlog.Debug(vlog)
 
 	rc.NoIndexTableTmpFile = "tmp_file"
@@ -281,7 +283,7 @@ func (rc *ConfigParameter) checkPar() {
 		rc.SecondaryL.StructV.ScheckMod = "loose"
 
 	}
-	vlog = fmt.Sprintf("(%d) [%s]  Validity verification of configuration parameters completed !!!", rc.LogThreadSeq, Event)
+	vlog = fmt.Sprintf("(%d) [%s] All options check have passed", rc.LogThreadSeq, Event)
 	global.Wlog.Info(vlog)
 
 }

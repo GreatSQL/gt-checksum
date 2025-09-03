@@ -19,20 +19,20 @@ func main() {
 	//获取配置文件
 	m := inputArg.ConfigInit(0)
 	if !actions.SchemaTableInit(m).GlobalAccessPriCheck(1, 2) {
-		fmt.Println("gt-checksum report: The SESSION_VARIABLES_ADMIN and REPLICATION global privileges may not have been granted. Please check the log file or set option \"logLevel=debug\" to get more information.")
+		fmt.Println(fmt.Sprintf("gt-checksum report: The SESSION_VARIABLES_ADMIN and REPLICATION global privileges may not have been granted. Please check %s or set option \"logLevel=debug\" to get more information.", m.SecondaryL.LogV.LogFile))
 		os.Exit(1)
 	}
 	//获取待校验表信息
 	var tableList []string
 	if tableList, err = actions.SchemaTableInit(m).SchemaTableFilter(3, 4); err != nil || len(tableList) == 0 {
-		fmt.Println("gt-checksum report: check table is empty. Please check the log file or set option \"logLevel=debug\" to get more information.")
+		fmt.Println(fmt.Sprintf("gt-checksum report: check table is empty. Please check %s or set option \"logLevel=debug\" to get more information.", m.SecondaryL.LogV.LogFile))
 		os.Exit(1)
 	}
 
 	switch m.SecondaryL.RulesV.CheckObject {
 	case "struct":
 		if err = actions.SchemaTableInit(m).Struct(tableList, 5, 6); err != nil {
-			fmt.Println("gt-checksum report: Table structures verification failed. Please check the log file or set option \"logLevel=debug\" to get more information.")
+			fmt.Println(fmt.Sprintf("gt-checksum report: Table structures verification failed. Please check %s or set option \"logLevel=debug\" to get more information.", m.SecondaryL.LogV.LogFile))
 			os.Exit(1)
 		}
 	case "index":
