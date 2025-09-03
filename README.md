@@ -56,14 +56,16 @@ USAGE:
 
 ```bash
 $  gt-checksum -f ./gc.conf
--- gt-checksum init configuration files --
--- gt-checksum init log files --
--- gt-checksum init check parameter --
--- gt-checksum init check table name --
--- gt-checksum init check table column --
--- gt-checksum init check table index column --
--- gt-checksum init source and dest transaction snapshoot conn pool --
--- gt-checksum init cehck table query plan and check data --
+
+gt-checksum is initializing
+gt-checksum is reading configuration files
+gt-checksum is opening log files
+gt-checksum is checking options
+gt-checksum is opening check tables
+gt-checksum is opening table columns
+gt-checksum is opening table indexes
+gt-checksum is opening srcDSN and dstDSN
+gt-checksum is generating tables and data check plan
 begin checkSum index table db1.t1
 [█████████████████████████████████████████████████████████████████████████████████████████████████████████████████]113%  task:     678/600
 table db1.t1 checksum complete
@@ -81,14 +83,16 @@ $  gt-checksum -S driver=mysql,user=checksum,passwd=Checksum@3306,\
 host=172.16.0.1,port=3306,charset=utf8 \
 -D driver=mysql,user=checksum,passwd=Checksum@3306,\
 host=172.16.0.2,port=3306,charset=utf8 -t test.t2 -nit yes
--- gt-checksum init configuration files --
--- gt-checksum init log files --
--- gt-checksum init check parameter --
--- gt-checksum init check table name --
--- gt-checksum init check table column --
--- gt-checksum init check table index column --
--- gt-checksum init source and dest transaction snapshoot conn pool --
--- gt-checksum init cehck table query plan and check data --
+
+gt-checksum is initializing
+gt-checksum is reading configuration files
+gt-checksum is opening log files
+gt-checksum is checking options
+gt-checksum is opening check tables
+gt-checksum is opening table columns
+gt-checksum is opening table indexes
+gt-checksum is opening srcDSN and dstDSN
+gt-checksum is generating tables and data check plan
 begin checkSum index table SCOTT.A5
 [█                    ]100%  task:       1/1
 table SCOTT.A5 checksum complete

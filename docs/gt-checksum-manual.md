@@ -64,20 +64,22 @@ $ gt-checksum -f ./gc.conf
 
 ```bash
 $ gt-checksum -f ./gc.conf
--- gt-checksum init configuration files --
--- gt-checksum init log files --
--- gt-checksum init check parameter --
--- gt-checksum init check table name --
--- gt-checksum init check table column --
--- gt-checksum init check table index column --
--- gt-checksum init source and dest transaction snapshoot conn pool --
--- gt-checksum init cehck table query plan and check data --
+
+gt-checksum is initializing
+gt-checksum is reading configuration files
+gt-checksum is opening log files
+gt-checksum is checking options
+gt-checksum is opening check tables
+gt-checksum is opening table columns
+gt-checksum is opening table indexes
+gt-checksum is opening srcDSN and dstDSN
+gt-checksum is generating tables and data check plan
 begin checkSum index table db1.t1
 [█████████████████████████████████████████████████████████████████████████████████████████████████████████████████]113%  task:     678/600
 table db1.t1 checksum complete
 
 ** gt-checksum Overview of results **
-Check time:  73.81s (Seconds)
+Check time:  73.81s
 Schema  Table                   IndexCol                                checkMod        Rows            Differences     Datafix
 db1     t1                      ol_w_id,ol_d_id,ol_o_id,ol_number       rows            5995934,5995918 yes             file
 ```
@@ -144,7 +146,7 @@ $ gt-checksum -S type=mysql,user=checksum,passwd=Checksum@3306,host=172.16.0.1,p
 
   和参数 **srcDSN** 一样，只支持MySQL、Oracle两种数据库，字符串格式要求也一样。
 
-- `--table / -t`。类型：**String**。默认值：**空**。作用：定义要执行数据校验的数据表对象列表，支持通配符 `"%"` 和 `"*"`。
+- `--tables / -t`。类型：**String**。默认值：**空**。作用：定义要执行数据校验的数据表对象列表，支持通配符 `"%"` 和 `"*"`。
 
   使用案例：
 
@@ -161,9 +163,9 @@ $ gt-checksum -S type=mysql,user=checksum,passwd=Checksum@3306,host=172.16.0.1,p
   - `db%.*` 表示所有库名中包含字母"db"开头的数据库中的所有表。
   - `%db.*` 表示所有库名中包含字母"db"结尾的数据库中的所有表。
 
-  **注意**：如果已经设置为 `"*.*"` 规则，则不能再增加其他的规则。例如，当设置 `"*.*,pcms%.*"` 时会报告规则错误。如果 `--table` 和 `--ignore-tables` 参数设置为相同值的话也会报告规则错误。
+  **注意**：如果已经设置为 `"*.*"` 规则，则不能再增加其他的规则。例如，当设置 `"*.*,pcms%.*"` 时会报告规则错误。如果 `--tables` 和 `--ignoreTables` 参数设置为相同值的话也会报告规则错误。
 
-- `--ignore-table / -it`。类型：**String**。默认值：**空**。作用：定义不要执行数据校验的数据表对象列表，支持通配符 `"%"` 和 `"*"`。
+- `--ignoreTables / -it`。类型：**String**。默认值：**空**。作用：定义不要执行数据校验的数据表对象列表，支持通配符 `"%"` 和 `"*"`。
 
   使用案例：
 
@@ -209,7 +211,7 @@ $ gt-checksum -S type=mysql,user=checksum,passwd=Checksum@3306,host=172.16.0.1,p
   $ gt-checksum -S srcDSN -D dstDSN -t db1.* -lf ./gt-checksum.log -ll info
   ```
 
-- `--parallel-thds / -thds`。类型：**Int**，默认值：**5**。作用：设置数据校验并行线程数。
+- `--parallelThds / -thds`。类型：**Int**，默认值：**5**。作用：设置数据校验并行线程数。
 
   **注意**：该参数值必须设置大于0才支持并行。并行线程数越高，数据校验速度越快，但系统负载也会越高，网络连接通信也可能会成为瓶颈。
 
@@ -229,7 +231,7 @@ $ gt-checksum -S type=mysql,user=checksum,passwd=Checksum@3306,host=172.16.0.1,p
   $ gt-checksum -S DSN -D DSN -t db1.* -sicr 1000
   ```
 
-- `--queue-size / -qs`。类型：**Int**，默认值：**100**。作用：设置数据校验队列深度。
+- `--queueSize / -qs`。类型：**Int**，默认值：**100**。作用：设置数据校验队列深度。
 
   **提醒**：数据校验队列深度值设置越大，校验的速度也会越快，但需要消耗的内存会越高，注意避免服务器内存消耗过大。
 
@@ -439,7 +441,7 @@ mysql> select * from t1;
 ```
 ...
 ** gt-checksum Overview of results **
-Check time:  0.30s (Seconds)
+Check time:  0.30s
 Schema  Table   IndexCol        checkMod        Rows    Differences     Datafix
 t1      T1      id,code         rows            10,8    no              file
 ```

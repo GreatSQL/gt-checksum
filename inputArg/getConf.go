@@ -55,7 +55,7 @@ func (rc *ConfigParameter) LevelParameterCheck() {
 			}
 		}
 		//Rules 二级参数检测
-		for _, i := range []string{"parallel-thds", "queue-size", "checkMode", "checkObject", "ratio", "chanRowCount"} {
+		for _, i := range []string{"parallelThds", "queueSize", "checkMode", "checkObject", "ratio", "chanRowCount"} {
 			if _, err = rc.FirstL.Rules.GetKey(i); err != nil {
 				rc.getErr(fmt.Sprintf("Failed to get %s parameters", i), err)
 			}
@@ -100,7 +100,7 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 
 	//校验库表设置
 	rc.SecondaryL.SchemaV.Tables = strings.TrimSpace(rc.FirstL.Schema.Key("tables").String())
-	rc.SecondaryL.SchemaV.IgnoreTables = strings.TrimSpace(rc.FirstL.Schema.Key("ignore-tables").String())
+	rc.SecondaryL.SchemaV.IgnoreTables = strings.TrimSpace(rc.FirstL.Schema.Key("ignoreTables").String())
 	if rc.SecondaryL.SchemaV.IgnoreTables == "" {
 		rc.SecondaryL.SchemaV.IgnoreTables = "nil"
 	}
@@ -119,14 +119,14 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 		}
 		rc.SecondaryL.LogV.LogLevel = rc.FirstL.Logs.Key("logLevel").In("info", []string{"debug", "info", "warn", "error"})
 
-		if rc.SecondaryL.RulesV.ParallelThds, err = rc.FirstL.Rules.Key("parallel-thds").Int(); err != nil {
-			rc.getErr("Failed to convert parallel-thds parameter to int", err)
+		if rc.SecondaryL.RulesV.ParallelThds, err = rc.FirstL.Rules.Key("parallelThds").Int(); err != nil {
+			rc.getErr("Failed to convert parallelThds parameter to int", err)
 		}
 		if rc.SecondaryL.RulesV.ChanRowCount, err = rc.FirstL.Rules.Key("chanRowCount").Int(); err != nil {
 			rc.getErr("Failed to convert chanRowCount parameter to int", err)
 		}
-		if rc.SecondaryL.RulesV.QueueSize, err = rc.FirstL.Rules.Key("queue-size").Int(); err != nil {
-			rc.getErr("Failed to convert queue-size parameter to int", err)
+		if rc.SecondaryL.RulesV.QueueSize, err = rc.FirstL.Rules.Key("queueSize").Int(); err != nil {
+			rc.getErr("Failed to convert queueSize parameter to int", err)
 		}
 		if rc.SecondaryL.RulesV.Ratio, err = rc.FirstL.Rules.Key("ratio").Int(); err != nil {
 			rc.getErr("Failed to convert Ratio parameter to int", err)

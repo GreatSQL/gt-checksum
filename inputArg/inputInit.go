@@ -82,7 +82,8 @@ var rc ConfigParameter
 
 func init() {
 	rc.cliHelp()
-	fmt.Println("-- gt-checksum init configuration files -- ")
+	fmt.Println("\ngt-checksum is initializing")
+	fmt.Println("gt-checksum is reading configuration files")
 	if rc.Config != "" {
 		if !strings.Contains(rc.Config, "/") {
 			sysType := runtime.GOOS
@@ -95,9 +96,9 @@ func init() {
 		rc.getConfig()
 	}
 	//初始化日志文件
-	fmt.Println("-- gt-checksum init log files -- ")
+	fmt.Println("gt-checksum is opening log files")
 	global.Wlog = log.NewWlog(rc.SecondaryL.LogV.LogFile, rc.SecondaryL.LogV.LogLevel)
-	fmt.Println("-- gt-checksum init check parameter --")
+	fmt.Println("gt-checksum is checking options")
 	rc.checkPar()
 }
 
