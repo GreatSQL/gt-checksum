@@ -71,7 +71,7 @@ func (rc *ConfigParameter) cliHelp() {
 			Destination: &rc.SecondaryL.SchemaV.Tables,
 		},
 		cli.StringFlag{
-			Name:        "ignore-table,it",
+			Name:        "ignoreTables,it",
 			Usage:       "Specify tables to ignore during checksum. For example: -it db2.*",
 			Value:       "nil",
 			EnvVar:      "nil,database.table,...",
@@ -93,7 +93,7 @@ func (rc *ConfigParameter) cliHelp() {
 		},
 
 		cli.IntFlag{
-			Name:        "parallel-thds,thds",
+			Name:        "parallelThds,thds",
 			Usage:       "Specify the number of parallel threads for data checksum. For example: --thds 5",
 			Value:       5,
 			Destination: &rc.SecondaryL.RulesV.ParallelThds,
@@ -105,7 +105,7 @@ func (rc *ConfigParameter) cliHelp() {
 			Destination: &rc.SecondaryL.RulesV.ChanRowCount,
 		},
 		cli.IntFlag{
-			Name:        "queue-size,qs",
+			Name:        "queueSize,qs",
 			Usage:       "Specify data check queue depth. for example: --qs 100",
 			Value:       100,
 			Destination: &rc.SecondaryL.RulesV.QueueSize,

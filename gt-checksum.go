@@ -19,25 +19,25 @@ func main() {
 	//获取配置文件
 	m := inputArg.ConfigInit(0)
 	if !actions.SchemaTableInit(m).GlobalAccessPriCheck(1, 2) {
-		fmt.Println("gt-checksum report: Missing global permissions, please check the log for details.")
+		fmt.Println("gt-checksum report: The SESSION_VARIABLES_ADMIN and REPLICATION global privileges may not have been granted. Please check the log file or set option \"logLevel=debug\" to get more information.")
 		os.Exit(1)
 	}
 	//获取待校验表信息
 	var tableList []string
 	if tableList, err = actions.SchemaTableInit(m).SchemaTableFilter(3, 4); err != nil || len(tableList) == 0 {
-		fmt.Println("gt-checksum report: check table is empty,please check the log for details!")
+		fmt.Println("gt-checksum report: check table is empty. Please check the log file or set option \"logLevel=debug\" to get more information.")
 		os.Exit(1)
 	}
 
 	switch m.SecondaryL.RulesV.CheckObject {
 	case "struct":
 		if err = actions.SchemaTableInit(m).Struct(tableList, 5, 6); err != nil {
-			fmt.Println("-- gt-checksum report: The table Struct verification failed, please refer to the log file for details, enable debug to get more information -- ")
+			fmt.Println("gt-checksum report: Table structures verification failed. Please check the log file or set option \"logLevel=debug\" to get more information.")
 			os.Exit(1)
 		}
 	case "index":
 		if err = actions.SchemaTableInit(m).Index(tableList, 7, 8); err != nil {
-			fmt.Println("-- gt-checksum report: The table Index verification failed, please refer to the log file for details, enable debug to get more information -- ")
+			fmt.Println("gt-checksum report: Indexes verification failed. Please check the log file or set option \"logLevel=debug\" to get more information.")
 			os.Exit(1)
 		}
 	case "partitions":
@@ -60,26 +60,26 @@ func main() {
 		//校验表结构
 		tableList, _, err = actions.SchemaTableInit(m).TableColumnNameCheck(tableList, 9, 10)
 		if err != nil {
-			fmt.Println("-- gt-checksum report: The table structure verification failed, please refer to the log file for details, enable debug to get more information -- ")
+			fmt.Println("gt-checksum report: Table structure verification failed. Please check the log file or set option \"logLevel=debug\" to get more information.")
 			os.Exit(1)
 		} else if len(tableList) == 0 {
-			fmt.Println("gt-checksum report: No checklist, please check the log for details.")
+			fmt.Println("gt-checksum report: table checklist is empty. Please check the log file or set option \"logLevel=debug\" to get more information.")
 			os.Exit(1)
 		}
 		//19、20
 		if tableList, _, err = actions.SchemaTableInit(m).TableAccessPriCheck(tableList, 19, 20); err != nil {
-			fmt.Println("-- gt-checksum report: The table access permissions query failed, please refer to the log file for details, enable debug to get more information -- ")
+			fmt.Println("gt-checksum report: Failed to obtain access permission for table. Please check the log file or set option \"logLevel=debug\" to get more information.")
 			os.Exit(1)
 		} else if len(tableList) == 0 {
-			fmt.Println("gt-checksum report: Insufficient permissions for the verification table, please check the log for details.")
+			fmt.Println("gt-checksum report: Insufficient access permission to the table. Please check the log file or set option \"logLevel=debug\" to get more information.")
 			os.Exit(1)
 		}
 
 		//根据要校验的表，获取该表的全部列信息
-		fmt.Println("-- gt-checksum init check table column --")
+		fmt.Println("gt-checksum is opening table columns")
 		tableAllCol := actions.SchemaTableInit(m).SchemaTableAllCol(tableList, 21, 22)
 		//根据要校验的表，筛选查询数据时使用到的索引列信息
-		fmt.Println("-- gt-checksum init check table index column --")
+		fmt.Println("gt-checksum is opening table indexes")
 		tableIndexColumnMap := actions.SchemaTableInit(m).TableIndexColumn(tableList, 23, 24)
 		//获取全局一致 x性位点
 		//fmt.Println("-- GreatdbCheck Obtain global consensus sites --")
@@ -107,12 +107,12 @@ func main() {
 		//}
 
 		//初始化数据库连接池
-		fmt.Println("-- gt-checksum init source and dest transaction snapshoot conn pool --")
+		fmt.Println("gt-checksum is opening srcDSN and dstDSN")
 		sdc, _ := dbExec.GCN().GcnObject(m.ConnPoolV.PoolMin, m.SecondaryL.DsnsV.SrcJdbc, m.SecondaryL.DsnsV.SrcDrive).NewConnPool(27)
 		ddc, _ := dbExec.GCN().GcnObject(m.ConnPoolV.PoolMin, m.SecondaryL.DsnsV.DestJdbc, m.SecondaryL.DsnsV.DestDrive).NewConnPool(28)
 
 		//针对待校验表生成查询条件计划清单
-		fmt.Println("-- gt-checksum init cehck table query plan and check data --")
+		fmt.Println("gt-checksum is generating tables and data check plan")
 		switch m.SecondaryL.RulesV.CheckMode {
 		case "rows":
 			actions.CheckTableQuerySchedule(sdc, ddc, tableIndexColumnMap, tableAllCol, *m).Schedulingtasks()
@@ -125,13 +125,13 @@ func main() {
 		sdc.Close(27)
 		ddc.Close(28)
 	default:
-		fmt.Println("-- gt-checksum report: checkObject parameter selection error, please refer to the log file for details, enable debug to get more information -- ")
+		fmt.Println("gt-checksum report: The option \"checkObject\" is set incorrectly. Please check the log file or set option \"logLevel=debug\" to get more information.")
 		os.Exit(1)
 	}
 	global.Wlog.Info("gt-checksum check object {", m.SecondaryL.RulesV.CheckObject, "} complete !!!")
 	//输出结果信息
 	fmt.Println("")
 	fmt.Println("** gt-checksum Overview of results **")
-	fmt.Println("Check time: ", fmt.Sprintf("%.2fs", time.Since(beginTime).Seconds()), "(Seconds)")
+	fmt.Println("Check time: ", fmt.Sprintf("%.2fs", time.Since(beginTime).Seconds()))
 	actions.CheckResultOut(m)
 }

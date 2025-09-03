@@ -56,7 +56,7 @@ func (rc *ConfigParameter) rexPat(rex *regexp.Regexp, rexStr string, illegalPara
 		}
 	}
 	if illegalParameterStatus { //不法参数
-		rc.getErr("table/ignoreTable Parameter setting error.", errors.New("parameter error"))
+		rc.getErr("tables/ignoreTables option error.", errors.New("option error"))
 	}
 }
 
@@ -249,8 +249,8 @@ func (rc *ConfigParameter) checkPar() {
 	}
 	for _, v := range []int{rc.SecondaryL.RulesV.ChanRowCount, rc.SecondaryL.RulesV.QueueSize, rc.SecondaryL.RulesV.Ratio, rc.SecondaryL.RulesV.ParallelThds} {
 		if v < 1 {
-			fmt.Println("GreatSQL report: chunkSize || queue-size || ratio || parallel-Thds Parameter setting error, please check the log for details.")
-			vlog = fmt.Sprintf("(%d) [%s]  chunkSize || queue-size || ratio || parallel-Thds parameter must be greater than 0.", rc.LogThreadSeq, Event)
+			fmt.Println("GreatSQL report: chunkSize || queueSize || ratio || parallelThds Parameter setting error, please check the log for details.")
+			vlog = fmt.Sprintf("(%d) [%s]  chunkSize || queueSize || ratio || parallelThds parameter must be greater than 0.", rc.LogThreadSeq, Event)
 			global.Wlog.Error(vlog)
 			os.Exit(1)
 		}
