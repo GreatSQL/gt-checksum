@@ -19,5 +19,5 @@ dstDSN = mysql|u1:p1@tcp(172.17.0.2:3307)/information_schema?charset=utf8mb4
 ; %db.* 表示所有库名中包含字母"db"结尾的数据库中的所有表
 ;
 ; 如果已经设置为 "*.*"，则不能再增加其他的规则，例如：设置 "*.*,pcms%.*" 则会报告规则错误
-; 如果 table 和 ignore-tables 设置的值相同的话也会报告规则错误
+; 如果 table 和 ignoreTables 设置的值相同的话也会报告规则错误
 tables = db1.t1
