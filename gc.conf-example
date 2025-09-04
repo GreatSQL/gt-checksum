@@ -10,28 +10,41 @@
 ;MySQL DSN格式为：mysql|usr:password@tcp(ip:port)/dbname?charset=xxx
 ;例如：dstDSN = mysql|checksum:Checksum@3306@tcp(172.16.0.1:3306)/information_schema?charset=utf8mb4
 
-srcDSN = mysql|checksum:Checksum@3306@tcp(172.16.0.1:3306)/information_schema?charset=utf8mb4
-dstDSN = mysql|checksum:Checksum@3306@tcp(172.16.0.2:3306)/information_schema?charset=utf8mb4
+srcDSN = mysql|u1:p1@tcp(172.17.0.1:3307)/information_schema?charset=utf8mb4
+dstDSN = mysql|u1:p1@tcp(172.17.0.2:3307)/information_schema?charset=utf8mb4
 
 ; 定义校验数据对象
 [Schema]
-; 配置参数中，table=*.*表示匹配所有库（MySQL不包含 information_schema\mysql\performance_schema\sys），库表都支持模糊匹配（无论是table还是ignoreTable），%代表模糊，*代表所有，包含的模糊规则：%schema.xxx，%schema%.xxx  schema%.xxx  schema.%table  schema.table% schema.%table%  schema.table  其中如果设置了*.*，则不能在输入其他的值，例如：*.*,pcms%.*，则是错误的，会报table设置错误，table和ignoreTable的值相同，也会报错
+; 配置参数中，table=*.*表示匹配所有库（MySQL不包含 information_schema, mysql, performance_schema, sys 等几个系统库）
+; 库表名称都支持模糊匹配（无论是table还是ignoreTable）
+; %代表模糊，*代表所有
+; 常用模糊规则示例：
+;  - %schema.xxx
+;  - %schema%.xxx
+;  - schema%.xxx
+;  - schema.%table
+;  - schema.table%
+;  - schema.%table%
+;  - schema.table
+; 其中如果设置了*.*，则不能再添加其他值
+; 例如设置规则"*.*,pcms%.*"会报告table参数设置错误
+; 当参数table和ignoreTable的值设置相同时也会报错
 
 ; 选项tables用来定义校验数据表对象，支持通配符"%"和"*"
 ; 例如：
-; *.* 表示所有库表对象（MySQL不包含 information_schema\mysql\performance_schema\sys）
+; *.* 表示所有库表对象（MySQL不包含 information_schema, mysql, performance_schema, sys 等几个系统库）
 ; test.* 表示test库下的所有表
 ; test.t% 表示test库下所有表名中包含字母"t"开头的表
 ; db%.* 表示所有库名中包含字母"db"开头的数据库中的所有表
 ; %db.* 表示所有库名中包含字母"db"结尾的数据库中的所有表
 ;
 ; 如果已经设置为 "*.*"，则不能再增加其他的规则，例如：设置 "*.*,pcms%.*" 则会报告规则错误
-; 如果 table 和 ignore-tables 设置的值相同的话也会报告规则错误
+; 如果 table 和 ignoreTables 设置的值相同的话也会报告规则错误
 tables = test.*
 
-; 选项 ignore-tables 用来定义忽略的数据对象规则，也支持通配符"%"和"*"，具体用法参考上面的案例
-; ignore-tables = db1.*
-ignore-tables =
+; 选项 ignoreTables 用来定义忽略的数据对象规则，也支持通配符"%"和"*"，具体用法参考上面的案例
+; ignoreTables = db1.*
+ignoreTables =
 
 ; 设置是否检查没有索引的表，可设置为：yes/no，默认值为：no
 ; checkNoIndexTable = yes | no
@@ -55,14 +68,14 @@ logLevel = info
 ; 其他校验规则
 [Rules]
 ; 数据校验并行线程数
-parallel-thds = 10
+parallelThds = 10
 
 ; 设置单列索引每次检索多少条数据进行校验，默认值：1000，建议范围：1000 - 5000
 ; 注：该值设置太大时有可能会造成SQL查询效率反倒下降的情况发生，一般建议设置不超过5000
 chunkSize = 1000
 
 ; 设置校验队列深度，默认值：100
-queue-size = 100
+queueSize = 100
 
 ; 设置数据校验模式，支持 count/rows/sample 三种模式，默认值为：rows
 ; count 表示只校验源、目标表的数据量
@@ -74,8 +87,8 @@ checkMode = rows
 ; 当 checkMode = sample 时，设置数据采样率，设置范围1-100，用百分比表示，1表示1%，100表示100%，默认值：10
 ; ratio = 10
 
-; 设置数据校验对象，支持 data/struct/index/partitions/foreign/trigger/func/proc，默认值为：data
-; 分别表示：行数据/表结构/索引/分区/外键/触发器/存储函数/存储过程
+; 设置数据校验对象，支持 data|struct|index|partitions|foreign|trigger|func|proc，默认值为：data
+; 分别表示：行数据|表结构|索引|分区|外键|触发器|存储函数|存储过程
 ; checkObject = data | struct | index | partitions | foreign | trigger | func | proc
 checkObject = data
 
