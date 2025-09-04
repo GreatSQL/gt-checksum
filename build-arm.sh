@@ -14,7 +14,7 @@ export LD_LIBRARY_PATH=/usr/local/$OracleDrive:$LD_LIBRARY_PATH
 
 go build -o gt-checksum gt-checksum.go
 mkdir gt-checksum-${vs}-linux-aarch64
-cp -rpf Oracle/${OracleDrive} gt-checksum gc.conf gc.conf-simple relnotes docs README.md gt-checksum-${vs}-linux-aarch64
+cp -rpf Oracle/${OracleDrive} gt-checksum README.md CHANGELOG.zh-CN.md gc.conf-example gc.conf-simple gt-checksum-${vs}-linux-aarch64
 tar zcf gt-checksum-${vs}-linux-aarch64.tar.gz gt-checksum-${vs}-linux-aarch64
 mkdir binary
 mv gt-checksum-${vs}-linux-aarch64.tar.gz binary
