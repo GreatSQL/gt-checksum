@@ -32,12 +32,12 @@ func main() {
 	switch m.SecondaryL.RulesV.CheckObject {
 	case "struct":
 		if err = actions.SchemaTableInit(m).Struct(tableList, 5, 6); err != nil {
-			fmt.Println(fmt.Sprintf("gt-checksum report: Table structures checksum failed. Please check %s or set option \"logLevel=debug\" to get more information.", m.SecondaryL.LogV.LogFile))
+			fmt.Println(fmt.Sprintf("gt-checksum report: Table structures verification failed. Please check %s or set option \"logLevel=debug\" to get more information.", m.SecondaryL.LogV.LogFile))
 			os.Exit(1)
 		}
 	case "index":
 		if err = actions.SchemaTableInit(m).Index(tableList, 7, 8); err != nil {
-			fmt.Println("gt-checksum report: Indexes checksum failed. Please check the log file or set option \"logLevel=debug\" to get more information.")
+			fmt.Println("gt-checksum report: Indexes verification failed. Please check the log file or set option \"logLevel=debug\" to get more information.")
 			os.Exit(1)
 		}
 	case "partitions":
@@ -60,7 +60,7 @@ func main() {
 		//校验表结构
 		tableList, _, err = actions.SchemaTableInit(m).TableColumnNameCheck(tableList, 9, 10)
 		if err != nil {
-			fmt.Println("gt-checksum report: Table structure checksum failed. Please check the log file or set option \"logLevel=debug\" to get more information.")
+			fmt.Println("gt-checksum report: Table structure verification failed. Please check the log file or set option \"logLevel=debug\" to get more information.")
 			os.Exit(1)
 		} else if len(tableList) == 0 {
 			fmt.Println("gt-checksum report: table checklist is empty. Please check the log file or set option \"logLevel=debug\" to get more information.")
@@ -81,6 +81,30 @@ func main() {
 		//根据要校验的表，筛选查询数据时使用到的索引列信息
 		fmt.Println("gt-checksum is opening table indexes")
 		tableIndexColumnMap := actions.SchemaTableInit(m).TableIndexColumn(tableList, 23, 24)
+		//获取全局一致 x性位点
+		//fmt.Println("-- GreatdbCheck Obtain global consensus sites --")
+		//sglobalSites, err := dbExec.GCN().GcnObject(m.PoolMin, m.PoolMax, m.SourceJdbc, m.SourceDrive).GlobalCN(25)
+		//if err != nil {
+		//	os.Exit(1)
+		//}
+		//dglobalSites, err := dbExec.GCN().GcnObject(m.PoolMin, m.PoolMax, m.DestJdbc, m.DestDrive).GlobalCN(26)
+		//if err != nil {
+		//	os.Exit(1)
+		//}
+		//fmt.Println(sglobalSites, dglobalSites)
+
+		//var SourceItemAbnormalDataChan = make(chan actions.SourceItemAbnormalDataStruct, 100)
+		//var addChan, delChan = make(chan string, 100), make(chan string, 100)
+
+		// 开启差异数据修复的线程
+		//go actions.DifferencesDataDispos(SourceItemAbnormalDataChan, addChan, delChan)
+		//go actions.DataFixSql(addChan, delChan)
+
+		//开始进行增量校验
+		//if m.IncCheckSwitch == "yesno" {
+		//	fmt.Println("-- GreatdbCheck begin cehck table incerment date --")
+		//	actions.IncDataDisops(m.SourceDrive, m.DestDrive, m.SourceJdbc, m.DestJdbc, sglobalSites, dglobalSites, tableList).Aa(fullDataCompletionStatus, SourceItemAbnormalDataChan)
+		//}
 
 		//初始化数据库连接池
 		fmt.Println("gt-checksum is opening srcDSN and dstDSN")
@@ -88,7 +112,7 @@ func main() {
 		ddc, _ := dbExec.GCN().GcnObject(m.ConnPoolV.PoolMin, m.SecondaryL.DsnsV.DestJdbc, m.SecondaryL.DsnsV.DestDrive).NewConnPool(28)
 
 		//针对待校验表生成查询条件计划清单
-		fmt.Println("gt-checksum is generating tables and data checksum plan")
+		fmt.Println("gt-checksum is generating tables and data check plan")
 		switch m.SecondaryL.RulesV.CheckMode {
 		case "rows":
 			actions.CheckTableQuerySchedule(sdc, ddc, tableIndexColumnMap, tableAllCol, *m).Schedulingtasks()

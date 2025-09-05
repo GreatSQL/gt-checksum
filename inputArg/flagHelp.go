@@ -46,160 +46,27 @@ func (rc *ConfigParameter) cliHelp() {
 	app.Version = "1.2.2"
 	app.Flags = []cli.Flag{
 		cli.StringFlag{
-			Name:        "config,f",                                                           //命令名称
-			Usage:       "Specifies config file. For example: --config gc.conf or -f gc.conf", //命令说明
+			Name:        "c,f",                                                           //命令名称
+			Usage:       "Specify config file. For example: -c gc.conf or -f gc.conf", //命令说明
 			Value:       "",                                                                   //默认值
 			Destination: &rc.Config,                                                           //赋值
 		},
-		cli.StringFlag{
-			Name:        "srcDSN,S",
-			Usage:       "Source database DSN. For example: -S type=oracle,user=checksum,passwd=Checksum@3306,host=127.0.0.1,port=1521,sid=helowin",
-			Value:       "",
-			Destination: &rc.SecondaryL.DsnsV.SrcDSN,
-		},
-		cli.StringFlag{
-			Name:        "dstDSN,D",
-			Usage:       "Destination database DSN. For example: -D type=mysql,user=checksum,passwd=Checksum@3306,host=127.0.0.1,port=3306,charset=utf8mb4",
-			Value:       "",
-			Destination: &rc.SecondaryL.DsnsV.DstDSN,
-		},
-		cli.StringFlag{
-			Name:        "tables,t",
-			Usage:       "Specify which tables to check. For example: --tables db1.*",
-			Value:       "nil",
-			EnvVar:      "nil,schema.table,...",
-			Destination: &rc.SecondaryL.SchemaV.Tables,
-		},
-		cli.StringFlag{
-			Name:        "ignoreTables,it",
-			Usage:       "Specify tables to ignore during checksum. For example: -it db2.*",
-			Value:       "nil",
-			EnvVar:      "nil,database.table,...",
-			Destination: &rc.SecondaryL.SchemaV.IgnoreTables,
-		},
-		cli.StringFlag{
-			Name:        "checkNoIndexTable,nit",
-			Usage:       "Enable/disable checksum for tables without indexes. For example: --nit no",
-			Value:       "no",
-			EnvVar:      "yes,no",
-			Destination: &rc.SecondaryL.SchemaV.CheckNoIndexTable,
-		},
-		cli.StringFlag{
-			Name:        "lowerCaseTableNames,lc",
-			Usage:       "Specify whether to use lowercase table names. For example: --lc no",
-			Value:       "no",
-			EnvVar:      "yes,no",
-			Destination: &rc.SecondaryL.SchemaV.LowerCaseTableNames,
-		},
-
-		cli.IntFlag{
-			Name:        "parallelThds,thds",
-			Usage:       "Specify the number of parallel threads for data checksum. For example: --thds 5",
-			Value:       5,
-			Destination: &rc.SecondaryL.RulesV.ParallelThds,
-		},
-		cli.IntFlag{
-			Name:        "chunkSize,cs",
-			Usage:       "Specifies how many rows are retrieved to check each time. For example: --cs 1000",
-			Value:       1000,
-			Destination: &rc.SecondaryL.RulesV.ChanRowCount,
-		},
-		cli.IntFlag{
-			Name:        "queueSize,qs",
-			Usage:       "Specify data check queue depth. for example: --qs 100",
-			Value:       100,
-			Destination: &rc.SecondaryL.RulesV.QueueSize,
-		},
-		cli.StringFlag{
-			Name:        "checkMode,cm",
-			Usage:       "Specify data check mode. For example: --cm count",
-			EnvVar:      "count,rows,sample",
-			Value:       "rows",
-			Destination: &rc.SecondaryL.RulesV.CheckMode,
-		},
-		cli.IntFlag{
-			Name:        "ratio,r",
-			Usage:       "When checkMode is set to sample, specify the data sampling rate, set the range of 1-100, in percentage. For example: -r 10",
-			Value:       10,
-			Destination: &rc.SecondaryL.RulesV.Ratio,
-		},
-		cli.StringFlag{
-			Name:        "checkObject,co",
-			Usage:       "Specify data check object. For example: --co struct",
-			EnvVar:      "data,struct,index,partitions,foreign,trigger,func,proc",
-			Value:       "data",
-			Destination: &rc.SecondaryL.RulesV.CheckObject,
-		},
-		cli.StringFlag{
-			Name:        "ScheckFixRule,sfr",
-			Usage:       "column to fix based on. For example: --sfr src",
-			Value:       "src",
-			EnvVar:      "src,dst",
-			Destination: &rc.SecondaryL.LogV.LogFile,
-		},
-		cli.StringFlag{
-			Name:        "ScheckOrder,sco",
-			Usage:       "The positive sequence check of column. For example: --sco yes",
-			Value:       "yes",
-			EnvVar:      "yes,no",
-			Destination: &rc.SecondaryL.StructV.ScheckOrder,
-		},
-		cli.StringFlag{
-			Name:        "ScheckMod,scm",
-			Usage:       "column check mode. For example: --scm strict",
-			Value:       "strict",
-			EnvVar:      "strict,loose",
-			Destination: &rc.SecondaryL.StructV.ScheckMod,
-		},
-		cli.StringFlag{
-			Name:        "logFile,lf",
-			Usage:       "Specify output log file name. For example: --lf ./gt-checksum.log",
-			Value:       "./gt-checksum.log",
-			Destination: &rc.SecondaryL.LogV.LogFile,
-		},
-		cli.StringFlag{
-			Name:        "logLevel,ll",
-			Usage:       "Specify output log level. For example: --ll info",
-			Value:       "info",
-			EnvVar:      "debug,info,warn,error",
-			Destination: &rc.SecondaryL.LogV.LogLevel,
-		},
-		cli.StringFlag{
-			Name:        "datafix,df",
-			Usage:       "Specify data repair mode. For example: --df table",
-			Value:       "file",
-			EnvVar:      "file,table",
-			Destination: &rc.SecondaryL.RepairV.Datafix,
-		},
-		cli.StringFlag{
-			Name:        "fixFileName,ffn",
-			Usage:       "Set data repair SQL file name. For example: --ffn ./gt-checksum-DataFix.sql",
-			Value:       "./gt-checksum-DataFix.sql",
-			Destination: &rc.SecondaryL.RepairV.FixFileName,
-		},
-		cli.IntFlag{
-			Name:        "fixTrxNum,ftn",
-			Usage:       "Maximum number of concurrent transactions when repairing data. For example: --ftn 20",
-			Value:       20,
-			Destination: &rc.SecondaryL.RepairV.FixTrxNum,
-		},
 	}
 	app.Action = func(c *cli.Context) { //应用执行函数
-		if (rc.SecondaryL.DsnsV.SrcDSN != "" || rc.SecondaryL.DsnsV.DstDSN != "") && rc.Config != "" {
-			fmt.Println("Specify the config, srcDSN and dstDSN options at the same time, causing conflicts, run the command with -h or --help")
-			os.Exit(0)
+		if rc.Config == "" {
+			if _, err := os.Stat("gc.conf"); err != nil {
+				fmt.Println("No config file specified and there is no gc.conf in the current directory, run the command with -h or --help")
+				os.Exit(0)
+			} else {
+				rc.Config = "gc.conf"
+				fmt.Println("\ngt-checksum: Automatically loading configuration file 'gc.conf' from current directory.")
+			}
 		}
-		if (rc.SecondaryL.DsnsV.SrcDSN == "" || rc.SecondaryL.DsnsV.DstDSN == "") && rc.Config == "" {
-			fmt.Println("If no options are specified, run the command with -h or --help")
-			os.Exit(0)
-		}
-		rc.SecondaryL.DsnsV.SrcDrive, rc.SecondaryL.DsnsV.SrcJdbc = jdbcDispos(rc.SecondaryL.DsnsV.SrcDSN)
-		rc.SecondaryL.DsnsV.DestDrive, rc.SecondaryL.DsnsV.DestJdbc = jdbcDispos(rc.SecondaryL.DsnsV.DstDSN)
 	}
 	app.Run(os.Args)
 	aa := os.Args
 	for i := range aa {
-		if aa[i] == "--help" || aa[i] == "-h" || aa[i] == "-v" || aa[i] == "--version" {
+		if aa[i] == "-h" || aa[i] == "-v" {
 			os.Exit(0)
 		}
 	}
