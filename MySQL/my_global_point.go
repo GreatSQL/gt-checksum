@@ -81,7 +81,7 @@ func (my *GlobalCS) sessionRR(logThreadSeq int) ([]*sql.DB, error) {
 			global.Wlog.Error(vlog)
 			return nil, err
 		}
-		strsql := "set session wait_timeout=86400;"
+		strsql := "SET SESSION wait_timeout=86400;"
 		if _, err = tx.Exec(strsql); err != nil {
 			vlog = fmt.Sprintf("(%d) MySQL DB exec sql %s fail. Error Info is {%s}.", logThreadSeq, strsql, err)
 			global.Wlog.Error(vlog)
@@ -93,7 +93,7 @@ func (my *GlobalCS) sessionRR(logThreadSeq int) ([]*sql.DB, error) {
 			global.Wlog.Error(vlog)
 			return nil, err
 		}
-		strsql = "SET session sql_mode=(SELECT REPLACE(@@sql_mode,'ONLY_FULL_GROUP_BY',''));"
+		strsql = "SET SESSION sql_mode=(SELECT REPLACE(@@sql_mode,'ONLY_FULL_GROUP_BY',''));"
 		if _, err = tx.Exec(strsql); err != nil {
 			vlog = fmt.Sprintf("(%d) MySQL DB exec sql %s fail. Error Info is {%s}.", logThreadSeq, strsql, err)
 			global.Wlog.Error(vlog)

@@ -65,10 +65,10 @@ var (
 			user := strings.Split(fmt.Sprintf("%s", v["DEFINER"]), "@")[0]
 			host := strings.Split(fmt.Sprintf("%s", v["DEFINER"]), "@")[1]
 			if event == "Proc" {
-				tmpb[ROUTINE_NAME] = fmt.Sprintf("delimiter $\nCREATE DEFINER='%s'@'%s' PROCEDURE %s(%s) %s$ \ndelimiter ;", user, host, ROUTINE_NAME, tmpa[ROUTINE_NAME], strings.ReplaceAll(ROUTINE_DEFINITION, "\n", ""))
+				tmpb[ROUTINE_NAME] = fmt.Sprintf("DELIMITER $\nCREATE DEFINER='%s'@'%s' PROCEDURE %s(%s) %s$ \nDELIMITER ;", user, host, ROUTINE_NAME, tmpa[ROUTINE_NAME], strings.ReplaceAll(ROUTINE_DEFINITION, "\n", ""))
 			}
 			if event == "Func" {
-				tmpb[ROUTINE_NAME] = fmt.Sprintf("delimiter $\nCREATE DEFINER='%s'@'%s' FUNCTION %s(%s) %s$ \ndelimiter ;", user, host, ROUTINE_NAME, tmpa[ROUTINE_NAME], strings.ReplaceAll(ROUTINE_DEFINITION, "\n", ""))
+				tmpb[ROUTINE_NAME] = fmt.Sprintf("DELIMITER $\nCREATE DEFINER='%s'@'%s' FUNCTION %s(%s) %s$ \nDELIMITER ;", user, host, ROUTINE_NAME, tmpa[ROUTINE_NAME], strings.ReplaceAll(ROUTINE_DEFINITION, "\n", ""))
 			}
 		}
 		return tmpb
@@ -90,7 +90,7 @@ func (my *QueryTable) DatabaseNameList(db *sql.DB, logThreadSeq int64) (map[stri
 	excludeSchema := fmt.Sprintf("'information_Schema','performance_Schema','sys','mysql'")
 	vlog = fmt.Sprintf("(%d) [%s] Start to query the metadata of the %s database and obtain library and table information.", logThreadSeq, Event, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("select TABLE_SCHEMA as databaseName,TABLE_NAME as tableName from information_Schema.TABLES where TABLE_SCHEMA not in (%s);", excludeSchema)
+	strsql = fmt.Sprintf("SELECT TABLE_SCHEMA AS databaseName, TABLE_NAME AS tableName FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA NOT IN (%s);", excludeSchema)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return nil, err
@@ -124,8 +124,7 @@ func (my *QueryTable) TableColumnName(db *sql.DB, logThreadSeq int64) ([]map[str
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start querying the metadata information of table %s.%s in the %s database and get all the column names", logThreadSeq, Event, my.Schema, my.Table, DBType)
 	global.Wlog.Debug(vlog)
-	//strsql = fmt.Sprintf("select COLUMN_NAME as columnName from information_Schema.columns where TABLE_Schema='%s' and TABLE_NAME='%s' order by ORDINAL_POSITION;", my.Schema, my.Table)
-	strsql = fmt.Sprintf("select COLUMN_NAME as columnName,COLUMN_TYPE as columnType,IS_NULLABLE as isNull,CHARACTER_SET_NAME as charset,COLLATION_NAME as collationName,COLUMN_COMMENT as columnComment,COLUMN_DEFAULT as columnDefault from information_Schema.columns where TABLE_Schema='%s' and TABLE_NAME='%s' order by ORDINAL_POSITION", my.Schema, my.Table)
+	strsql = fmt.Sprintf("SELECT COLUMN_NAME AS columnName, COLUMN_TYPE AS columnType, IS_NULLABLE AS isNull, CHARACTER_SET_NAME AS charset, COLLATION_NAME AS collationName, COLUMN_COMMENT AS columnComment, COLUMN_DEFAULT AS columnDefault FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s' ORDER BY ORDINAL_POSITION", my.Schema, my.Table)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		if err != nil {
@@ -152,7 +151,7 @@ func (my *QueryTable) DatabaseVersion(db *sql.DB, logThreadSeq int64) (string, e
 		Event   = "Q_M_Versions"
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start querying the version information of the %s database", logThreadSeq, Event, DBType)
-	strsql = fmt.Sprintf("select version()")
+	strsql = fmt.Sprintf("SELECT VERSION() AS VERSION")
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if rows, err = dispos.DBSQLforExec(strsql); err != nil {
 		if err != nil {
@@ -168,7 +167,7 @@ func (my *QueryTable) DatabaseVersion(db *sql.DB, logThreadSeq int64) (string, e
 		return "", nil
 	}
 	for _, i := range a {
-		if cc, ok := i["version()"]; ok {
+		if cc, ok := i["VERSION"]; ok {
 			version = fmt.Sprintf("%v", cc)
 			break
 		}
@@ -210,7 +209,7 @@ func (my *QueryTable) GlobalAccessPri(db *sql.DB, logThreadSeq int64) (bool, err
 		globalPriS = append(globalPriS, k)
 	}
 	//获取当前匹配的用户
-	strsql = fmt.Sprintf("select current_user() as user;")
+	strsql = fmt.Sprintf("SELECT CURRENT_USER() AS user;")
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if rows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return false, err
@@ -228,7 +227,7 @@ func (my *QueryTable) GlobalAccessPri(db *sql.DB, logThreadSeq int64) (bool, err
 	//查找全局权限 类似于grant all privileges on *.* 或 grant select on *.*
 	vlog = fmt.Sprintf("(%d) [%s] Query the current %s DB global dynamic grants permission, to query it...", logThreadSeq, Event, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("select PRIVILEGE_TYPE as privileges from information_schema.USER_PRIVILEGES where PRIVILEGE_TYPE in('%s') and grantee = \"%s\";", strings.Join(globalPriS, "','"), currentUser)
+	strsql = fmt.Sprintf("SELECT PRIVILEGE_TYPE AS privileges FROM INFORMATION_SCHEMA.USER_PRIVILEGES WHERE PRIVILEGE_TYPE IN('%s') AND GRANTEE=\"%s\";", strings.Join(globalPriS, "','"), currentUser)
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return false, err
 	}
@@ -309,7 +308,7 @@ func (my *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 		}
 	}
 	//获取当前匹配的用户
-	strsql = fmt.Sprintf("select current_user() as user;")
+	strsql = fmt.Sprintf("SELECT CURRENT_USER() AS user;")
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return nil, err
@@ -322,7 +321,7 @@ func (my *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 	//查找全局权限 类似于grant all privileges on *.* 或 grant select on *.*
 	vlog = fmt.Sprintf("(%d) [%s] Query the current %s DB global dynamic grants permission, to query it...", logThreadSeq, Event, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("select PRIVILEGE_TYPE as privileges from information_schema.USER_PRIVILEGES where PRIVILEGE_TYPE in('%s') and grantee = \"%s\";", strings.Join(globalPriS, "','"), currentUser)
+	strsql = fmt.Sprintf("SELECT PRIVILEGE_TYPE AS privileges FROM INFORMATION_SCHEMA.USER_PRIVILEGES WHERE PRIVILEGE_TYPE IN('%s') AND GRANTEE=\"%s\";", strings.Join(globalPriS, "','"), currentUser)
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return nil, err
 	}
@@ -349,7 +348,7 @@ func (my *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 	for AC, _ := range A {
 		var cc []string
 		var intseq int
-		strsql = fmt.Sprintf("select TABLE_SCHEMA as databaseName,PRIVILEGE_TYPE as privileges from information_schema.schema_PRIVILEGES where PRIVILEGE_TYPE in ('%s') and TABLE_SCHEMA = '%s' and grantee = \"%s\";", strings.Join(globalPriS, "','"), AC, currentUser)
+		strsql = fmt.Sprintf("SELECT TABLE_SCHEMA AS databaseName, PRIVILEGE_TYPE AS privileges FROM INFORMATION_SCHEMA.SCHEMA_PRIVILEGES WHERE PRIVILEGE_TYPE IN('%s') AND TABLE_SCHEMA='%s' AND GRANTEE=\"%s\";", strings.Join(globalPriS, "','"), AC, currentUser)
 		if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 			return nil, err
 		}
@@ -393,7 +392,7 @@ func (my *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 	}
 	for B, _ := range A {
 		//按照每个库，查询table pri权限
-		strsql = fmt.Sprintf("select table_name as tableName,PRIVILEGE_TYPE as privileges from information_schema.table_PRIVILEGES where PRIVILEGE_TYPE in('%s') and TABLE_SCHEMA = '%s' and grantee = \"%s\";", strings.Join(globalPriS, "','"), B, currentUser)
+		strsql = fmt.Sprintf("SELECT TABLE_NAME AS tableName, PRIVILEGE_TYPE AS privileges FROM INFORMATION_SCHEMA.TABLE_PRIVILEGES WHERE PRIVILEGE_TYPE IN('%s') AND TABLE_SCHEMA='%s' AND GRANTEE=\"%s\";", strings.Join(globalPriS, "','"), B, currentUser)
 		if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 			return nil, err
 		}
@@ -453,7 +452,7 @@ func (my *QueryTable) TableAllColumn(db *sql.DB, logThreadSeq int64) ([]map[stri
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start to query the metadata of all the columns of table %s.%s in the %s database", logThreadSeq, Event, my.Schema, my.Table, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("select COLUMN_NAME as columnName ,COLUMN_TYPE as dataType,ORDINAL_POSITION as columnSeq,IS_NULLABLE as isNull from information_Schema.columns where table_Schema= '%s' and table_name='%s' order by ORDINAL_POSITION;", my.Schema, my.Table)
+	strsql = fmt.Sprintf("SELECT COLUMN_NAME AS columnName, COLUMN_TYPE AS dataType, ORDINAL_POSITION AS columnSeq, IS_NULLABLE AS isNull FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s' ORDER BY ORDINAL_POSITION;", my.Schema, my.Table)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return nil, err
@@ -658,7 +657,7 @@ func (my *QueryTable) Trigger(db *sql.DB, logThreadSeq int64) (map[string]string
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start to query the trigger information under the %s database.", logThreadSeq, Event, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("select TRIGGER_NAME as triggerName,EVENT_OBJECT_TABLE as tableName from INFORMATION_SCHEMA.TRIGGERS where TRIGGER_SCHEMA in ('%s');", my.Schema)
+	strsql = fmt.Sprintf("SELECT TRIGGER_NAME AS triggerName, EVENT_OBJECT_TABLE AS tableName FROM INFORMATION_SCHEMA.TRIGGERS WHERE TRIGGER_SCHEMA IN('%s');", my.Schema)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return nil, err
@@ -668,7 +667,7 @@ func (my *QueryTable) Trigger(db *sql.DB, logThreadSeq int64) (map[string]string
 		return nil, err
 	}
 	for _, v := range triggerName {
-		strsql = fmt.Sprintf("show create trigger %s.%s", my.Schema, v["triggerName"])
+		strsql = fmt.Sprintf("SHOW CREATE TRIGGER %s.%s", my.Schema, v["triggerName"])
 		if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 			return nil, err
 		}
@@ -714,7 +713,7 @@ func (my *QueryTable) Proc(db *sql.DB, logThreadSeq int64) (map[string]string, e
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start to query the stored procedure information under the %s database.", logThreadSeq, Event, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("select SPECIFIC_SCHEMA,SPECIFIC_NAME,ORDINAL_POSITION,PARAMETER_MODE,PARAMETER_NAME,DTD_IDENTIFIER from information_schema.PARAMETERS where SPECIFIC_SCHEMA in ('%s') and ROUTINE_TYPE='PROCEDURE' order by ORDINAL_POSITION;", my.Schema)
+	strsql = fmt.Sprintf("SELECT SPECIFIC_SCHEMA, SPECIFIC_NAME, ORDINAL_POSITION, PARAMETER_MODE, PARAMETER_NAME, DTD_IDENTIFIER FROM INFORMATION_SCHEMA.PARAMETERS WHERE SPECIFIC_SCHEMA IN('%s') AND ROUTINE_TYPE='PROCEDURE' ORDER BY ORDINAL_POSITION;", my.Schema)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return nil, err
@@ -723,7 +722,7 @@ func (my *QueryTable) Proc(db *sql.DB, logThreadSeq int64) (map[string]string, e
 	if err != nil {
 		return nil, err
 	}
-	strsql = fmt.Sprintf("select ROUTINE_SCHEMA,ROUTINE_NAME,ROUTINE_DEFINITION,DEFINER from information_schema.ROUTINES where routine_schema in ('%s') and ROUTINE_TYPE='PROCEDURE';", my.Schema)
+	strsql = fmt.Sprintf("SELECT ROUTINE_SCHEMA, ROUTINE_NAME, ROUTINE_DEFINITION, DEFINER FROM INFORMATION_SCHEMA.ROUTINES WHERE ROUTINE_SCHEMA IN('%s') AND ROUTINE_TYPE='PROCEDURE';", my.Schema)
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return nil, err
 	}
@@ -747,7 +746,7 @@ func (my *QueryTable) Func(db *sql.DB, logThreadSeq int64) (map[string]string, e
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start to query the stored Func information under the %s database.", logThreadSeq, Event, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("select DEFINER,ROUTINE_NAME from information_schema.ROUTINES where routine_schema in ('%s') and ROUTINE_TYPE='FUNCTION';", my.Schema)
+	strsql = fmt.Sprintf("SELECT DEFINER, ROUTINE_NAME FROM INFORMATION_SCHEMA.ROUTINES WHERE ROUTINE_SCHEMA IN('%s') AND ROUTINE_TYPE='FUNCTION';", my.Schema)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return nil, err
@@ -793,7 +792,7 @@ func (my *QueryTable) Foreign(db *sql.DB, logThreadSeq int64) (map[string]string
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start to query the Foreign information under the %s database.", logThreadSeq, Event, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("select CONSTRAINT_SCHEMA,TABLE_NAME from information_schema.referential_constraints where CONSTRAINT_SCHEMA in ('%s') and TABLE_NAME in ('%s');", my.Schema, my.Table)
+	strsql = fmt.Sprintf("SELECT CONSTRAINT_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS WHERE CONSTRAINT_SCHEMA IN('%s') AND TABLE_NAME IN('%s');", my.Schema, my.Table)
 	//vlog = fmt.Sprintf("(%d) MySQL DB query table query Foreign info exec sql is {%s}", logThreadSeq, sqlStr)
 	//global.Wlog.Debug(vlog)
 
@@ -893,7 +892,7 @@ func (my *QueryTable) Partitions(db *sql.DB, logThreadSeq int64) (map[string]str
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start to query the Partitions information under the %s database.", logThreadSeq, Event, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("select TABLE_SCHEMA,TABLE_NAME from information_schema.partitions where table_schema in ('%s') and TABLE_NAME in ('%s') and PARTITION_NAME <> '';", my.Schema, my.Table)
+	strsql = fmt.Sprintf("SELECT TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.PARTITIONS WHERE TABLE_SCHEMA IN('%s') AND TABLE_NAME IN('%s') AND PARTITION_NAME<>'';", my.Schema, my.Table)
 	//vlog = fmt.Sprintf("(%d) MySQL DB query table query partitions info exec sql is {%s}", logThreadSeq, sqlStr)
 	//global.Wlog.Debug(vlog)
 	//sqlRows, err := db.Query(sqlStr)

@@ -104,9 +104,9 @@ func (rs rapirSqlStruct) SqlFile(sfile *os.File, sql []string, logThreadSeq int6
 	if strings.HasPrefix(strings.ToUpper(strings.Join(sql, ";")), "ALTER TABLE") {
 		sqlCommit = sql
 	} else {
-		sqlCommit = []string{"begin;"}
+		sqlCommit = []string{"BEGIN;"}
 		sqlCommit = append(sqlCommit, sql...)
-		sqlCommit = append(sqlCommit, "commit;")
+		sqlCommit = append(sqlCommit, "COMMIT;")
 	}
 	_, err := FileOperate{File: sfile, BufSize: 1024 * 4 * 1024, SqlType: "sql"}.ConcurrencyWriteFile(sqlCommit)
 	if err != nil {

@@ -11,20 +11,20 @@ var rollbackSQL = func(sl []string) []string {
 	var newDelS []string
 	for _, i := range sl {
 		if strings.HasPrefix(i, "insert") {
-			ii := strings.Replace(strings.Replace(i, "insert into", "delete from", 1), "values", "where", 1)
+			ii := strings.Replace(strings.Replace(i, "INSERT INTO", "DELETE FROM", 1), "VALUES", "WHERE", 1)
 			newDelS = append(newDelS, ii)
 		}
 		if strings.HasPrefix(i, "update") {
-			schemaTable := strings.TrimSpace(strings.Split(strings.Split(i, "where")[0], "update")[1])
-			e := strings.Split(strings.Split(i, "where")[1], "/*columnModify*/")
+			schemaTable := strings.TrimSpace(strings.Split(strings.Split(i, "WHERE")[0], "UPDATE")[1])
+			e := strings.Split(strings.Split(i, "WHERE")[1], "/*columnModify*/")
 			oldrow := strings.Replace(e[0], "(", "", 1)
 			newrow := strings.Replace(e[1], ");", "", 1)
-			delSql := fmt.Sprintf("delete from %s where %s;", schemaTable, newrow)
-			addSql := fmt.Sprintf("insert into %s values (%s);", schemaTable, oldrow)
+			delSql := fmt.Sprintf("DELETE FROM %s WHERE %s;", schemaTable, newrow)
+			addSql := fmt.Sprintf("INSERT INTO %s VALUES (%s);", schemaTable, oldrow)
 			newDelS = append(newDelS, delSql, addSql)
 		}
 		if strings.HasPrefix(i, "delete") {
-			ii := strings.Replace(strings.Replace(i, "delete from", "insert into", 1), "where", "values", 1)
+			ii := strings.Replace(strings.Replace(i, "DELETE FROM", "INSERT INTO", 1), "WHERE", "VALUES", 1)
 			newDelS = append(newDelS, ii)
 		}
 	}
@@ -35,18 +35,18 @@ var rollbackSQL = func(sl []string) []string {
 var positiveSequenceSQL = func(sl []string) []string {
 	var newDelS []string
 	for _, i := range sl {
-		if i != "" && strings.HasPrefix(i, "insert into") {
+		if i != "" && strings.HasPrefix(i, "INSERT INTO") {
 			newDelS = append(newDelS, i)
 		}
-		if i != "" && strings.HasPrefix(i, "delete") {
+		if i != "" && strings.HasPrefix(i, "DELETE") {
 			newDelS = append(newDelS, i)
 		}
-		if i != "" && strings.HasPrefix(i, "update") {
-			schemaTable := strings.TrimSpace(strings.Split(strings.Split(i, "where")[0], "update")[1])
+		if i != "" && strings.HasPrefix(i, "UPDATE") {
+			schemaTable := strings.TrimSpace(strings.Split(strings.Split(i, "WHERE")[0], "UPDATE")[1])
 			e := strings.Split(i, "/*columnModify*/")
-			delSql := fmt.Sprintf("delete from %s);", strings.Replace(e[0], "update ", "", 1))
+			delSql := fmt.Sprintf("DELETE FROM %s);", strings.Replace(e[0], "UPDATE ", "", 1))
 			newDelS = append(newDelS, delSql)
-			addSql := fmt.Sprintf("insert into %s values (%s", schemaTable, e[1])
+			addSql := fmt.Sprintf("INSERT INTO %s VALUES (%s", schemaTable, e[1])
 			newDelS = append(newDelS, addSql)
 		}
 	}

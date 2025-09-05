@@ -44,7 +44,7 @@ func (or *QueryTable) DatabaseNameList(db *sql.DB, logThreadSeq int64) (map[stri
 	excludeSchema = fmt.Sprintf("'SYS','OUTLN','SYSTEM','DBSNMP','APPQOSSYS','WMSYS','EXFSYS','CTXSYS','XDB','ORDDATA','ORDSYS','MDSYS','OLAPSYS','SYSMAN','FLOWS_FILES','APEX_030200','OWBSYS','HR','OE','SH','IX','PM'")
 	vlog = fmt.Sprintf("(%d) [%s] Start to query the metadata of the %s database and obtain library and table information.", logThreadSeq, Event, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("SELECT owner as \"databaseName\",table_name as \"tableName\" FROM DBA_TABLES WHERE OWNER not in (%s)", excludeSchema)
+	strsql = fmt.Sprintf("SELECT owner AS \"databaseName\", table_name AS \"tableName\" FROM DBA_TABLES WHERE OWNER NOT IN(%s)", excludeSchema)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	rows, err := dispos.DBSQLforExec(strsql)
 	if err != nil {
@@ -80,7 +80,7 @@ func (or *QueryTable) TableColumnName(db *sql.DB, logThreadSeq int64) ([]map[str
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start querying the metadata information of table %s.%s in the %s database and get all the column names", logThreadSeq, Event, or.Schema, or.Table, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("select tc.column_name as \"columnName\",decode(tc.data_type,'NUMBER',NVL2(DATA_PRECISION,'NUMBER(' || tc.DATA_PRECISION || ',' || tc.DATA_SCALE || ')','NUMBER'),'VARCHAR2','VARCHAR2(' || tc.DATA_LENGTH || ')','CHAR','CHAR(' || tc.DATA_LENGTH || ')','RAW','RAW(' || tc.DATA_LENGTH || ')',tc.DATA_TYPE) as \"columnType\",NULLABLE as \"isNull\",'','',to_nchar(cc.comments) as \"columnComment\",DATA_DEFAULT as \"columnDefault\" from dba_tab_columns tc join dba_col_comments cc on tc.OWNER = cc.owner and tc.TABLE_NAME = cc.table_name and tc.COLUMN_NAME = cc.column_name WHERE tc.owner = '%s' and tc.table_name = '%s' order by tc.COLUMN_ID", or.Schema, or.Table)
+	strsql = fmt.Sprintf("SELECT tc.column_name AS \"columnName\", DECODE(tc.data_type, 'NUMBER', NVL2(DATA_PRECISION, 'NUMBER(' || tc.DATA_PRECISION || ',' || tc.DATA_SCALE || ')', 'NUMBER'), 'VARCHAR2', 'VARCHAR2(' || tc.DATA_LENGTH || ')', 'CHAR', 'CHAR(' || tc.DATA_LENGTH || ')', 'RAW', 'RAW(' || tc.DATA_LENGTH || ')',tc.DATA_TYPE) AS \"columnType\", NULLABLE AS \"isNull\", '', '', TO_NCHAR(cc.comments) AS \"columnComment\", DATA_DEFAULT AS \"columnDefault\" FROM dba_tab_columns tc JOIN dba_col_comments cc ON tc.OWNER=cc.owner AND tc.TABLE_NAME=cc.table_name AND tc.COLUMN_NAME=cc.column_name WHERE tc.owner='%s' AND tc.table_name = '%s' ORDER BY tc.COLUMN_ID", or.Schema, or.Table)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		if err != nil {
@@ -119,7 +119,7 @@ func (or *QueryTable) GlobalAccessPri(db *sql.DB, logThreadSeq int64) (bool, err
 	//查找全局权限 类似于grant all privileges on *.* 或 grant select on *.*
 	vlog = fmt.Sprintf("(%d) [%s] Query the current %s DB global dynamic grants permission, to query it...", logThreadSeq, Event, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("select PRIVILEGE as \"privileges\" from user_sys_privs where PRIVILEGE IN ('%s')", strings.Join(globalPriS, "','"))
+	strsql = fmt.Sprintf("SELECT PRIVILEGE AS \"privileges\" FROM user_sys_privs WHERE PRIVILEGE IN('%s')", strings.Join(globalPriS, "','"))
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return false, err
@@ -129,7 +129,7 @@ func (or *QueryTable) GlobalAccessPri(db *sql.DB, logThreadSeq int64) (bool, err
 	}
 	//权限缺失列表
 	if len(globalDynamic) == 0 {
-		strsql = fmt.Sprintf("SELECT PRIVILEGE as \"privileges\" FROM ROLE_SYS_PRIVS WHERE PRIVILEGE IN ('%s') group by PRIVILEGE", strings.Join(globalPriS, "','"))
+		strsql = fmt.Sprintf("SELECT PRIVILEGE AS \"privileges\" FROM ROLE_SYS_PRIVS WHERE PRIVILEGE IN('%s') GROUP BY PRIVILEGE", strings.Join(globalPriS, "','"))
 		if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 			return false, err
 		}
@@ -238,7 +238,7 @@ func (or *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 	//查找全局权限 类似于grant all privileges on *.* 或 grant select on *.*
 	vlog = fmt.Sprintf("(%d) [%s] Query the current %s DB global dynamic grants permission, to query it...", logThreadSeq, Event, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("SELECT PRIVILEGE as \"privileges\" FROM ROLE_SYS_PRIVS WHERE PRIVILEGE IN ('%s') group by PRIVILEGE", strings.Join(priAllTableS, "','"))
+	strsql = fmt.Sprintf("SELECT PRIVILEGE AS \"privileges\" FROM ROLE_SYS_PRIVS WHERE PRIVILEGE IN ('%s') GROUP BY PRIVILEGE", strings.Join(priAllTableS, "','"))
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return nil, err
@@ -286,7 +286,7 @@ func (or *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 			DM[strings.ToUpper(D)]++
 		}
 	}
-	strsql = fmt.Sprintf("select owner||'.'||table_name AS \"tablesName\",PRIVILEGE as \"privileges\" from user_tab_privs")
+	strsql = fmt.Sprintf("SELECT owner||'.'||table_name AS \"tablesName\", PRIVILEGE AS \"privileges\" FROM user_tab_privs")
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return nil, err
 	}
@@ -332,7 +332,7 @@ func (or *QueryTable) TableAllColumn(db *sql.DB, logThreadSeq int64) ([]map[stri
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start to query the metadata of all the columns of table %s.%s in the %s database", logThreadSeq, Event, or.Schema, or.Table, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("SELECT column_name as \"columnName\",case when data_type='NUMBER' AND DATA_PRECISION is null THEN DATA_TYPE when data_type='NUMBER' AND DATA_PRECISION is not null then DATA_TYPE || '(' || DATA_PRECISION || ',' || NVL(DATA_SCALE,0) || ')' when data_type='VARCHAR2' THEN DATA_TYPE||'('||DATA_LENGTH||')' ELSE DATA_TYPE END AS \"dataType\",COLUMN_id as \"columnSeq\",NULLABLE as \"isNull\" FROM all_tab_columns WHERE owner='%s' and TABLE_NAME = '%s' order by column_id", or.Schema, or.Table)
+	strsql = fmt.Sprintf("SELECT column_name AS \"columnName\", CASE WHEN data_type='NUMBER' AND DATA_PRECISION IS NULL THEN DATA_TYPE WHEN data_type='NUMBER' AND DATA_PRECISION IS NOT NULL THEN DATA_TYPE || '(' || DATA_PRECISION || ',' || NVL(DATA_SCALE,0) || ')' WHEN data_type='VARCHAR2' THEN DATA_TYPE||'('||DATA_LENGTH||')' ELSE DATA_TYPE END AS \"dataType\", COLUMN_id AS \"columnSeq\", NULLABLE AS \"isNull\" FROM all_tab_columns WHERE owner='%s' AND TABLE_NAME='%s' ORDER BY column_id", or.Schema, or.Table)
 
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
@@ -516,7 +516,7 @@ func (or *QueryTable) Trigger(db *sql.DB, logThreadSeq int64) (map[string]string
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start to query the trigger information under the %s database.", logThreadSeq, Event, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("select TRIGGER_name as triggerName,TABLE_NAME as tableName from all_triggers where owner = '%s'", or.Schema)
+	strsql = fmt.Sprintf("SELECT TRIGGER_name AS triggerName, TABLE_NAME AS tableName FROM all_triggers WHERE owner='%s'", or.Schema)
 	//vlog = fmt.Sprintf("(%d) Oracle DB query table query Trigger info exec sql is {%s}", logThreadSeq, sqlStr)
 	//global.Wlog.Debug(vlog)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
@@ -582,7 +582,7 @@ func (or *QueryTable) Proc(db *sql.DB, logThreadSeq int64) (map[string]string, e
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start to query the stored procedure information under the %s database.", logThreadSeq, Event, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf(" select object_name as ROUTINE_NAME from all_procedures where object_type='PROCEDURE' and owner = '%s'", or.Schema)
+	strsql = fmt.Sprintf(" SELECT object_name AS ROUTINE_NAME FROM all_procedures WHERE object_type='PROCEDURE' AND owner='%s'", or.Schema)
 	//vlog = fmt.Sprintf("(%d) Oracle DB query table query Stored Procedure info exec sql is {%s}", logThreadSeq, sqlStr)
 	//global.Wlog.Debug(vlog)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
@@ -631,7 +631,7 @@ func (or *QueryTable) Func(db *sql.DB, logThreadSeq int64) (map[string]string, e
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start to query the stored Func information under the %s database.", logThreadSeq, Event, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("select OBJECT_NAME as ROUTINE_NAME  from all_procedures where object_type='FUNCTION' and owner = '%s'", or.Schema)
+	strsql = fmt.Sprintf("SELECT OBJECT_NAME AS ROUTINE_NAME FROM all_procedures WHERE object_type='FUNCTION' AND owner='%s'", or.Schema)
 	//vlog = fmt.Sprintf("(%d) Oracle DB query table query Stored Function info exec sql is {%s}", logThreadSeq, sqlStr)
 	//global.Wlog.Debug(vlog)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
@@ -680,7 +680,7 @@ func (or *QueryTable) Foreign(db *sql.DB, logThreadSeq int64) (map[string]string
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start to query the Foreign information under the %s database.", logThreadSeq, Event, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf(" select c.OWNER as DATABASE,c.table_name as TABLENAME, c.r_constraint_name,c.delete_rule,cc.column_name,cc.position from user_constraints c join user_cons_columns cc on c.constraint_name=cc.constraint_name and c.table_name=cc.table_name  where c.constraint_type='R' and c.validated='VALIDATED' and c.OWNER = '%s' and c.table_name='%s'", or.Schema, or.Table)
+	strsql = fmt.Sprintf(" SELECT c.OWNER AS DATABASE, c.table_name AS TABLENAME, c.r_constraint_name, c.delete_rule, cc.column_name, cc.position FROM user_constraints c JOIN user_cons_columns cc ON c.constraint_name=cc.constraint_name AND c.table_name=cc.table_name WHERE c.constraint_type='R' AND c.validated='VALIDATED' AND c.OWNER = '%s' AND c.table_name='%s'", or.Schema, or.Table)
 	//vlog = fmt.Sprintf("(%d) Oracle DB query table query Foreign info exec sql is {%s}", logThreadSeq, sqlStr)
 	//global.Wlog.Debug(vlog)
 	//sqlRows, err := db.Query(sqlStr)
@@ -711,7 +711,7 @@ func (or *QueryTable) Foreign(db *sql.DB, logThreadSeq int64) (map[string]string
 	}
 	for k, _ := range routineNameM {
 		schema, table := strings.Split(k, ".")[0], strings.Split(k, ".")[1]
-		strsql = fmt.Sprintf("SELECT DBMS_METADATA.GET_DDL('TABLE','%s','%s') as CREATE_FOREIGN FROM DUAL", table, schema)
+		strsql = fmt.Sprintf("SELECT DBMS_METADATA.GET_DDL('TABLE','%s','%s') AS CREATE_FOREIGN FROM DUAL", table, schema)
 		//vlog = fmt.Sprintf("(%d) MySQL DB query create Foreign table %s.%s info, exec sql is {%s}", logThreadSeq, or.Schema, or.Table, sqlStr)
 		//global.Wlog.Debug(vlog)
 		//sqlRows, err = db.Query(sqlStr)
