@@ -25,7 +25,7 @@ ARG VERSION
 
 RUN go mod tidy
 RUN go build -o gt-checksum gt-checksum.go
-RUN mkdir -p ./gt-checksum-${VERSION} && cp -rf README.md CHANGELOG.zh-CN.md gc.conf-example gc.conf-simple gt-checksum Oracle/instantclient_11_2 gt-checksum-${VERSION}
+RUN mkdir -p ./gt-checksum-${VERSION} && cp -rf README.md CHANGELOG.zh-CN.md gc.conf-sample gt-checksum Oracle/instantclient_11_2 gt-checksum-${VERSION}
 
 FROM scratch AS exporter
 

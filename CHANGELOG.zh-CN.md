@@ -1,5 +1,7 @@
 ## 1.2.2
 - 合并jointIndexChanRowCount和singleIndexChanRowCount两个参数为新的参数chunkSize
+- 不再支持命令行传参方式调用，仅支持配置文件方式调用，命令行参数仅支持"-h", "-v", "-c"等几个必要的参数
+- 删除极简模式，默认支持配置文件中只有srcDSN, dstDSN, tables等几个参数
 
 ## 1.2.1
 新增表结构校验、列类型校验等新特性及修复数个bug。

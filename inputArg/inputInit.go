@@ -72,7 +72,6 @@ type ConfigParameter struct {
 	SecondaryL          SecondaryLevel
 	ConfFine            *ini.File
 	ConnPoolV           ConnPool
-	ParametersSwitch    bool
 	Config              string //配置文件信息
 	LogThreadSeq        int64
 	NoIndexTableTmpFile string
@@ -84,6 +83,12 @@ func init() {
 	rc.cliHelp()
 	fmt.Println("\ngt-checksum is initializing")
 	fmt.Println("gt-checksum is reading configuration files")
+	if rc.Config == "" {
+		if _, err := os.Stat("gc.conf"); err == nil {
+			rc.Config = "gc.conf"
+			fmt.Println("gt-checksum: Automatically loading configuration file 'gc.conf' from current directory.")
+		}
+	}
 	if rc.Config != "" {
 		if !strings.Contains(rc.Config, "/") {
 			sysType := runtime.GOOS
