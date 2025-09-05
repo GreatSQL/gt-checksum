@@ -19,7 +19,7 @@ func (my *QueryTable) QueryTableIndexColumnInfo(db *sql.DB, logThreadSeq int64) 
 		tableData []map[string]interface{}
 		err       error
 	)
-	strsql = fmt.Sprintf("select isc.COLUMN_NAME as columnName,isc.COLUMN_TYPE as columnType,isc.COLUMN_KEY as columnKey,isc.EXTRA as autoIncrement,iss.NON_UNIQUE as nonUnique,iss.INDEX_NAME as indexName,iss.SEQ_IN_INDEX as IndexSeq,isc.ORDINAL_POSITION as columnSeq from information_schema.columns isc inner join (select NON_UNIQUE,INDEX_NAME,SEQ_IN_INDEX,COLUMN_NAME from information_schema.STATISTICS where table_schema='%s' and table_name='%s') as iss on isc.column_name =iss.column_name where isc.table_schema='%s' and isc.table_name='%s';", my.Schema, my.Table, my.Schema, my.Table)
+	strsql = fmt.Sprintf("SELECT isc.COLUMN_NAME AS columnName, isc.COLUMN_TYPE AS columnType, isc.COLUMN_KEY AS columnKey,isc.EXTRA AS autoIncrement, iss.NON_UNIQUE AS nonUnique, iss.INDEX_NAME AS indexName, iss.SEQ_IN_INDEX AS IndexSeq, isc.ORDINAL_POSITION AS columnSeq FROM INFORMATION_SCHEMA.COLUMNS isc INNER JOIN (SELECT NON_UNIQUE, INDEX_NAME, SEQ_IN_INDEX, COLUMN_NAME FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s') AS iss ON isc.COLUMN_NAME=iss.COLUMN_NAME WHERE isc.TABLE_SCHEMA='%s' AND isc.TABLE_NAME='%s';", my.Schema, my.Table, my.Schema, my.Table)
 	vlog = fmt.Sprintf("(%d) [%s] Generate a sql statement to query the index statistics of table %s.%s under the %s database.sql messige is {%s}", logThreadSeq, Event, my.Schema, my.Table, DBType, strsql)
 	global.Wlog.Debug(vlog)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
@@ -137,17 +137,17 @@ func (my *QueryTable) TmpTableIndexColumnSelectDispos(logThreadSeq int64) map[st
 	//根据索引列的多少，生成select 列条件，并生成列长度，为判断列是否为null或为空做判断
 	if len(columnName) == 1 {
 		columnSelect["selectColumnName"] = strings.Join(columnName, "")
-		columnSelect["selectColumnLength"] = fmt.Sprintf("LENGTH(trim(%s)) as %s_length", strings.Join(columnName, ""), strings.Join(columnName, ""))
+		columnSelect["selectColumnLength"] = fmt.Sprintf("LENGTH(trim(%s)) AS %s_length", strings.Join(columnName, ""), strings.Join(columnName, ""))
 		columnSelect["selectColumnLengthSlice"] = fmt.Sprintf("%s_length", strings.Join(columnName, ""))
-		columnSelect["selectColumnNull"] = fmt.Sprintf("%s is null ", strings.Join(columnName, ""))
+		columnSelect["selectColumnNull"] = fmt.Sprintf("%s IS NULL ", strings.Join(columnName, ""))
 		columnSelect["selectColumnEmpty"] = fmt.Sprintf("%s = '' ", strings.Join(columnName, ""))
 	} else if len(columnName) > 1 {
 		columnSelect["selectColumnName"] = strings.Join(columnName, "/*column*/")
 		var aa, bb, cc, dd, ee []string
 		for i := range columnName {
-			aa = append(aa, fmt.Sprintf("LENGTH(trim(%s)) as %s_length", columnName[i], columnName[i]))
+			aa = append(aa, fmt.Sprintf("LENGTH(trim(%s)) AS %s_length", columnName[i], columnName[i]))
 			bb = append(bb, fmt.Sprintf("%s_length", columnName[i]))
-			cc = append(cc, fmt.Sprintf("%s is null ", columnName[i]))
+			cc = append(cc, fmt.Sprintf("%s IS NULL ", columnName[i]))
 			dd = append(dd, fmt.Sprintf("%s = '' ", columnName[i]))
 			ee = append(ee, fmt.Sprintf("%s != '' ", columnName[i]))
 		}
@@ -172,7 +172,7 @@ func (my *QueryTable) TmpTableIndexColumnRowsCount(db *sql.DB, logThreadSeq int6
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start to query the total number of rows in the following table %s.%s of the %s database.", logThreadSeq, Event, my.Schema, my.Table, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("select index_name AS INDEX_NAME,column_name AS columnName,cardinality as CARDINALITY from INFORMATION_SCHEMA.STATISTICS where TABLE_SCHEMA = '%s' and table_name = '%s' and SEQ_IN_INDEX=1", my.Schema, my.Table)
+	strsql = fmt.Sprintf("SELECT index_name AS INDEX_NAME, column_name AS columnName, cardinality as CARDINALITY FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s' AND SEQ_IN_INDEX=1", my.Schema, my.Table)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return 0, err
@@ -197,9 +197,9 @@ func (my *QueryTable) TmpTableIndexColumnRowsCount(db *sql.DB, logThreadSeq int6
 		}
 	}
 	if E != "" {
-		strsql = fmt.Sprintf("select sum(a.count) as sum from (select count(1) as count from `%s`.`%s` group by %s) a", my.Schema, my.Table, E)
+		strsql = fmt.Sprintf("SELECT SUM(a.count) AS sum FROM (SELECT COUNT(1) AS count FROM `%s`.`%s` GROUP BY %s) a", my.Schema, my.Table, E)
 	} else {
-		strsql = fmt.Sprintf("select count(1) as sum from `%s`.`%s`", my.Schema, my.Table)
+		strsql = fmt.Sprintf("SELECT COUNT(1) AS sum FROM `%s`.`%s`", my.Schema, my.Table)
 	}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return 0, err
@@ -262,7 +262,7 @@ func (my QueryTable) TmpTableColumnGroupDataDispos(db *sql.DB, where string, col
 	}
 	whereExist = where
 	if where != "" {
-		whereExist = fmt.Sprintf("where %s ", where)
+		whereExist = fmt.Sprintf("WHERE %s ", where)
 		if strings.Contains(version, "5.7") {
 			whereExist, err = my.FloatTypeQueryDispos(db, where, logThreadSeq)
 			if err != nil {
@@ -270,7 +270,7 @@ func (my QueryTable) TmpTableColumnGroupDataDispos(db *sql.DB, where string, col
 			}
 		}
 	}
-	strsql = fmt.Sprintf("select %s as columnName,count(1) as count from `%s`.`%s` %s group by %s", columnName, my.Schema, my.Table, whereExist, columnName)
+	strsql = fmt.Sprintf("SELECT %s AS columnName, COUNT(1) AS count FROM `%s`.`%s` %s GROUP BY %s", columnName, my.Schema, my.Table, whereExist, columnName)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return nil, err
@@ -290,7 +290,7 @@ func (my *QueryTable) TableRows(db *sql.DB, logThreadSeq int64) (uint64, error) 
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start querying the statistical information of table %s.%s in the %s database and get the number of rows in the table", logThreadSeq, Event, my.Schema, my.Table, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("select TABLE_ROWS as tableRows from information_schema.tables where table_schema='%s' and table_name ='%s'", my.Schema, my.Table)
+	strsql = fmt.Sprintf("SELECT TABLE_ROWS AS tableRows FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s'", my.Schema, my.Table)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return 0, err
@@ -358,7 +358,7 @@ func (my *QueryTable) NoIndexGeneratingQueryCriteria(db *sql.DB, beginSeq uint64
 		}
 		columnNameSeq = append(columnNameSeq, tmpcolumnName)
 	}
-	strsql = fmt.Sprintf("select %s from `%s`.`%s` limit %d,%d", strings.Join(columnNameSeq, ","), my.Schema, my.Table, beginSeq, chanrowCount)
+	strsql = fmt.Sprintf("SELECT %s FROM `%s`.`%s` LIMIT %d,%d", strings.Join(columnNameSeq, ","), my.Schema, my.Table, beginSeq, chanrowCount)
 	//if orderByColumn != "" {
 	//	strsql = fmt.Sprintf("select * from `%s`.`%s` order by %s limit %d,%d", my.Schema, my.Table, orderByColumn, beginSeq, chanrowCount)
 	//}
@@ -434,11 +434,11 @@ func (my *QueryTable) GeneratingQuerySql(db *sql.DB, logThreadSeq int64) (string
 			return "", err
 		}
 	} else {
-		if !strings.HasPrefix(strings.TrimSpace(my.Sqlwhere), "where") {
-			my.Sqlwhere = fmt.Sprintf(" where %s ", my.Sqlwhere)
+		if !strings.HasPrefix(strings.TrimSpace(my.Sqlwhere), "WHERE") {
+			my.Sqlwhere = fmt.Sprintf(" WHERE %s ", my.Sqlwhere)
 		}
 	}
-	selectSql = fmt.Sprintf("select %s from `%s`.`%s` %s", queryColumn, my.Schema, my.Table, my.Sqlwhere)
+	selectSql = fmt.Sprintf("SELECT %s FROM `%s`.`%s` %s", queryColumn, my.Schema, my.Table, my.Sqlwhere)
 	vlog = fmt.Sprintf("(%d) [%s] Complete the data query sql of table %s.%s in the %s database.", logThreadSeq, Event, my.Schema, my.Table, DBType)
 	global.Wlog.Debug(vlog)
 	return selectSql, nil

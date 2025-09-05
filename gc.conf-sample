@@ -3,10 +3,8 @@
 ; 定义源、目标数据源
 ; 这部分参数不能全部为空
 [DSNs]
-srcDSN = mysql|checksum:Checksum@3306@tcp(127.0.0.1:3306)/sbtest?charset=utf8mb4
-dstDSN = mysql|checksum:Checksum@3306@tcp(127.0.0.1:6306)/sbtest?charset=utf8mb4
-;srcDSN = mysql|u1:p1@tcp(172.17.0.1:3307)/information_schema?charset=utf8mb4
-;dstDSN = mysql|u1:p1@tcp(172.17.0.2:3307)/information_schema?charset=utf8mb4
+srcDSN = mysql|u1:p1@tcp(172.17.0.1:3307)/information_schema?charset=utf8mb4
+dstDSN = mysql|u1:p1@tcp(172.17.0.2:3307)/information_schema?charset=utf8mb4
 ; 目前只支持MySQL、Oracle两种数据源
 ; Oracle DSN格式为：oracle|user/password@ip:port/sid
 ; 例如：srcDSN = oracle|scott/tiger@172.16.0.1:1521/helowin
@@ -19,8 +17,7 @@ dstDSN = mysql|checksum:Checksum@3306@tcp(127.0.0.1:6306)/sbtest?charset=utf8mb4
 ; 这部分参数不能全部为空，至少要配置tables参数
 [Schema]
 ;tables = test.*
-tables = sbtest.*
-; 配置参数中，table=*.*表示匹配所有库（MySQL不包含 information_schema, mysql, performance_schema, sys 等几个系统库）
+; 配置参数中，table=*.*表示匹配所有库（MySQL数据源则自动排除 information_schema, mysql, performance_schema, sys 等几个系统库）
 ; 库表名称都支持模糊匹配（无论是table还是ignoreTable）
 ; %代表模糊，*代表所有
 ; 常用模糊规则示例：
@@ -37,7 +34,7 @@ tables = sbtest.*
 
 ; 选项tables用来定义校验数据表对象，支持通配符"%"和"*"
 ; 例如：
-; *.* 表示所有库表对象（MySQL不包含 information_schema, mysql, performance_schema, sys 等几个系统库）
+; *.* 表示所有库表对象（MySQL数据源则自动排除 information_schema, mysql, performance_schema, sys 等几个系统库）
 ; test.* 表示test库下的所有表
 ; test.t% 表示test库下所有表名中包含字母"t"开头的表
 ; db%.* 表示所有库名中包含字母"db"开头的数据库中的所有表
@@ -46,8 +43,7 @@ tables = sbtest.*
 ; 如果已经设置为 "*.*"，则不能再增加其他的规则，例如：设置 "*.*,pcms%.*" 则会报告规则错误
 ; 如果 table 和 ignoreTables 设置的值相同的话也会报告规则错误
 
-;ignoreTables =
-ignoreTables = sbtest.sbtest2
+ignoreTables =
 ; 选项 ignoreTables 用来定义忽略的数据对象规则，也支持通配符"%"和"*"，具体用法参考上面的案例
 
 checkNoIndexTable = no
