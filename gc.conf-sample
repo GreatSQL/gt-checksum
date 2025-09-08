@@ -49,11 +49,11 @@ checkNoIndexTable = no
 ; 如果为设置则使用默认值 no
 ; checkNoIndexTable = yes | no
 
-lowerCaseTableNames = no
+caseSensitiveObjectName = no
 ; 设置是否忽略库名、表名、字段名等数据对象名的大小写，可设置为 [yes | no]，默认值：no
 ; no，忽略tables和ignoreTables涉及的数据对象名大小写规则，统一使用大写库名及表名
 ; yes，按照tables和ignoreTables参数涉及的数据对象名的大小写进行匹配
-; lowerCaseTableNames = yes | no
+; caseSensitiveObjectName = yes | no
 
 
 ; 其他校验规则

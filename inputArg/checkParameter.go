@@ -17,7 +17,7 @@ import (
 //	PoolMin                                      int      //数据库连接池最小值
 //	Table, Igtable                               string   //待校验的表和忽略的表
 //	CheckNoIndexTable                            string   //是否校验无索引表
-//	LowerCaseTableNames                          string   //是否忽略校验表的大小写
+//	CaseSensitiveObjectName                          string   //是否忽略校验表的大小写
 //	LogFile, LogLevel                            string   //关于日志输出信息配置
 //	Concurrency                                  int      //查询并发度
 //	ChunkSize                      				 int      //校验数据块长度
@@ -188,7 +188,7 @@ func (rc *ConfigParameter) checkPar() {
 	if strings.HasSuffix(rc.SecondaryL.SchemaV.Tables, ",") {
 		rc.SecondaryL.SchemaV.Tables = rc.SecondaryL.SchemaV.Tables[:len(rc.SecondaryL.SchemaV.Tables)-1]
 	}
-	if rc.SecondaryL.SchemaV.LowerCaseTableNames == "no" {
+	if rc.SecondaryL.SchemaV.CaseSensitiveObjectName == "no" {
 		rc.SecondaryL.SchemaV.Tables = strings.ToUpper(strings.TrimSpace(rc.SecondaryL.SchemaV.Tables))
 		rc.SecondaryL.SchemaV.IgnoreTables = strings.ToUpper(strings.TrimSpace(rc.SecondaryL.SchemaV.IgnoreTables))
 	}
@@ -219,8 +219,8 @@ func (rc *ConfigParameter) checkPar() {
 
 	vlog = fmt.Sprintf("(%d) [%s] start init lower case table name values.", rc.LogThreadSeq, Event)
 	global.Wlog.Debug(vlog)
-	rc.SecondaryL.SchemaV.LowerCaseTableNames = strings.ToLower(rc.SecondaryL.SchemaV.LowerCaseTableNames)
-	vlog = fmt.Sprintf("(%d) [%s] check lower case table name parameter message is {%s}.", rc.LogThreadSeq, Event, rc.SecondaryL.SchemaV.LowerCaseTableNames)
+	rc.SecondaryL.SchemaV.CaseSensitiveObjectName = strings.ToLower(rc.SecondaryL.SchemaV.CaseSensitiveObjectName)
+	vlog = fmt.Sprintf("(%d) [%s] check case sensitive object name parameter message is {%s}.", rc.LogThreadSeq, Event, rc.SecondaryL.SchemaV.CaseSensitiveObjectName)
 	global.Wlog.Debug(vlog)
 
 	vlog = fmt.Sprintf("(%d) [%s] start init log out values.", rc.LogThreadSeq, Event)
