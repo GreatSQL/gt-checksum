@@ -30,7 +30,7 @@ type SchemaS struct {
 	Tables              string
 	IgnoreTables        string
 	CheckNoIndexTable   string
-	LowerCaseTableNames string
+	CaseSensitiveObjectName string
 }
 type RulesS struct {
 	ParallelThds int

@@ -43,7 +43,7 @@ func (rc *ConfigParameter) LevelParameterCheck() {
 		fmt.Println("Failed to set [Struct] options, using default values")
 	}
 	//Schema 获取校验库表信息
-	for _, i := range []string{"checkNoIndexTable", "lowerCaseTableNames"} {
+	for _, i := range []string{"checkNoIndexTable", "caseSensitiveObjectName"} {
 		if _, err = rc.FirstL.Schema.GetKey(i); err != nil {
 			fmt.Printf("Failed to set option %s, using default value\n", i)
 		}
@@ -111,7 +111,7 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 	if rc.SecondaryL.SchemaV.IgnoreTables == "" {
 		rc.SecondaryL.SchemaV.IgnoreTables = "nil"
 	}
-	rc.SecondaryL.SchemaV.LowerCaseTableNames = rc.FirstL.Schema.Key("lowerCaseTableNames").In("no", []string{"yes", "no"})
+	rc.SecondaryL.SchemaV.CaseSensitiveObjectName = rc.FirstL.Schema.Key("caseSensitiveObjectName").In("no", []string{"yes", "no"})
 	rc.SecondaryL.SchemaV.CheckNoIndexTable = rc.FirstL.Schema.Key("checkNoIndexTable").In("no", []string{"yes", "no"})
 	//Struct
 	if rc.FirstL.Struct != nil {

@@ -22,7 +22,7 @@ type schemaTable struct {
 	destDrive           string
 	sourceDB            *sql.DB
 	destDB              *sql.DB
-	lowerCaseTableNames string
+	caseSensitiveObjectName string
 	datefix             string
 	sfile               *os.File
 	djdbc               string
@@ -122,7 +122,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 			v2 := []string{}
 			for k, v22 := range v1 {
 				v1k = k
-				if stcls.lowerCaseTableNames == "no" {
+				if stcls.caseSensitiveObjectName == "no" {
 					v1k = strings.ToUpper(k)
 				}
 				v2 = v22
@@ -136,7 +136,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 			v2 := []string{}
 			for k, v22 := range v1 {
 				v1k = k
-				if stcls.lowerCaseTableNames == "no" {
+				if stcls.caseSensitiveObjectName == "no" {
 					v1k = strings.ToUpper(k)
 				}
 				v2 = v22
@@ -458,7 +458,7 @@ func (stcls *schemaTable) SchemaTableFilter(logThreadSeq1, logThreadSeq2 int64) 
 	vlog = fmt.Sprintf("(%d) Obtain schema.table info", logThreadSeq1)
 	global.Wlog.Info(vlog)
 	//获取当前数据库信息列表
-	tc := dbExec.TableColumnNameStruct{Table: stcls.table, Drive: stcls.sourceDrive, Db: stcls.sourceDB, IgnoreTable: stcls.ignoreTable, LowerCaseTableNames: stcls.lowerCaseTableNames}
+	tc := dbExec.TableColumnNameStruct{Table: stcls.table, Drive: stcls.sourceDrive, Db: stcls.sourceDB, IgnoreTable: stcls.ignoreTable, CaseSensitiveObjectName: stcls.caseSensitiveObjectName}
 	vlog = fmt.Sprintf("(%d) Obtain databases list", logThreadSeq1)
 	global.Wlog.Debug(vlog)
 	if dbCheckNameList, err = tc.Query().DatabaseNameList(stcls.sourceDB, logThreadSeq2); err != nil {
@@ -620,11 +620,11 @@ func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 in
 	global.Wlog.Info(vlog)
 	for _, i := range dtabS {
 		i = strings.Split(i, ".")[0]
-		if stcls.lowerCaseTableNames == "yes" {
+		if stcls.caseSensitiveObjectName == "yes" {
 			i = strings.ToUpper(i)
 			z[i]++
 		}
-		if stcls.lowerCaseTableNames == "no" {
+		if stcls.caseSensitiveObjectName == "no" {
 			z[i]++
 		}
 	}
@@ -1343,7 +1343,7 @@ func SchemaTableInit(m *inputArg.ConfigParameter) *schemaTable {
 		destDrive:           m.SecondaryL.DsnsV.DestDrive,
 		sourceDB:            sdb,
 		destDB:              ddb,
-		lowerCaseTableNames: m.SecondaryL.SchemaV.LowerCaseTableNames,
+		caseSensitiveObjectName: m.SecondaryL.SchemaV.CaseSensitiveObjectName,
 		datefix:             m.SecondaryL.RepairV.Datafix,
 		sfile:               m.SecondaryL.RepairV.FixFileFINE,
 		djdbc:               m.SecondaryL.DsnsV.DestJdbc,

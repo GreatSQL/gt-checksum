@@ -13,7 +13,7 @@ type QueryTable struct {
 	Table               string
 	Db                  *sql.DB
 	Datafix             string
-	LowerCaseTableNames string
+	CaseSensitiveObjectName string
 	TmpTableFileName    string
 	ColumnName          []string
 	ChanrowCount        int
@@ -58,7 +58,7 @@ func (or *QueryTable) DatabaseNameList(db *sql.DB, logThreadSeq int64) (map[stri
 	for i := range tableData {
 		var ga string
 		gd, gt := fmt.Sprintf("%v", tableData[i]["databaseName"]), fmt.Sprintf("%v", tableData[i]["tableName"])
-		if or.LowerCaseTableNames == "no" {
+		if or.CaseSensitiveObjectName == "no" {
 			gd = strings.ToUpper(gd)
 			gt = strings.ToUpper(gt)
 		}
@@ -219,7 +219,7 @@ func (or *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 	//校验库.表由切片改为map
 	for _, AA := range checkTableList {
 		newCheckTableList[AA]++
-		if or.LowerCaseTableNames == "no" {
+		if or.CaseSensitiveObjectName == "no" {
 			newCheckTableList[strings.ToUpper(AA)]++
 		}
 	}
@@ -229,7 +229,7 @@ func (or *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 	for _, aa := range checkTableList {
 		if strings.Contains(aa, ".") {
 			A[strings.Split(aa, ".")[0]]++
-			if or.LowerCaseTableNames == "no" {
+			if or.CaseSensitiveObjectName == "no" {
 				A[strings.ToUpper(strings.Split(aa, ".")[0])]++
 			}
 		}
@@ -282,7 +282,7 @@ func (or *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 	var DM = make(map[string]int)
 	for _, D := range checkTableList {
 		DM[D]++
-		if or.LowerCaseTableNames == "no" {
+		if or.CaseSensitiveObjectName == "no" {
 			DM[strings.ToUpper(D)]++
 		}
 	}
@@ -297,7 +297,7 @@ func (or *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 	DD := columnMerge(tablePri, "tablesName", "privileges")
 	for K, V := range DD {
 		var aaaseq int
-		if or.LowerCaseTableNames == "no" {
+		if or.CaseSensitiveObjectName == "no" {
 			strings.ToUpper(K)
 		}
 		if _, ok := DM[K]; ok {

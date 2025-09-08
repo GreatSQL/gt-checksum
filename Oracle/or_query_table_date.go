@@ -57,7 +57,7 @@ func (or *QueryTable) IndexDisposF(queryData []map[string]interface{}, logThread
 	
 	for _, v := range queryData {
 		currIndexName = fmt.Sprintf("%s", v["indexName"])
-		if or.LowerCaseTableNames == "no" {
+		if or.CaseSensitiveObjectName == "no" {
 			currIndexName = strings.ToUpper(fmt.Sprintf("%s", v["indexName"]))
 		}
 		
