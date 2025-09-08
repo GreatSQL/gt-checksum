@@ -58,7 +58,7 @@ func (rc *ConfigParameter) LevelParameterCheck() {
 	}
 	//Rules 二级参数检测
 	if rc.FirstL.Rules != nil {
-		for _, i := range []string{"parallelThds", "queueSize", "checkMode", "checkObject", "ratio", "chunkSize"} {
+		for _, i := range []string{"parallelThds", "queueSize", "checkMode", "checkObject", "ratio", "chunkSize", "memoryLimit"} {
 			if _, err = rc.FirstL.Rules.GetKey(i); err != nil {
 				fmt.Printf("Failed to set option %s, using default value\n", i)
 			}
@@ -193,6 +193,15 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 			rc.SecondaryL.RulesV.CheckObject = rc.FirstL.Rules.Key("checkObject").In("data", []string{"data", "struct", "index", "partitions", "foreign", "trigger", "func", "proc"})
 		} else {
 			rc.SecondaryL.RulesV.CheckObject = "data"
+		}
+		if rc.FirstL.Rules != nil {
+			if rc.SecondaryL.RulesV.MemoryLimit, err = rc.FirstL.Rules.Key("memoryLimit").Int(); err != nil {
+				fmt.Println("Failed to set option memoryLimit, using default value 1024")
+				rc.SecondaryL.RulesV.MemoryLimit = 1024
+			}
+		} else {
+			fmt.Println("Failed to set option memoryLimit, using default value 1024")
+			rc.SecondaryL.RulesV.MemoryLimit = 1024
 		}
 
 		if rc.FirstL.Repair != nil {

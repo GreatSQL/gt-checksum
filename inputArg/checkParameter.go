@@ -257,9 +257,15 @@ func (rc *ConfigParameter) checkPar() {
 			os.Exit(1)
 		}
 	}
-	if rc.SecondaryL.RulesV.Ratio > 100 {
-		fmt.Println(fmt.Sprintf("gt-checksum report: The option \"Ratio\" is set incorrectly.. Please check %s or set option \"logLevel=debug\" to get more information.", rc.SecondaryL.LogV.LogFile))
-		vlog = fmt.Sprintf("(%d) [%s] Ratio value must be between 1 and 100.", rc.LogThreadSeq, Event)
+	if rc.SecondaryL.RulesV.MemoryLimit < 100 || rc.SecondaryL.RulesV.MemoryLimit > 65536 {
+		fmt.Println(fmt.Sprintf("gt-checksum report: The option \"memoryLimit\" must be between 100 and 65536. Please check %s or set option \"logLevel=debug\" to get more information.", rc.SecondaryL.LogV.LogFile))
+		vlog = fmt.Sprintf("(%d) [%s] option \"memoryLimit\" must be between 100 and 65536.", rc.LogThreadSeq, Event)
+		global.Wlog.Error(vlog)
+		os.Exit(1)
+	}
+	if rc.SecondaryL.RulesV.Ratio < 1 || rc.SecondaryL.RulesV.Ratio > 100 {
+		fmt.Println(fmt.Sprintf("gt-checksum report: The option \"Ratio\" must be between 1 and 100. Please check %s or set option \"logLevel=debug\" to get more information.", rc.SecondaryL.LogV.LogFile))
+		vlog = fmt.Sprintf("(%d) [%s] option \"Ratio\" must be between 1 and 100.", rc.LogThreadSeq, Event)
 		global.Wlog.Error(vlog)
 		os.Exit(1)
 	}

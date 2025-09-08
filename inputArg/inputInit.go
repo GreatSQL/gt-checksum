@@ -39,6 +39,7 @@ type RulesS struct {
 	CheckMode    string
 	Ratio        int
 	CheckObject  string
+	MemoryLimit  int
 }
 type StructS struct {
 	ScheckMod     string

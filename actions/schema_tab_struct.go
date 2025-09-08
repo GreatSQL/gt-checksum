@@ -154,7 +154,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 				global.Wlog.Error(vlog)
 				abnormalTableList = append(abnormalTableList, fmt.Sprintf("%s.%s", stcls.schema, stcls.table))
 			}
-			// 存疑：不要加continue，否则可能导致当检查到有个表中列定义不一致时，这里会被跳过忽略检查
+			// yejr存疑：不要加continue，否则可能导致当检查到有个表中列定义不一致时，这里会被跳过忽略检查
 			//continue
 		}
 
@@ -624,6 +624,7 @@ func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 in
 			i = strings.ToUpper(i)
 			z[i]++
 		}
+		// yejr存疑，这段代码是否多余，或者和上一段代码是否冲突？
 		if stcls.caseSensitiveObjectName == "no" {
 			z[i]++
 		}
