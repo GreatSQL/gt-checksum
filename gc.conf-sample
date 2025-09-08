@@ -85,6 +85,10 @@ checkObject = data
 ; 分别表示：行数据|表结构|索引|分区|外键|触发器|存储函数|存储过程
 ; checkObject = data | struct | index | partitions | foreign | trigger | func | proc
 
+memoryLimit = 1024
+; 设置内存使用限制，当内存使用超过该值时，会自动退出，避免内存溢出
+; 设置范围 [100 - 65536]，默认值：1024，单位：MB（不支持附加KB、MB、GB等单位写法）
+
 
 ; 设置表结构校验规则，当checkObject为struct时才会生效
 ; 这部分参数如果不设置则使用相应的默认值

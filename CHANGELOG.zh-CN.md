@@ -3,6 +3,7 @@
 - 不再支持命令行传参方式调用，仅支持配置文件方式调用，命令行参数仅支持"-h", "-v", "-c"等几个必要的参数
 - 删除极简模式，默认支持配置文件中只有srcDSN, dstDSN, tables等几个参数
 - 参数名lowerCaseTableNames变更为caseSensitiveObjectName，更好理解
+- 新增参数memoryLimit，用于限制内存使用量，防止OOM
 
 ## 1.2.1
 新增表结构校验、列类型校验等新特性及修复数个bug。
