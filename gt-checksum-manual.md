@@ -78,6 +78,8 @@ Schema  Table                   IndexCol                                checkMod
 db1     t1                      ol_w_id,ol_d_id,ol_o_id,ol_number       rows            5995934,5995918 yes             file
 ```
 
+> 基于性能因素考虑，校验结果输出中的Rows列不是实时同步查询的，源和目标端的数据可能不一致，这时只要 Differences 列显示为 yes 即可，这仍表示校验结果数据是一致的。
+
 ## 配置参数详解
 
 **gt-checksum** 支持命令行传参及指定配置文件两种方式运行，但不支持两种方式同时指定。
