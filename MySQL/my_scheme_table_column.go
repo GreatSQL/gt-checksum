@@ -88,9 +88,9 @@ func (my *QueryTable) DatabaseNameList(db *sql.DB, logThreadSeq int64) (map[stri
 		Event = "Q_Schema_Table_List"
 	)
 	excludeSchema := fmt.Sprintf("'information_Schema','performance_Schema','sys','mysql'")
-	vlog = fmt.Sprintf("(%d) [%s] Start to query the metadata of the %s database and obtain library and table information.", logThreadSeq, Event, DBType)
-	global.Wlog.Debug(vlog)
 	strsql = fmt.Sprintf("SELECT TABLE_SCHEMA AS databaseName, TABLE_NAME AS tableName FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA NOT IN (%s);", excludeSchema)
+	vlog = fmt.Sprintf("(%d) [%s] Start to query the metadata of the %s database and obtain library and table information. SQL: {%s}", logThreadSeq, Event, DBType, strsql)
+	global.Wlog.Debug(vlog)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return nil, err

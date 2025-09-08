@@ -16,7 +16,7 @@ dstDSN = mysql|u1:p1@tcp(172.17.0.2:3307)/information_schema?charset=utf8mb4
 ; 定义校验数据对象
 ; 这部分参数不能全部为空，至少要配置tables参数
 [Schema]
-;tables = test.*
+tables = test.*
 ; 配置参数中，table=*.*表示匹配所有库（MySQL数据源则自动排除 information_schema, mysql, performance_schema, sys 等几个系统库）
 ; 库表名称都支持模糊匹配（无论是table还是ignoreTable）
 ; %代表模糊，*代表所有
@@ -28,23 +28,21 @@ dstDSN = mysql|u1:p1@tcp(172.17.0.2:3307)/information_schema?charset=utf8mb4
 ;  - schema.table%
 ;  - schema.%table%
 ;  - schema.table
-; 其中如果设置了*.*，则不能再添加其他值
-; 例如设置规则"*.*,pcms%.*"会报告table参数设置错误
+; 如果已经设置了"*.*"，则不能再添加其他值
+; 例如设置规则"*.*,pcms%.*"时会报告table参数设置错误
 ; 当参数table和ignoreTable的值设置相同时也会报错
 
-; 选项tables用来定义校验数据表对象，支持通配符"%"和"*"
+; 参数tables用来定义校验数据表对象，支持通配符"%"和"*"
 ; 例如：
 ; *.* 表示所有库表对象（MySQL数据源则自动排除 information_schema, mysql, performance_schema, sys 等几个系统库）
 ; test.* 表示test库下的所有表
 ; test.t% 表示test库下所有表名中包含字母"t"开头的表
 ; db%.* 表示所有库名中包含字母"db"开头的数据库中的所有表
 ; %db.* 表示所有库名中包含字母"db"结尾的数据库中的所有表
-;
-; 如果已经设置为 "*.*"，则不能再增加其他的规则，例如：设置 "*.*,pcms%.*" 则会报告规则错误
-; 如果 table 和 ignoreTables 设置的值相同的话也会报告规则错误
 
 ignoreTables =
-; 选项 ignoreTables 用来定义忽略的数据对象规则，也支持通配符"%"和"*"，具体用法参考上面的案例
+; 参数 ignoreTables 用来定义忽略的数据对象规则
+; ignoreTables 参数的配置规则和 tables 参数相同
 
 checkNoIndexTable = no
 ; 设置是否检查没有索引的表，可设置为 [yes | no]，默认值：no
@@ -52,9 +50,9 @@ checkNoIndexTable = no
 ; checkNoIndexTable = yes | no
 
 lowerCaseTableNames = no
-; 设置是否忽略表名大小写，可设置为 [yes | no]，默认值：no
-; no，统一使用大写表名
-; yes，按照配置的大小写进行匹配
+; 设置是否忽略库名、表名、字段名等数据对象名的大小写，可设置为 [yes | no]，默认值：no
+; no，忽略tables和ignoreTables涉及的数据对象名大小写规则，统一使用大写库名及表名
+; yes，按照tables和ignoreTables参数涉及的数据对象名的大小写进行匹配
 ; lowerCaseTableNames = yes | no
 
 
