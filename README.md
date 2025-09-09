@@ -66,7 +66,7 @@ USAGE:
 
 - 指定配置文件方式，执行数据校验
 
-拷贝或重命名模板文件*gc.conf-sample*为*gc.conf*，主要修改`srcDSN`,`dstDSN`,`tables`,`ignoreTables`等几个参数后，执行如下命令进行数据校验：
+拷贝或重命名模板文件*gc-sample.conf*为*gc.conf*，主要修改`srcDSN`,`dstDSN`,`tables`,`ignoreTables`等几个参数后，执行如下命令进行数据校验：
 
 ```bash
 $  gt-checksum -c ./gc.conf
@@ -103,7 +103,7 @@ db1     t1                      ol_w_id,ol_d_id,ol_o_id,ol_number       rows    
 
 ## 配置参数
 
-配置文件中所有参数的详解可参考模板文件 [gc.conf-sample](./gc.conf-sample)。
+配置文件中所有参数的详解可参考模板文件 [gc-sample.conf](./gc-sample.conf)。
 
 ## 已知缺陷
 
