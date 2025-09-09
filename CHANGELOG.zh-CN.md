@@ -4,6 +4,8 @@
 - 删除极简模式，默认支持配置文件中只有srcDSN, dstDSN, tables等几个参数
 - 参数名lowerCaseTableNames变更为caseSensitiveObjectName，更好理解
 - 新增参数memoryLimit，用于限制内存使用量，防止OOM
+- 优化校验结果输出，Rows的值改为精确值，此外不再频繁输出刷屏
+- 参数logFile支持日期时间格式，例如：gt-checksum-%Y%m%d%H%M%S.log
 
 ## 1.2.1
 新增表结构校验、列类型校验等新特性及修复数个bug。

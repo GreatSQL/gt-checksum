@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"time"
 )
 
 //type ConfigParameter struct {
@@ -62,6 +63,21 @@ func (rc *ConfigParameter) rexPat(rex *regexp.Regexp, rexStr string, illegalPara
 
 func (rc *ConfigParameter) fileExsit(logFile string) {
 	var err error
+	// 支持日期时间格式，例如："./gt-checksum-%Y%m%d%H%M%S.log"
+	if strings.Contains(logFile, "%") {
+		currentTime := time.Now()
+		// 替换常见的日期时间格式符
+		logFile = strings.ReplaceAll(logFile, "%Y", currentTime.Format("2006"))
+		logFile = strings.ReplaceAll(logFile, "%m", currentTime.Format("01"))
+		logFile = strings.ReplaceAll(logFile, "%d", currentTime.Format("02"))
+		logFile = strings.ReplaceAll(logFile, "%H", currentTime.Format("15"))
+		logFile = strings.ReplaceAll(logFile, "%M", currentTime.Format("04"))
+		logFile = strings.ReplaceAll(logFile, "%S", currentTime.Format("05"))
+		logFile = strings.ReplaceAll(logFile, "%s", fmt.Sprintf("%d", currentTime.Unix()))
+		logFile = strings.ReplaceAll(logFile, "%F", currentTime.Format("2006-01-02"))
+		logFile = strings.ReplaceAll(logFile, "%T", currentTime.Format("15:04:05"))
+	}
+	
 	if _, err = os.Stat(logFile); err != nil {
 		if _, err = os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666); err != nil {
 			rc.getErr("Failed to create a log file. Procedure.", err)
