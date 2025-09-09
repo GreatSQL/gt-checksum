@@ -160,20 +160,20 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 		if rc.FirstL.Rules != nil {
 			if rc.SecondaryL.RulesV.ChanRowCount, err = rc.FirstL.Rules.Key("chunkSize").Int(); err != nil {
 				fmt.Println("Failed to set option chunkSize, using default value 1000")
-				rc.SecondaryL.RulesV.ChanRowCount = 1000
+				rc.SecondaryL.RulesV.ChanRowCount = 10000
 			}
 		} else {
 			fmt.Println("Failed to set option chunkSize, using default value 1000")
-			rc.SecondaryL.RulesV.ChanRowCount = 1000
+			rc.SecondaryL.RulesV.ChanRowCount = 10000
 		}
 		if rc.FirstL.Rules != nil {
 			if rc.SecondaryL.RulesV.QueueSize, err = rc.FirstL.Rules.Key("queueSize").Int(); err != nil {
 				fmt.Println("Failed to set option queueSize, using default value 100")
-				rc.SecondaryL.RulesV.QueueSize = 100
+				rc.SecondaryL.RulesV.QueueSize = 1000
 			}
 		} else {
 			fmt.Println("Failed to set option queueSize, using default value 100")
-			rc.SecondaryL.RulesV.QueueSize = 100
+			rc.SecondaryL.RulesV.QueueSize = 1000
 		}
 		if rc.FirstL.Rules != nil {
 			if rc.SecondaryL.RulesV.Ratio, err = rc.FirstL.Rules.Key("ratio").Int(); err != nil {

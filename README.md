@@ -86,12 +86,11 @@ table db1.t1 checksum complete
 
 ** gt-checksum Overview of results **
 Check time:  73.81s (Seconds)
-Schema  Table                   IndexCol                                checkMod        Rows            Differences     Datafix
-db1     t1                      ol_w_id,ol_d_id,ol_o_id,ol_number       rows            5995934,5995918 yes             file
+Schema  Table                   IndexCol                                checkMod        Rows            DIFFS     Datafix
+db1     t1                      ol_w_id,ol_d_id,ol_o_id,ol_number       rows            5995934,5995918 yes       file
 ```
 
-> 提示1：开始执行数据校验前，要先在源和目标数据库创建相应的专属账号并授权。详情参考：[**gt-checksum 手册**](./gt-checksum-manual.md#数据库授权)。
-> 提示2：基于性能因素考虑，校验结果输出中的Rows列不是实时同步查询的，源和目标端的数据可能不一致，这时只要 Differences 列显示为 yes 即可，这仍表示校验结果数据是一致的。
+> 开始执行数据校验前，要先在源和目标数据库创建相应的专属账号并授权。详情参考：[**gt-checksum 手册**](./gt-checksum-manual.md#数据库授权)。
 
 ## 手册
 
@@ -104,10 +103,6 @@ db1     t1                      ol_w_id,ol_d_id,ol_o_id,ol_number       rows    
 ## 配置参数
 
 配置文件中所有参数的详解可参考模板文件 [gc-sample.conf](./gc-sample.conf)。
-
-## 已知缺陷
-
-截止最新的1.2.1版本中，当数据表没有显式主键，且表中有多行数据是重复的，可能会导致校验结果不准确，详见 [已知缺陷](./gt-checksum-manual.md#已知缺陷) 。
 
 ## 问题反馈
 
