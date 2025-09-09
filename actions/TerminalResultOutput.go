@@ -6,16 +6,19 @@ import (
 	"github.com/gosuri/uitable"
 	"gt-checksum/inputArg"
 	"strings"
+	"time"
 )
 
 //进度条
 type Bar struct {
-	percent  int64  //百分比
-	cur      int64  //当前进度位置
-	total    int64  //总进度
-	rate     string //进度条
-	graph    string //显示符号
-	taskUnit string //task单位
+	percent      int64  //百分比
+	cur          int64  //当前进度位置
+	total        int64  //总进度
+	rate         string //进度条
+	graph        string //显示符号
+	taskUnit     string //task单位
+	lastUpdate   int64  //上次更新时间戳（毫秒）
+	updateInterval int64 //更新间隔（毫秒）
 }
 
 type Pod struct {
@@ -152,6 +155,7 @@ func (bar *Bar) NewOption(start, total int64, taskUnit string) {
 	bar.cur = start
 	bar.total = total
 	bar.taskUnit = taskUnit
+	bar.updateInterval = 500 // 默认500毫秒更新一次
 	if bar.graph == "" {
 		bar.graph = "█"
 	}
@@ -162,7 +166,15 @@ func (bar *Bar) NewOption(start, total int64, taskUnit string) {
 }
 
 func (bar *Bar) getPercent() int64 {
-	return int64(float32(bar.cur) / float32(bar.total) * 100)
+	if bar.total == 0 {
+		return 0
+	}
+	percent := int64(float32(bar.cur) / float32(bar.total) * 100)
+	// 确保百分比不超过100%
+	if percent > 100 {
+		return 100
+	}
+	return percent
 }
 func (bar *Bar) NewOptionWithGraph(start, total int64, graph, taskUnit string) {
 	bar.graph = graph
@@ -176,23 +188,35 @@ func (bar *Bar) Play(cur int64) {
 	bar.cur = cur
 	last := bar.percent
 	bar.percent = bar.getPercent()
-	//if bar.percent != last && bar.percent%2 == 0 {
-	//	bar.rate += bar.graph
-	//}
-	if bar.percent != last {
+	
+	currentTime := time.Now().UnixMilli()
+	
+	// 只在百分比变化且达到更新时间间隔时才更新进度条
+	if bar.percent != last && (currentTime - bar.lastUpdate) >= bar.updateInterval {
 		bar.rate += bar.graph
+		bar.lastUpdate = currentTime
+		// 使用回车符覆盖当前行，避免刷屏
+		fmt.Printf("\r[%-21s]%3d%%  %s%8d/%d", bar.rate, bar.percent, fmt.Sprintf("%s:", bar.taskUnit), bar.cur, bar.total)
 	}
-	//if bar.total >= 100
-	//if bar.taskUnit == "task"{
-	//	fmt.Printf("\r[%-21s]%3d%%  %s%8d/%d", bar.rate, bar.percent, "task:", bar.cur, bar.total)
-	//}
-	//if bar.taskUnit == "rows"{
-	//	fmt.Printf("\r[%-21s]%3d%%  %s%8d/%d", bar.rate, bar.percent, "rows:", bar.cur, bar.total)
-	//}
-	fmt.Printf("\r[%-21s]%3d%%  %s%8d/%d", bar.rate, bar.percent, fmt.Sprintf("%s:", bar.taskUnit), bar.cur, bar.total)
+}
+
+// NewTableProgress 开始新表的进度显示，先输出换行再开始进度条
+func (bar *Bar) NewTableProgress(tableName string) {
+	// 先输出换行确保新表进度在新行开始
+	fmt.Printf("\n%-40s", tableName)
 }
 
 //由于上面的打印没有打印换行符，因此，在进度全部结束之后（也就是跳出循环之外时），需要打印一个换行符，因此，封装了一个Finish函数，该函数纯粹的打印一个换行，表示进度条已经完成。
 func (bar *Bar) Finish() {
+	// 确保进度条显示100%完成
+	if bar.cur < bar.total {
+		bar.cur = bar.total
+		bar.percent = 100
+		// 补全进度条
+		for len(bar.rate) < 21 {
+			bar.rate += bar.graph
+		}
+		fmt.Printf("\r[%-21s]%3d%%  %s%8d/%d", bar.rate, bar.percent, fmt.Sprintf("%s:", bar.taskUnit), bar.total, bar.total)
+	}
 	fmt.Println()
 }
