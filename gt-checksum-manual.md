@@ -74,11 +74,10 @@ table db1.t1 checksum complete
 
 ** gt-checksum Overview of results **
 Check time:  73.81s
-Schema  Table                   IndexCol                                checkMod        Rows            Differences     Datafix
-db1     t1                      ol_w_id,ol_d_id,ol_o_id,ol_number       rows            5995934,5995918 yes             file
+Schema  Table                   IndexCol                                checkMod        Rows            DIFFS     Datafix
+db1     t1                      ol_w_id,ol_d_id,ol_o_id,ol_number       rows            5995934,5995918 yes       file
 ```
 
-> 基于性能因素考虑，校验结果输出中的Rows列不是实时同步查询的，源和目标端的数据可能不一致，这时只要 Differences 列显示为 yes 即可，这仍表示校验结果数据是一致的。
 
 ## 配置参数详解
 
@@ -148,6 +147,8 @@ $ mv gt-checksum /usr/local/bin
 
 截止最新的v1.2.2版本，已知存在以下几个问题。
 
+- 不支持对非InnoDB引擎表的数据校验。
+
 - 切换到"partitions|foreign|trigger|func|proc"等几个校验模式时，当校验结果不一致时，无法生成相应的修复SQL，即便设置`datafiex=table`也无法直接修复，需要DBA介入判断后手动修复。
 
 - 当数据表没有显式主键，且表中有多行数据是重复的，可能会导致校验结果不准确。
@@ -209,8 +210,8 @@ mysql> SELECT * FROM t1;
 ...
 ** gt-checksum Overview of results **
 Check time:  0.30s
-Schema  Table   IndexCol        checkMod        Rows    Differences     Datafix
-t1      T1      id,code         rows            10,8    no              file
+Schema  Table   IndexCol        checkMod        Rows    DIFFS     Datafix
+t1      T1      id,code         rows            10,8    no        file
 ```
 这个问题我们会在未来的版本中尽快修复。
 
