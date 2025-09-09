@@ -86,8 +86,8 @@ table db1.t1 checksum complete
 
 ** gt-checksum Overview of results **
 Check time:  73.81s (Seconds)
-Schema  Table                   IndexCol                                checkMod        Rows            DIFFS     Datafix
-db1     t1                      ol_w_id,ol_d_id,ol_o_id,ol_number       rows            5995934,5995918 yes       file
+Schema  Table         IndexColumn                             checkMode       Rows            Diffs     Datafix
+db1     t1            ol_w_id,ol_d_id,ol_o_id,ol_number       rows            5995934,5995918 yes       file
 ```
 
 > 开始执行数据校验前，要先在源和目标数据库创建相应的专属账号并授权。详情参考：[**gt-checksum 手册**](./gt-checksum-manual.md#数据库授权)。

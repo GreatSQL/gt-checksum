@@ -22,7 +22,7 @@ type Bar struct {
 }
 
 type Pod struct {
-	Schema, Table, IndexCol, CheckMod, Rows, Differences, CheckObject, Datafix, FuncName, Definer, ProcName, Sample, TriggerName string
+	Schema, Table, IndexColumn, CheckMode, Rows, DIFFS, CheckObject, Datafix, FuncName, Definer, ProcName, Sample, TriggerName string
 }
 
 var measuredDataPods []Pod
@@ -35,70 +35,70 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 
 	switch m.SecondaryL.RulesV.CheckObject {
 	case "struct":
-		table.AddRow("Schema", "Table ", " CheckObject ", "Differences", "Datafix")
+		table.AddRow("Schema", "Table", " CheckObject ", "Diffs", "Datafix")
 		for _, pod := range measuredDataPods {
-			table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.CheckObject), color.GreenString(pod.Differences), color.YellowString(pod.Datafix))
+			table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.CheckObject), color.GreenString(pod.DIFFS), color.YellowString(pod.Datafix))
 		}
 		fmt.Println(table)
 	case "index":
-		table.AddRow("Schema", "Table ", "CheckObject ", "Differences", "Datafix")
+		table.AddRow("Schema", "Table", "CheckObject ", "Diffs", "Datafix")
 		for _, pod := range measuredDataPods {
-			table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.CheckObject), color.GreenString(pod.Differences), color.YellowString(pod.Datafix))
+			table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.CheckObject), color.GreenString(pod.DIFFS), color.YellowString(pod.Datafix))
 		}
 		fmt.Println(table)
 	case "partitions":
-		table.AddRow("Schema", "Table ", "checkObject ", "Differences", "Datafix")
+		table.AddRow("Schema", "Table", "checkObject ", "Diffs", "Datafix")
 		for _, pod := range measuredDataPods {
-			table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.CheckObject), color.GreenString(pod.Differences), color.YellowString(pod.Datafix))
+			table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.CheckObject), color.GreenString(pod.DIFFS), color.YellowString(pod.Datafix))
 		}
 		fmt.Println(table)
 	case "foreign":
-		table.AddRow("Schema", "Table ", "checkObject ", "Differences", "Datafix")
+		table.AddRow("Schema", "Table", "checkObject ", "Diffs", "Datafix")
 		for _, pod := range measuredDataPods {
-			table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.CheckObject), color.GreenString(pod.Differences), color.YellowString(pod.Datafix))
+			table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.CheckObject), color.GreenString(pod.DIFFS), color.YellowString(pod.Datafix))
 		}
 		fmt.Println(table)
 	case "func":
-		table.AddRow("Schema ", "funcName ", "checkObject ", "Differences ", "Datafix ")
+		table.AddRow("Schema ", "funcName ", "checkObject ", "DIFFS ", "Datafix ")
 		for _, pod := range measuredDataPods {
-			table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.FuncName), color.RedString(pod.CheckObject), color.GreenString(pod.Differences), color.YellowString(pod.Datafix))
+			table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.FuncName), color.RedString(pod.CheckObject), color.GreenString(pod.DIFFS), color.YellowString(pod.Datafix))
 		}
 		fmt.Println(table)
 	case "proc":
-		table.AddRow("Schema ", "procName ", "checkObject ", "Differences ", "Datafix ")
+		table.AddRow("Schema ", "procName ", "checkObject ", "DIFFS ", "Datafix ")
 		for _, pod := range measuredDataPods {
-			table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.ProcName), color.RedString(pod.CheckObject), color.GreenString(pod.Differences), color.YellowString(pod.Datafix))
+			table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.ProcName), color.RedString(pod.CheckObject), color.GreenString(pod.DIFFS), color.YellowString(pod.Datafix))
 		}
 		fmt.Println(table)
 	case "trigger":
-		table.AddRow("Schema ", "triggerName ", "checkObject ", "Differences ", "Datafix ")
+		table.AddRow("Schema ", "triggerName ", "checkObject ", "Diffs ", "Datafix ")
 		for _, pod := range measuredDataPods {
-			table.AddRow(color.RedString(pod.Schema), color.GreenString(pod.TriggerName), color.RedString(pod.CheckObject), color.GreenString(pod.Differences), color.YellowString(pod.Datafix))
+			table.AddRow(color.RedString(pod.Schema), color.GreenString(pod.TriggerName), color.RedString(pod.CheckObject), color.GreenString(pod.DIFFS), color.YellowString(pod.Datafix))
 		}
 		fmt.Println(table)
 	case "data":
 		switch m.SecondaryL.RulesV.CheckMode {
 		case "count":
-			table.AddRow("Schema", "Table ", "checkObject", "checkMod", "Rows", "Differences")
+			table.AddRow("Schema", "Table", "checkObject", "checkMode", "Rows", "Diffs")
 			for _, pod := range measuredDataPods {
-				table.AddRow(color.RedString(pod.Schema), color.GreenString(pod.Table), color.RedString(pod.CheckObject), color.GreenString(pod.CheckMod), color.RedString(pod.Rows), color.YellowString(pod.Differences))
+				table.AddRow(color.RedString(pod.Schema), color.GreenString(pod.Table), color.RedString(pod.CheckObject), color.GreenString(pod.CheckMode), color.RedString(pod.Rows), color.YellowString(pod.DIFFS))
 			}
 			fmt.Println(table)
 		case "sample":
 			for _, pod := range measuredDataPods {
 				if pod.Sample == "" {
-					table.AddRow("Schema", "Table ", "IndexCol ", "checkObject", "checkMod", "Rows", "Differences")
-					table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.IndexCol), color.YellowString(pod.CheckObject), color.BlueString(pod.CheckMod), color.BlueString(pod.Rows), color.GreenString(pod.Differences))
+					table.AddRow("Schema", "Table", "IndexColumn", "checkObject", "checkMode", "Rows", "Diffs")
+					table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.IndexColumn), color.YellowString(pod.CheckObject), color.BlueString(pod.CheckMode), color.BlueString(pod.Rows), color.GreenString(pod.DIFFS))
 				} else {
-					table.AddRow("Schema", "Table ", "IndexCol ", "checkObject", "checkMod", "Rows", "Samp", "Differences")
-					table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.IndexCol), color.YellowString(pod.CheckObject), color.BlueString(pod.CheckMod), color.BlueString(pod.Rows), color.RedString(pod.Sample), color.GreenString(pod.Differences))
+					table.AddRow("Schema", "Table", "IndexColumn", "checkObject", "checkMode", "Rows", "Samp", "Diffs")
+					table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.IndexColumn), color.YellowString(pod.CheckObject), color.BlueString(pod.CheckMode), color.BlueString(pod.Rows), color.RedString(pod.Sample), color.GreenString(pod.DIFFS))
 				}
 			}
 			fmt.Println(table)
 		case "rows":
-			table.AddRow("Schema", "Table ", "IndexCol ", "checkMod", "Rows", "Differences", "Datafix")
+			table.AddRow("Schema", "Table", "IndexColumn", "checkMode", "Rows", "Diffs", "Datafix")
 			for _, pod := range measuredDataPods {
-				var differences = pod.Differences
+				var differences = pod.DIFFS
 				for k, _ := range differencesSchemaTable {
 					if k != "" {
 						KI := strings.Split(k, "greatdbCheck_greatdbCheck")
@@ -107,47 +107,10 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 						}
 					}
 				}
-				table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.IndexCol), color.BlueString(pod.CheckMod), color.BlueString(pod.Rows), color.GreenString(differences), color.YellowString(pod.Datafix))
+				table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.IndexColumn), color.BlueString(pod.CheckMode), color.BlueString(pod.Rows), color.GreenString(differences), color.YellowString(pod.Datafix))
 			}
 			fmt.Println(table)
 		}
-		//if m.CheckObject == "data" {
-		//if m.CheckMode == "count" {
-		//	table.AddRow("Schema", "Table ", "checkObject", "checkMod", "Rows", "Differences")
-		//	for _, pod := range measuredDataPods {
-		//		table.AddRow(color.RedString(pod.Schema), color.GreenString(pod.Table), color.RedString(pod.CheckObject), color.GreenString(pod.CheckMod), color.RedString(pod.Rows), color.YellowString(pod.Differences))
-		//	}
-		//	fmt.Println(table)
-		//}
-		//if m.CheckMode == "sample" {
-		//	for _, pod := range measuredDataPods {
-		//		if pod.Sample == "" {
-		//			table.AddRow("Schema", "Table ", "IndexCol ", "checkObject", "checkMod", "Rows", "Differences")
-		//			table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.IndexCol), color.YellowString(pod.CheckObject), color.BlueString(pod.CheckMod), color.BlueString(pod.Rows), color.GreenString(pod.Differences))
-		//		} else {
-		//			table.AddRow("Schema", "Table ", "IndexCol ", "checkObject", "checkMod", "Rows", "Samp", "Differences")
-		//			table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.IndexCol), color.YellowString(pod.CheckObject), color.BlueString(pod.CheckMod), color.BlueString(pod.Rows), color.RedString(pod.Sample), color.GreenString(pod.Differences))
-		//		}
-		//	}
-		//	fmt.Println(table)
-		//}
-		//if m.CheckMode == "rows" {
-		//	table.AddRow("Schema", "Table ", "IndexCol ", "checkMod", "Rows", "Differences", "Datafix")
-		//	for _, pod := range measuredDataPods {
-		//		var differences = pod.Differences
-		//		for k, _ := range differencesSchemaTable {
-		//			if k != "" {
-		//				KI := strings.Split(k, "greatdbCheck_greatdbCheck")
-		//				if pod.Schema == KI[0] && pod.Table == KI[1] {
-		//					differences = "yes"
-		//				}
-		//			}
-		//		}
-		//		table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.IndexCol), color.BlueString(pod.CheckMod), color.BlueString(pod.Rows), color.GreenString(differences), color.YellowString(pod.Datafix))
-		//	}
-		//	fmt.Println(table)
-		//}
-		//}
 	}
 }
 

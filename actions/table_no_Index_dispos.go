@@ -97,7 +97,7 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 						rowData = ki
 						sqlType = vi
 						//noIndexD <- struct{}{}
-						pods.Differences = "yes"
+						pods.DIFFS = "yes"
 						dbf.IndexType = "mui"
 						//go func() {
 						//	defer func() {
@@ -322,9 +322,9 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 	global.Wlog.Info(vlog)
 	barTableRow := sp.NoIndexTableCount(logThreadSeq)
 	pods := Pod{Schema: sp.schema, Table: sp.table,
-		IndexCol:    "noIndex",
-		CheckMod:    sp.checkMod,
-		Differences: "no",
+		IndexColumn:    "noIndex",
+		CheckMode:    sp.checkMod,
+		DIFFS: "no",
 		Datafix:     sp.datafixType,
 	}
 	sp.bar.NewOption(0, barTableRow, "rows")
