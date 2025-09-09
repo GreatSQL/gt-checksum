@@ -443,15 +443,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 					idxc.Sqlwhere = c1.SqlWhere[sp.ddrive]
 					idxc.TableColumn = colData.DColumnInfo
 					dtt, _ := idxc.TableIndexColumn().GeneratingQueryCriteria(ddb, logThreadSeq)
-					//对不同数据库的的null处理
-					//if aa.CheckMd5(stt) != aa.CheckMd5(dtt) {
-					//	if strings.Contains(stt, "/*go actions columnData*//*") {
-					//		stt = strings.ReplaceAll(stt, "/*go actions columnData*//*", "/*go actions columnData*/<nil>/*")
-					//	}
-					//	if strings.Contains(dtt, "/*go actions columnData*//*") {
-					//		dtt = strings.ReplaceAll(dtt, "/*go actions columnData*//*", "/*go actions columnData*/<nil>/*")
-					//	}
-					//}
+
 					if aa.CheckMd5(stt) != aa.CheckMd5(dtt) {
 						add, del := aa.Arrcmp(strings.Split(stt, "/*go actions rowData*/"), strings.Split(dtt, "/*go actions rowData*/"))
 						stt, dtt = "", ""
@@ -534,7 +526,7 @@ func (sp SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 				}
 			} else {
 				increSeq++
-				sp.pods.Differences = "yes"
+				sp.pods.DIFFS = "yes"
 				sqlSlice = append(sqlSlice, v)
 				if increSeq == sp.fixTrxNum {
 					var sqlSlice1 []string
@@ -584,9 +576,9 @@ func (sp SchedulePlan) doIndexDataCheck() {
 	sp.pods = &Pod{
 		Schema:      sp.schema,
 		Table:       sp.table,
-		IndexCol:    strings.TrimLeft(strings.Join(sp.columnName, ","), ","),
-		CheckMod:    sp.checkMod,
-		Differences: "no",
+		IndexColumn:    strings.TrimLeft(strings.Join(sp.columnName, ","), ","),
+		CheckMode:    sp.checkMod,
+		DIFFS: "no",
 		Datafix:     sp.datafixType,
 	}
 	idxc.Drivce = sp.sdrive

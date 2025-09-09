@@ -74,7 +74,7 @@ table db1.t1 checksum complete
 
 ** gt-checksum Overview of results **
 Check time:  73.81s
-Schema  Table                   IndexCol                                checkMod        Rows            DIFFS     Datafix
+Schema  Table                   IndexColumn                             checkMode       Rows            Diffs     Datafix
 db1     t1                      ol_w_id,ol_d_id,ol_o_id,ol_number       rows            5995934,5995918 yes       file
 ```
 
@@ -210,7 +210,7 @@ mysql> SELECT * FROM t1;
 ...
 ** gt-checksum Overview of results **
 Check time:  0.30s
-Schema  Table   IndexCol        checkMod        Rows    DIFFS     Datafix
+Schema  Table   IndexColumn     checkMode       Rows    Diffs     Datafix
 t1      T1      id,code         rows            10,8    no        file
 ```
 这个问题我们会在未来的版本中尽快修复。

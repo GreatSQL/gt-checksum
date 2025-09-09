@@ -667,10 +667,10 @@ func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 in
 		for k, _ := range tmpM {
 			pods.TriggerName = strings.ReplaceAll(strings.Split(k, ".")[1], "\"", "")
 			if sourceTrigger[k] != destTrigger[k] {
-				pods.Differences = "yes"
+				pods.DIFFS = "yes"
 				d = append(d, k)
 			} else {
-				pods.Differences = "no"
+				pods.DIFFS = "no"
 				c = append(c, k)
 			}
 			vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment databases %s Trigger. normal databases message is {%s} num [%d] abnormal databases message is {%s} num [%d]", logThreadSeq, stcls.schema, c, len(c), d, len(d))
@@ -751,21 +751,21 @@ func (stcls *schemaTable) Proc(dtabS []string, logThreadSeq, logThreadSeq2 int64
 			if stcls.sourceDrive != stcls.destDrive {
 				if v == 2 {
 					pods.ProcName = k
-					pods.Differences = "no"
+					pods.DIFFS = "no"
 					c = append(c, k)
 				} else {
 					pods.ProcName = k
-					pods.Differences = "yes"
+					pods.DIFFS = "yes"
 					d = append(d, k)
 				}
 			} else {
 				if sourceProc[k] != destProc[k] {
 					pods.ProcName = k
-					pods.Differences = "yes"
+					pods.DIFFS = "yes"
 					d = append(d, k)
 				} else {
 					pods.ProcName = k
-					pods.Differences = "no"
+					pods.DIFFS = "no"
 					c = append(c, k)
 				}
 			}
@@ -845,22 +845,22 @@ func (stcls *schemaTable) Func(dtabS []string, logThreadSeq, logThreadSeq2 int64
 			if stcls.sourceDrive != stcls.destDrive { //异构,只校验函数名
 				if v == 2 {
 					pods.FuncName = k
-					pods.Differences = "no"
+					pods.DIFFS = "no"
 					c = append(c, k)
 				} else {
 					pods.FuncName = k
-					pods.Differences = "yes"
+					pods.DIFFS = "yes"
 					d = append(d, k)
 				}
 			} else { //相同架构，校验函数结构体
 				sv, dv = sourceFunc[k], destFunc[k]
 				if sv != dv {
 					pods.FuncName = k
-					pods.Differences = "yes"
+					pods.DIFFS = "yes"
 					d = append(d, k)
 				} else {
 					pods.FuncName = k
-					pods.Differences = "no"
+					pods.DIFFS = "no"
 					c = append(c, k)
 				}
 			}
@@ -874,46 +874,6 @@ func (stcls *schemaTable) Func(dtabS []string, logThreadSeq, logThreadSeq2 int64
 	vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment table Stored Function data. normal databases message is {%s} num [%d] abnormal databases message is {%s} num [%d]", logThreadSeq, c, len(c), d, len(d))
 	global.Wlog.Info(vlog)
 }
-
-/*
-	校验函数
-*/
-
-//func (stcls *schemaTable) IndexDisposF(queryData []map[string]interface{}) ([]string, map[string][]string, map[string][]string) {
-//	nultiseriateIndexColumnMap := make(map[string][]string)
-//	multiseriateIndexColumnMap := make(map[string][]string)
-//	var PriIndexCol, uniIndexCol, mulIndexCol []string
-//	var indexName string
-//	for _, v := range queryData {
-//		var currIndexName = strings.ToUpper(v["indexName"].(string))
-//		//判断唯一索引（包含主键索引和普通索引）
-//		if v["nonUnique"].(string) == "0" || v["nonUnique"].(string) == "UNIQUE" {
-//			if currIndexName == "PRIMARY" || v["columnKey"].(string) == "1" {
-//				if currIndexName != indexName {
-//					indexName = currIndexName
-//				}
-//				PriIndexCol = append(PriIndexCol, fmt.Sprintf("%s", v["columnName"]))
-//			} else {
-//				if currIndexName != indexName {
-//					indexName = currIndexName
-//					nultiseriateIndexColumnMap[indexName] = append(uniIndexCol, fmt.Sprintf("%s /*actions Column Type*/ %s", v["columnName"], v["columnType"]))
-//				} else {
-//					nultiseriateIndexColumnMap[indexName] = append(nultiseriateIndexColumnMap[indexName], fmt.Sprintf("%s /*actions Column Type*/ %s", v["columnName"], v["columnType"]))
-//				}
-//			}
-//		}
-//		//处理普通索引
-//		if v["nonUnique"].(string) == "1" || (v["nonUnique"].(string) == "NONUNIQUE" && v["columnKey"].(string) == "0") {
-//			if currIndexName != indexName {
-//				indexName = currIndexName
-//				multiseriateIndexColumnMap[indexName] = append(mulIndexCol, fmt.Sprintf("%s /*actions Column Type*/ %s", v["columnName"], v["columnType"]))
-//			} else {
-//				multiseriateIndexColumnMap[indexName] = append(multiseriateIndexColumnMap[indexName], fmt.Sprintf("%s /*actions Column Type*/ %s", v["columnName"], v["columnType"]))
-//			}
-//		}
-//	}
-//	return PriIndexCol, nultiseriateIndexColumnMap, multiseriateIndexColumnMap
-//}
 
 func (stcls *schemaTable) Foreign(dtabS []string, logThreadSeq, logThreadSeq2 int64) {
 	var (
@@ -972,10 +932,10 @@ func (stcls *schemaTable) Foreign(dtabS []string, logThreadSeq, logThreadSeq2 in
 		global.Wlog.Debug(vlog)
 		for k, _ := range tmpM {
 			if sourceForeign[k] != destForeign[k] {
-				pods.Differences = "yes"
+				pods.DIFFS = "yes"
 				d = append(d, k)
 			} else {
-				pods.Differences = "no"
+				pods.DIFFS = "no"
 				c = append(c, k)
 			}
 		}
@@ -1047,11 +1007,11 @@ func (stcls *schemaTable) Partitions(dtabS []string, logThreadSeq, logThreadSeq2
 		global.Wlog.Debug(vlog)
 		for k, _ := range tmpM {
 			if strings.Join(strings.Fields(sourcePartitions[k]), "") != strings.Join(strings.Fields(destPartitions[k]), "") {
-				pods.Differences = "yes"
+				pods.DIFFS = "yes"
 				d = append(d, k)
 			} else {
 				c = append(c, k)
-				pods.Differences = "no"
+				pods.DIFFS = "no"
 			}
 		}
 		vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment table %s.%s partitions. normal table message is {%s} num [%d] abnormal table message is {%s} num [%d]", logThreadSeq, stcls.schema, stcls.table, c, len(c), d, len(d))
@@ -1227,7 +1187,7 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 			Datafix:     stcls.datefix,
 			CheckObject: "Index",
 
-			Differences: "no",
+			DIFFS: "no",
 			Schema:      stcls.schema,
 			Table:       stcls.table,
 		}
@@ -1251,7 +1211,7 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 		global.Wlog.Debug(vlog)
 		// 应用并清空 sqlS
 		if len(sqlS) > 0 {
-		    pods.Differences = "yes"
+		    pods.DIFFS = "yes"
 
 		    err := ApplyDataFix(sqlS, stcls.datefix, stcls.sfile, stcls.destDrive, stcls.djdbc, logThreadSeq)
 		    if err != nil {
@@ -1296,14 +1256,14 @@ func (stcls *schemaTable) Struct(dtabS []string, logThreadSeq, logThreadSeq2 int
 		aa := strings.Split(i, ".")
 		pods.Schema = aa[0]
 		pods.Table = aa[1]
-		pods.Differences = "no"
+		pods.DIFFS = "no"
 		measuredDataPods = append(measuredDataPods, pods)
 	}
 	for _, i := range abnormal {
 		aa := strings.Split(i, ".")
 		pods.Schema = aa[0]
 		pods.Table = aa[1]
-		pods.Differences = "yes"
+		pods.DIFFS = "yes"
 		measuredDataPods = append(measuredDataPods, pods)
 	}
 	fmt.Println("gt-checksum report: Table structure checksum completed")
