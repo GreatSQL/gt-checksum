@@ -608,7 +608,10 @@ func (sp SchedulePlan) doIndexDataCheck() {
 	} else {
 		sp.tableMaxRows = B
 	}
-	sp.pods.Rows = fmt.Sprintf("%d,%d", A, B)
+	// 重新查询精确行数
+	sourceExactCount := sp.getExactRowCount(sp.sdbPool, sp.schema, sp.table, logThreadSeq)
+	targetExactCount := sp.getExactRowCount(sp.ddbPool, sp.schema, sp.table, logThreadSeq)
+	sp.pods.Rows = fmt.Sprintf("%d,%d", sourceExactCount, targetExactCount)
 	var scheduleCount = make(chan int64, 1)
 	go sp.indexColumnDispos(sqlWhere, selectColumnStringM)
 	go sp.queryTableSql(sqlWhere, selectSql, tableColumn, scheduleCount, logThreadSeq)

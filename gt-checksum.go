@@ -21,7 +21,7 @@ func main() {
 	m := inputArg.ConfigInit(0)
 
 	//启动内存监控
-	utils.MemoryMonitor(fmt.Sprintf("%dMB", m.SecondaryL.RulesV.MemoryLimit))
+	utils.MemoryMonitor(fmt.Sprintf("%dMB", m.SecondaryL.RulesV.MemoryLimit), m)
 
 	if !actions.SchemaTableInit(m).GlobalAccessPriCheck(1, 2) {
 		fmt.Println(fmt.Sprintf("gt-checksum report: The SESSION_VARIABLES_ADMIN and REPLICATION global privileges may not have been granted. Please check %s or set option \"logLevel=debug\" to get more information.", m.SecondaryL.LogV.LogFile))

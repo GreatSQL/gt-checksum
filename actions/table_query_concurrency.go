@@ -85,7 +85,9 @@ func (sp *SchedulePlan) Schedulingtasks() {
 		} else { //校验有索引的表
 			sp.chanrowCount = sp.chunkSize
 			sp.columnName = v
-			fmt.Println(fmt.Sprintf("begin checkSum index table %s.%s", sp.schema, sp.table))
+			// 开始新表的进度显示
+			tableName := fmt.Sprintf("begin checkSum index table %s.%s", sp.schema, sp.table)
+			sp.bar.NewTableProgress(tableName)
 			sp.doIndexDataCheck()
 			fmt.Println()
 			fmt.Println(fmt.Sprintf("table %s.%s checksum complete", sp.schema, sp.table))
