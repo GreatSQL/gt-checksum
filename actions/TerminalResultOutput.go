@@ -123,11 +123,9 @@ func (bar *Bar) NewOption(start, total int64, taskUnit string) {
 		bar.graph = "█"
 	}
 	bar.percent = bar.getPercent()
-	// 计算进度条长度：每个█字符代表约3.33%的进度（100% / 30个字符）
-	progressBars := int(float64(bar.percent) * 30 / 100)
-	for i := 0; i < progressBars; i++ {
-		bar.rate += bar.graph //初始化进度条位置
-	}
+	// 计算进度条长度：每个█字符代表5%的进度（100% / 20个字符）
+	progressBars := int(float64(bar.percent) * 20 / 100)
+	bar.rate = strings.Repeat(bar.graph, progressBars) //初始化进度条位置
 }
 
 func (bar *Bar) getPercent() int64 {
@@ -158,22 +156,24 @@ func (bar *Bar) Play(cur int64) {
 	
 	// 强制在进度完成时更新进度条
 	if bar.percent == 100 || bar.cur == bar.total {
-		// 补全进度极条到100% (30个█字符)
-		for len(bar.rate) < 30 {
+		// 补全进度条到100% (20个█字符)
+		for len(bar.rate) < 20 {
 			bar.rate += bar.graph
 		}
 		bar.percent = 100
-		fmt.Printf("\r\033[K[%-30s]%3d%%  %s%5d/100", bar.rate, bar.percent, fmt.Sprintf("%s:", bar.taskUnit), bar.percent)
-	} else if bar.percent != last && (currentTime - bar.lastUpdate) >= bar.updateInterval {
+		fmt.Printf("\r\033[K[%-20s]%3d%%  %s%5d/100", bar.rate, bar.percent, fmt.Sprintf("%s:", bar.taskUnit), bar.percent)
+	} else if (bar.percent != last || bar.cur == bar.total) && (currentTime - bar.lastUpdate) >= bar.updateInterval {
 		// 只在百分比变化且达到更新时间间隔时才更新进度条
-		// 计算当前应该显示的进度条长度
-		progressBars := int(bar.percent) / 5
-		if progressBars > len(bar.rate) {
-			bar.rate = strings.Repeat(bar.graph, progressBars)
+		// 计算当前应该显示的进度条长度（每个█字符代表5%的进度）
+		progressBars := int(float64(bar.percent) * 20 / 100)
+		// 确保进度条长度不超过20个字符
+		if progressBars > 20 {
+			progressBars = 20
 		}
+		bar.rate = strings.Repeat(bar.graph, progressBars)
 		bar.lastUpdate = currentTime
 		// 使用回车符覆盖当前行，避免刷屏
-		fmt.Printf("\r\033[K[%-30s]%3d%%  %s%5d/100", bar.rate, bar.percent, fmt.Sprintf("%s:", bar.taskUnit), bar.percent)
+		fmt.Printf("\r\033[K[%-20s]%3d%%  %s%5d/100", bar.rate, bar.percent, fmt.Sprintf("%s:", bar.taskUnit), bar.percent)
 	}
 }
 
@@ -185,21 +185,10 @@ func (bar *Bar) NewTableProgress(tableName string) {
 
 //由于上面的打印没有打印换行符，因此，在进度全部结束之后（也就是跳出循环之外时），需要打印一个换行符，因此，封装了一个Finish函数，该函数纯粹的打印一个换行，表示进度条已经完成。
 func (bar *Bar) Finish() {
-	// 确保进度条显示100%完成
-	if bar.cur < bar.total {
-		bar.cur = bar.total
-		bar.percent = 100
-		// 补全进度条
-		for len(bar.rate) < 30 {
-			bar.rate += bar.graph
-		}
-		fmt.Printf("\r\033[K[%-极30s]%3d%%  %s%5d/100", bar.rate, bar.percent, fmt.Sprintf("%s:", bar.taskUnit), bar.percent)
-	} else if bar.percent == 100 {
-		// 如果进度已经是100%，确保进度条显示完整
-		for len(bar.rate) < 30 {
-			bar.rate += bar.graph
-		}
-		fmt.Printf("\r\033[K[%-30s]%3d%%  %s%5d/100", bar.rate, bar.percent, fmt.Sprintf("%s:", bar.taskUnit), bar.percent)
-	}
+	// 强制设置进度为100%并补全进度条
+	bar.cur = bar.total
+	bar.percent = 100
+	bar.rate = strings.Repeat(bar.graph, 20) // 强制补全进度条到20个字符
+	fmt.Printf("\r\033[K[%-20s]%3d%%  %s%5d/100", bar.rate, bar.percent, fmt.Sprintf("%s:", bar.taskUnit), bar.percent)
 	fmt.Println()
 }
