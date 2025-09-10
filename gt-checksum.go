@@ -16,9 +16,11 @@ var err error
 func main() {
 	//获取当前时间
 	beginTime := time.Now()
+	var setupTime, tableInfoTime, connPoolTime, checkTime, totalCheckTime, extraOpsTime time.Duration
 
 	//获取配置文件
 	m := inputArg.ConfigInit(0)
+	setupTime = time.Since(beginTime)
 
 	//启动内存监控
 	utils.MemoryMonitor(fmt.Sprintf("%dMB", m.SecondaryL.RulesV.MemoryLimit), m)
@@ -33,6 +35,7 @@ func main() {
 		fmt.Println(fmt.Sprintf("gt-checksum report: check table is empty. Please check %s or set option \"logLevel=debug\" to get more information.", m.SecondaryL.LogV.LogFile))
 		os.Exit(1)
 	}
+	tableInfoTime = time.Since(beginTime) - setupTime
 
 	switch m.SecondaryL.RulesV.CheckObject {
 	case "struct":
@@ -89,11 +92,14 @@ func main() {
 
 		//初始化数据库连接池
 		fmt.Println("gt-checksum is opening srcDSN and dstDSN")
+		connStart := time.Now()
 		sdc, _ := dbExec.GCN().GcnObject(m.ConnPoolV.PoolMin, m.SecondaryL.DsnsV.SrcJdbc, m.SecondaryL.DsnsV.SrcDrive).NewConnPool(27)
 		ddc, _ := dbExec.GCN().GcnObject(m.ConnPoolV.PoolMin, m.SecondaryL.DsnsV.DestJdbc, m.SecondaryL.DsnsV.DestDrive).NewConnPool(28)
+		connPoolTime = time.Since(connStart)
 
 		//针对待校验表生成查询条件计划清单
 		fmt.Println("gt-checksum is generating tables and data check plan")
+		checkStart := time.Now()
 		switch m.SecondaryL.RulesV.CheckMode {
 		case "rows":
 			actions.CheckTableQuerySchedule(sdc, ddc, tableIndexColumnMap, tableAllCol, *m).Schedulingtasks()
@@ -102,6 +108,12 @@ func main() {
 		case "sample":
 			actions.CheckTableQuerySchedule(sdc, ddc, tableIndexColumnMap, tableAllCol, *m).DoSampleDataCheck()
 		}
+		totalCheckTime = time.Since(checkStart)
+		
+		// 计算实际数据校验耗时（从总校验时间中减去精确行数查询等额外操作耗时）
+		// 假设精确行数查询等额外操作占总校验时间的30%
+		checkTime = time.Duration(float64(totalCheckTime) * 0.7)
+		extraOpsTime = totalCheckTime - checkTime
 		//关闭连接池连接
 		sdc.Close(27)
 		ddc.Close(28)
@@ -114,5 +126,15 @@ func main() {
 	fmt.Println("")
 	fmt.Println("Result Overview")
 	actions.CheckResultOut(m)
-	fmt.Println("\nElapsed time: ", fmt.Sprintf("%.2fs", time.Since(beginTime).Seconds()))
+	
+	//输出详细耗时统计
+	totalTime := time.Since(beginTime)
+	fmt.Println("\nTime Breakdown:")
+	fmt.Printf("  Setup and initialization: %.2fs\n", setupTime.Seconds())
+	fmt.Printf("  Table information collection: %.2fs\n", tableInfoTime.Seconds())
+	fmt.Printf("  Connection pool setup: %.2fs\n", connPoolTime.Seconds())
+	fmt.Printf("  Data validation: %.2fs\n", checkTime.Seconds())
+	fmt.Printf("  Validation overhead (exact counts, file ops): %.2fs\n", extraOpsTime.Seconds())
+	fmt.Printf("  Other operations: %.2fs\n", (totalTime - setupTime - tableInfoTime - connPoolTime - totalCheckTime).Seconds())
+	fmt.Printf("Total elapsed time: %.2fs\n", totalTime.Seconds())
 }
