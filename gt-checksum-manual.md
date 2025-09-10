@@ -37,8 +37,8 @@ $ gt-checksum -c ./gc.conf
 
   假设现在要对db1.t1做校验和修复，则可授权如下
   ```sql
-  mysql> GRANT REPLICATION CLIENT, SESSION_VARIABLES_ADMIN ON *.* TO ...;
-  mysql> GRANT SELECT, INSERT, DELETE ON db1.t1 TO ...;
+  mysql> GRANT REPLICATION CLIENT, SESSION_VARIABLES_ADMIN ON *.* TO 'checksum'@'%';
+  mysql> GRANT SELECT, INSERT, DELETE ON db1.t1 TO 'checksum'@'%';
   ```
 
 - Oracle端

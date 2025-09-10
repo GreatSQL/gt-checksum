@@ -118,12 +118,14 @@ func (bar *Bar) NewOption(start, total int64, taskUnit string) {
 	bar.cur = start
 	bar.total = total
 	bar.taskUnit = taskUnit
-	bar.updateInterval = 500 // 默认500毫秒更新一次
+	bar.updateInterval = 100 // 调整为100毫秒更新一次，使进度条更流畅
 	if bar.graph == "" {
 		bar.graph = "█"
 	}
 	bar.percent = bar.getPercent()
-	for i := 0; i < int(bar.percent); i += 2 {
+	// 计算进度条长度：每个█字符代表约3.33%的进度（100% / 30个字符）
+	progressBars := int(float64(bar.percent) * 30 / 100)
+	for i := 0; i < progressBars; i++ {
 		bar.rate += bar.graph //初始化进度条位置
 	}
 }
@@ -154,12 +156,24 @@ func (bar *Bar) Play(cur int64) {
 	
 	currentTime := time.Now().UnixMilli()
 	
-	// 只在百分比变化且达到更新时间间隔时才更新进度条
-	if bar.percent != last && (currentTime - bar.lastUpdate) >= bar.updateInterval {
-		bar.rate += bar.graph
+	// 强制在进度完成时更新进度条
+	if bar.percent == 100 || bar.cur == bar.total {
+		// 补全进度极条到100% (30个█字符)
+		for len(bar.rate) < 30 {
+			bar.rate += bar.graph
+		}
+		bar.percent = 100
+		fmt.Printf("\r\033[K[%-30s]%3d%%  %s%5d/100", bar.rate, bar.percent, fmt.Sprintf("%s:", bar.taskUnit), bar.percent)
+	} else if bar.percent != last && (currentTime - bar.lastUpdate) >= bar.updateInterval {
+		// 只在百分比变化且达到更新时间间隔时才更新进度条
+		// 计算当前应该显示的进度条长度
+		progressBars := int(bar.percent) / 5
+		if progressBars > len(bar.rate) {
+			bar.rate = strings.Repeat(bar.graph, progressBars)
+		}
 		bar.lastUpdate = currentTime
 		// 使用回车符覆盖当前行，避免刷屏
-		fmt.Printf("\r[%-21s]%3d%%  %s%8d/%d", bar.rate, bar.percent, fmt.Sprintf("%s:", bar.taskUnit), bar.cur, bar.total)
+		fmt.Printf("\r\033[K[%-30s]%3d%%  %s%5d/100", bar.rate, bar.percent, fmt.Sprintf("%s:", bar.taskUnit), bar.percent)
 	}
 }
 
@@ -176,10 +190,16 @@ func (bar *Bar) Finish() {
 		bar.cur = bar.total
 		bar.percent = 100
 		// 补全进度条
-		for len(bar.rate) < 21 {
+		for len(bar.rate) < 30 {
 			bar.rate += bar.graph
 		}
-		fmt.Printf("\r[%-21s]%3d%%  %s%8d/%d", bar.rate, bar.percent, fmt.Sprintf("%s:", bar.taskUnit), bar.total, bar.total)
+		fmt.Printf("\r\033[K[%-极30s]%3d%%  %s%5d/100", bar.rate, bar.percent, fmt.Sprintf("%s:", bar.taskUnit), bar.percent)
+	} else if bar.percent == 100 {
+		// 如果进度已经是100%，确保进度条显示完整
+		for len(bar.rate) < 30 {
+			bar.rate += bar.graph
+		}
+		fmt.Printf("\r\033[K[%-30s]%3d%%  %s%5d/100", bar.rate, bar.percent, fmt.Sprintf("%s:", bar.taskUnit), bar.percent)
 	}
 	fmt.Println()
 }
