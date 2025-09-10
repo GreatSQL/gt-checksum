@@ -86,30 +86,6 @@ func main() {
 		//根据要校验的表，筛选查询数据时使用到的索引列信息
 		fmt.Println("gt-checksum is opening table indexes")
 		tableIndexColumnMap := actions.SchemaTableInit(m).TableIndexColumn(tableList, 23, 24)
-		//获取全局一致 x性位点
-		//fmt.Println("-- GreatdbCheck Obtain global consensus sites --")
-		//sglobalSites, err := dbExec.GCN().GcnObject(m.PoolMin, m.PoolMax, m.SourceJdbc, m.SourceDrive).GlobalCN(25)
-		//if err != nil {
-		//	os.Exit(1)
-		//}
-		//dglobalSites, err := dbExec.GCN().GcnObject(m.PoolMin, m.PoolMax, m.DestJdbc, m.DestDrive).GlobalCN(26)
-		//if err != nil {
-		//	os.Exit(1)
-		//}
-		//fmt.Println(sglobalSites, dglobalSites)
-
-		//var SourceItemAbnormalDataChan = make(chan actions.SourceItemAbnormalDataStruct, 100)
-		//var addChan, delChan = make(chan string, 100), make(chan string, 100)
-
-		// 开启差异数据修复的线程
-		//go actions.DifferencesDataDispos(SourceItemAbnormalDataChan, addChan, delChan)
-		//go actions.DataFixSql(addChan, delChan)
-
-		//开始进行增量校验
-		//if m.IncCheckSwitch == "yesno" {
-		//	fmt.Println("-- GreatdbCheck begin cehck table incerment date --")
-		//	actions.IncDataDisops(m.SourceDrive, m.DestDrive, m.SourceJdbc, m.DestJdbc, sglobalSites, dglobalSites, tableList).Aa(fullDataCompletionStatus, SourceItemAbnormalDataChan)
-		//}
 
 		//初始化数据库连接池
 		fmt.Println("gt-checksum is opening srcDSN and dstDSN")
@@ -136,7 +112,7 @@ func main() {
 	global.Wlog.Info("gt-checksum check object {", m.SecondaryL.RulesV.CheckObject, "} complete !!!")
 	//输出结果信息
 	fmt.Println("")
-	fmt.Println("** gt-checksum Overview of results **")
-	fmt.Println("Check time: ", fmt.Sprintf("%.2fs", time.Since(beginTime).Seconds()))
+	fmt.Println("Result Overview")
 	actions.CheckResultOut(m)
+	fmt.Println("\nElapsed time: ", fmt.Sprintf("%.2fs", time.Since(beginTime).Seconds()))
 }

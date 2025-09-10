@@ -415,7 +415,7 @@ func (sp *SchedulePlan) getExactRowCount(dbPool *global.Pool, schema, table stri
 	err := db.QueryRow(query).Scan(&count)
 	if err != nil {
 		// 如果查询失败，返回0
-		vlog := fmt.Sprintf("(%d) Failed to get exact row count for %s.%极s: %v", logThreadSeq, schema, table, err)
+		vlog := fmt.Sprintf("(%d) Failed to get exact row count for %s.%s: %v", logThreadSeq, schema, table, err)
 		global.Wlog.Error(vlog)
 		return 0
 	}

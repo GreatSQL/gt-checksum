@@ -19,6 +19,7 @@ type Bar struct {
 	taskUnit     string //task单位
 	lastUpdate   int64  //上次更新时间戳（毫秒）
 	updateInterval int64 //更新间隔（毫秒）
+	startTime    int64  //开始时间戳（毫秒）
 }
 
 type Pod struct {
@@ -119,6 +120,7 @@ func (bar *Bar) NewOption(start, total int64, taskUnit string) {
 	bar.total = total
 	bar.taskUnit = taskUnit
 	bar.updateInterval = 100 // 调整为100毫秒更新一次，使进度条更流畅
+	bar.startTime = time.Now().UnixMilli() // 记录开始时间
 	if bar.graph == "" {
 		bar.graph = "█"
 	}
@@ -161,7 +163,9 @@ func (bar *Bar) Play(cur int64) {
 			bar.rate += bar.graph
 		}
 		bar.percent = 100
-		fmt.Printf("\r\033[K[%-20s]%3d%%  %s%5d/100", bar.rate, bar.percent, fmt.Sprintf("%s:", bar.taskUnit), bar.percent)
+		// 计算实时耗时（秒）
+		elapsedMilliseconds := time.Now().UnixMilli() - bar.startTime
+		fmt.Printf("\r\033[K[%-20s]%3d%%  %s%5d/100     Elapsed time: %.2fs", bar.rate, bar.percent, fmt.Sprintf("%s:", bar.taskUnit), bar.percent, float64(elapsedMilliseconds)/1000)
 	} else if (bar.percent != last || bar.cur == bar.total) && (currentTime - bar.lastUpdate) >= bar.updateInterval {
 		// 只在百分比变化且达到更新时间间隔时才更新进度条
 		// 计算当前应该显示的进度条长度（每个█字符代表5%的进度）
@@ -173,7 +177,9 @@ func (bar *Bar) Play(cur int64) {
 		bar.rate = strings.Repeat(bar.graph, progressBars)
 		bar.lastUpdate = currentTime
 		// 使用回车符覆盖当前行，避免刷屏
-		fmt.Printf("\r\033[K[%-20s]%3d%%  %s%5d/100", bar.rate, bar.percent, fmt.Sprintf("%s:", bar.taskUnit), bar.percent)
+		// 计算实时耗时（秒）
+		elapsedMilliseconds := currentTime - bar.startTime
+		fmt.Printf("\r\033[K[%-20s]%3d%%  %s%5d/100     Elapsed time: %.2fs", bar.rate, bar.percent, fmt.Sprintf("%s:", bar.taskUnit), bar.percent, float64(elapsedMilliseconds)/1000)
 	}
 }
 
@@ -189,6 +195,11 @@ func (bar *Bar) Finish() {
 	bar.cur = bar.total
 	bar.percent = 100
 	bar.rate = strings.Repeat(bar.graph, 20) // 强制补全进度条到20个字符
-	fmt.Printf("\r\033[K[%-20s]%3d%%  %s%5d/100", bar.rate, bar.percent, fmt.Sprintf("%s:", bar.taskUnit), bar.percent)
+	
+	// 计算耗时（秒）
+	endTime := time.Now().UnixMilli()
+	elapsedSeconds := float64(endTime - bar.startTime) / 1000.0
+	
+	fmt.Printf("\r\033[K[%-20s]%3d%%  %s%5d/100 耗时: %.2fs", bar.rate, bar.percent, fmt.Sprintf("%s:", bar.taskUnit), bar.percent, elapsedSeconds)
 	fmt.Println()
 }
