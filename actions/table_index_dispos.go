@@ -311,17 +311,17 @@ func (sp *SchedulePlan) queryTableData(selectSql chanMap, diffQueryData chanDiff
 			if sp.tableMaxRows%uint64(sp.chanrowCount) > 0 {
 				barTotal += 1
 			}
-			sp.bar.NewOption(0, barTotal, "task")
+			sp.bar.NewOption(0, barTotal, "Processing")
 		}
 	}
 	if sp.checkMod == "sample" {
-		sp.bar.NewOption(0, sp.sampDataGroupNumber, "task")
+		sp.bar.NewOption(0, sp.sampDataGroupNumber, "Processing")
 	}
 	for {
 		select {
 		case d, ok := <-sc:
 			if ok {
-				sp.bar.NewOption(0, d, "task")
+				sp.bar.NewOption(0, d, "Processing")
 			}
 		case c, ok := <-selectSql:
 			if !ok {
