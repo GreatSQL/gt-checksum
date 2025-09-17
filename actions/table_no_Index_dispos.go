@@ -9,7 +9,7 @@ import (
 )
 
 /*
-	针对差异数据行做md5校验，并去除重复值
+针对差异数据行做md5校验，并去除重复值
 */
 func (sp *SchedulePlan) AbDataMd5Unique(md5Chan <-chan map[string]string, logThreadSeq int64) chan map[string]string {
 	var A = make(chan map[string]string, 1)
@@ -38,14 +38,14 @@ func (sp *SchedulePlan) AbDataMd5Unique(md5Chan <-chan map[string]string, logThr
 }
 
 /*
-	无索引表的表统计信息行数
+无索引表的表统计信息行数
 */
 func (sp *SchedulePlan) NoIndexTableCount(logThreadSeq int64) int64 {
 	var (
 		A, B uint64
 		err  error
 	)
-	idxc := dbExec.IndexColumnStruct{Drivce: sp.sdrive, Schema: sp.schema, Table: sp.table, ColumnName: sp.columnName, ChanrowCount: sp.chanrowCount}
+	idxc := dbExec.IndexColumnStruct{Drivce: sp.sdrive, Schema: sp.sourceSchema, Table: sp.table, ColumnName: sp.columnName, ChanrowCount: sp.chanrowCount}
 	sdb := sp.sdbPool.Get(int64(logThreadSeq))
 	A, err = idxc.TableIndexColumn().TableRows(sdb, int64(logThreadSeq))
 	if err != nil {
@@ -54,8 +54,8 @@ func (sp *SchedulePlan) NoIndexTableCount(logThreadSeq int64) int64 {
 	sp.sdbPool.Put(sdb, int64(logThreadSeq))
 
 	ddb := sp.ddbPool.Get(int64(logThreadSeq))
-	idxc.Drivce = sp.ddrive
-	B, err = idxc.TableIndexColumn().TableRows(ddb, int64(logThreadSeq))
+	idxcDest := dbExec.IndexColumnStruct{Drivce: sp.ddrive, Schema: sp.destSchema, Table: sp.table, ColumnName: sp.columnName, ChanrowCount: sp.chanrowCount}
+	B, err = idxcDest.TableIndexColumn().TableRows(ddb, int64(logThreadSeq))
 	if err != nil {
 		return 0
 	}
@@ -70,7 +70,7 @@ func (sp *SchedulePlan) NoIndexTableCount(logThreadSeq int64) int64 {
 }
 
 /*
-	针对差异数据行做md5校验，并去除重复值
+针对差异数据行做md5校验，并去除重复值
 */
 func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *Pod, logThreadSeq int64) chan string {
 	var sqlStrExec = make(chan string, sp.mqQueueDepth)
@@ -79,9 +79,10 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 			vlog     string
 			noIndexD = make(chan struct{}, sp.concurrency)
 		)
-		vlog = fmt.Sprintf("(%d) Start to generate delete and insert sql statements for table %s.%s.", logThreadSeq, sp.schema, sp.table)
+		displayTableName := sp.getDisplayTableName()
+		vlog = fmt.Sprintf("(%d) Start to generate delete and insert sql statements for table %s.", logThreadSeq, displayTableName)
 		global.Wlog.Debug(vlog)
-		colData := sp.tableAllCol[fmt.Sprintf("%s_greatdbCheck_%s", sp.schema, sp.table)]
+		colData := sp.tableAllCol[fmt.Sprintf("%s_gtchecksum_%s", sp.schema, sp.table)]
 		dbf := dbExec.DataAbnormalFixStruct{Schema: sp.schema, Table: sp.table, ColData: colData.DColumnInfo, DestDevice: sp.ddrive, DatafixType: sp.datafixType}
 		for {
 			select {
@@ -105,7 +106,8 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 						//	}()
 						ddb := sp.ddbPool.Get(logThreadSeq)
 						if sqlType == "delete" {
-							vlog = fmt.Sprintf("(%d) Start to generate the delete of table %s.%s to repair the sql statement.", logThreadSeq, sp.schema, sp.table)
+							displayTableName := sp.getDisplayTableName()
+							vlog = fmt.Sprintf("(%d) Start to generate the delete of table %s to repair the sql statement.", logThreadSeq, displayTableName)
 							global.Wlog.Debug(vlog)
 							dbf.RowData = rowData
 							sqlstr, err := dbf.DataAbnormalFix().FixDeleteSqlExec(ddb, sp.ddrive, logThreadSeq)
@@ -115,11 +117,13 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 							if sqlstr != "" {
 								sqlStrExec <- sqlstr
 							}
-							vlog = fmt.Sprintf("(%d) The delete repair sql statements of table %s.%s are generated.", logThreadSeq, sp.schema, sp.table)
+							displayTableName = sp.getDisplayTableName()
+							vlog = fmt.Sprintf("(%d) The delete repair sql statements of table %s are generated.", logThreadSeq, displayTableName)
 							global.Wlog.Debug(vlog)
 						}
 						if sqlType == "insert" {
-							vlog = fmt.Sprintf("(%d) Start to generate the insert of table %s.%s to repair the sql statement.", logThreadSeq, sp.schema, sp.table)
+							displayTableName := sp.getDisplayTableName()
+							vlog = fmt.Sprintf("(%d) Start to generate the insert of table %s to repair the sql statement.", logThreadSeq, displayTableName)
 							global.Wlog.Debug(vlog)
 							dbf.RowData = rowData
 							sqlstr, err := dbf.DataAbnormalFix().FixInsertSqlExec(ddb, sp.ddrive, logThreadSeq)
@@ -129,7 +133,8 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 							if sqlstr != "" {
 								sqlStrExec <- sqlstr
 							}
-							vlog = fmt.Sprintf("(%d) The insert repair sql statements of table %s.%s are generated.", logThreadSeq, sp.schema, sp.table)
+							displayTableName = sp.getDisplayTableName()
+							vlog = fmt.Sprintf("(%d) The insert repair sql statements of table %s are generated.", logThreadSeq, displayTableName)
 							global.Wlog.Debug(vlog)
 						}
 						sp.ddbPool.Put(ddb, logThreadSeq)
@@ -143,7 +148,7 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 }
 
 /*
-	针对差异数据行做md5校验，并去除重复值
+针对差异数据行做md5校验，并去除重复值
 */
 func (sp *SchedulePlan) FixSqlExec(sqlStrExec <-chan string, logThreadSeq int64) {
 	var (
@@ -152,9 +157,10 @@ func (sp *SchedulePlan) FixSqlExec(sqlStrExec <-chan string, logThreadSeq int64)
 		noIndexD = make(chan struct{}, sp.concurrency)
 		increSeq int
 	)
-	vlog = fmt.Sprintf("(%d) Start to generate delete and insert sql statements for table %s.%s.", logThreadSeq, sp.schema, sp.table)
+	displayTableName := sp.getDisplayTableName()
+	vlog = fmt.Sprintf("(%d) Start to generate delete and insert sql statements for table %s.", logThreadSeq, displayTableName)
 	global.Wlog.Debug(vlog)
-	colData := sp.tableAllCol[fmt.Sprintf("%s_greatdbCheck_%s", sp.schema, sp.table)]
+	colData := sp.tableAllCol[fmt.Sprintf("%s_gtchecksum_%s", sp.schema, sp.table)]
 	dbf := dbExec.DataAbnormalFixStruct{Schema: sp.schema, Table: sp.table, ColData: colData.DColumnInfo, SourceDevice: sp.ddrive}
 	dbf.IndexColumnType = "mui"
 	for {
@@ -164,7 +170,8 @@ func (sp *SchedulePlan) FixSqlExec(sqlStrExec <-chan string, logThreadSeq int64)
 				if len(noIndexD) == 0 {
 					if len(sqlSlice) > 0 {
 						ApplyDataFix(sqlSlice, sp.datafixType, sp.sfile, sp.ddrive, sp.djdbc, logThreadSeq)
-						vlog = fmt.Sprintf("(%d) The delete repair sql statements of table %s.%s are generated.", logThreadSeq, sp.schema, sp.table)
+						displayTableName := sp.getDisplayTableName()
+						vlog = fmt.Sprintf("(%d) The delete repair sql statements of table %s are generated.", logThreadSeq, displayTableName)
 						global.Wlog.Debug(vlog)
 						sqlSlice = []string{}
 					} else {
@@ -187,7 +194,8 @@ func (sp *SchedulePlan) FixSqlExec(sqlStrExec <-chan string, logThreadSeq int64)
 							<-noIndexD
 						}()
 						ApplyDataFix(a, sp.datafixType, sp.sfile, sp.ddrive, sp.djdbc, logThreadSeq)
-						vlog = fmt.Sprintf("(%d) The delete repair sql statements of table %s.%s are generated.", logThreadSeq, sp.schema, sp.table)
+						displayTableName := sp.getDisplayTableName()
+						vlog = fmt.Sprintf("(%d) The delete repair sql statements of table %s are generated.", logThreadSeq, displayTableName)
 						global.Wlog.Debug(vlog)
 					}(sqlSlice1)
 				}
@@ -197,7 +205,7 @@ func (sp *SchedulePlan) FixSqlExec(sqlStrExec <-chan string, logThreadSeq int64)
 }
 
 /*
-	查询无索引表数据
+查询无索引表数据
 */
 func (sp *SchedulePlan) QueryTableData(beginSeq uint64, chunkSeq uint64, chanrowCount int, logThreadSeq int64) (string, string, error) {
 	var (
@@ -205,11 +213,11 @@ func (sp *SchedulePlan) QueryTableData(beginSeq uint64, chunkSeq uint64, chanrow
 		err      error
 		stt, dtt string
 	)
-	vlog = fmt.Sprintf("(%d) There is currently no index table %s.%s, and the cycle check data is started.", logThreadSeq, sp.schema, sp.table)
+	displayTableName := sp.getDisplayTableName()
+	vlog = fmt.Sprintf("(%d) There is currently no index table %s, and the cycle check data is started.", logThreadSeq, displayTableName)
 	global.Wlog.Debug(vlog)
-	noIndexOrderCol := sp.tableAllCol[fmt.Sprintf("%s_greatdbCheck_%s", sp.schema, sp.table)]
-	idxc := dbExec.IndexColumnStruct{Drivce: sp.sdrive, Schema: sp.schema, Table: sp.table, TableColumn: noIndexOrderCol.SColumnInfo, ChanrowCount: chanrowCount}
-	idxc.Drivce = sp.sdrive
+	noIndexOrderCol := sp.tableAllCol[fmt.Sprintf("%s_gtchecksum_%s", sp.schema, sp.table)]
+	idxc := dbExec.IndexColumnStruct{Drivce: sp.sdrive, Schema: sp.sourceSchema, Table: sp.table, TableColumn: noIndexOrderCol.SColumnInfo, ChanrowCount: chanrowCount}
 	//allColumns := idxc.TableIndexColumn().NoIndexOrderBySingerColumn(noIndexOrderCol.SColumnInfo)
 	sdb := sp.sdbPool.Get(logThreadSeq)
 	stt, err = idxc.TableIndexColumn().NoIndexGeneratingQueryCriteria(sdb, beginSeq, chanrowCount, logThreadSeq)
@@ -217,9 +225,9 @@ func (sp *SchedulePlan) QueryTableData(beginSeq uint64, chunkSeq uint64, chanrow
 	if err != nil {
 		return "", "", err
 	}
-	idxc.Drivce = sp.ddrive
+	idxcDest := dbExec.IndexColumnStruct{Drivce: sp.ddrive, Schema: sp.destSchema, Table: sp.table, TableColumn: noIndexOrderCol.DColumnInfo, ChanrowCount: chanrowCount}
 	ddb := sp.ddbPool.Get(logThreadSeq)
-	dtt, err = idxc.TableIndexColumn().NoIndexGeneratingQueryCriteria(ddb, beginSeq, chanrowCount, logThreadSeq)
+	dtt, err = idxcDest.TableIndexColumn().NoIndexGeneratingQueryCriteria(ddb, beginSeq, chanrowCount, logThreadSeq)
 	if err != nil {
 		return "", "", err
 	}
@@ -228,7 +236,7 @@ func (sp *SchedulePlan) QueryTableData(beginSeq uint64, chunkSeq uint64, chanrow
 }
 
 /*
-	针对查询的字符串进行md5校验，字符串不一致则进行差异处理
+针对查询的字符串进行md5校验，字符串不一致则进行差异处理
 */
 func (sp *SchedulePlan) QueryDataCheckSum(stt, dtt string, md5chan chan<- map[string]string, FileOpen FileOperate, chunkSeq uint64, logThreadSeq int64) {
 	var (
@@ -236,15 +244,18 @@ func (sp *SchedulePlan) QueryDataCheckSum(stt, dtt string, md5chan chan<- map[st
 		aa           = &CheckSumTypeStruct{}
 		tmpAnDateMap = make(map[string]string)
 	)
-	vlog = fmt.Sprintf("(%d) Start to check whether the row data blocks of the original target-side non-indexed table %s.%s are consistent...", logThreadSeq, sp.schema, sp.table)
+	displayTableName := sp.getDisplayTableName()
+	vlog = fmt.Sprintf("(%d) Start to check whether the row data blocks of the original target-side non-indexed table %s are consistent...", logThreadSeq, displayTableName)
 	global.Wlog.Debug(vlog)
 	if aa.CheckMd5(stt) != aa.CheckMd5(dtt) {
-		vlog = fmt.Sprintf("(%d) There is currently no index table %s.%s. The %d md5 check of the data consistency of the original target is abnormal.", logThreadSeq, sp.schema, sp.table, chunkSeq)
+		displayTableName := sp.getDisplayTableName()
+		vlog = fmt.Sprintf("(%d) There is currently no index table %s. The %d md5 check of the data consistency of the original target is abnormal.", logThreadSeq, displayTableName, chunkSeq)
 		global.Wlog.Debug(vlog)
 		add, del := aa.Arrcmp(strings.Split(stt, "/*go actions rowData*/"), strings.Split(dtt, "/*go actions rowData*/"))
 		if len(del) > 0 {
 			tmpAnDateMap = make(map[string]string)
-			vlog = fmt.Sprintf("(%d) Start generating the redundant data in the difference data for table %s.%s.", logThreadSeq, sp.schema, sp.table)
+			displayTableName := sp.getDisplayTableName()
+			vlog = fmt.Sprintf("(%d) Start generating the redundant data in the difference data for table %s.", logThreadSeq, displayTableName)
 			global.Wlog.Debug(vlog)
 			FileOpen.SqlType = "delete"
 			md5Slice, err := FileOpen.ConcurrencyWriteFile(del)
@@ -256,12 +267,14 @@ func (sp *SchedulePlan) QueryDataCheckSum(stt, dtt string, md5chan chan<- map[st
 				tmpAnDateMap[deli] = "delete"
 			}
 			md5chan <- tmpAnDateMap
-			vlog = fmt.Sprintf("(%d) The redundant data in the difference data of table %s.%s is generated.", logThreadSeq, sp.schema, sp.table)
+			displayTableName = sp.getDisplayTableName()
+			vlog = fmt.Sprintf("(%d) The redundant data in the difference data of table %s is generated.", logThreadSeq, displayTableName)
 			global.Wlog.Debug(vlog)
 		}
 		if len(add) > 0 {
 			tmpAnDateMap = make(map[string]string)
-			vlog = fmt.Sprintf("(%d) The missing data in the difference data that starts generating table %s.%s.", logThreadSeq, sp.schema, sp.table)
+			displayTableName := sp.getDisplayTableName()
+			vlog = fmt.Sprintf("(%d) The missing data in the difference data that starts generating table %s.", logThreadSeq, displayTableName)
 			global.Wlog.Debug(vlog)
 			//md5Slice := FileOperate{File: sp.file, BufSize: 1024 * 4 * 1024, SqlType: "insert", fileName: sp.TmpFileName}.ConcurrencyWriteFile(add)
 			FileOpen.SqlType = "insert"
@@ -273,15 +286,17 @@ func (sp *SchedulePlan) QueryDataCheckSum(stt, dtt string, md5chan chan<- map[st
 				tmpAnDateMap[addi] = "insert"
 			}
 			md5chan <- tmpAnDateMap
-			vlog = fmt.Sprintf("(%d) The missing data in the difference data of table %s.%s is generated.", logThreadSeq, sp.schema, sp.table)
+			displayTableName = sp.getDisplayTableName()
+			vlog = fmt.Sprintf("(%d) The missing data in the difference data of table %s is generated.", logThreadSeq, displayTableName)
 			global.Wlog.Debug(vlog)
 		}
 	}
-	vlog = fmt.Sprintf("(%d) The consistency check of the row data block of table %s.%s without index on the original target is completed!!!", logThreadSeq, sp.schema, sp.table)
+	displayTableName = sp.getDisplayTableName()
+	vlog = fmt.Sprintf("(%d) The consistency check of the row data block of table %s without index on the original target is completed!!!", logThreadSeq, displayTableName)
 	global.Wlog.Debug(vlog)
 }
 
-//无索引表读取临时文件，并返回差异的数据
+// 无索引表读取临时文件，并返回差异的数据
 func (sp *SchedulePlan) noIndexTableAbdataRead(uniqMD5C chan map[string]string, logThreadSeq int64) chan map[string]string {
 	var dataFixC = make(chan map[string]string, sp.mqQueueDepth)
 	//检测临时文件，并按照一定条件读取
@@ -302,7 +317,7 @@ func (sp *SchedulePlan) noIndexTableAbdataRead(uniqMD5C chan map[string]string, 
 }
 
 /*
-	单表的数据循环校验
+单表的数据循环校验
 */
 func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSeq int64) {
 	var (
@@ -317,14 +332,15 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 		tableRow      = make(chan int, sp.mqQueueDepth)
 		rowEnd        bool
 	)
-	fmt.Println(fmt.Sprintf("begin checkSum no index table %s.%s", sp.schema, sp.table))
-	vlog = fmt.Sprintf("(%d) Start to verify the data of the original target end of the non-indexed table %s.%s ...", logThreadSeq, sp.schema, sp.table)
+	displayTableName := sp.getDisplayTableName()
+	fmt.Println(fmt.Sprintf("begin checkSum no index table %s", displayTableName))
+	vlog = fmt.Sprintf("(%d) Start to verify the data of the original target end of the non-indexed table %s ...", logThreadSeq, displayTableName)
 	global.Wlog.Info(vlog)
 	barTableRow := sp.NoIndexTableCount(logThreadSeq)
 	pods := Pod{Schema: sp.schema, Table: sp.table,
-		IndexColumn:    "noIndex",
-		CheckMode:    sp.checkMod,
-		DIFFS: "no",
+		IndexColumn: "noIndex",
+		CheckMode:   sp.checkMod,
+		DIFFS:       "no",
 		Datafix:     sp.datafixType,
 	}
 	sp.bar.NewOption(0, barTableRow, "rows")
@@ -364,7 +380,8 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 			defer func() {
 				<-noIndexC
 			}()
-			vlog = fmt.Sprintf("(%d) There is currently no index table %s.%s, and the %d md5 check of the data consistency of the original target is started.", logThreadSeq, sp.schema, sp.table, Cycles)
+			displayTableName := sp.getDisplayTableName()
+			vlog = fmt.Sprintf("(%d) There is currently no index table %s, and the %d md5 check of the data consistency of the original target is started.", logThreadSeq, displayTableName, Cycles)
 			global.Wlog.Debug(vlog)
 			stt, dtt, err = sp.QueryTableData(beginSeq, Cycles, chanrowCount, int64(logThreadSeq))
 			if err != nil {
@@ -382,7 +399,8 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 				tableRow <- dlength
 			}
 			sp.QueryDataCheckSum(stt, dtt, md5Chan, FileOper, Cycles, logThreadSeq)
-			vlog = fmt.Sprintf("(%d) There is currently no index table %s.%s The %d round of data cycle verification is complete.", logThreadSeq, sp.schema, sp.table, Cycles)
+			displayTableName = sp.getDisplayTableName()
+			vlog = fmt.Sprintf("(%d) There is currently no index table %s The %d round of data cycle verification is complete.", logThreadSeq, displayTableName, Cycles)
 			global.Wlog.Debug(vlog)
 		}(Cycles, beginSeq)
 		beginSeq = beginSeq + uint64(chanrowCount)
@@ -401,23 +419,58 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 	targetExactCount := sp.getExactRowCount(sp.ddbPool, sp.schema, sp.table, logThreadSeq)
 	pods.Rows = fmt.Sprintf("%d,%d", sourceExactCount, targetExactCount)
 	measuredDataPods = append(measuredDataPods, pods)
-	vlog = fmt.Sprintf("(%d) No index table %s.%s The data consistency check of the original target end is completed", logThreadSeq, sp.schema, sp.table)
+	displayTableName = sp.getDisplayTableName()
+	vlog = fmt.Sprintf("(%d) No index table %s The data consistency check of the original target end is completed", logThreadSeq, displayTableName)
 	global.Wlog.Info(vlog)
-	fmt.Println(fmt.Sprintf("%s.%s 校验完成", sp.schema, sp.table))
+	fmt.Println(fmt.Sprintf("%s 校验完成", displayTableName))
 }
+
 // getExactRowCount 查询表的精确行数
 func (sp *SchedulePlan) getExactRowCount(dbPool *global.Pool, schema, table string, logThreadSeq int64) int64 {
 	db := dbPool.Get(logThreadSeq)
 	defer dbPool.Put(db, logThreadSeq)
-	
+
+	// 确保schema不为空
+	if schema == "" {
+		vlog := fmt.Sprintf("(%d) [getExactRowCount] Schema is empty for table %s, using default schema", logThreadSeq, table)
+		global.Wlog.Warn(vlog)
+		
+		// 尝试从tableMappings中获取正确的schema
+		if dbPool == sp.sdbPool {
+			// 如果是源数据库连接池，使用sourceSchema
+			schema = sp.sourceSchema
+			vlog = fmt.Sprintf("(%d) [getExactRowCount] Using sourceSchema: %s for table %s", logThreadSeq, schema, table)
+			global.Wlog.Debug(vlog)
+		} else if dbPool == sp.ddbPool {
+			// 如果是目标数据库连接池，使用destSchema
+			schema = sp.destSchema
+			vlog = fmt.Sprintf("(%d) [getExactRowCount] Using destSchema: %s for table %s", logThreadSeq, schema, table)
+			global.Wlog.Debug(vlog)
+		}
+		
+		// 如果仍然为空，记录错误并返回0
+		if schema == "" {
+			vlog = fmt.Sprintf("(%d) [getExactRowCount] Unable to determine schema for table %s", logThreadSeq, table)
+			global.Wlog.Error(vlog)
+			return 0
+		}
+	}
+
 	var count int64
-	query := fmt.Sprintf("SELECT COUNT(*) FROM %s.%s", schema, table)
+	query := fmt.Sprintf("SELECT COUNT(*) FROM `%s`.`%s`", schema, table)
+	vlog := fmt.Sprintf("(%d) [getExactRowCount] Executing query: %s", logThreadSeq, query)
+	global.Wlog.Debug(vlog)
+	
 	err := db.QueryRow(query).Scan(&count)
 	if err != nil {
 		// 如果查询失败，返回0
-		vlog := fmt.Sprintf("(%d) Failed to get exact row count for %s.%s: %v", logThreadSeq, schema, table, err)
+		vlog = fmt.Sprintf("(%d) [getExactRowCount] Failed to get exact row count for %s.%s: %v", logThreadSeq, schema, table, err)
 		global.Wlog.Error(vlog)
 		return 0
 	}
+	
+	vlog = fmt.Sprintf("(%d) [getExactRowCount] Got exact row count for %s.%s: %d", logThreadSeq, schema, table, count)
+	global.Wlog.Debug(vlog)
+	
 	return count
 }

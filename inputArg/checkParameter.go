@@ -34,7 +34,7 @@ import (
 
 var illegalParameterStatus = false
 
-//判断库表配置参数是否存在非法参数
+// 判断库表配置参数是否存在非法参数
 func (rc *ConfigParameter) rexPat(rex *regexp.Regexp, rexStr string, illegalParameterStatus bool) {
 	if strings.Contains(rexStr, ",") {
 		ab := strings.Split(rexStr, ",")
@@ -77,7 +77,7 @@ func (rc *ConfigParameter) fileExsit(logFile string) {
 		logFile = strings.ReplaceAll(logFile, "%F", currentTime.Format("2006-01-02"))
 		logFile = strings.ReplaceAll(logFile, "%T", currentTime.Format("15:04:05"))
 	}
-	
+
 	if _, err = os.Stat(logFile); err != nil {
 		if _, err = os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666); err != nil {
 			rc.getErr("Failed to create a log file. Procedure.", err)
@@ -120,7 +120,7 @@ func (rc *ConfigParameter) getErr(msg string, err error) {
 }
 
 /*
-	校验输入参数是否合规
+校验输入参数是否合规
 */
 func (rc *ConfigParameter) checkPar() {
 	var (
@@ -165,7 +165,6 @@ func (rc *ConfigParameter) checkPar() {
 
 	//表级别的正则匹配
 	vlog = fmt.Sprintf("(%d) [%s] Check whether the options v1 and v2 are set correctly", rc.LogThreadSeq, Event)
-
 
 	global.Wlog.Debug(vlog)
 	if rc.SecondaryL.SchemaV.Tables == "" {
@@ -307,7 +306,6 @@ func (rc *ConfigParameter) checkPar() {
 	}
 	vlog = fmt.Sprintf("(%d) [%s] All options check have passed", rc.LogThreadSeq, Event)
 	global.Wlog.Info(vlog)
-
 }
 
 func (rc *ConfigParameter) readConfigFile(config string) {

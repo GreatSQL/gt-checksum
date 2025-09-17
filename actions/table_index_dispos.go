@@ -47,21 +47,21 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 		curryCount     int64
 	)
 	//获取索引列的数据类型
-	a := sp.tableAllCol[fmt.Sprintf("%s_greatdbCheck_%s", sp.schema, sp.table)].SColumnInfo
+	a := sp.tableAllCol[fmt.Sprintf("%s_gtchecksum_%s", sp.schema, sp.table)].SColumnInfo
 	//查询源目标端索引列数据
-	idxc := dbExec.IndexColumnStruct{Schema: sp.schema, Table: sp.table, ColumnName: sp.columnName,
+	idxc := dbExec.IndexColumnStruct{Schema: sp.sourceSchema, Table: sp.table, ColumnName: sp.columnName,
 		ChanrowCount: sp.chanrowCount, Drivce: sp.sdrive, SelectColumn: selectColumn[sp.sdrive], ColData: a}
-	vlog = fmt.Sprintf("(%d) Start to query the index column data of index column [%v] of source table [%v.%v]...", logThreadSeq, sp.columnName[level], sp.schema, sp.table)
+	vlog = fmt.Sprintf("(%d) Start to query the index column data of index column [%v] of source table [%v.%v]...", logThreadSeq, sp.columnName[level], sp.sourceSchema, sp.table)
 	global.Wlog.Debug(vlog)
 	SdataChan1, err := idxc.TableIndexColumn().TmpTableColumnGroupDataDispos(sdb, where, sp.columnName[level], logThreadSeq)
 	if err != nil {
 		return
 	}
-	idxc.Drivce = sp.ddrive
-	idxc.SelectColumn = selectColumn[sp.ddrive]
-	vlog = fmt.Sprintf("(%d) Start to query the index column data of index column [%v] of dest table [%v.%v]...", logThreadSeq, sp.columnName[level], sp.schema, sp.table)
+	idxcDest := dbExec.IndexColumnStruct{Schema: sp.destSchema, Table: sp.table, ColumnName: sp.columnName,
+		ChanrowCount: sp.chanrowCount, Drivce: sp.ddrive, SelectColumn: selectColumn[sp.ddrive], ColData: a}
+	vlog = fmt.Sprintf("(%d) Start to query the index column data of index column [%v] of dest table [%v.%v]...", logThreadSeq, sp.columnName[level], sp.destSchema, sp.table)
 	global.Wlog.Debug(vlog)
-	DdataChan1, err := idxc.TableIndexColumn().TmpTableColumnGroupDataDispos(ddb, where, sp.columnName[level], logThreadSeq)
+	DdataChan1, err := idxcDest.TableIndexColumn().TmpTableColumnGroupDataDispos(ddb, where, sp.columnName[level], logThreadSeq)
 	if err != nil {
 		return
 	}
@@ -269,17 +269,16 @@ func (sp *SchedulePlan) queryTableSql(sqlWhere chanString, selectSql chanMap, cc
 						<-curry
 					}()
 					//查询该表的列名和列信息
-					idxc := dbExec.IndexColumnStruct{Schema: sp.schema, Table: sp.table, TableColumn: cc1.SColumnInfo, Sqlwhere: c1, Drivce: sp.sdrive}
+					idxc := dbExec.IndexColumnStruct{Schema: sp.sourceSchema, Table: sp.table, TableColumn: cc1.SColumnInfo, Sqlwhere: c1, Drivce: sp.sdrive}
 					lock.Lock()
 					selectSqlMap[sp.sdrive], err = idxc.TableIndexColumn().GeneratingQuerySql(sd, logThreadSeq)
 					if err != nil {
 						return
 					}
 					lock.Unlock()
-					idxc.Drivce = sp.ddrive
-					idxc.TableColumn = cc1.DColumnInfo
+					idxcDest := dbExec.IndexColumnStruct{Schema: sp.destSchema, Table: sp.table, TableColumn: cc1.DColumnInfo, Sqlwhere: c1, Drivce: sp.ddrive}
 					lock.Lock()
-					selectSqlMap[sp.ddrive], err = idxc.TableIndexColumn().GeneratingQuerySql(dd, logThreadSeq)
+					selectSqlMap[sp.ddrive], err = idxcDest.TableIndexColumn().GeneratingQuerySql(dd, logThreadSeq)
 					if err != nil {
 						return
 					}
@@ -344,30 +343,28 @@ func (sp *SchedulePlan) queryTableData(selectSql chanMap, diffQueryData chanDiff
 						<-curry
 					}()
 					//查询该表的列名和列信息
-					vlog = fmt.Sprintf("(%d) Start to query the block data of check table %s.%s ...", logThreadSeq, sp.schema, sp.table)
+					vlog = fmt.Sprintf("(%d) Start to query the block data of check table %s.%s ...", logThreadSeq, sp.sourceSchema, sp.table)
 					global.Wlog.Debug(vlog)
 					sdb := sp.sdbPool.Get(logThreadSeq)
 					vlog = fmt.Sprintf("%v", c1)
 					global.Wlog.Debug(vlog)
 					stt, err := idxc.TableIndexColumn().GeneratingQueryCriteria(sdb, logThreadSeq)
-					vlog = fmt.Sprintf("(%d) check source %s table %s.%s query data is {%v}", logThreadSeq, sp.sdrive, sp.schema, sp.table, stt)
+					vlog = fmt.Sprintf("(%d) check source %s table %s.%s query data is {%v}", logThreadSeq, sp.sdrive, sp.sourceSchema, sp.table, stt)
 					global.Wlog.Debug(vlog)
 					sp.sdbPool.Put(sdb, logThreadSeq)
 					if err != nil {
 						return
 					}
-					idxc.Drivce = sp.ddrive
-					idxc.Sqlwhere = c1[sp.ddrive]
-					idxc.TableColumn = cc1.DColumnInfo
+					idxcDest := dbExec.IndexColumnStruct{Schema: sp.destSchema, Table: sp.table, Sqlwhere: c1[sp.ddrive], TableColumn: cc1.DColumnInfo, Drivce: sp.ddrive}
 					ddb := sp.ddbPool.Get(logThreadSeq)
-					dtt, err := idxc.TableIndexColumn().GeneratingQueryCriteria(ddb, logThreadSeq)
-					vlog = fmt.Sprintf("(%d) check dest %s table %s.%s query data is {%v}", logThreadSeq, sp.ddrive, sp.schema, sp.table, dtt)
+					dtt, err := idxcDest.TableIndexColumn().GeneratingQueryCriteria(ddb, logThreadSeq)
+					vlog = fmt.Sprintf("(%d) check dest %s table %s.%s query data is {%v}", logThreadSeq, sp.ddrive, sp.destSchema, sp.table, dtt)
 					global.Wlog.Debug(vlog)
 					sp.ddbPool.Put(ddb, logThreadSeq)
 					if err != nil {
 						return
 					}
-					vlog = fmt.Sprintf("(%d) Check table %s.%s to start checking the consistency of block data ...", logThreadSeq, sp.schema, sp.table)
+					vlog = fmt.Sprintf("(%d) Check table %s.%s to start checking the consistency of block data ...", logThreadSeq, sp.sourceSchema, sp.table)
 					global.Wlog.Debug(vlog)
 					if aa.CheckMd5(stt) != aa.CheckMd5(dtt) {
 						vlog = fmt.Sprintf("(%d) Verification table %s.%s The block data verified by the original target end is inconsistent. query sql is {%s}.", logThreadSeq, sp.schema, sp.table, c1)
@@ -430,15 +427,17 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 						sp.sdbPool.Put(sdb, logThreadSeq)
 						sp.ddbPool.Put(ddb, logThreadSeq)
 					}()
-					colData := sp.tableAllCol[fmt.Sprintf("%s_greatdbCheck_%s", c1.Schema, c1.Table)]
+					colData := sp.tableAllCol[fmt.Sprintf("%s_gtchecksum_%s", c1.Schema, c1.Table)]
 					idxc := dbExec.IndexColumnStruct{
 						Schema:      sp.schema,
 						Table:       sp.table,
 						TableColumn: colData.SColumnInfo,
 						Drivce:      sp.sdrive,
 					}
+					idxc.Schema = sp.sourceSchema
 					idxc.Sqlwhere = c1.SqlWhere[sp.sdrive]
 					stt, _ := idxc.TableIndexColumn().GeneratingQueryCriteria(sdb, logThreadSeq)
+					idxc.Schema = sp.destSchema
 					idxc.Drivce = sp.ddrive
 					idxc.Sqlwhere = c1.SqlWhere[sp.ddrive]
 					idxc.TableColumn = colData.DColumnInfo
@@ -561,37 +560,63 @@ func (sp SchedulePlan) doIndexDataCheck() {
 		selectSql           = make(chanMap, queueDepth)
 		diffQueryData       = make(chanDiffDataS, queueDepth)
 		fixSQL              = make(chanString, queueDepth)
-		tableColumn         = sp.tableAllCol[fmt.Sprintf("%s_greatdbCheck_%s", sp.schema, sp.table)]
+		tableColumn         = sp.tableAllCol[fmt.Sprintf("%s_gtchecksum_%s", sp.schema, sp.table)]
 		selectColumnStringM = make(map[string]map[string]string)
 	)
+	var idxc, idxcDest dbExec.IndexColumnStruct
 	rand.Seed(time.Now().UnixNano())
 	logThreadSeq := rand.Int63()
-	idxc := dbExec.IndexColumnStruct{Schema: sp.schema, Table: sp.table, ColumnName: sp.columnName,
+	idxc = dbExec.IndexColumnStruct{Schema: sp.sourceSchema, Table: sp.table, ColumnName: sp.columnName,
 		ChanrowCount: sp.chanrowCount, Drivce: sp.sdrive,
-		ColData: sp.tableAllCol[fmt.Sprintf("%s_greatdbCheck_%s", sp.schema, sp.table)].SColumnInfo}
+		ColData: sp.tableAllCol[fmt.Sprintf("%s_gtchecksum_%s", sp.sourceSchema, sp.table)].SColumnInfo}
 	selectColumnStringM[sp.sdrive] = idxc.TableIndexColumn().TmpTableIndexColumnSelectDispos(logThreadSeq)
-	idxc.Drivce = sp.ddrive
-	selectColumnStringM[sp.ddrive] = idxc.TableIndexColumn().TmpTableIndexColumnSelectDispos(logThreadSeq)
+	idxcDest = dbExec.IndexColumnStruct{Schema: sp.destSchema, Table: sp.table, ColumnName: sp.columnName,
+		ChanrowCount: sp.chanrowCount, Drivce: sp.ddrive,
+		ColData: sp.tableAllCol[fmt.Sprintf("%s_gtchecksum_%s", sp.destSchema, sp.table)].DColumnInfo}
+	selectColumnStringM[sp.ddrive] = idxcDest.TableIndexColumn().TmpTableIndexColumnSelectDispos(logThreadSeq)
 
+	// 设置Pod结构体，包括映射关系信息
+	mappingInfo := ""
+	if sp.sourceSchema != sp.destSchema {
+		mappingInfo = fmt.Sprintf("Schema: %s:%s", sp.sourceSchema, sp.destSchema)
+		if sp.table != sp.table { // 如果表名也不同，添加表名映射信息
+			mappingInfo += fmt.Sprintf(", Table: %s:%s", sp.table, sp.table)
+		}
+	} else if sp.table != sp.table { // 只有表名不同
+		mappingInfo = fmt.Sprintf("Table: %s:%s", sp.table, sp.table)
+	}
+	
 	sp.pods = &Pod{
 		Schema:      sp.schema,
 		Table:       sp.table,
-		IndexColumn:    strings.TrimLeft(strings.Join(sp.columnName, ","), ","),
-		CheckMode:    sp.checkMod,
-		DIFFS: "no",
+		IndexColumn: strings.TrimLeft(strings.Join(sp.columnName, ","), ","),
+		CheckMode:   sp.checkMod,
+		DIFFS:       "no",
 		Datafix:     sp.datafixType,
+		MappingInfo: mappingInfo,
 	}
-	idxc.Drivce = sp.sdrive
+	// 确保使用正确的源表和目标表的Schema
+	idxc = dbExec.IndexColumnStruct{Schema: sp.sourceSchema, Table: sp.table, Drivce: sp.sdrive}
 	sdb := sp.sdbPool.Get(logThreadSeq)
+	var vlog string
+	vlog = fmt.Sprintf("(%d) [doIndexDataCheck] Querying source table rows for %s.%s", logThreadSeq, sp.sourceSchema, sp.table)
+	global.Wlog.Debug(vlog)
 	A, err := idxc.TableIndexColumn().TableRows(sdb, int64(logThreadSeq))
 	sp.sdbPool.Put(sdb, logThreadSeq)
 	if err != nil {
+		vlog = fmt.Sprintf("(%d) [doIndexDataCheck] Failed to get source table rows for %s.%s: %v", logThreadSeq, sp.sourceSchema, sp.table, err)
+		global.Wlog.Error(vlog)
 		return
 	}
-	idxc.Drivce = sp.ddrive
+
+	idxcDest = dbExec.IndexColumnStruct{Schema: sp.destSchema, Table: sp.table, Drivce: sp.ddrive}
 	ddb := sp.ddbPool.Get(logThreadSeq)
-	B, err := idxc.TableIndexColumn().TableRows(ddb, int64(logThreadSeq))
+	vlog = fmt.Sprintf("(%d) [doIndexDataCheck] Querying destination table rows for %s.%s", logThreadSeq, sp.destSchema, sp.table)
+	global.Wlog.Debug(vlog)
+	B, err := idxcDest.TableIndexColumn().TableRows(ddb, int64(logThreadSeq))
 	if err != nil {
+		vlog = fmt.Sprintf("(%d) [doIndexDataCheck] Failed to get destination table rows for %s.%s: %v", logThreadSeq, sp.destSchema, sp.table, err)
+		global.Wlog.Error(vlog)
 		return
 	}
 	sp.ddbPool.Put(ddb, logThreadSeq)
@@ -601,8 +626,8 @@ func (sp SchedulePlan) doIndexDataCheck() {
 		sp.tableMaxRows = B
 	}
 	// 重新查询精确行数
-	sourceExactCount := sp.getExactRowCount(sp.sdbPool, sp.schema, sp.table, logThreadSeq)
-	targetExactCount := sp.getExactRowCount(sp.ddbPool, sp.schema, sp.table, logThreadSeq)
+	sourceExactCount := sp.getExactRowCount(sp.sdbPool, sp.sourceSchema, sp.table, logThreadSeq)
+	targetExactCount := sp.getExactRowCount(sp.ddbPool, sp.destSchema, sp.table, logThreadSeq)
 	sp.pods.Rows = fmt.Sprintf("%d,%d", sourceExactCount, targetExactCount)
 	var scheduleCount = make(chan int64, 1)
 	go sp.indexColumnDispos(sqlWhere, selectColumnStringM)

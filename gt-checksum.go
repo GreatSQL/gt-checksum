@@ -30,8 +30,9 @@ func main() {
 		os.Exit(1)
 	}
 	//获取待校验表信息
-	var tableList []string
-	if tableList, err = actions.SchemaTableInit(m).SchemaTableFilter(3, 4); err != nil || len(tableList) == 0 {
+	var tableList, tableListColCheck, tableListPriCheck []string
+	schemaTableInstance := actions.SchemaTableInit(m)
+	if tableList, err = schemaTableInstance.SchemaTableFilter(3, 4); err != nil || len(tableList) == 0 {
 		fmt.Println(fmt.Sprintf("gt-checksum report: check table is empty. Please check %s or set option \"logLevel=debug\" to get more information.", m.SecondaryL.LogV.LogFile))
 		os.Exit(1)
 	}
@@ -39,34 +40,45 @@ func main() {
 
 	switch m.SecondaryL.RulesV.CheckObject {
 	case "struct":
-		if err = actions.SchemaTableInit(m).Struct(tableList, 5, 6); err != nil {
+		if err = schemaTableInstance.Struct(tableList, 5, 6); err != nil {
 			fmt.Println(fmt.Sprintf("gt-checksum report: Table structures verification failed. Please check %s or set option \"logLevel=debug\" to get more information.", m.SecondaryL.LogV.LogFile))
 			os.Exit(1)
 		}
 	case "index":
-		if err = actions.SchemaTableInit(m).Index(tableList, 7, 8); err != nil {
+		if err = schemaTableInstance.Index(tableList, 7, 8); err != nil {
 			fmt.Println("gt-checksum report: Indexes verification failed. Please check the log file or set option \"logLevel=debug\" to get more information.")
 			os.Exit(1)
 		}
 	case "partitions":
-		//9、10
-		actions.SchemaTableInit(m).Partitions(tableList, 9, 10)
-	case "foreign":
-		//11、12
-		actions.SchemaTableInit(m).Foreign(tableList, 11, 12)
-	case "func":
-		//13、14
-		actions.SchemaTableInit(m).Func(tableList, 13, 14)
-	case "proc":
-		//15、16
-		actions.SchemaTableInit(m).Proc(tableList, 15, 16)
+		schemaTableInstance.Partitions(tableList, 9, 10)
 	case "trigger":
-		//17、18
+		schemaTableInstance.Trigger(tableList, 11, 12)
+	case "proc":
+		schemaTableInstance.Proc(tableList, 13, 14)
+	case "func":
+		schemaTableInstance.Func(tableList, 15, 16)
+	case "foreign":
 		// 部分ok，异构数据库需要部分内容进行手动验证，例如：触发器结构体中包含的sql语句不一致的情况
-		actions.SchemaTableInit(m).Trigger(tableList, 17, 18)
+		schemaTableInstance.Foreign(tableList, 17, 18)
 	case "data":
 		//校验表结构
-		tableList, _, err = actions.SchemaTableInit(m).TableColumnNameCheck(tableList, 9, 10)
+		tableListColCheck, _, err = schemaTableInstance.TableColumnNameCheck(tableList, 9, 10)
+		if err != nil {
+			fmt.Println("gt-checksum report: Table structure verification failed. Please check the log file or set option \"logLevel=debug\" to get more information.")
+			os.Exit(1)
+		} else if len(tableListColCheck) == 0 {
+			fmt.Println("gt-checksum report: table checklist is empty. Please check the log file or set option \"logLevel=debug\" to get more information.")
+			os.Exit(1)
+		}
+		//19、20
+		if tableListPriCheck, _, err = actions.SchemaTableInit(m).TableAccessPriCheck(tableList, 19, 20); err != nil {
+			fmt.Println("gt-checksum report: Failed to obtain access permission for table. Please check the log file or set option \"logLevel=debug\" to get more information.")
+			os.Exit(1)
+		} else if len(tableListPriCheck) == 0 {
+			fmt.Println("gt-checksum report: Insufficient access permission to the table. Please check the log file or set option \"logLevel=debug\" to get more information.")
+			os.Exit(1)
+		}
+
 		if err != nil {
 			fmt.Println("gt-checksum report: Table structure verification failed. Please check the log file or set option \"logLevel=debug\" to get more information.")
 			os.Exit(1)
@@ -75,20 +87,23 @@ func main() {
 			os.Exit(1)
 		}
 		//19、20
-		if tableList, _, err = actions.SchemaTableInit(m).TableAccessPriCheck(tableList, 19, 20); err != nil {
+		if tableListPriCheck, _, err = schemaTableInstance.TableAccessPriCheck(tableList, 19, 20); err != nil {
 			fmt.Println("gt-checksum report: Failed to obtain access permission for table. Please check the log file or set option \"logLevel=debug\" to get more information.")
 			os.Exit(1)
-		} else if len(tableList) == 0 {
+		} else if len(tableListPriCheck) == 0 {
 			fmt.Println("gt-checksum report: Insufficient access permission to the table. Please check the log file or set option \"logLevel=debug\" to get more information.")
 			os.Exit(1)
 		}
 
 		//根据要校验的表，获取该表的全部列信息
 		fmt.Println("gt-checksum is opening table columns")
-		tableAllCol := actions.SchemaTableInit(m).SchemaTableAllCol(tableList, 21, 22)
+		tableAllCol := schemaTableInstance.SchemaTableAllCol(tableList, 21, 22)
 		//根据要校验的表，筛选查询数据时使用到的索引列信息
 		fmt.Println("gt-checksum is opening table indexes")
-		tableIndexColumnMap := actions.SchemaTableInit(m).TableIndexColumn(tableList, 23, 24)
+		tableIndexColumnMap := schemaTableInstance.TableIndexColumn(tableList, 23, 24)
+		//fmt.Printf("\nDEBUG1: tableList = %v\n", tableList)
+		//fmt.Printf("\nDEBUG2: tableAllCol keys = %v\n", tableAllCol)
+		//fmt.Printf("\nDEBUG3: tableAllCol keys = %v\n", tableIndexColumnMap)
 
 		//初始化数据库连接池
 		fmt.Println("gt-checksum is opening srcDSN and dstDSN")
@@ -109,7 +124,7 @@ func main() {
 			actions.CheckTableQuerySchedule(sdc, ddc, tableIndexColumnMap, tableAllCol, *m).DoSampleDataCheck()
 		}
 		totalCheckTime = time.Since(checkStart)
-		
+
 		// 计算实际数据校验耗时（从总校验时间中减去精确行数查询等额外操作耗时）
 		// 假设精确行数查询等额外操作占总校验时间的30%
 		checkTime = time.Duration(float64(totalCheckTime) * 0.7)
@@ -126,7 +141,7 @@ func main() {
 	fmt.Println("")
 	fmt.Println("Result Overview")
 	actions.CheckResultOut(m)
-	
+
 	//输出详细耗时统计
 	totalTime := time.Since(beginTime)
 	fmt.Println("\nTime Breakdown:")

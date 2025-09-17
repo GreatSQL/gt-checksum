@@ -10,7 +10,7 @@ import (
 )
 
 /*
-	单表的数据循环校验
+单表的数据循环校验
 */
 func (sp *SchedulePlan) sampSingleTableCheckProcessing(chanrowCount int, sampDataGroupNumber uint64, logThreadSeq int64) {
 	var (
@@ -49,9 +49,9 @@ func (sp *SchedulePlan) sampSingleTableCheckProcessing(chanrowCount int, sampDat
 	//sp.bar.NewOption(0, barTableRow)
 	fmt.Println(A, B)
 	pods := Pod{Schema: sp.schema, Table: sp.table,
-		IndexColumn:    "noIndex",
-		CheckMode:    sp.checkMod,
-		DIFFS: "no",
+		IndexColumn: "noIndex",
+		CheckMode:   sp.checkMod,
+		DIFFS:       "no",
 		Datafix:     sp.datafixType,
 	}
 
@@ -143,7 +143,7 @@ func (sp *SchedulePlan) sampSingleTableCheckProcessing(chanrowCount int, sampDat
 }
 
 /*
-	做数据的抽样检查，先使用count*，针对count*数量一致的表在进行部分数据的抽样检查
+做数据的抽样检查，先使用count*，针对count*数量一致的表在进行部分数据的抽样检查
 */
 func (sp *SchedulePlan) DoSampleDataCheck() {
 	var (
@@ -161,71 +161,183 @@ func (sp *SchedulePlan) DoSampleDataCheck() {
 	logThreadSeq := rand.Int63()
 	vlog = fmt.Sprintf("(%d) Start the sampling data verification of the original target...", logThreadSeq)
 	global.Wlog.Info(vlog)
+
+	// 添加调试日志，显示表索引映射
+	vlog = fmt.Sprintf("DoSampleDataCheck tableIndexColumnMap keys: %v", sp.tableIndexColumnMap)
+	global.Wlog.Debug(vlog)
+
 	for k, v := range sp.tableIndexColumnMap {
 		if sp.checkNoIndexTable == "no" && len(v) == 0 {
 			continue
 		}
+
+		// 解析键值，提取源表和目标表信息
+		var sourceSchema, sourceTable, destSchema, destTable string
+		var indexColumnType string
+
+		// 检查是否包含映射信息
+		if strings.Contains(k, "/*mapping*/") {
+			// 新格式: "sourceSchema/*gtchecksumSchemaTable*/sourceTable/*mapping*/destSchema/*mappingTable*/destTable"
+			// 或者: "sourceSchema/*gtchecksumSchemaTable*/sourceTable/*indexColumnType*/indexType/*mapping*/destSchema/*mappingTable*/destTable"
+
+			if strings.Contains(k, "/*indexColumnType*/") {
+				parts := strings.Split(k, "/*indexColumnType*/")
+				ki := parts[0]
+				indexColumnType = strings.Split(parts[1], "/*mapping*/")[0]
+
+				if strings.Contains(ki, "/*gtchecksumSchemaTable*/") {
+					sourceSchema = strings.Split(ki, "/*gtchecksumSchemaTable*/")[0]
+					sourceTable = strings.Split(ki, "/*gtchecksumSchemaTable*/")[1]
+
+					mappingPart := strings.Split(parts[1], "/*mapping*/")[1]
+					if strings.Contains(mappingPart, "/*mappingTable*/") {
+						destSchema = strings.Split(mappingPart, "/*mappingTable*/")[0]
+						destTable = strings.Split(mappingPart, "/*mappingTable*/")[1]
+					}
+				}
+			} else {
+				ki := k
+				if strings.Contains(ki, "/*gtchecksumSchemaTable*/") {
+					sourceSchema = strings.Split(ki, "/*gtchecksumSchemaTable*/")[0]
+					remainingPart := strings.Split(ki, "/*gtchecksumSchemaTable*/")[1]
+
+					if strings.Contains(remainingPart, "/*mapping*/") {
+						sourceTable = strings.Split(remainingPart, "/*mapping*/")[0]
+						mappingPart := strings.Split(remainingPart, "/*mapping*/")[1]
+
+						if strings.Contains(mappingPart, "/*mappingTable*/") {
+							destSchema = strings.Split(mappingPart, "/*mappingTable*/")[0]
+							destTable = strings.Split(mappingPart, "/*mappingTable*/")[1]
+						}
+					}
+				}
+			}
+		} else {
+			// 旧格式处理
+			if strings.Contains(k, "/*indexColumnType*/") {
+				parts := strings.Split(k, "/*indexColumnType*/")
+				ki := parts[0]
+				indexColumnType = parts[1]
+
+				if strings.Contains(ki, "/*gtchecksumSchemaTable*/") {
+					sourceSchema = strings.Split(ki, "/*gtchecksumSchemaTable*/")[0]
+					sourceTable = strings.Split(ki, "/*gtchecksumSchemaTable*/")[1]
+					destSchema = sourceSchema
+					destTable = sourceTable
+				}
+			} else {
+				if strings.Contains(k, "/*gtchecksumSchemaTable*/") {
+					sourceSchema = strings.Split(k, "/*gtchecksumSchemaTable*/")[0]
+					sourceTable = strings.Split(k, "/*gtchecksumSchemaTable*/")[1]
+					destSchema = sourceSchema
+					destTable = sourceTable
+				}
+			}
+		}
+
+		// 如果解析失败，跳过此项
+		if sourceSchema == "" || sourceTable == "" {
+			vlog = fmt.Sprintf("(%d) Failed to parse table information from key: %s", logThreadSeq, k)
+			global.Wlog.Warn(vlog)
+			continue
+		}
+
+		// 如果目标表信息为空，使用源表信息
+		if destSchema == "" || destTable == "" {
+			destSchema = sourceSchema
+			destTable = sourceTable
+		}
+
+		// 构建显示名称，包含映射关系
+		displayTableName := sourceSchema + "." + sourceTable
+		if sourceSchema != destSchema || sourceTable != destTable {
+			displayTableName = fmt.Sprintf("%s.%s:%s.%s", sourceSchema, sourceTable, destSchema, destTable)
+		}
+
 		//输出校验结果信息
 		sp.pods = &Pod{
 			CheckObject: sp.checkObject,
-			CheckMode:    sp.checkMod,
-			DIFFS: "no",
+			CheckMode:   sp.checkMod,
+			DIFFS:       "no",
+			Schema:      sourceSchema,
+			Table:       sourceTable,
 		}
-		if strings.Contains(k, "/*indexColumnType*/") {
-			ki := strings.Split(k, "/*indexColumnType*/")[0]
+
+		// 如果存在映射关系，将映射信息添加到表名中
+		if sourceSchema != destSchema || sourceTable != destTable {
+			sp.pods.Table = fmt.Sprintf("%s:%s.%s", sp.pods.Table, destSchema, destTable)
+		}
+
+		if len(v) > 0 {
 			sp.pods.IndexColumn = strings.TrimLeft(strings.Join(v, ","), ",")
-			sp.indexColumnType = strings.Split(k, "/*indexColumnType*/")[1]
-			if strings.Contains(ki, "/*greatdbSchemaTable*/") {
-				sp.schema = strings.Split(ki, "/*greatdbSchemaTable*/")[0]
-				sp.table = strings.Split(ki, "/*greatdbSchemaTable*/")[1]
-			}
+			sp.indexColumnType = indexColumnType
 		} else {
 			sp.pods.IndexColumn = "no"
-			if strings.Contains(k, "/*greatdbSchemaTable*/") {
-				sp.schema = strings.Split(k, "/*greatdbSchemaTable*/")[0]
-				sp.table = strings.Split(k, "/*greatdbSchemaTable*/")[1]
-			}
 		}
-		sp.pods.Schema = sp.schema
-		sp.pods.Table = sp.table
-		fmt.Println(fmt.Sprintf("begin checkSum table %s.%s", sp.schema, sp.table))
-		tableColumn := sp.tableAllCol[fmt.Sprintf("%s_greatdbCheck_%s", sp.schema, sp.table)]
+
+		// 设置当前处理的表信息
+		sp.schema = sourceSchema
+		sp.table = sourceTable
+		sp.sourceSchema = sourceSchema
+		sp.destSchema = destSchema
+
+		fmt.Println(fmt.Sprintf("begin checkSum table %s", displayTableName))
+
+		// 使用正确的键名查找表列信息
+		tableColumnKey := fmt.Sprintf("%s_gtchecksum_%s", destSchema, destTable)
+		tableColumn, exists := sp.tableAllCol[tableColumnKey]
+		if !exists {
+			vlog = fmt.Sprintf("(%d) Table column information not found for %s", logThreadSeq, tableColumnKey)
+			global.Wlog.Warn(vlog)
+			continue
+		}
+
 		//根据索引列数量决定chanrowCount数
 		sp.chanrowCount = sp.chunkSize
 		sp.columnName = v
+
 		//统计表的总行数
 		sdb := sp.sdbPool.Get(logThreadSeq)
-		//查询原目标端的表总行数，并生成调度计划
-		idxc := dbExec.IndexColumnStruct{Schema: sp.schema, Table: sp.table, ColumnName: sp.columnName, Drivce: sp.sdrive}
+		//查询源端的表总行数
+		idxc := dbExec.IndexColumnStruct{Schema: sourceSchema, Table: sourceTable, ColumnName: sp.columnName, Drivce: sp.sdrive}
 		stmpTableCount, err = idxc.TableIndexColumn().TmpTableIndexColumnRowsCount(sdb, logThreadSeq)
 		sp.sdbPool.Put(sdb, logThreadSeq)
 		if err != nil {
+			vlog = fmt.Sprintf("(%d) Error getting source table row count: %v", logThreadSeq, err)
+			global.Wlog.Error(vlog)
 			return
 		}
+
 		ddb := sp.ddbPool.Get(logThreadSeq)
-		idxc.Drivce = sp.ddrive
-		dtmpTableCount, err = idxc.TableIndexColumn().TmpTableIndexColumnRowsCount(ddb, logThreadSeq)
+		//查询目标端的表总行数
+		idxcDest := dbExec.IndexColumnStruct{Schema: destSchema, Table: destTable, ColumnName: sp.columnName, Drivce: sp.ddrive}
+		dtmpTableCount, err = idxcDest.TableIndexColumn().TmpTableIndexColumnRowsCount(ddb, logThreadSeq)
 		if err != nil {
+			vlog = fmt.Sprintf("(%d) Error getting destination table row count: %v", logThreadSeq, err)
+			global.Wlog.Error(vlog)
 			return
 		}
 		sp.ddbPool.Put(ddb, logThreadSeq)
 
-		vlog = fmt.Sprintf("(%d) Start to verify the total number of rows of table %s.%s source and target ...", logThreadSeq, sp.schema, sp.table)
+		vlog = fmt.Sprintf("(%d) Start to verify the total number of rows of table %s source and target ...", logThreadSeq, displayTableName)
 		global.Wlog.Debug(vlog)
+
 		if stmpTableCount != dtmpTableCount {
-			vlog = fmt.Sprintf("(%d) Verify that the total number of rows at the source and destination of table %s.%s is inconsistent.", logThreadSeq, sp.schema, sp.table)
+			vlog = fmt.Sprintf("(%d) Verify that the total number of rows at the source and destination of table %s is inconsistent.", logThreadSeq, displayTableName)
 			global.Wlog.Debug(vlog)
 			sp.pods.DIFFS = "yes"
 			sp.pods.Rows = fmt.Sprintf("%d,%d", stmpTableCount, dtmpTableCount)
 			measuredDataPods = append(measuredDataPods, *sp.pods)
-			vlog = fmt.Sprintf("(%d) Check table %s.%s The total number of rows at the source and target end has been checked.", logThreadSeq, sp.schema, sp.table)
+			vlog = fmt.Sprintf("(%d) Check table %s The total number of rows at the source and target end has been checked.", logThreadSeq, displayTableName)
 			global.Wlog.Debug(vlog)
 			fmt.Println()
-			fmt.Println(fmt.Sprintf("table %s.%s checksum complete", sp.schema, sp.table))
+			fmt.Println(fmt.Sprintf("table %s checksum complete", displayTableName))
 			continue
 		}
-		vlog = fmt.Sprintf("(%d) Verify that the total number of rows at the source and destination of table %s.%s is consistent", logThreadSeq, sp.schema, sp.table)
+
+		vlog = fmt.Sprintf("(%d) Verify that the total number of rows at the source and destination of table %s is consistent", logThreadSeq, displayTableName)
 		global.Wlog.Debug(vlog)
+
 		var sampDataGroupNumber, dataGroupNumber uint64
 		var selectColumnStringM = make(map[string]map[string]string)
 		dataGroupNumber = stmpTableCount / uint64(sp.chanrowCount)
@@ -243,32 +355,45 @@ func (sp *SchedulePlan) DoSampleDataCheck() {
 		if len(v) == 0 {
 			sp.pods.IndexColumn = "noIndex"
 			sp.sampSingleTableCheckProcessing(sp.chanrowCount, sampDataGroupNumber, logThreadSeq)
-			//measuredDataPods = append(measuredDataPods, pods)
 			fmt.Println()
-			fmt.Println(fmt.Sprintf("table %s.%s checksum complete", sp.schema, sp.table))
-			vlog = fmt.Sprintf("(%d) Check table %s.%s The total number of rows at the source and target end has been checked.", logThreadSeq, sp.schema, sp.table)
+			fmt.Println(fmt.Sprintf("table %s checksum complete", displayTableName))
+			vlog = fmt.Sprintf("(%d) Check table %s The total number of rows at the source and target end has been checked.", logThreadSeq, displayTableName)
 			global.Wlog.Debug(vlog)
 			continue
 		}
+
 		//开始校验有索引表
 		sp.pods.IndexColumn = strings.TrimLeft(strings.Join(sp.columnName, ","), ",")
 		//获取索引列数据长度，处理索引列数据中有null或空字符串的问题
-		idxc = dbExec.IndexColumnStruct{Schema: sp.schema, Table: sp.table, ColumnName: sp.columnName,
-			ChanrowCount: chanrowCount, Drivce: sp.sdrive,
-			ColData: sp.tableAllCol[fmt.Sprintf("%s_greatdbCheck_%s", sp.schema, sp.table)].SColumnInfo}
+		idxc = dbExec.IndexColumnStruct{
+			Schema:       sourceSchema,
+			Table:        sourceTable,
+			ColumnName:   sp.columnName,
+			ChanrowCount: chanrowCount,
+			Drivce:       sp.sdrive,
+			ColData:      tableColumn.SColumnInfo,
+		}
 		selectColumnStringM[sp.sdrive] = idxc.TableIndexColumn().TmpTableIndexColumnSelectDispos(logThreadSeq)
-		idxc.Drivce = sp.ddrive
-		selectColumnStringM[sp.ddrive] = idxc.TableIndexColumn().TmpTableIndexColumnSelectDispos(logThreadSeq)
+
+		idxcDest = dbExec.IndexColumnStruct{
+			Schema:       destSchema,
+			Table:        destTable,
+			ColumnName:   sp.columnName,
+			ChanrowCount: chanrowCount,
+			Drivce:       sp.ddrive,
+			ColData:      tableColumn.DColumnInfo,
+		}
+		selectColumnStringM[sp.ddrive] = idxcDest.TableIndexColumn().TmpTableIndexColumnSelectDispos(logThreadSeq)
 
 		var scheduleCount = make(chan int64, 1)
 		go sp.recursiveIndexColumn(sqlWhere, sdb, ddb, 0, sp.chanrowCount, "", selectColumnStringM, logThreadSeq)
-		
+
 		go sp.queryTableData(selectSql, diffQueryData, tableColumn, scheduleCount, logThreadSeq)
 		go sp.AbnormalDataDispos(diffQueryData, fixSQL, logThreadSeq)
 		sp.DataFixDispos(fixSQL, logThreadSeq)
 		fmt.Println()
-		fmt.Println(fmt.Sprintf("table %s.%s checksum complete", sp.schema, sp.table))
-		vlog = fmt.Sprintf("(%d) Check table %s.%s The total number of rows at the source and target end has been checked.", logThreadSeq, sp.schema, sp.table)
+		fmt.Println(fmt.Sprintf("table %s checksum complete", displayTableName))
+		vlog = fmt.Sprintf("(%d) Check table %s The total number of rows at the source and target end has been checked.", logThreadSeq, displayTableName)
 		global.Wlog.Debug(vlog)
 	}
 	vlog = fmt.Sprintf("(%d) The sampling data verification of the original target is completed !!!", logThreadSeq)
