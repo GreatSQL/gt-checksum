@@ -11,7 +11,7 @@ import (
 )
 
 /*
-	查询MySQL库下指定表的索引统计信息
+查询MySQL库下指定表的索引统计信息
 */
 func (my *QueryTable) QueryTableIndexColumnInfo(db *sql.DB, logThreadSeq int64) ([]map[string]interface{}, error) {
 	var (
@@ -37,7 +37,7 @@ func (my *QueryTable) QueryTableIndexColumnInfo(db *sql.DB, logThreadSeq int64) 
 }
 
 /*
-	根据MySQL库下指定表的索引信息，筛选主键索引、唯一索引、普通索引
+根据MySQL库下指定表的索引信息，筛选主键索引、唯一索引、普通索引
 */
 func (my *QueryTable) IndexDisposF(queryData []map[string]interface{}, logThreadSeq int64) (map[string][]string, map[string][]string, map[string][]string) {
 	var (
@@ -45,39 +45,39 @@ func (my *QueryTable) IndexDisposF(queryData []map[string]interface{}, logThread
 		multiseriateIndexColumnMap = make(map[string][]string)
 		priIndexColumnMap          = make(map[string][]string)
 		indexName                  string
-		currIndexName             string
-		Event                     = "E_Index_Filter"
+		currIndexName              string
+		Event                      = "E_Index_Filter"
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start to filter the primary key index, unique index, and common index based on the index information of the specified table %s.%s under the %s library", logThreadSeq, Event, my.Schema, my.Table, DBType)
 	global.Wlog.Debug(vlog)
-	
+
 	// 用于临时存储每个索引的列顺序
 	indexColumns := make(map[string]map[string]string)
-	
+
 	for _, v := range queryData {
 		currIndexName = fmt.Sprintf("%s", v["indexName"])
 		if my.CaseSensitiveObjectName == "no" {
 			currIndexName = strings.ToUpper(fmt.Sprintf("%s", v["indexName"]))
 		}
-		
+
 		columnName := fmt.Sprintf("%s", v["columnName"])
 		indexSeq := fmt.Sprintf("%s", v["IndexSeq"])
 		columnType := fmt.Sprintf("%s", v["columnType"])
-		
+
 		// 初始化map
 		if _, exists := indexColumns[currIndexName]; !exists {
 			indexColumns[currIndexName] = make(map[string]string)
 		}
-		
+
 		// 存储列的顺序信息
 		indexColumns[currIndexName][indexSeq] = columnName + "/*seq*/" + indexSeq + "/*type*/" + columnType
-		
+
 		// 更新当前索引名
 		if currIndexName != indexName {
 			indexName = currIndexName
 		}
 	}
-	
+
 	// 按照索引序号排序并添加到最终的map中
 	for idxName, columns := range indexColumns {
 		// 获取所有序号并排序
@@ -87,14 +87,14 @@ func (my *QueryTable) IndexDisposF(queryData []map[string]interface{}, logThread
 			seqNums = append(seqNums, seqNum)
 		}
 		sort.Ints(seqNums)
-		
+
 		// 按序号顺序添加列
 		var orderedColumns []string
 		for _, seq := range seqNums {
 			seqStr := strconv.Itoa(seq)
 			orderedColumns = append(orderedColumns, columns[seqStr])
 		}
-		
+
 		// 根据索引类型添加到相应的map中
 		if idxName == "PRIMARY" {
 			priIndexColumnMap["pri"] = orderedColumns
@@ -107,7 +107,7 @@ func (my *QueryTable) IndexDisposF(queryData []map[string]interface{}, logThread
 					break
 				}
 			}
-			
+
 			if isUnique {
 				nultiseriateIndexColumnMap[idxName] = orderedColumns
 			} else {
@@ -115,15 +115,15 @@ func (my *QueryTable) IndexDisposF(queryData []map[string]interface{}, logThread
 			}
 		}
 	}
-	
+
 	vlog = fmt.Sprintf("(%d) [%s] The index information screening of the specified table %s.%s under the %s library is completed", logThreadSeq, Event, my.Schema, my.Table, DBType)
 	global.Wlog.Debug(vlog)
-	
+
 	return priIndexColumnMap, nultiseriateIndexColumnMap, multiseriateIndexColumnMap
 }
 
 /*
-	查询表，输出索引列数据的字符串长度，判断是否有null或空
+查询表，输出索引列数据的字符串长度，判断是否有null或空
 */
 func (my *QueryTable) TmpTableIndexColumnSelectDispos(logThreadSeq int64) map[string]string {
 	//根据索引列的多少，生成select 列条件，并生成列长度，为判断列是否为null或为空做判断
@@ -162,7 +162,7 @@ func (my *QueryTable) TmpTableIndexColumnSelectDispos(logThreadSeq int64) map[st
 }
 
 /*
-	MySQL 查询有索引表的总行数
+MySQL 查询有索引表的总行数
 */
 func (my *QueryTable) TmpTableIndexColumnRowsCount(db *sql.DB, logThreadSeq int64) (uint64, error) {
 	var (
@@ -219,7 +219,7 @@ func (my *QueryTable) TmpTableIndexColumnRowsCount(db *sql.DB, logThreadSeq int6
 }
 
 /*
-	处理MySQL 5.7版本针对列数据类型为FLOAT类型时，select where column = 'float'查询不出数据问题
+处理MySQL 5.7版本针对列数据类型为FLOAT类型时，select where column = 'float'查询不出数据问题
 */
 func (my QueryTable) FloatTypeQueryDispos(db *sql.DB, where string, logThreadSeq int64) (string, error) {
 	var whereExist string
@@ -247,7 +247,7 @@ func (my QueryTable) FloatTypeQueryDispos(db *sql.DB, where string, logThreadSeq
 }
 
 /*
-	MySQL库下查询表的索引列数据，并进行去重排序
+MySQL库下查询表的索引列数据，并进行去重排序
 */
 func (my QueryTable) TmpTableColumnGroupDataDispos(db *sql.DB, where string, columnName string, logThreadSeq int64) (chan map[string]interface{}, error) {
 	var (
@@ -282,31 +282,70 @@ func (my QueryTable) TmpTableColumnGroupDataDispos(db *sql.DB, where string, col
 }
 
 /*
-	MySQL 查询表的统计信息中行数
+MySQL 查询表的统计信息中行数
 */
 func (my *QueryTable) TableRows(db *sql.DB, logThreadSeq int64) (uint64, error) {
 	var (
 		Event = "Q_I_S_tableRows"
 	)
-	vlog = fmt.Sprintf("(%d) [%s] Start querying the statistical information of table %s.%s in the %s database and get the number of rows in the table", logThreadSeq, Event, my.Schema, my.Table, DBType)
+	// 确保Schema不为空
+	if my.Schema == "" {
+		vlog := fmt.Sprintf("(%d) [%s] Schema is empty for table %s, cannot get row count. Please specify a schema.", logThreadSeq, Event, my.Table)
+		global.Wlog.Error(vlog)
+		return 0, fmt.Errorf("schema is empty for table %s", my.Table)
+	}
+
+	vlog := fmt.Sprintf("(%d) [%s] Start querying the statistical information of table %s.%s in the %s database and get the number of rows in the table", logThreadSeq, Event, my.Schema, my.Table, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("SELECT TABLE_ROWS AS tableRows FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s'", my.Schema, my.Table)
+
+	// 首先尝试从INFORMATION_SCHEMA获取表统计信息
+	strsql := fmt.Sprintf("SELECT TABLE_ROWS AS tableRows FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s'", my.Schema, my.Table)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
-		return 0, err
+		vlog = fmt.Sprintf("(%d) [%s] Failed to get table statistics: %v, trying COUNT(*) instead", logThreadSeq, Event, err)
+		global.Wlog.Warn(vlog)
+		return 0, nil
 	}
+
 	tableData, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
 	if err != nil {
-		return 0, err
+		return 0, nil
 	}
 	defer dispos.SqlRows.Close()
+
+	// 检查tableData是否为空，如果为空则使用COUNT(*)查询
+	if len(tableData) == 0 {
+		vlog = fmt.Sprintf("(%d) [%s] No table statistics found for table %s.%s in the %s database, trying COUNT(*)", logThreadSeq, Event, my.Schema, my.Table, DBType)
+		global.Wlog.Warn(vlog)
+
+		// 使用COUNT(*)查询获取行数
+		strsql = fmt.Sprintf("SELECT COUNT(*) AS tableRows FROM `%s`.`%s`", my.Schema, my.Table)
+		if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
+			vlog = fmt.Sprintf("(%d) [%s] Failed to get row count with COUNT(*): %v", logThreadSeq, Event, err)
+			global.Wlog.Error(vlog)
+			return 0, nil
+		}
+
+		tableData, err = dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
+		if err != nil {
+			return 0, nil
+		}
+
+		if len(tableData) == 0 {
+			vlog = fmt.Sprintf("(%d) [%s] No rows returned from COUNT(*) query for table %s.%s", logThreadSeq, Event, my.Schema, my.Table)
+			global.Wlog.Warn(vlog)
+			return 0, nil
+		}
+	}
+
 	vlog = fmt.Sprintf("(%d) [%s] The number of rows in table %s.%s in the %s database has been obtained.", logThreadSeq, Event, my.Schema, my.Table, DBType)
 	global.Wlog.Debug(vlog)
+
 	return strconv.ParseUint(fmt.Sprintf("%s", tableData[0]["tableRows"]), 10, 64)
 }
 
 /*
-	处理无索引表查询select的order by列，防止原目标端查询的段不一致情况
+处理无索引表查询select的order by列，防止原目标端查询的段不一致情况
 */
 func (my *QueryTable) NoIndexOrderBySingerColumn(orderCol []map[string]string) []string {
 	//处理order by column
@@ -333,7 +372,7 @@ func (my *QueryTable) NoIndexOrderBySingerColumn(orderCol []map[string]string) [
 }
 
 /*
-	查询无索引表的数据（使用limit分页的方式），并排序
+查询无索引表的数据（使用limit分页的方式），并排序
 */
 func (my *QueryTable) NoIndexGeneratingQueryCriteria(db *sql.DB, beginSeq uint64, chanrowCount int, logThreadSeq int64) (string, error) {
 	var (
@@ -375,7 +414,7 @@ func (my *QueryTable) NoIndexGeneratingQueryCriteria(db *sql.DB, beginSeq uint64
 }
 
 /*
-	MySQL 通过where条件查询表的分段数据（查询数据生成带有greatdbCheck标识的数据块）
+MySQL 通过where条件查询表的分段数据（查询数据生成带有greatdbCheck标识的数据块）
 */
 func (my QueryTable) GeneratingQueryCriteria(db *sql.DB, logThreadSeq int64) (string, error) {
 	var (
@@ -397,7 +436,7 @@ func (my QueryTable) GeneratingQueryCriteria(db *sql.DB, logThreadSeq int64) (st
 }
 
 /*
-	MySQL 生成查询数据的sql语句
+MySQL 生成查询数据的sql语句
 */
 func (my *QueryTable) GeneratingQuerySql(db *sql.DB, logThreadSeq int64) (string, error) {
 	var (

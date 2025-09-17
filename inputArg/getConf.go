@@ -2,11 +2,12 @@ package inputArg
 
 import (
 	"fmt"
-	"gopkg.in/ini.v1"
 	"strings"
+
+	"gopkg.in/ini.v1"
 )
 
-//一级、二级参数标签合法性校验
+// 一级、二级参数标签合法性校验
 func (rc *ConfigParameter) LevelParameterCheck() {
 	var (
 		err error
@@ -83,7 +84,7 @@ func (rc *ConfigParameter) LevelParameterCheck() {
 }
 
 /*
-	二级参数值获取校验
+二级参数值获取校验
 */
 func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 	var (
@@ -111,6 +112,7 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 	if rc.SecondaryL.SchemaV.IgnoreTables == "" {
 		rc.SecondaryL.SchemaV.IgnoreTables = "nil"
 	}
+
 	rc.SecondaryL.SchemaV.CaseSensitiveObjectName = rc.FirstL.Schema.Key("caseSensitiveObjectName").In("no", []string{"yes", "no"})
 	rc.SecondaryL.SchemaV.CheckNoIndexTable = rc.FirstL.Schema.Key("checkNoIndexTable").In("no", []string{"yes", "no"})
 	//Struct
@@ -136,101 +138,101 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 		rc.SecondaryL.LogV.LogFile = rc.FirstL.Logs.Key("logFile").String()
 		if rc.SecondaryL.LogV.LogFile == "" {
 			rc.SecondaryL.LogV.LogFile = "./gt-checksum.log"
-				fmt.Println("Failed to set option LogFile, using default value ./gt-checksum.log")
-			}
-		} else {
-			rc.SecondaryL.LogV.LogFile = "./gt-checksum.log"
 			fmt.Println("Failed to set option LogFile, using default value ./gt-checksum.log")
 		}
-		if rc.FirstL.Logs != nil {
-			rc.SecondaryL.LogV.LogLevel = rc.FirstL.Logs.Key("logLevel").In("info", []string{"debug", "info", "warn", "error"})
-		} else {
-			rc.SecondaryL.LogV.LogLevel = "info"
-		}
+	} else {
+		rc.SecondaryL.LogV.LogFile = "./gt-checksum.log"
+		fmt.Println("Failed to set option LogFile, using default value ./gt-checksum.log")
+	}
+	if rc.FirstL.Logs != nil {
+		rc.SecondaryL.LogV.LogLevel = rc.FirstL.Logs.Key("logLevel").In("info", []string{"debug", "info", "warn", "error"})
+	} else {
+		rc.SecondaryL.LogV.LogLevel = "info"
+	}
 
-		if rc.FirstL.Rules != nil {
-			if rc.SecondaryL.RulesV.ParallelThds, err = rc.FirstL.Rules.Key("parallelThds").Int(); err != nil {
-				fmt.Println("Failed to set option parallelThds, using default value 10")
-				rc.SecondaryL.RulesV.ParallelThds = 10
-			}
-		} else {
+	if rc.FirstL.Rules != nil {
+		if rc.SecondaryL.RulesV.ParallelThds, err = rc.FirstL.Rules.Key("parallelThds").Int(); err != nil {
 			fmt.Println("Failed to set option parallelThds, using default value 10")
 			rc.SecondaryL.RulesV.ParallelThds = 10
 		}
-		if rc.FirstL.Rules != nil {
-			if rc.SecondaryL.RulesV.ChanRowCount, err = rc.FirstL.Rules.Key("chunkSize").Int(); err != nil {
-				fmt.Println("Failed to set option chunkSize, using default value 1000")
-				rc.SecondaryL.RulesV.ChanRowCount = 10000
-			}
-		} else {
+	} else {
+		fmt.Println("Failed to set option parallelThds, using default value 10")
+		rc.SecondaryL.RulesV.ParallelThds = 10
+	}
+	if rc.FirstL.Rules != nil {
+		if rc.SecondaryL.RulesV.ChanRowCount, err = rc.FirstL.Rules.Key("chunkSize").Int(); err != nil {
 			fmt.Println("Failed to set option chunkSize, using default value 1000")
 			rc.SecondaryL.RulesV.ChanRowCount = 10000
 		}
-		if rc.FirstL.Rules != nil {
-			if rc.SecondaryL.RulesV.QueueSize, err = rc.FirstL.Rules.Key("queueSize").Int(); err != nil {
-				fmt.Println("Failed to set option queueSize, using default value 100")
-				rc.SecondaryL.RulesV.QueueSize = 1000
-			}
-		} else {
+	} else {
+		fmt.Println("Failed to set option chunkSize, using default value 1000")
+		rc.SecondaryL.RulesV.ChanRowCount = 10000
+	}
+	if rc.FirstL.Rules != nil {
+		if rc.SecondaryL.RulesV.QueueSize, err = rc.FirstL.Rules.Key("queueSize").Int(); err != nil {
 			fmt.Println("Failed to set option queueSize, using default value 100")
 			rc.SecondaryL.RulesV.QueueSize = 1000
 		}
-		if rc.FirstL.Rules != nil {
-			if rc.SecondaryL.RulesV.Ratio, err = rc.FirstL.Rules.Key("ratio").Int(); err != nil {
-				fmt.Println("Failed to set option Ratio, using default value 10")
-				rc.SecondaryL.RulesV.Ratio = 10
-			}
-		} else {
+	} else {
+		fmt.Println("Failed to set option queueSize, using default value 100")
+		rc.SecondaryL.RulesV.QueueSize = 1000
+	}
+	if rc.FirstL.Rules != nil {
+		if rc.SecondaryL.RulesV.Ratio, err = rc.FirstL.Rules.Key("ratio").Int(); err != nil {
 			fmt.Println("Failed to set option Ratio, using default value 10")
 			rc.SecondaryL.RulesV.Ratio = 10
 		}
-		if rc.FirstL.Rules != nil {
-			rc.SecondaryL.RulesV.CheckMode = rc.FirstL.Rules.Key("checkMode").In("rows", []string{"count", "rows", "sample"})
-		} else {
-			rc.SecondaryL.RulesV.CheckMode = "rows"
-		}
-		if rc.FirstL.Rules != nil {
-			rc.SecondaryL.RulesV.CheckObject = rc.FirstL.Rules.Key("checkObject").In("data", []string{"data", "struct", "index", "partitions", "foreign", "trigger", "func", "proc"})
-		} else {
-			rc.SecondaryL.RulesV.CheckObject = "data"
-		}
-		if rc.FirstL.Rules != nil {
-			if rc.SecondaryL.RulesV.MemoryLimit, err = rc.FirstL.Rules.Key("memoryLimit").Int(); err != nil {
-				fmt.Println("Failed to set option memoryLimit, using default value 1024")
-				rc.SecondaryL.RulesV.MemoryLimit = 1024
-			}
-		} else {
+	} else {
+		fmt.Println("Failed to set option Ratio, using default value 10")
+		rc.SecondaryL.RulesV.Ratio = 10
+	}
+	if rc.FirstL.Rules != nil {
+		rc.SecondaryL.RulesV.CheckMode = rc.FirstL.Rules.Key("checkMode").In("rows", []string{"count", "rows", "sample"})
+	} else {
+		rc.SecondaryL.RulesV.CheckMode = "rows"
+	}
+	if rc.FirstL.Rules != nil {
+		rc.SecondaryL.RulesV.CheckObject = rc.FirstL.Rules.Key("checkObject").In("data", []string{"data", "struct", "index", "partitions", "foreign", "trigger", "func", "proc"})
+	} else {
+		rc.SecondaryL.RulesV.CheckObject = "data"
+	}
+	if rc.FirstL.Rules != nil {
+		if rc.SecondaryL.RulesV.MemoryLimit, err = rc.FirstL.Rules.Key("memoryLimit").Int(); err != nil {
 			fmt.Println("Failed to set option memoryLimit, using default value 1024")
 			rc.SecondaryL.RulesV.MemoryLimit = 1024
 		}
+	} else {
+		fmt.Println("Failed to set option memoryLimit, using default value 1024")
+		rc.SecondaryL.RulesV.MemoryLimit = 1024
+	}
 
-		if rc.FirstL.Repair != nil {
-			if rc.SecondaryL.RepairV.FixTrxNum, err = rc.FirstL.Repair.Key("fixTrxNum").Int(); err != nil {
-				fmt.Println("Failed to set option fixTrxNum, using default value 100")
-				rc.SecondaryL.RepairV.FixTrxNum = 100
-			}
-		} else {
+	if rc.FirstL.Repair != nil {
+		if rc.SecondaryL.RepairV.FixTrxNum, err = rc.FirstL.Repair.Key("fixTrxNum").Int(); err != nil {
 			fmt.Println("Failed to set option fixTrxNum, using default value 100")
 			rc.SecondaryL.RepairV.FixTrxNum = 100
 		}
+	} else {
+		fmt.Println("Failed to set option fixTrxNum, using default value 100")
+		rc.SecondaryL.RepairV.FixTrxNum = 100
+	}
+	if rc.FirstL.Repair != nil {
+		rc.SecondaryL.RepairV.Datafix = rc.FirstL.Repair.Key("datafix").In("file", []string{"file", "table"})
+	} else {
+		rc.SecondaryL.RepairV.Datafix = "file"
+	}
+	if rc.SecondaryL.RepairV.Datafix == "file" {
 		if rc.FirstL.Repair != nil {
-			rc.SecondaryL.RepairV.Datafix = rc.FirstL.Repair.Key("datafix").In("file", []string{"file", "table"})
-		} else {
-			rc.SecondaryL.RepairV.Datafix = "file"
-		}
-		if rc.SecondaryL.RepairV.Datafix == "file" {
-			if rc.FirstL.Repair != nil {
-				if _, err = rc.FirstL.Repair.GetKey("fixFileName"); err != nil {
-					fmt.Println("Failed to set option fixFileName, using default value ./gt-checksum-DataFix.sql")
-					rc.SecondaryL.RepairV.FixFileName = "./gt-checksum-DataFix.sql"
-				} else {
-					rc.SecondaryL.RepairV.FixFileName = rc.FirstL.Repair.Key("fixFileName").String()
-				}
-			} else {
+			if _, err = rc.FirstL.Repair.GetKey("fixFileName"); err != nil {
 				fmt.Println("Failed to set option fixFileName, using default value ./gt-checksum-DataFix.sql")
 				rc.SecondaryL.RepairV.FixFileName = "./gt-checksum-DataFix.sql"
+			} else {
+				rc.SecondaryL.RepairV.FixFileName = rc.FirstL.Repair.Key("fixFileName").String()
 			}
+		} else {
+			fmt.Println("Failed to set option fixFileName, using default value ./gt-checksum-DataFix.sql")
+			rc.SecondaryL.RepairV.FixFileName = "./gt-checksum-DataFix.sql"
 		}
+	}
 }
 
 /*
