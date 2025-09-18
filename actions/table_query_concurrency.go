@@ -11,7 +11,8 @@ import (
 )
 
 type SchedulePlan struct {
-	chunkSize, mqQueueDepth   int
+	chunkSize, mqQueueDepth int
+
 	schema, table             string   //待校验库名、表名
 	sourceSchema, destSchema  string   //源端和目标端库名
 	columnName                []string //待校验表的列名，有可能是多个
@@ -161,7 +162,7 @@ func (sp *SchedulePlan) Schedulingtasks() {
 			displayTableName := sp.getDisplayTableName()
 			tableName := fmt.Sprintf("begin checkSum index table %s", displayTableName)
 			sp.bar.NewTableProgress(tableName)
-			sp.doIndexDataCheck()
+			sp.doIndexDataCheck() // 确保SchedulePlan结构体已定义此方法
 			fmt.Println()
 
 			// 显示映射关系信息

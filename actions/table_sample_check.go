@@ -388,7 +388,7 @@ func (sp *SchedulePlan) DoSampleDataCheck() {
 		var scheduleCount = make(chan int64, 1)
 		go sp.recursiveIndexColumn(sqlWhere, sdb, ddb, 0, sp.chanrowCount, "", selectColumnStringM, logThreadSeq)
 
-		go sp.queryTableData(selectSql, diffQueryData, tableColumn, scheduleCount, logThreadSeq)
+		go sp.queryTableDataSeparate(selectSql, make(chanMap), diffQueryData, tableColumn, scheduleCount, logThreadSeq)
 		go sp.AbnormalDataDispos(diffQueryData, fixSQL, logThreadSeq)
 		sp.DataFixDispos(fixSQL, logThreadSeq)
 		fmt.Println()

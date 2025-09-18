@@ -10,21 +10,21 @@ import (
 )
 
 type QueryTable struct {
-	Schema              string
-	Table               string
-	IgnoreTable         string
-	Db                  *sql.DB
-	Datafix             string
+	Schema                  string
+	Table                   string
+	IgnoreTable             string
+	Db                      *sql.DB
+	Datafix                 string
 	CaseSensitiveObjectName string
-	TmpTableFileName    string
-	ColumnName          []string
-	ChanrowCount        int
-	TableColumn         []map[string]string
-	Sqlwhere            string
-	ColData             []map[string]string
-	BeginSeq            string
-	RowDataCh           int64
-	SelectColumn        map[string]string
+	TmpTableFileName        string
+	ColumnName              []string
+	ChanrowCount            int
+	TableColumn             []map[string]string
+	Sqlwhere                string
+	ColData                 []map[string]string
+	BeginSeq                string
+	RowDataCh               int64
+	SelectColumn            map[string]string
 }
 
 var (
@@ -80,7 +80,7 @@ var (
 */
 
 /*
-   MySQL 获取对应的库表信息，排除'information_Schema','performance_Schema','sys','mysql'
+MySQL 获取对应的库表信息，排除'information_Schema','performance_Schema','sys','mysql'
 */
 func (my *QueryTable) DatabaseNameList(db *sql.DB, logThreadSeq int64) (map[string]int, error) {
 	var (
@@ -116,7 +116,7 @@ func (my *QueryTable) DatabaseNameList(db *sql.DB, logThreadSeq int64) (map[stri
 }
 
 /*
-	MySQL 通过查询表的元数据信息获取列名
+MySQL 通过查询表的元数据信息获取列名
 */
 func (my *QueryTable) TableColumnName(db *sql.DB, logThreadSeq int64) ([]map[string]interface{}, error) {
 	var (
@@ -142,7 +142,7 @@ func (my *QueryTable) TableColumnName(db *sql.DB, logThreadSeq int64) ([]map[str
 }
 
 /*
-	MySQL 查询数据库版本信息
+MySQL 查询数据库版本信息
 */
 func (my *QueryTable) DatabaseVersion(db *sql.DB, logThreadSeq int64) (string, error) {
 	var (
@@ -179,7 +179,7 @@ func (my *QueryTable) DatabaseVersion(db *sql.DB, logThreadSeq int64) (string, e
 }
 
 /*
-	MySQL 查看当前用户是否有全局变量
+MySQL 查看当前用户是否有全局变量
 */
 func (my *QueryTable) GlobalAccessPri(db *sql.DB, logThreadSeq int64) (bool, error) {
 	var (
@@ -265,7 +265,7 @@ func (my *QueryTable) GlobalAccessPri(db *sql.DB, logThreadSeq int64) (bool, err
 }
 
 /*
-	MySQL 查询用户是否有表的读写权限
+MySQL 查询用户是否有表的读写权限
 */
 func (my *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, datefix string, logThreadSeq int64) (map[string]int, error) {
 	var (
@@ -442,7 +442,7 @@ func (my *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 }
 
 /*
-	MySQL 获取校验表的列信息，包含列名，列序号，列类型
+MySQL 获取校验表的列信息，包含列名，列序号，列类型
 */
 func (my *QueryTable) TableAllColumn(db *sql.DB, logThreadSeq int64) ([]map[string]interface{}, error) {
 	var (
@@ -462,32 +462,6 @@ func (my *QueryTable) TableAllColumn(db *sql.DB, logThreadSeq int64) ([]map[stri
 		return nil, err
 	}
 
-	//for i := 1; i < 4; i++ {
-	//	rows, err = db.Query(strsql)
-	//	if err != nil {
-	//		blog := fmt.Sprintf("(%d) MySQL DB exec sql fail. sql message is {%s} Error info is {%s}.", logThreadSeq, strsql, err)
-	//		global.Wlog.Error(blog)
-	//		vlog = fmt.Sprintf("(%d) Failed to query the table column source table [%v.%v] for the %v time.", logThreadSeq, my.Schema, my.Table, i)
-	//		global.Wlog.Error(vlog)
-	//		if i == 3 {
-	//			return nil, err
-	//		}
-	//		time.Sleep(5 * time.Second)
-	//	} else {
-	//		break
-	//	}
-	//}
-	//if err != nil {
-	//	blog := fmt.Sprintf("(%d) MySQL DB exec sql fail. sql message is {%s} Error info is {%s}.", logThreadSeq, strsql, err)
-	//	global.Wlog.Error(blog)
-	//	return nil, err
-	//}
-	//if rows == nil {
-	//	return nil, nil
-	//}
-
-	//dispos := dataDispos.DBdataDispos{DBtype: "MySQL", Logseq: logThreadSeq, SqlRows: rows, Event: "tableAllColumn"}
-	//tableData, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
 	vlog = fmt.Sprintf("(%d) [%s] Complete the metadata query of all columns in table %s.%s in the %s database.", logThreadSeq, Event, my.Schema, my.Table, DBType)
 	global.Wlog.Debug(vlog)
 	defer dispos.SqlRows.Close()
@@ -495,7 +469,7 @@ func (my *QueryTable) TableAllColumn(db *sql.DB, logThreadSeq int64) ([]map[stri
 }
 
 /*
-	MySQL 处理唯一索引索引（包含主键索引）
+MySQL 处理唯一索引索引（包含主键索引）
 */
 func (my *QueryTable) keyChoiceDispos(IndexColumnMap map[string][]string, indexType string) map[string][]string {
 	var (
@@ -572,7 +546,7 @@ func (my *QueryTable) keyChoiceDispos(IndexColumnMap map[string][]string, indexT
 }
 
 /*
-	MySQL 表的索引选择
+MySQL 表的索引选择
 */
 func (my *QueryTable) TableIndexChoice(queryData []map[string]interface{}, logThreadSeq int64) map[string][]string {
 	var (
@@ -648,7 +622,7 @@ func (my *QueryTable) TableIndexChoice(queryData []map[string]interface{}, logTh
 }
 
 /*
-	MySQL 查询触发器信息
+MySQL 查询触发器信息
 */
 func (my *QueryTable) Trigger(db *sql.DB, logThreadSeq int64) (map[string]string, error) {
 	var (
@@ -705,7 +679,7 @@ func (my *QueryTable) Trigger(db *sql.DB, logThreadSeq int64) (map[string]string
 }
 
 /*
-	MySQL 存储过程校验
+MySQL 存储过程校验
 */
 func (my *QueryTable) Proc(db *sql.DB, logThreadSeq int64) (map[string]string, error) {
 	var (
@@ -737,7 +711,7 @@ func (my *QueryTable) Proc(db *sql.DB, logThreadSeq int64) (map[string]string, e
 }
 
 /*
-	MySQL 存储函数或自定义函数校验
+MySQL 存储函数或自定义函数校验
 */
 func (my *QueryTable) Func(db *sql.DB, logThreadSeq int64) (map[string]string, error) {
 	var (
@@ -780,7 +754,7 @@ func (my *QueryTable) Func(db *sql.DB, logThreadSeq int64) (map[string]string, e
 }
 
 /*
-	MySQL 外键校验
+MySQL 外键校验
 */
 func (my *QueryTable) Foreign(db *sql.DB, logThreadSeq int64) (map[string]string, error) {
 	var (
@@ -882,7 +856,7 @@ func (my *QueryTable) Foreign(db *sql.DB, logThreadSeq int64) (map[string]string
 }
 
 /*
-	分区表校验
+分区表校验
 */
 func (my *QueryTable) Partitions(db *sql.DB, logThreadSeq int64) (map[string]string, error) {
 	var (

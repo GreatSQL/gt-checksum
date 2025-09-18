@@ -236,7 +236,10 @@ func (sp *SchedulePlan) indexColumnDispos(sqlWhere chanString, selectColumn map[
 /*
 针对表的所有列的数据类型进行处理，将列类型转换成字符串，例如时间类型
 */
+// Deprecated: 请使用queryTableSqlSeparate函数替代
 func (sp *SchedulePlan) queryTableSql(sqlWhere chanString, selectSql chanMap, cc1 global.TableAllColumnInfoS, sc chan int64, logThreadSeq int64) {
+	// 保持向后兼容
+	sp.queryTableSqlSeparate(sqlWhere, make(chanMap), make(chanMap), cc1, sc, logThreadSeq)
 	var (
 		vlog    string
 		curry   = make(chanStruct, sp.concurrency)
@@ -268,18 +271,46 @@ func (sp *SchedulePlan) queryTableSql(sqlWhere chanString, selectSql chanMap, cc
 						ddbPool.Put(dd, logThreadSeq)
 						<-curry
 					}()
-					//查询该表的列名和列信息
-					idxc := dbExec.IndexColumnStruct{Schema: sp.sourceSchema, Table: sp.table, TableColumn: cc1.SColumnInfo, Sqlwhere: c1, Drivce: sp.sdrive}
+					// 为源端生成WHERE条件
+					sourceWhere := strings.Replace(c1, fmt.Sprintf("%s.%s", sp.destSchema, sp.table), fmt.Sprintf("%s.%s", sp.sourceSchema, sp.table), -1)
+					sourceWhere = strings.Replace(sourceWhere, fmt.Sprintf("`%s`.`%s`", sp.destSchema, sp.table), fmt.Sprintf("`%s`.`%s`", sp.sourceSchema, sp.table), -1)
+
+					// 源端使用sourceSchema和sourceTable
+					idxc := dbExec.IndexColumnStruct{
+						Schema:      sp.sourceSchema,
+						Table:       sp.table,
+						TableColumn: cc1.SColumnInfo,
+						Sqlwhere:    sourceWhere,
+						Drivce:      sp.sdrive,
+						ColData:     cc1.SColumnInfo,
+					}
 					lock.Lock()
 					selectSqlMap[sp.sdrive], err = idxc.TableIndexColumn().GeneratingQuerySql(sd, logThreadSeq)
 					if err != nil {
+						vlog = fmt.Sprintf("(%d) [doIndexDataCheck] Failed to generate source query SQL for %s.%s: %v", logThreadSeq, sp.sourceSchema, sp.table, err)
+						global.Wlog.Error(vlog)
 						return
 					}
 					lock.Unlock()
-					idxcDest := dbExec.IndexColumnStruct{Schema: sp.destSchema, Table: sp.table, TableColumn: cc1.DColumnInfo, Sqlwhere: c1, Drivce: sp.ddrive}
+
+					// 为目标端生成WHERE条件
+					destWhere := strings.Replace(c1, fmt.Sprintf("%s.%s", sp.sourceSchema, sp.table), fmt.Sprintf("%s.%s", sp.destSchema, sp.table), -1)
+					destWhere = strings.Replace(destWhere, fmt.Sprintf("`%s`.`%s`", sp.sourceSchema, sp.table), fmt.Sprintf("`%s`.`%s`", sp.destSchema, sp.table), -1)
+
+					// 目标端使用destSchema和destTable
+					idxcDest := dbExec.IndexColumnStruct{
+						Schema:      sp.destSchema,
+						Table:       sp.table,
+						TableColumn: cc1.DColumnInfo,
+						Sqlwhere:    destWhere,
+						Drivce:      sp.ddrive,
+						ColData:     cc1.DColumnInfo,
+					}
 					lock.Lock()
 					selectSqlMap[sp.ddrive], err = idxcDest.TableIndexColumn().GeneratingQuerySql(dd, logThreadSeq)
 					if err != nil {
+						vlog = fmt.Sprintf("(%d) [doIndexDataCheck] Failed to generate destination query SQL for %s.%s: %v", logThreadSeq, sp.destSchema, sp.table, err)
+						global.Wlog.Error(vlog)
 						return
 					}
 					lock.Unlock()
@@ -295,7 +326,10 @@ func (sp *SchedulePlan) queryTableSql(sqlWhere chanString, selectSql chanMap, cc
 /*
 针对表的所有列的数据类型进行处理，将列类型转换成字符串，例如时间类型，并执行sql语句
 */
+// Deprecated: 请使用queryTableDataSeparate函数替代
 func (sp *SchedulePlan) queryTableData(selectSql chanMap, diffQueryData chanDiffDataS, cc1 global.TableAllColumnInfoS, sc chan int64, logThreadSeq int64) {
+	// 保持向后兼容
+	sp.queryTableDataSeparate(selectSql, make(chanMap), diffQueryData, cc1, sc, logThreadSeq)
 	var (
 		vlog               string
 		aa                 = &CheckSumTypeStruct{}
@@ -330,38 +364,51 @@ func (sp *SchedulePlan) queryTableData(selectSql chanMap, diffQueryData chanDiff
 				}
 			} else {
 				autoSeq1++
+				// 源端检查使用sourceSchema
 				idxc := dbExec.IndexColumnStruct{
-					Schema:      sp.schema,
+					Schema:      sp.sourceSchema,
 					Table:       sp.table,
 					TableColumn: cc1.SColumnInfo,
 					Sqlwhere:    c[sp.sdrive],
 					Drivce:      sp.sdrive,
+					ColData:     cc1.SColumnInfo,
 				}
 				curry <- struct{}{}
 				go func(c1 map[string]string, cc1 global.TableAllColumnInfoS) {
 					defer func() {
 						<-curry
 					}()
-					//查询该表的列名和列信息
-					vlog = fmt.Sprintf("(%d) Start to query the block data of check table %s.%s ...", logThreadSeq, sp.sourceSchema, sp.table)
+					//查询源端表数据
+					vlog = fmt.Sprintf("(%d) Start to query source table %s.%s block data...", logThreadSeq, sp.sourceSchema, sp.table)
 					global.Wlog.Debug(vlog)
 					sdb := sp.sdbPool.Get(logThreadSeq)
-					vlog = fmt.Sprintf("%v", c1)
-					global.Wlog.Debug(vlog)
 					stt, err := idxc.TableIndexColumn().GeneratingQueryCriteria(sdb, logThreadSeq)
-					vlog = fmt.Sprintf("(%d) check source %s table %s.%s query data is {%v}", logThreadSeq, sp.sdrive, sp.sourceSchema, sp.table, stt)
+					vlog = fmt.Sprintf("(%d) Source %s table %s.%s query result: %v", logThreadSeq, sp.sdrive, sp.sourceSchema, sp.table, stt)
 					global.Wlog.Debug(vlog)
 					sp.sdbPool.Put(sdb, logThreadSeq)
 					if err != nil {
+						vlog = fmt.Sprintf("(%d) Failed to query source table %s.%s: %v", logThreadSeq, sp.sourceSchema, sp.table, err)
+						global.Wlog.Error(vlog)
 						return
 					}
-					idxcDest := dbExec.IndexColumnStruct{Schema: sp.destSchema, Table: sp.table, Sqlwhere: c1[sp.ddrive], TableColumn: cc1.DColumnInfo, Drivce: sp.ddrive}
+
+					// 目标端检查使用destSchema
+					idxcDest := dbExec.IndexColumnStruct{
+						Schema:      sp.destSchema,
+						Table:       sp.table,
+						Sqlwhere:    c1[sp.ddrive],
+						TableColumn: cc1.DColumnInfo,
+						Drivce:      sp.ddrive,
+						ColData:     cc1.DColumnInfo,
+					}
 					ddb := sp.ddbPool.Get(logThreadSeq)
 					dtt, err := idxcDest.TableIndexColumn().GeneratingQueryCriteria(ddb, logThreadSeq)
-					vlog = fmt.Sprintf("(%d) check dest %s table %s.%s query data is {%v}", logThreadSeq, sp.ddrive, sp.destSchema, sp.table, dtt)
+					vlog = fmt.Sprintf("(%d) Destination %s table %s.%s query result: %v", logThreadSeq, sp.ddrive, sp.destSchema, sp.table, dtt)
 					global.Wlog.Debug(vlog)
 					sp.ddbPool.Put(ddb, logThreadSeq)
 					if err != nil {
+						vlog = fmt.Sprintf("(%d) Failed to query destination table %s.%s: %v", logThreadSeq, sp.destSchema, sp.table, err)
+						global.Wlog.Error(vlog)
 						return
 					}
 					vlog = fmt.Sprintf("(%d) Check table %s.%s to start checking the consistency of block data ...", logThreadSeq, sp.sourceSchema, sp.table)
@@ -557,7 +604,6 @@ func (sp SchedulePlan) doIndexDataCheck() {
 	var (
 		queueDepth          = sp.mqQueueDepth
 		sqlWhere            = make(chanString, queueDepth)
-		selectSql           = make(chanMap, queueDepth)
 		diffQueryData       = make(chanDiffDataS, queueDepth)
 		fixSQL              = make(chanString, queueDepth)
 		tableColumn         = sp.tableAllCol[fmt.Sprintf("%s_gtchecksum_%s", sp.schema, sp.table)]
@@ -585,7 +631,7 @@ func (sp SchedulePlan) doIndexDataCheck() {
 	} else if sp.table != sp.table { // 只有表名不同
 		mappingInfo = fmt.Sprintf("Table: %s:%s", sp.table, sp.table)
 	}
-	
+
 	sp.pods = &Pod{
 		Schema:      sp.schema,
 		Table:       sp.table,
@@ -629,10 +675,135 @@ func (sp SchedulePlan) doIndexDataCheck() {
 	sourceExactCount := sp.getExactRowCount(sp.sdbPool, sp.sourceSchema, sp.table, logThreadSeq)
 	targetExactCount := sp.getExactRowCount(sp.ddbPool, sp.destSchema, sp.table, logThreadSeq)
 	sp.pods.Rows = fmt.Sprintf("%d,%d", sourceExactCount, targetExactCount)
+
+	// 创建独立的channel用于源端和目标端查询SQL
+	sourceSelectSql := make(chanMap, sp.mqQueueDepth)
+	destSelectSql := make(chanMap, sp.mqQueueDepth)
+
 	var scheduleCount = make(chan int64, 1)
 	go sp.indexColumnDispos(sqlWhere, selectColumnStringM)
-	go sp.queryTableSql(sqlWhere, selectSql, tableColumn, scheduleCount, logThreadSeq)
-	go sp.queryTableData(selectSql, diffQueryData, tableColumn, scheduleCount, logThreadSeq)
+
+	// 调用分离的查询函数
+	go sp.queryTableSqlSeparate(sqlWhere, sourceSelectSql, destSelectSql, tableColumn, scheduleCount, logThreadSeq)
+	go sp.queryTableDataSeparate(sourceSelectSql, destSelectSql, diffQueryData, tableColumn, scheduleCount, logThreadSeq)
+
 	go sp.AbnormalDataDispos(diffQueryData, fixSQL, logThreadSeq)
 	sp.DataFixDispos(fixSQL, logThreadSeq)
+}
+
+// 新的函数处理分离的源端和目标端查询
+func (sp *SchedulePlan) queryTableSqlSeparate(sqlWhere chanString, sourceSelectSql chanMap, destSelectSql chanMap, cc1 global.TableAllColumnInfoS, sc chan int64, logThreadSeq int64) {
+	for c := range sqlWhere {
+		// 源端查询SQL
+		sourceWhere := strings.Replace(c, fmt.Sprintf("%s.%s", sp.destSchema, sp.table), fmt.Sprintf("%s.%s", sp.sourceSchema, sp.table), -1)
+		sourceWhere = strings.Replace(sourceWhere, fmt.Sprintf("`%s`.`%s`", sp.destSchema, sp.table), fmt.Sprintf("`%s`.`%s`", sp.sourceSchema, sp.table), -1)
+
+		idxc := dbExec.IndexColumnStruct{
+			Schema:   sp.sourceSchema,
+			Table:    sp.table,
+			Drivce:   sp.sdrive,
+			Sqlwhere: sourceWhere,
+			ColData:  cc1.SColumnInfo,
+		}
+		sdb := sp.sdbPool.Get(logThreadSeq)
+		sql, err := idxc.TableIndexColumn().GeneratingQuerySql(sdb, logThreadSeq)
+		sp.sdbPool.Put(sdb, logThreadSeq)
+		if err != nil {
+			continue
+		}
+		sourceSelectSql <- map[string]string{sp.sdrive: sql}
+
+		// 目标端查询SQL
+		destWhere := strings.Replace(c, fmt.Sprintf("%s.%s", sp.sourceSchema, sp.table), fmt.Sprintf("%s.%s", sp.destSchema, sp.table), -1)
+		destWhere = strings.Replace(destWhere, fmt.Sprintf("`%s`.`%s`", sp.sourceSchema, sp.table), fmt.Sprintf("`%s`.`%s`", sp.destSchema, sp.table), -1)
+
+		idxcDest := dbExec.IndexColumnStruct{
+			Schema:   sp.destSchema,
+			Table:    sp.table,
+			Drivce:   sp.ddrive,
+			Sqlwhere: destWhere,
+			ColData:  cc1.DColumnInfo,
+		}
+		ddb := sp.ddbPool.Get(logThreadSeq)
+		sql, err = idxcDest.TableIndexColumn().GeneratingQuerySql(ddb, logThreadSeq)
+		sp.ddbPool.Put(ddb, logThreadSeq)
+		if err != nil {
+			continue
+		}
+		destSelectSql <- map[string]string{sp.ddrive: sql}
+	}
+	close(sourceSelectSql)
+	close(destSelectSql)
+}
+
+func (sp *SchedulePlan) queryTableDataSeparate(sourceSelectSql chanMap, destSelectSql chanMap, diffQueryData chanDiffDataS, cc1 global.TableAllColumnInfoS, sc chan int64, logThreadSeq int64) {
+	var (
+		curry = make(chanStruct, sp.concurrency)
+	)
+
+	for {
+		select {
+		case d, ok := <-sc:
+			if ok {
+				sp.bar.NewOption(0, d, "Processing")
+			}
+		case sourceSql, ok := <-sourceSelectSql:
+			if !ok {
+				if len(curry) == 0 {
+					close(diffQueryData)
+					return
+				}
+			} else {
+				destSql := <-destSelectSql
+				autoSeq := int64(0)
+				autoSeq++
+				curry <- struct{}{}
+				go func(sourceSql, destSql map[string]string) {
+					defer func() {
+						<-curry
+					}()
+
+					// 源端查询
+					sdb := sp.sdbPool.Get(logThreadSeq)
+					stt, err := (&dbExec.IndexColumnStruct{
+						Schema:   sp.sourceSchema,
+						Table:    sp.table,
+						Drivce:   sp.sdrive,
+						Sqlwhere: sourceSql[sp.sdrive],
+						ColData:  cc1.SColumnInfo,
+					}).TableIndexColumn().GeneratingQueryCriteria(sdb, logThreadSeq)
+					sp.sdbPool.Put(sdb, logThreadSeq)
+					if err != nil {
+						return
+					}
+
+					// 目标端查询
+					ddb := sp.ddbPool.Get(logThreadSeq)
+					dtt, err := (&dbExec.IndexColumnStruct{
+						Schema:   sp.destSchema,
+						Table:    sp.table,
+						Drivce:   sp.ddrive,
+						Sqlwhere: destSql[sp.ddrive],
+						ColData:  cc1.DColumnInfo,
+					}).TableIndexColumn().GeneratingQueryCriteria(ddb, logThreadSeq)
+					sp.ddbPool.Put(ddb, logThreadSeq)
+					if err != nil {
+						return
+					}
+
+					// 比较结果
+					aa := &CheckSumTypeStruct{}
+					if aa.CheckMd5(stt) != aa.CheckMd5(dtt) {
+						differencesData := DifferencesDataStruct{
+							Schema:          sp.schema,
+							Table:           sp.table,
+							SqlWhere:        map[string]string{sp.sdrive: sourceSql[sp.sdrive], sp.ddrive: destSql[sp.ddrive]},
+							TableColumnInfo: cc1,
+						}
+						diffQueryData <- differencesData
+					}
+				}(sourceSql, destSql)
+			}
+		}
+	}
 }
