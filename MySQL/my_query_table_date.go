@@ -446,6 +446,37 @@ func (my *QueryTable) GeneratingQuerySql(db *sql.DB, logThreadSeq int64) (string
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start to generate the data query sql of table %s.%s in the %s database", logThreadSeq, Event, my.Schema, my.Table, DBType)
 	global.Wlog.Debug(vlog)
+
+	// 如果TableColumn为空，从数据库查询获取列信息
+	if len(my.TableColumn) == 0 {
+		vlog = fmt.Sprintf("(%d) [%s] TableColumn is empty, querying column info from database for table %s.%s", logThreadSeq, Event, my.Schema, my.Table)
+		global.Wlog.Debug(vlog)
+
+		// 查询表的所有列信息
+		query := fmt.Sprintf("SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s'", my.Schema, my.Table)
+		rows, err := db.Query(query)
+		if err != nil {
+			vlog = fmt.Sprintf("(%d) [%s] Failed to query column info for table %s.%s: %v", logThreadSeq, Event, my.Schema, my.Table, err)
+			global.Wlog.Error(vlog)
+			return "", err
+		}
+		defer rows.Close()
+
+		// 将查询结果填充到TableColumn中
+		for rows.Next() {
+			var columnName, dataType string
+			if err := rows.Scan(&columnName, &dataType); err != nil {
+				vlog = fmt.Sprintf("(%d) [%s] Failed to scan column info for table %s.%s: %v", logThreadSeq, Event, my.Schema, my.Table, err)
+				global.Wlog.Error(vlog)
+				return "", err
+			}
+			my.TableColumn = append(my.TableColumn, map[string]string{
+				"columnName": columnName,
+				"dataType":   dataType,
+			})
+		}
+	}
+
 	//处理mysql查询时间列时数据带时区问题  2021-01-23 10:16:29 +0800 CST
 	for _, i := range my.TableColumn {
 		var tmpcolumnName string
@@ -477,7 +508,11 @@ func (my *QueryTable) GeneratingQuerySql(db *sql.DB, logThreadSeq int64) (string
 			my.Sqlwhere = fmt.Sprintf(" WHERE %s ", my.Sqlwhere)
 		}
 	}
-	selectSql = fmt.Sprintf("SELECT %s FROM `%s`.`%s` %s", queryColumn, my.Schema, my.Table, my.Sqlwhere)
+	// 确保WHERE条件中不包含schema名称
+	cleanSqlWhere := strings.ReplaceAll(my.Sqlwhere, fmt.Sprintf("`%s`.`%s`", my.Schema, my.Table), fmt.Sprintf("`%s`", my.Table))
+	cleanSqlWhere = strings.ReplaceAll(cleanSqlWhere, fmt.Sprintf("%s.%s", my.Schema, my.Table), fmt.Sprintf("%s", my.Table))
+
+	selectSql = fmt.Sprintf("SELECT %s FROM `%s`.`%s` %s", queryColumn, my.Schema, my.Table, cleanSqlWhere)
 	vlog = fmt.Sprintf("(%d) [%s] Complete the data query sql of table %s.%s in the %s database.", logThreadSeq, Event, my.Schema, my.Table, DBType)
 	global.Wlog.Debug(vlog)
 	return selectSql, nil

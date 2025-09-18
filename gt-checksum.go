@@ -101,9 +101,6 @@ func main() {
 		//根据要校验的表，筛选查询数据时使用到的索引列信息
 		fmt.Println("gt-checksum is opening table indexes")
 		tableIndexColumnMap := schemaTableInstance.TableIndexColumn(tableList, 23, 24)
-		//fmt.Printf("\nDEBUG1: tableList = %v\n", tableList)
-		//fmt.Printf("\nDEBUG2: tableAllCol keys = %v\n", tableAllCol)
-		//fmt.Printf("\nDEBUG3: tableAllCol keys = %v\n", tableIndexColumnMap)
 
 		//初始化数据库连接池
 		fmt.Println("gt-checksum is opening srcDSN and dstDSN")

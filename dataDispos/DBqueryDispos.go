@@ -21,7 +21,7 @@ type DBdataDispos struct {
 	DBType          string
 }
 
-//处理单列数据类型
+// 处理单列数据类型
 func (dbpos *DBdataDispos) ColumnTypeDispos(columnName string) (string, int, bool) {
 	var (
 		vlog              string
@@ -300,7 +300,7 @@ func (dbpos *DBdataDispos) DataSizeComparison(st1, st2 interface{}, columnName s
 	return 0
 }
 
-//处理行数据的null值
+// 处理行数据的null值
 func (dbpos *DBdataDispos) RowsdataNullDispos(i map[string]interface{}) map[string]interface{} {
 	var (
 		znull = make(map[string]interface{}) //源目标端索引列数据的集合（无序的） //针对null的值的一个处理
@@ -350,7 +350,7 @@ func (dbpos *DBdataDispos) RowsdataNullDispos(i map[string]interface{}) map[stri
 	return znull
 }
 
-//表查询使用chan来做流式处理
+// 表查询使用chan来做流式处理
 func (dbpos *DBdataDispos) DataChanDispos() chan map[string]interface{} {
 	var chanEntry = make(chan map[string]interface{}, 1000)
 	go func() {
@@ -398,7 +398,7 @@ func (dbpos *DBdataDispos) DataChanDispos() chan map[string]interface{} {
 	return chanEntry
 }
 
-//表查询使用slice来做聚合处理
+// 表查询使用slice来做聚合处理
 func (dbpos *DBdataDispos) DataRowsAndColumnSliceDispos(tableData []map[string]interface{}) ([]map[string]interface{}, error) {
 	// 获取列名
 	columns, err := dbpos.SqlRows.Columns()
@@ -442,7 +442,7 @@ func (dbpos *DBdataDispos) DataRowsAndColumnSliceDispos(tableData []map[string]i
 }
 
 /*
-	返回行数据切片和列数据切片，多用于无索引表的对比去重
+返回行数据切片和列数据切片，多用于无索引表的对比去重
 */
 func (dbpos *DBdataDispos) DataRowsDispos(tableData []string) ([]string, error) {
 	// 获取列名
@@ -497,7 +497,7 @@ func (dbpos *DBdataDispos) DataRowsDispos(tableData []string) ([]string, error) 
 }
 
 /*
-	连接数据库执行sql语句，尝试执行次数
+连接数据库执行sql语句，尝试执行次数
 */
 func (dbpos *DBdataDispos) DBSQLforExec(strsql string) (*sql.Rows, error) {
 	var (
@@ -522,7 +522,8 @@ func (dbpos *DBdataDispos) DBSQLforExec(strsql string) (*sql.Rows, error) {
 				global.Wlog.Error(vlog)
 				return nil, err
 			}
-			time.Sleep(5 * time.Second)
+			// yejr存疑，反复查询失败的话，每次时间间隔可以改成1秒，5秒看起来有点大了
+			time.Sleep(1 * time.Second)
 		} else {
 			break
 		}
