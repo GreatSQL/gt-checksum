@@ -151,6 +151,7 @@ func (sp *SchedulePlan) Schedulingtasks() {
 		vlog = fmt.Sprintf("Parsed key: sourceSchema=%s, sourceTable=%s, destSchema=%s, destTable=%s, indexType=%s",
 			sourceSchema, sourceTable, destSchema, destTable, indexType)
 		global.Wlog.Debug(vlog)
+
 		if len(v) == 0 { //校验无索引表
 			sp.chanrowCount = sp.chunkSize
 			logThreadSeq := rand.Int63()

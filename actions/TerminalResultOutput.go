@@ -250,6 +250,6 @@ func (bar *Bar) Finish() {
 	endTime := time.Now().UnixMilli()
 	elapsedSeconds := float64(endTime-bar.startTime) / 1000.0
 
-	fmt.Printf("\r\033[K[%-20s]%3d%%  %s%5d/100 耗时: %.2fs", bar.rate, bar.percent, fmt.Sprintf("%s:", bar.taskUnit), bar.percent, elapsedSeconds)
+	fmt.Printf("\r\033[K[%-20s]%3d%%  %s%5d/100 Elapsed time: %.2fs", bar.rate, bar.percent, fmt.Sprintf("%s:", bar.taskUnit), bar.percent, elapsedSeconds)
 	fmt.Println()
 }

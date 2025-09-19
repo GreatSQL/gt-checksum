@@ -379,28 +379,48 @@ func (my *QueryTable) NoIndexGeneratingQueryCriteria(db *sql.DB, beginSeq uint64
 		columnNameSeq []string
 		Event         = "Q_table_Data"
 	)
+	
+	// 如果没有列信息，使用"*"查询所有列
+	if len(my.TableColumn) == 0 {
+		strsql := fmt.Sprintf("SELECT * FROM `%s`.`%s` LIMIT %d,%d", my.Schema, my.Table, beginSeq, chanrowCount)
+		dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
+		if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
+			return "", err
+		}
+		tableData, err := dispos.DataRowsDispos([]string{})
+		if err != nil {
+			return "", err
+		}
+		defer dispos.SqlRows.Close()
+		return strings.Join(tableData, "/*go actions rowData*/"), nil
+	}
+
+	// 处理列名
 	for _, i := range my.TableColumn {
 		var tmpcolumnName string
-		tmpcolumnName = i["columnName"]
+		tmpcolumnName = fmt.Sprintf("`%s`", i["columnName"])
 		if strings.ToUpper(i["dataType"]) == "DATETIME" {
-			tmpcolumnName = fmt.Sprintf("date_format(%s,'%%Y-%%m-%%d %%H:%%i:%%s')", i["columnName"])
+			tmpcolumnName = fmt.Sprintf("date_format(%s,'%%Y-%%m-%%d %%H:%%i:%%s')", tmpcolumnName)
 		}
 		if strings.Contains(strings.ToUpper(i["dataType"]), "TIMESTAMP") {
-			tmpcolumnName = fmt.Sprintf("date_format(%s,'%%Y-%%m-%%d %%H:%%i:%%s')", i["columnName"])
+			tmpcolumnName = fmt.Sprintf("date_format(%s,'%%Y-%%m-%%d %%H:%%i:%%s')", tmpcolumnName)
 		}
 		if strings.HasPrefix(strings.ToUpper(i["dataType"]), "DOUBLE(") {
 			dianAfter := strings.ReplaceAll(strings.Split(i["dataType"], ",")[1], ")", "")
 			bb, _ := strconv.Atoi(dianAfter)
 			dianBefer := strings.Split(strings.Split(i["dataType"], ",")[0], "(")[1]
 			bbc, _ := strconv.Atoi(dianBefer)
-			tmpcolumnName = fmt.Sprintf("CAST(%s AS DECIMAL(%d,%d))", i["columnName"], bbc, bb)
+			tmpcolumnName = fmt.Sprintf("CAST(%s AS DECIMAL(%d,%d))", tmpcolumnName, bbc, bb)
 		}
 		columnNameSeq = append(columnNameSeq, tmpcolumnName)
 	}
+
+	// 确保至少有一个列名
+	if len(columnNameSeq) == 0 {
+		columnNameSeq = append(columnNameSeq, "*")
+	}
+
 	strsql = fmt.Sprintf("SELECT %s FROM `%s`.`%s` LIMIT %d,%d", strings.Join(columnNameSeq, ","), my.Schema, my.Table, beginSeq, chanrowCount)
-	//if orderByColumn != "" {
-	//	strsql = fmt.Sprintf("select * from `%s`.`%s` order by %s limit %d,%d", my.Schema, my.Table, orderByColumn, beginSeq, chanrowCount)
-	//}
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return "", err
