@@ -139,7 +139,7 @@ func (sp *SchedulePlan) sampSingleTableCheckProcessing(chanrowCount int, sampDat
 	measuredDataPods = append(measuredDataPods, pods)
 	vlog = fmt.Sprintf("(%d) No index table %s.%s The data consistency check of the original target end is completed", logThreadSeq, sp.schema, sp.table)
 	global.Wlog.Info(vlog)
-	fmt.Println(fmt.Sprintf("%s.%s 校验完成", sp.schema, sp.table))
+	fmt.Println(fmt.Sprintf("%s.%s checksum completed", sp.schema, sp.table))
 }
 
 /*
@@ -281,7 +281,7 @@ func (sp *SchedulePlan) DoSampleDataCheck() {
 		sp.sourceSchema = sourceSchema
 		sp.destSchema = destSchema
 
-		fmt.Println(fmt.Sprintf("begin checkSum table %s", displayTableName))
+		fmt.Println(fmt.Sprintf("Begin checksum for table %s", displayTableName))
 
 		// 使用正确的键名查找表列信息
 		tableColumnKey := fmt.Sprintf("%s_gtchecksum_%s", destSchema, destTable)

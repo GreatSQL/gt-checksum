@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-//增量数据校验结构
+// 增量数据校验结构
 type IncDataDisposStruct struct {
 	//mytype     string         //mysql体系的类型 是MySQL或miriadb
 	//host       string         //数据库连接地址
@@ -41,7 +41,7 @@ type SourceItemAbnormalDataStruct struct {
 }
 
 /*
-	根据源目标端的一致性点，读取源目标端的Event，解析sql语句，进行binlog event比对，出现差异则进行处理
+根据源目标端的一致性点，读取源目标端的Event，解析sql语句，进行binlog event比对，出现差异则进行处理
 */
 func (idds IncDataDisposStruct) Aa(fullDataCompletionStatus chan struct{}, cqMq chan SourceItemAbnormalDataStruct) {
 	var (
@@ -177,7 +177,7 @@ func (idds IncDataDisposStruct) Aa(fullDataCompletionStatus chan struct{}, cqMq 
 
 		//读取源目端binlog的线程停止
 		if ok && ok1 {
-			fmt.Println("---退出__-")
+			fmt.Println("Exit!")
 			break
 		}
 	}

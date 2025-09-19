@@ -45,7 +45,26 @@ func (sp *SchedulePlan) NoIndexTableCount(logThreadSeq int64) int64 {
 		A, B uint64
 		err  error
 	)
-	idxc := dbExec.IndexColumnStruct{Drivce: sp.sdrive, Schema: sp.sourceSchema, Table: sp.table, ColumnName: sp.columnName, ChanrowCount: sp.chanrowCount}
+	// 获取有效的列名
+	var columnNames []string
+	if len(sp.columnName) > 0 {
+		columnNames = sp.columnName
+	} else if cols, ok := sp.tableAllCol[fmt.Sprintf("%s_gtchecksum_%s", sp.schema, sp.table)]; ok {
+		// 从表结构信息中获取所有列名
+		for _, colInfo := range cols.SColumnInfo {
+			if name, ok := colInfo["COLUMN_NAME"]; ok {
+				columnNames = append(columnNames, name)
+			}
+		}
+	}
+
+	// 如果没有列名，使用"0"作为默认值
+	if len(columnNames) == 0 {
+		columnNames = []string{"0"}
+	}
+
+	idxc := dbExec.IndexColumnStruct{Drivce: sp.sdrive, Schema: sp.sourceSchema, Table: sp.table, ColumnName: columnNames, ChanrowCount: sp.chanrowCount}
+
 	sdb := sp.sdbPool.Get(int64(logThreadSeq))
 	A, err = idxc.TableIndexColumn().TableRows(sdb, int64(logThreadSeq))
 	if err != nil {
@@ -54,7 +73,8 @@ func (sp *SchedulePlan) NoIndexTableCount(logThreadSeq int64) int64 {
 	sp.sdbPool.Put(sdb, int64(logThreadSeq))
 
 	ddb := sp.ddbPool.Get(int64(logThreadSeq))
-	idxcDest := dbExec.IndexColumnStruct{Drivce: sp.ddrive, Schema: sp.destSchema, Table: sp.table, ColumnName: sp.columnName, ChanrowCount: sp.chanrowCount}
+	idxcDest := dbExec.IndexColumnStruct{Drivce: sp.ddrive, Schema: sp.destSchema, Table: sp.table, ColumnName: columnNames, ChanrowCount: sp.chanrowCount}
+
 	B, err = idxcDest.TableIndexColumn().TableRows(ddb, int64(logThreadSeq))
 	if err != nil {
 		return 0
@@ -231,6 +251,7 @@ func (sp *SchedulePlan) QueryTableData(beginSeq uint64, chunkSeq uint64, chanrow
 	if err != nil {
 		return "", "", err
 	}
+
 	sp.ddbPool.Put(ddb, logThreadSeq)
 	return stt, dtt, nil
 }
@@ -332,8 +353,10 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 		tableRow      = make(chan int, sp.mqQueueDepth)
 		rowEnd        bool
 	)
+
 	displayTableName := sp.getDisplayTableName()
-	fmt.Println(fmt.Sprintf("begin checkSum no index table %s", displayTableName))
+
+	fmt.Println(fmt.Sprintf("Begin checksum for no-index table %s", displayTableName))
 	vlog = fmt.Sprintf("(%d) Start to verify the data of the original target end of the non-indexed table %s ...", logThreadSeq, displayTableName)
 	global.Wlog.Info(vlog)
 	barTableRow := sp.NoIndexTableCount(logThreadSeq)
@@ -364,6 +387,7 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 	//根据去重后的数据读取文件，找出差异数据
 	dataFixC := sp.noIndexTableAbdataRead(uniqMD5C, logThreadSeq)
 	sqlStrExec := sp.DataFixSql(dataFixC, &pods, logThreadSeq)
+
 	FileOper := FileOperate{File: sp.file, BufSize: 1024 * 4 * 1024, fileName: sp.TmpFileName}
 	//循环读取表行数，并进行数据校验
 	for {
@@ -422,7 +446,7 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 	displayTableName = sp.getDisplayTableName()
 	vlog = fmt.Sprintf("(%d) No index table %s The data consistency check of the original target end is completed", logThreadSeq, displayTableName)
 	global.Wlog.Info(vlog)
-	fmt.Println(fmt.Sprintf("%s 校验完成", displayTableName))
+	fmt.Println(fmt.Sprintf("%s checksum completed", displayTableName))
 }
 
 // getExactRowCount 查询表的精确行数
@@ -430,26 +454,32 @@ func (sp *SchedulePlan) getExactRowCount(dbPool *global.Pool, schema, table stri
 	db := dbPool.Get(logThreadSeq)
 	defer dbPool.Put(db, logThreadSeq)
 
+	// 处理库名映射
+	var targetSchema string
+	if dbPool == sp.sdbPool {
+		// 源端使用原始schema
+		targetSchema = schema
+	} else if dbPool == sp.ddbPool {
+		// 目标端检查是否有映射关系
+		if mappedSchema, exists := sp.tableMappings[schema]; exists {
+			targetSchema = mappedSchema
+		} else {
+			targetSchema = schema
+		}
+	}
+
 	// 确保schema不为空
-	if schema == "" {
+	if targetSchema == "" {
 		vlog := fmt.Sprintf("(%d) [getExactRowCount] Schema is empty for table %s, using default schema", logThreadSeq, table)
 		global.Wlog.Warn(vlog)
 
-		// 尝试从tableMappings中获取正确的schema
 		if dbPool == sp.sdbPool {
-			// 如果是源数据库连接池，使用sourceSchema
-			schema = sp.sourceSchema
-			vlog = fmt.Sprintf("(%d) [getExactRowCount] Using sourceSchema: %s for table %s", logThreadSeq, schema, table)
-			global.Wlog.Debug(vlog)
+			targetSchema = sp.sourceSchema
 		} else if dbPool == sp.ddbPool {
-			// 如果是目标数据库连接池，使用destSchema
-			schema = sp.destSchema
-			vlog = fmt.Sprintf("(%d) [getExactRowCount] Using destSchema: %s for table %s", logThreadSeq, schema, table)
-			global.Wlog.Debug(vlog)
+			targetSchema = sp.destSchema
 		}
 
-		// 如果仍然为空，记录错误并返回0
-		if schema == "" {
+		if targetSchema == "" {
 			vlog = fmt.Sprintf("(%d) [getExactRowCount] Unable to determine schema for table %s", logThreadSeq, table)
 			global.Wlog.Error(vlog)
 			return 0
@@ -457,19 +487,18 @@ func (sp *SchedulePlan) getExactRowCount(dbPool *global.Pool, schema, table stri
 	}
 
 	var count int64
-	query := fmt.Sprintf("SELECT COUNT(*) FROM `%s`.`%s`", schema, table)
+	query := fmt.Sprintf("SELECT COUNT(*) FROM `%s`.`%s`", targetSchema, table)
 	vlog := fmt.Sprintf("(%d) [getExactRowCount] Executing query: %s", logThreadSeq, query)
 	global.Wlog.Debug(vlog)
 
 	err := db.QueryRow(query).Scan(&count)
 	if err != nil {
-		// 如果查询失败，返回0
-		vlog = fmt.Sprintf("(%d) [getExactRowCount] Failed to get exact row count for %s.%s: %v", logThreadSeq, schema, table, err)
+		vlog = fmt.Sprintf("(%d) [getExactRowCount] Failed to get exact row count for %s.%s: %v", logThreadSeq, targetSchema, table, err)
 		global.Wlog.Error(vlog)
 		return 0
 	}
 
-	vlog = fmt.Sprintf("(%d) [getExactRowCount] Got exact row count for %s.%s: %d", logThreadSeq, schema, table, count)
+	vlog = fmt.Sprintf("(%d) [getExactRowCount] Got exact row count for %s.%s: %d", logThreadSeq, targetSchema, table, count)
 	global.Wlog.Debug(vlog)
 
 	return count

@@ -630,7 +630,7 @@ func (stcls *schemaTable) SchemaTableFilter(logThreadSeq1, logThreadSeq2 int64) 
 		dbCheckNameList map[string]int
 		err             error
 	)
-	fmt.Println("gt-checksum is opening check tables")
+	fmt.Println("gt-checksum: Starting table checks")
 	vlog = fmt.Sprintf("(%d) Obtain schema.table info", logThreadSeq1)
 	global.Wlog.Info(vlog)
 
@@ -1746,7 +1746,7 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 		}
 	)
 
-	fmt.Println("gt-checksum is opening indexes")
+	fmt.Println("gt-checksum: Starting index checks")
 	event = fmt.Sprintf("[%s]", "check_table_index")
 	//校验索引
 	vlog = fmt.Sprintf("(%d) %s start init check source and target DB index Column. to check it...", logThreadSeq, event)
@@ -1847,7 +1847,7 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 		vlog = fmt.Sprintf("(%d) %s The source target segment table %s.%s index column data verification is completed", logThreadSeq, event, stcls.schema, stcls.table)
 		global.Wlog.Info(vlog)
 	}
-	fmt.Println("gt-checksum report: indexes verification completed")
+	fmt.Println("gt-checksum: Index verification completed")
 	return nil
 }
 
@@ -1861,7 +1861,7 @@ func (stcls *schemaTable) Struct(dtabS []string, logThreadSeq, logThreadSeq2 int
 		event string
 	)
 	event = fmt.Sprintf("[check_table_columns]")
-	fmt.Println("gt-checksum is checking table structure")
+	fmt.Println("gt-checksum: Checking table structure")
 	vlog = fmt.Sprintf("(%d) %s checking table structure of %v(num[%d]) from srcDSN and dstDSN", logThreadSeq, event, dtabS, len(dtabS))
 	global.Wlog.Info(vlog)
 	normal, abnormal, err := stcls.TableColumnNameCheck(dtabS, logThreadSeq, logThreadSeq2)
@@ -1889,7 +1889,7 @@ func (stcls *schemaTable) Struct(dtabS []string, logThreadSeq, logThreadSeq2 int
 		pods.DIFFS = "yes"
 		measuredDataPods = append(measuredDataPods, pods)
 	}
-	fmt.Println("gt-checksum report: Table structure checksum completed")
+	fmt.Println("gt-checksum: Table structure verification completed")
 	vlog = fmt.Sprintf("(%d) %s check source and target DB table struct complete", logThreadSeq, event)
 	global.Wlog.Info(vlog)
 	return nil
