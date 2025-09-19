@@ -9,20 +9,20 @@ import (
 )
 
 type QueryTable struct {
-	Schema              string
-	Table               string
-	Db                  *sql.DB
-	Datafix             string
+	Schema                  string
+	Table                   string
+	Db                      *sql.DB
+	Datafix                 string
 	CaseSensitiveObjectName string
-	TmpTableFileName    string
-	ColumnName          []string
-	ChanrowCount        int
-	TableColumn         []map[string]string
-	Sqlwhere            string
-	ColData             []map[string]string
-	BeginSeq            string
-	RowDataCh           int64
-	SelectColumn        map[string]string
+	TmpTableFileName        string
+	ColumnName              []string
+	ChanrowCount            int
+	TableColumn             []map[string]string
+	Sqlwhere                string
+	ColData                 []map[string]string
+	BeginSeq                string
+	RowDataCh               int64
+	SelectColumn            map[string]string
 }
 
 var (
@@ -33,7 +33,7 @@ var (
 )
 
 /*
-   Oracle 获取对应的库表信息，排除'SYS','OUTLN','SYSTEM','DBSNMP','APPQOSSYS','WMSYS','EXFSYS','CTXSYS','XDB','ORDDATA','ORDSYS','MDSYS','OLAPSYS','SYSMAN','FLOWS_FILES','APEX_030200','OWBSYS','SCOTT','HR','OE','SH','IX','PM'
+Oracle 获取对应的库表信息，排除'SYS','OUTLN','SYSTEM','DBSNMP','APPQOSSYS','WMSYS','EXFSYS','CTXSYS','XDB','ORDDATA','ORDSYS','MDSYS','OLAPSYS','SYSMAN','FLOWS_FILES','APEX_030200','OWBSYS','SCOTT','HR','OE','SH','IX','PM'
 */
 func (or *QueryTable) DatabaseNameList(db *sql.DB, logThreadSeq int64) (map[string]int, error) {
 	var (
@@ -72,7 +72,7 @@ func (or *QueryTable) DatabaseNameList(db *sql.DB, logThreadSeq int64) (map[stri
 }
 
 /*
-	Oracle 通过查询表的元数据信息获取列名
+Oracle 通过查询表的元数据信息获取列名
 */
 func (or *QueryTable) TableColumnName(db *sql.DB, logThreadSeq int64) ([]map[string]interface{}, error) {
 	var (
@@ -98,7 +98,7 @@ func (or *QueryTable) TableColumnName(db *sql.DB, logThreadSeq int64) ([]map[str
 }
 
 /*
-	Oracle 查看当前用户是否有全局变量
+Oracle 查看当前用户是否有全局变量
 */
 func (or *QueryTable) GlobalAccessPri(db *sql.DB, logThreadSeq int64) (bool, error) {
 	var (
@@ -161,7 +161,7 @@ func (or *QueryTable) GlobalAccessPri(db *sql.DB, logThreadSeq int64) (bool, err
 }
 
 /*
-	Oracle 查询用户是否有表的查询权限
+Oracle 查询用户是否有表的查询权限
 */
 func (or *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, datefix string, logThreadSeq int64) (map[string]int, error) {
 	var (
@@ -324,7 +324,7 @@ func (or *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 }
 
 /*
-	Oracle 获取校验表的列信息，包含列名，列序号，列类型
+Oracle 获取校验表的列信息，包含列名，列序号，列类型
 */
 func (or *QueryTable) TableAllColumn(db *sql.DB, logThreadSeq int64) ([]map[string]interface{}, error) {
 	var (
@@ -349,7 +349,7 @@ func (or *QueryTable) TableAllColumn(db *sql.DB, logThreadSeq int64) ([]map[stri
 }
 
 /*
-	Oracle 处理唯一索引索引（包含主键索引）
+Oracle 处理唯一索引索引（包含主键索引）
 */
 func (or *QueryTable) keyChoiceDispos(IndexColumnMap map[string][]string, indexType string) map[string][]string {
 	var (
@@ -426,7 +426,7 @@ func (or *QueryTable) keyChoiceDispos(IndexColumnMap map[string][]string, indexT
 }
 
 /*
-	Oracle 表的索引选择
+Oracle 表的索引选择
 */
 func (or *QueryTable) TableIndexChoice(queryData []map[string]interface{}, logThreadSeq int64) map[string][]string {
 	var (
@@ -493,7 +493,7 @@ func (or *QueryTable) TableIndexChoice(queryData []map[string]interface{}, logTh
 	}
 	//vlog = fmt.Sprintf("(%d) MySQL DB nounique key index starts to choose the best.", logThreadSeq)
 	//global.Wlog.Debug(vlog)
-	f := or.keyChoiceDispos(multiseriateIndexColumnMap, "mui")
+	f := or.keyChoiceDispos(multiseriateIndexColumnMap, "mul")
 	for k, v := range f {
 		if len(v) > 0 {
 			indexChoice[k] = v
@@ -505,7 +505,7 @@ func (or *QueryTable) TableIndexChoice(queryData []map[string]interface{}, logTh
 }
 
 /*
-	Oracle 查询触发器信息
+Oracle 查询触发器信息
 */
 func (or *QueryTable) Trigger(db *sql.DB, logThreadSeq int64) (map[string]string, error) {
 	var (
@@ -573,7 +573,7 @@ func (or *QueryTable) Trigger(db *sql.DB, logThreadSeq int64) (map[string]string
 }
 
 /*
-	存储过程校验
+存储过程校验
 */
 func (or *QueryTable) Proc(db *sql.DB, logThreadSeq int64) (map[string]string, error) {
 	var (
@@ -620,7 +620,7 @@ func (or *QueryTable) Proc(db *sql.DB, logThreadSeq int64) (map[string]string, e
 }
 
 /*
-	Oracle 存储函数或自定义函数校验
+Oracle 存储函数或自定义函数校验
 */
 func (or *QueryTable) Func(db *sql.DB, logThreadSeq int64) (map[string]string, error) {
 	var (
@@ -670,7 +670,7 @@ func (or *QueryTable) Func(db *sql.DB, logThreadSeq int64) (map[string]string, e
 }
 
 /*
-	Oracle 外键检查
+Oracle 外键检查
 */
 func (or *QueryTable) Foreign(db *sql.DB, logThreadSeq int64) (map[string]string, error) {
 	var (
@@ -771,7 +771,7 @@ func (or *QueryTable) Foreign(db *sql.DB, logThreadSeq int64) (map[string]string
 }
 
 /*
-	分区表校验
+分区表校验
 */
 func (or *QueryTable) Partitions(db *sql.DB, logThreadSeq int64) (map[string]string, error) {
 	var (

@@ -610,7 +610,7 @@ func (my *QueryTable) TableIndexChoice(queryData []map[string]interface{}, logTh
 			indexChoice[k] = v
 		}
 	}
-	f := my.keyChoiceDispos(multiseriateIndexColumnMap, "mui")
+	f := my.keyChoiceDispos(multiseriateIndexColumnMap, "mul")
 	for k, v := range f {
 		if len(v) > 0 {
 			indexChoice[k] = v

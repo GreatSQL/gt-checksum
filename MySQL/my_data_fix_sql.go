@@ -23,7 +23,7 @@ type MysqlDataAbnormalFixStruct struct {
 }
 
 /*
-  MySQL 生成insert修复语句
+MySQL 生成insert修复语句
 */
 func (my *MysqlDataAbnormalFixStruct) FixInsertSqlExec(db *sql.DB, sourceDrive string, logThreadSeq int64) (string, error) {
 	//查询该表的列名和列信息
@@ -87,7 +87,7 @@ func (my *MysqlDataAbnormalFixStruct) FixInsertSqlExec(db *sql.DB, sourceDrive s
 }
 
 /*
-  mysql 生成delete 修复语句
+mysql 生成delete 修复语句
 */
 func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive string, logThreadSeq int64) (string, error) {
 	var (
@@ -107,7 +107,7 @@ func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive s
 	global.Wlog.Debug(vlog)
 	vlog = fmt.Sprintf("(%d) MySQL DB check table %s.%s Generate delete repair statement based on unique index.", logThreadSeq, my.Schema, my.Table)
 	global.Wlog.Debug(vlog)
-	if my.IndexType == "mui" {
+	if my.IndexType == "mul" {
 		var FB, AS []string
 		for _, i := range colData {
 			FB = append(FB, i["columnName"])

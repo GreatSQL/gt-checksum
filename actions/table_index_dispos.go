@@ -502,7 +502,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 							} else if strings.HasPrefix(c1.indexColumnType, "uni") {
 								dbf.IndexType = "uni"
 							} else {
-								dbf.IndexType = "mui"
+								dbf.IndexType = "mul"
 							}
 							if len(del) > 0 {
 								vlog = fmt.Sprintf("(%d) Start to generate the delete statement of check table %s.%s.", logThreadSeq, c1.Schema, c1.Table)
