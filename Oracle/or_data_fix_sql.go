@@ -105,7 +105,7 @@ func (or *OracleDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive 
 	global.Wlog.Debug(vlog)
 	vlog = fmt.Sprintf("(%d) MySQL DB check table %s.%s Generate delete repair statement based on unique index.", logThreadSeq, or.Schema, or.Table)
 	global.Wlog.Debug(vlog)
-	if or.IndexType == "mui" {
+	if or.IndexType == "mul" {
 		var FB, AS []string
 		for _, i := range colData {
 			FB = append(FB, i["columnName"])

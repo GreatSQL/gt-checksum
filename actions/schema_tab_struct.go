@@ -361,24 +361,29 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 */
 func (stcls *schemaTable) tableIndexAlgorithm(indexType map[string][]string) (string, []string) {
 	if len(indexType) > 0 {
-		//假如有单列主键索引，则选择单列主键索引
+		// 优先选择主键索引
 		if len(indexType["pri_single"]) > 0 {
 			return "pri_single", indexType["pri_single"]
 		}
-		//假如没有单列主键索引，有多列主键索引，且有单列唯一索引，则选择单列唯一索引
-		if len(indexType["uni_single"]) > 0 {
-			return "uni_single", indexType["uni_single"]
-		}
-		//假如没有单列主键索引，有多列主键索引，且没有单列唯一索引，则选择多列主键索引
 		if len(indexType["pri_multi"]) > 0 {
 			return "pri_multi", indexType["pri_multi"]
 		}
-		//假如没有单列主键索引，没有多列主键索引，但有多列唯一索引，则选择多列唯一索引
+
+		// 其次选择唯一索引
+		if len(indexType["uni_single"]) > 0 {
+			return "uni_single", indexType["uni_single"]
+		}
 		if len(indexType["uni_multi"]) > 0 {
 			return "uni_multi", indexType["uni_multi"]
 		}
 
-		return "", []string{}
+		// 最后选择普通索引
+		if len(indexType["mul_single"]) > 0 {
+			return "mul_single", indexType["mul_single"]
+		}
+		if len(indexType["mul_multi"]) > 0 {
+			return "mul_multi", indexType["mul_multi"]
+		}
 	}
 	return "", []string{}
 }
@@ -1088,6 +1093,7 @@ func (stcls *schemaTable) TableIndexColumn(dtabS []string, logThreadSeq, logThre
 			global.Wlog.Error(vlog)
 			continue
 		}
+
 		tcDest := dbExec.TableColumnNameStruct{Schema: destSchema, Table: destTable, Drive: stcls.destDrive, Db: stcls.destDB}
 		indexTypeDest := tcDest.Query().TableIndexChoice(queryDataDest, logThreadSeq2)
 		vlog = fmt.Sprintf("(%d) Target table %s.%s index list information query completed. index list message is {%v}",
@@ -1096,7 +1102,6 @@ func (stcls *schemaTable) TableIndexColumn(dtabS []string, logThreadSeq, logThre
 
 		// 使用源端schema和表名作为key，因为后续处理中会根据源端表进行数据校验
 		// 同时在key中保存目标端schema和表名，以便后续处理
-
 		if len(indexType) == 0 { //针对于表没有索引的，进行处理
 			key := fmt.Sprintf("%s/*gtchecksumSchemaTable*/%s/*mapping*/%s/*mappingTable*/%s",
 				sourceSchema, sourceTable, destSchema, destTable)
@@ -1104,6 +1109,7 @@ func (stcls *schemaTable) TableIndexColumn(dtabS []string, logThreadSeq, logThre
 
 			// 构建显示名称，包含映射关系
 			displayTableName := fmt.Sprintf("%s.%s:%s.%s", sourceSchema, sourceTable, destSchema, destTable)
+
 			vlog = fmt.Sprintf("(%d) The source table %s has no index.", logThreadSeq, displayTableName)
 			global.Wlog.Warn(vlog)
 		} else {
@@ -1117,6 +1123,7 @@ func (stcls *schemaTable) TableIndexColumn(dtabS []string, logThreadSeq, logThre
 
 			// 构建显示名称，包含映射关系
 			displayTableName := fmt.Sprintf("%s.%s:%s.%s", sourceSchema, sourceTable, destSchema, destTable)
+
 			vlog = fmt.Sprintf("(%d) The index selection of source table %s is completed, and the selected index information is { keyName:%s keyColumn: %s}",
 				logThreadSeq, displayTableName, ab, aa)
 			global.Wlog.Debug(vlog)

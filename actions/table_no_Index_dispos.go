@@ -99,7 +99,7 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 						sqlType = vi
 						//noIndexD <- struct{}{}
 						pods.DIFFS = "yes"
-						dbf.IndexType = "mui"
+						dbf.IndexType = "mul"
 						//go func() {
 						//	defer func() {
 						//		<-noIndexD
@@ -162,7 +162,7 @@ func (sp *SchedulePlan) FixSqlExec(sqlStrExec <-chan string, logThreadSeq int64)
 	global.Wlog.Debug(vlog)
 	colData := sp.tableAllCol[fmt.Sprintf("%s_gtchecksum_%s", sp.schema, sp.table)]
 	dbf := dbExec.DataAbnormalFixStruct{Schema: sp.schema, Table: sp.table, ColData: colData.DColumnInfo, SourceDevice: sp.ddrive}
-	dbf.IndexColumnType = "mui"
+	dbf.IndexColumnType = "mul"
 	for {
 		select {
 		case v, ok := <-sqlStrExec:
@@ -434,7 +434,7 @@ func (sp *SchedulePlan) getExactRowCount(dbPool *global.Pool, schema, table stri
 	if schema == "" {
 		vlog := fmt.Sprintf("(%d) [getExactRowCount] Schema is empty for table %s, using default schema", logThreadSeq, table)
 		global.Wlog.Warn(vlog)
-		
+
 		// 尝试从tableMappings中获取正确的schema
 		if dbPool == sp.sdbPool {
 			// 如果是源数据库连接池，使用sourceSchema
@@ -447,7 +447,7 @@ func (sp *SchedulePlan) getExactRowCount(dbPool *global.Pool, schema, table stri
 			vlog = fmt.Sprintf("(%d) [getExactRowCount] Using destSchema: %s for table %s", logThreadSeq, schema, table)
 			global.Wlog.Debug(vlog)
 		}
-		
+
 		// 如果仍然为空，记录错误并返回0
 		if schema == "" {
 			vlog = fmt.Sprintf("(%d) [getExactRowCount] Unable to determine schema for table %s", logThreadSeq, table)
@@ -460,7 +460,7 @@ func (sp *SchedulePlan) getExactRowCount(dbPool *global.Pool, schema, table stri
 	query := fmt.Sprintf("SELECT COUNT(*) FROM `%s`.`%s`", schema, table)
 	vlog := fmt.Sprintf("(%d) [getExactRowCount] Executing query: %s", logThreadSeq, query)
 	global.Wlog.Debug(vlog)
-	
+
 	err := db.QueryRow(query).Scan(&count)
 	if err != nil {
 		// 如果查询失败，返回0
@@ -468,9 +468,9 @@ func (sp *SchedulePlan) getExactRowCount(dbPool *global.Pool, schema, table stri
 		global.Wlog.Error(vlog)
 		return 0
 	}
-	
+
 	vlog = fmt.Sprintf("(%d) [getExactRowCount] Got exact row count for %s.%s: %d", logThreadSeq, schema, table, count)
 	global.Wlog.Debug(vlog)
-	
+
 	return count
 }
