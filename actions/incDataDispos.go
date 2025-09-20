@@ -113,13 +113,13 @@ func (idds IncDataDisposStruct) Aa(fullDataCompletionStatus chan struct{}, cqMq 
 							destTrxType:   k,
 							destSqlGather: []string{i},
 						}
-						if strings.HasPrefix(i, "delete") {
+						if strings.HasPrefix(i, "DELETE") {
 							aa.destSqlType = "delete"
 						}
-						if strings.HasPrefix(i, "update") {
+						if strings.HasPrefix(i, "UPDATE") {
 							aa.destSqlType = "update"
 						}
-						if strings.HasPrefix(i, "insert into") {
+						if strings.HasPrefix(i, "INSERT INTO") {
 							aa.destSqlType = "insert"
 						}
 						aa.destSqlGather = []string{i}

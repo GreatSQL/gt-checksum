@@ -31,9 +31,9 @@ func (my *MysqlDataAbnormalFixStruct) FixInsertSqlExec(db *sql.DB, sourceDrive s
 		insertSql     string
 		valuesNameSeq []string
 	)
-	vlog = fmt.Sprintf("(%d)  MySQL DB check table %s.%s starts to generate insert repair statement.", logThreadSeq, my.Schema, my.Table)
+	vlog = fmt.Sprintf("(%d) Generating INSERT repair statement for %s.%s", logThreadSeq, my.Schema, my.Table)
 	global.Wlog.Debug(vlog)
-	//tmprowSlic := strings.Split(strings.TrimSpace(my.RowData), "/*go actions columnData*/")
+
 	//处理mysql查询时间列时数据带时区问题  2021-01-23 10:16:29 +0800 CST
 	for k, v := range strings.Split(my.RowData, "/*go actions columnData*/") {
 		var tmpcolumnName string
@@ -52,37 +52,12 @@ func (my *MysqlDataAbnormalFixStruct) FixInsertSqlExec(db *sql.DB, sourceDrive s
 		}
 		valuesNameSeq = append(valuesNameSeq, tmpcolumnName)
 	}
-	//for i := range my.ColData {
-	//	var tmpcolumnName string
-	//	if !strings.Contains(my.RowData, "/*go actions columnData*/") {
-	//		insertSql = fmt.Sprintf("insert into `%s`.`%s` values(%s) ", my.Schema, my.Table, my.RowData)
-	//	}
-	//	tmpcolumnName = fmt.Sprintf("'%s'", tmprowSlic[i])
-	//	if strings.ToUpper(my.ColData[i]["dataType"]) == "DATETIME" {
-	//		tmpColumnSeq, _ := strconv.Atoi(fmt.Sprintf("%v", my.ColData[i]["columnSeq"]))
-	//		tmprowSLIC := strings.ReplaceAll(tmprowSlic[tmpColumnSeq-1], "'", "")
-	//		tmpcolumnName = fmt.Sprintf("date_format('%s','%%Y-%%m-%%d %%H:%%i:%%s')", tmprowSLIC)
-	//	}
-	//	if strings.Contains(strings.ToUpper(my.ColData[i]["dataType"]), "TIMESTAMP") {
-	//		tmpColumnSeq, _ := strconv.Atoi(fmt.Sprintf("%v", my.ColData[i]["columnSeq"]))
-	//		tmprowSLIC := strings.ReplaceAll(tmprowSlic[tmpColumnSeq-1], "'", "")
-	//		tmpcolumnName = fmt.Sprintf("date_format('%s','%%Y-%%m-%%d %%H:%%i:%%s')", tmprowSLIC)
-	//	}
-	//	valuesNameSeq = append(valuesNameSeq, tmpcolumnName)
-	//}
+
 	if len(valuesNameSeq) > 0 {
 		queryColumn := strings.Join(valuesNameSeq, ",")
 		insertSql = fmt.Sprintf("INSERT INTO `%s`.`%s` VALUES(%s) ;", my.Schema, my.Table, queryColumn)
 	}
-	//if strings.Contains(queryColumn, "'<nil>'") {
-	//	insertSql = fmt.Sprintf("insert into `%s`.`%s` values(%s) ;", my.Schema, my.Table, strings.ReplaceAll(queryColumn, "'<nil>'", "NULL"))
-	//} else {
-	//	insertSql = fmt.Sprintf("insert into `%s`.`%s` values(%s) ;", my.Schema, my.Table, queryColumn)
-	//}
-	//if sourceDrive == "godror" && strings.Contains(insertSql, ",'',") {
-	//	insertSql = strings.ReplaceAll(insertSql, ",'',", ",null,")
-	//}
-	//fmt.Println(insertSql)
+
 	return insertSql, nil
 }
 
@@ -103,10 +78,9 @@ func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive s
 			acc["double"] = i["columnName"]
 		}
 	}
-	vlog = fmt.Sprintf("(%d)  MySQL DB check table %s.%s starts to generate delete repair statement.", logThreadSeq, my.Schema, my.Table)
+	vlog = fmt.Sprintf("(%d) Generating DELETE repair statement for %s.%s", logThreadSeq, my.Schema, my.Table)
 	global.Wlog.Debug(vlog)
-	vlog = fmt.Sprintf("(%d) MySQL DB check table %s.%s Generate delete repair statement based on unique index.", logThreadSeq, my.Schema, my.Table)
-	global.Wlog.Debug(vlog)
+
 	if my.IndexType == "mul" {
 		var FB, AS []string
 		for _, i := range colData {
@@ -124,8 +98,12 @@ func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive s
 				AS = append(AS, fmt.Sprintf(" %s = '%s' ", FB[k], v))
 			}
 		}
-		deleteSqlWhere = strings.Join(AS, " and ")
+		deleteSqlWhere = strings.Join(AS, " AND ")
 	}
+
+	vlog = fmt.Sprintf("(%d) Generating DELETE repair statement using unique index for %s.%s", logThreadSeq, my.Schema, my.Table)
+	global.Wlog.Debug(vlog)
+
 	if my.IndexType == "pri" || my.IndexType == "uni" {
 		var FB []string
 		for _, i := range colData {

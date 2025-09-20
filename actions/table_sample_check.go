@@ -24,30 +24,20 @@ func (sp *SchedulePlan) sampSingleTableCheckProcessing(chanrowCount int, sampDat
 		dataFixC      = make(chan map[string]string, sp.mqQueueDepth)
 		noIndexC      = make(chan struct{}, sp.concurrency)
 		tableRow      = make(chan int, sp.mqQueueDepth)
-		//uniqMD5C      = make(chan map[string]string, 1)
-		rowEnd bool
-		//sqlStrExec    = make(chan string, sp.mqQueueDepth)
+		rowEnd        bool
 	)
-	fmt.Println(fmt.Sprintf("begin checkSum no index table %s.%s", sp.schema, sp.table))
-	vlog = fmt.Sprintf("(%d) Start to verify the data of the original target end of the non-indexed table %s.%s ...", logThreadSeq, sp.schema, sp.table)
+	fmt.Printf("Starting checksum for table without index %s.%s\n", sp.schema, sp.table)
+	vlog = fmt.Sprintf("(%d) Verifying data for table without index %s.%s", logThreadSeq, sp.schema, sp.table)
 	global.Wlog.Info(vlog)
-	var A, B uint64
 	idxc := dbExec.IndexColumnStruct{Drivce: sp.sdrive, Schema: sp.schema, Table: sp.table, ColumnName: sp.columnName, ChanrowCount: chanrowCount}
 	sdb := sp.sdbPool.Get(int64(logThreadSeq))
-	A, err = idxc.TableIndexColumn().TableRows(sdb, int64(logThreadSeq))
+	_, err = idxc.TableIndexColumn().TableRows(sdb, int64(logThreadSeq))
 	sp.sdbPool.Put(sdb, int64(logThreadSeq))
 
 	ddb := sp.ddbPool.Get(int64(logThreadSeq))
-	B, err = idxc.TableIndexColumn().TableRows(ddb, int64(logThreadSeq))
+	_, err = idxc.TableIndexColumn().TableRows(ddb, int64(logThreadSeq))
 	sp.ddbPool.Put(ddb, int64(logThreadSeq))
-	//var barTableRow int64
-	//if A >= B {
-	//	barTableRow = int64(A)
-	//} else {
-	//	barTableRow = int64(B)
-	//}
-	//sp.bar.NewOption(0, barTableRow)
-	fmt.Println(A, B)
+
 	pods := Pod{Schema: sp.schema, Table: sp.table,
 		IndexColumn: "noIndex",
 		CheckMode:   sp.checkMod,
@@ -102,11 +92,11 @@ func (sp *SchedulePlan) sampSingleTableCheckProcessing(chanrowCount int, sampDat
 			defer func() {
 				<-noIndexC
 			}()
-			vlog = fmt.Sprintf("(%d) There is currently no index table %s.%s, and the %d md5 check of the data consistency of the original target is started.", logThreadSeq, sp.schema, sp.table, Cycles)
+			vlog = fmt.Sprintf("(%d) Starting MD5 checksum round %d for table without index %s.%s", logThreadSeq, Cycles, sp.schema, sp.table)
 			global.Wlog.Debug(vlog)
 			stt, dtt, err = sp.QueryTableData(beginSeq, Cycles, chanrowCount, int64(logThreadSeq))
 			if err != nil {
-				fmt.Println(err)
+				global.Wlog.Error(fmt.Sprintf("(%d) Error occurred: %v", logThreadSeq, err))
 				return
 			}
 			slength := len(strings.Split(stt, "/*go actions rowData*/"))
@@ -121,25 +111,19 @@ func (sp *SchedulePlan) sampSingleTableCheckProcessing(chanrowCount int, sampDat
 				tableRow <- dlength
 			}
 			sp.QueryDataCheckSum(stt, dtt, md5Chan, FileOper, Cycles, logThreadSeq)
-			vlog = fmt.Sprintf("(%d) There is currently no index table %s.%s The %d round of data cycle verification is complete.", logThreadSeq, sp.schema, sp.table, Cycles)
+			vlog = fmt.Sprintf("(%d) Completed MD5 checksum round %d for table without index %s.%s", logThreadSeq, Cycles, sp.schema, sp.table)
 			global.Wlog.Debug(vlog)
 		}(Cycles, beginSeq)
 		beginSeq = beginSeq + uint64(chanrowCount)
 		time.Sleep(500 * time.Millisecond)
-		//if beginSeq < uint64(barTableRow) {
-		//	sp.bar.Play(int64(beginSeq))
-		//} else {
-		//	sp.bar.Play(barTableRow)
-		//}
+		sp.FixSqlExec(sqlStrExec, int64(logThreadSeq))
+		//输出校验结果信息
+		pods.Rows = fmt.Sprintf("%v", maxTableCount)
+		measuredDataPods = append(measuredDataPods, pods)
+		vlog = fmt.Sprintf("(%d) Completed data checksum for table without index %s.%s", logThreadSeq, sp.schema, sp.table)
+		global.Wlog.Info(vlog)
+		global.Wlog.Info(fmt.Sprintf("(%d) Checksum completed for %s.%s", logThreadSeq, sp.schema, sp.table))
 	}
-	//sp.bar.Finish()
-	sp.FixSqlExec(sqlStrExec, int64(logThreadSeq))
-	//输出校验结果信息
-	pods.Rows = fmt.Sprintf("%v", maxTableCount)
-	measuredDataPods = append(measuredDataPods, pods)
-	vlog = fmt.Sprintf("(%d) No index table %s.%s The data consistency check of the original target end is completed", logThreadSeq, sp.schema, sp.table)
-	global.Wlog.Info(vlog)
-	fmt.Println(fmt.Sprintf("%s.%s checksum completed", sp.schema, sp.table))
 }
 
 /*
@@ -159,11 +143,11 @@ func (sp *SchedulePlan) DoSampleDataCheck() {
 	)
 	rand.Seed(time.Now().UnixNano())
 	logThreadSeq := rand.Int63()
-	vlog = fmt.Sprintf("(%d) Start the sampling data verification of the original target...", logThreadSeq)
+	vlog = fmt.Sprintf("(%d) Starting sampling data checksum", logThreadSeq)
 	global.Wlog.Info(vlog)
 
 	// 添加调试日志，显示表索引映射
-	vlog = fmt.Sprintf("DoSampleDataCheck tableIndexColumnMap keys: %v", sp.tableIndexColumnMap)
+	vlog = fmt.Sprintf("Table index column mapping options: %v", sp.tableIndexColumnMap)
 	global.Wlog.Debug(vlog)
 
 	for k, v := range sp.tableIndexColumnMap {
@@ -237,7 +221,7 @@ func (sp *SchedulePlan) DoSampleDataCheck() {
 
 		// 如果解析失败，跳过此项
 		if sourceSchema == "" || sourceTable == "" {
-			vlog = fmt.Sprintf("(%d) Failed to parse table information from key: %s", logThreadSeq, k)
+			vlog = fmt.Sprintf("(%d) Unable to parse table information from key: %s", logThreadSeq, k)
 			global.Wlog.Warn(vlog)
 			continue
 		}
@@ -281,13 +265,13 @@ func (sp *SchedulePlan) DoSampleDataCheck() {
 		sp.sourceSchema = sourceSchema
 		sp.destSchema = destSchema
 
-		fmt.Println(fmt.Sprintf("Begin checksum for table %s", displayTableName))
+		global.Wlog.Info(fmt.Sprintf("(%d) Starting checksum for table %s", logThreadSeq, displayTableName))
 
 		// 使用正确的键名查找表列信息
 		tableColumnKey := fmt.Sprintf("%s_gtchecksum_%s", destSchema, destTable)
 		tableColumn, exists := sp.tableAllCol[tableColumnKey]
 		if !exists {
-			vlog = fmt.Sprintf("(%d) Table column information not found for %s", logThreadSeq, tableColumnKey)
+			vlog = fmt.Sprintf("(%d) Column information not available for %s", logThreadSeq, tableColumnKey)
 			global.Wlog.Warn(vlog)
 			continue
 		}
@@ -303,7 +287,7 @@ func (sp *SchedulePlan) DoSampleDataCheck() {
 		stmpTableCount, err = idxc.TableIndexColumn().TmpTableIndexColumnRowsCount(sdb, logThreadSeq)
 		sp.sdbPool.Put(sdb, logThreadSeq)
 		if err != nil {
-			vlog = fmt.Sprintf("(%d) Error getting source table row count: %v", logThreadSeq, err)
+			vlog = fmt.Sprintf("(%d) Failed to retrieve source table row count: %v", logThreadSeq, err)
 			global.Wlog.Error(vlog)
 			return
 		}
@@ -313,29 +297,29 @@ func (sp *SchedulePlan) DoSampleDataCheck() {
 		idxcDest := dbExec.IndexColumnStruct{Schema: destSchema, Table: destTable, ColumnName: sp.columnName, Drivce: sp.ddrive}
 		dtmpTableCount, err = idxcDest.TableIndexColumn().TmpTableIndexColumnRowsCount(ddb, logThreadSeq)
 		if err != nil {
-			vlog = fmt.Sprintf("(%d) Error getting destination table row count: %v", logThreadSeq, err)
+			vlog = fmt.Sprintf("(%d) Failed to retrieve target table row count: %v", logThreadSeq, err)
 			global.Wlog.Error(vlog)
 			return
 		}
 		sp.ddbPool.Put(ddb, logThreadSeq)
 
-		vlog = fmt.Sprintf("(%d) Start to verify the total number of rows of table %s source and target ...", logThreadSeq, displayTableName)
+		vlog = fmt.Sprintf("(%d) Verifying row counts for table %s", logThreadSeq, displayTableName)
 		global.Wlog.Debug(vlog)
 
 		if stmpTableCount != dtmpTableCount {
-			vlog = fmt.Sprintf("(%d) Verify that the total number of rows at the source and destination of table %s is inconsistent.", logThreadSeq, displayTableName)
+			vlog = fmt.Sprintf("(%d) Row counts differ for table %s", logThreadSeq, displayTableName)
 			global.Wlog.Debug(vlog)
 			sp.pods.DIFFS = "yes"
 			sp.pods.Rows = fmt.Sprintf("%d,%d", stmpTableCount, dtmpTableCount)
 			measuredDataPods = append(measuredDataPods, *sp.pods)
-			vlog = fmt.Sprintf("(%d) Check table %s The total number of rows at the source and target end has been checked.", logThreadSeq, displayTableName)
+			vlog = fmt.Sprintf("(%d) Row count checksum completed for table %s", logThreadSeq, displayTableName)
 			global.Wlog.Debug(vlog)
 			fmt.Println()
-			fmt.Println(fmt.Sprintf("table %s checksum complete", displayTableName))
+			global.Wlog.Info(fmt.Sprintf("(%d) Checksum completed for table %s", logThreadSeq, displayTableName))
 			continue
 		}
 
-		vlog = fmt.Sprintf("(%d) Verify that the total number of rows at the source and destination of table %s is consistent", logThreadSeq, displayTableName)
+		vlog = fmt.Sprintf("(%d) Row counts match for table %s", logThreadSeq, displayTableName)
 		global.Wlog.Debug(vlog)
 
 		var sampDataGroupNumber, dataGroupNumber uint64
@@ -356,7 +340,7 @@ func (sp *SchedulePlan) DoSampleDataCheck() {
 			sp.pods.IndexColumn = "noIndex"
 			sp.sampSingleTableCheckProcessing(sp.chanrowCount, sampDataGroupNumber, logThreadSeq)
 			fmt.Println()
-			fmt.Println(fmt.Sprintf("table %s checksum complete", displayTableName))
+			global.Wlog.Info(fmt.Sprintf("Table %s checksum completed", displayTableName))
 			vlog = fmt.Sprintf("(%d) Check table %s The total number of rows at the source and target end has been checked.", logThreadSeq, displayTableName)
 			global.Wlog.Debug(vlog)
 			continue
@@ -392,10 +376,10 @@ func (sp *SchedulePlan) DoSampleDataCheck() {
 		go sp.AbnormalDataDispos(diffQueryData, fixSQL, logThreadSeq)
 		sp.DataFixDispos(fixSQL, logThreadSeq)
 		fmt.Println()
-		fmt.Println(fmt.Sprintf("table %s checksum complete", displayTableName))
+		global.Wlog.Info(fmt.Sprintf("Table %s checksum completed", displayTableName))
 		vlog = fmt.Sprintf("(%d) Check table %s The total number of rows at the source and target end has been checked.", logThreadSeq, displayTableName)
 		global.Wlog.Debug(vlog)
 	}
-	vlog = fmt.Sprintf("(%d) The sampling data verification of the original target is completed !!!", logThreadSeq)
+	vlog = fmt.Sprintf("(%d) Sampling data checksum completed", logThreadSeq)
 	global.Wlog.Info(vlog)
 }

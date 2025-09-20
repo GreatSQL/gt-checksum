@@ -3,11 +3,12 @@ package mysql
 import (
 	"context"
 	"fmt"
-	"github.com/go-mysql-org/go-mysql/mysql"
-	"github.com/go-mysql-org/go-mysql/replication"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/go-mysql-org/go-mysql/mysql"
+	"github.com/go-mysql-org/go-mysql/replication"
 )
 
 type BinlogPrepareStruct struct {
@@ -44,7 +45,7 @@ type xaTrxPrepareStruct struct {
 }
 
 /*
-	将binlog生成的事务语句转换成对应语句
+将binlog生成的事务语句转换成对应语句
 */
 func (my MySQLIncDataBinlogPrepareStruct) binlogSqlTransition(a []BinlogPrepareStruct) []string {
 	var sql []string
@@ -67,80 +68,68 @@ func (my MySQLIncDataBinlogPrepareStruct) binlogSqlTransition(a []BinlogPrepareS
 }
 
 /*
-	解析binlog中的ddl语句
+解析binlog中的ddl语句
 */
 func (my MySQLIncDataBinlogPrepareStruct) binlogQuerySql(ev *replication.BinlogEvent) map[string]string {
 	var querySqlMap = make(map[string]string, 1)
 	if ev.Header.EventType == replication.QUERY_EVENT {
 		qEvent := ev.Event.(*replication.QueryEvent)
-		//fmt.Println(fmt.Sprintf("Slave proxy ID: %d", qEvent.SlaveProxyID))
-		//fmt.Println(fmt.Sprintf("Execution time: %d", qEvent.ExecutionTime))
-		//fmt.Println(fmt.Sprintf("Error code: %d", qEvent.ErrorCode))
-		//fmt.Println(fmt.Sprintf("Schame: %s", string(qEvent.Schema)))
+
 		querySql := strings.TrimSpace(string(qEvent.Query))
 		//create 语句
 		if strings.HasPrefix(strings.ToUpper(querySql), "CREATE") {
 			if strings.HasPrefix(strings.ToUpper(querySql), "CREATE DATABASE") {
 				querySqlMap["createDatabase"] = querySql
-				//fmt.Println("create database query info: ", querySql)
 			}
 			if strings.HasPrefix(strings.ToUpper(querySql), "CREATE TABLE") {
 				querySqlMap["createTable"] = querySql
-				//fmt.Println("create table query info: ", querySql)
 			}
 			if strings.HasPrefix(strings.ToUpper(querySql), "CREATE INDEX") {
 				querySqlMap["createIndex"] = querySql
-				//fmt.Println("create index query info: ", querySql)
 			}
 		}
 		//drop 语句
 		if strings.HasPrefix(strings.ToUpper(querySql), "DROP ") {
 			if strings.HasPrefix(strings.ToUpper(querySql), "DROP DATABASE") {
 				querySqlMap["dropDatabase"] = querySql
-				//fmt.Println("drop database query info: ", querySql)
 			}
 			if strings.HasPrefix(strings.ToUpper(querySql), "DROP TABLE") {
 				querySqlMap["dropTable"] = querySql
-				//fmt.Println("drop table query info: ", querySql)
 			}
 			if strings.HasPrefix(strings.ToUpper(querySql), "DROP INDEX") {
 				querySqlMap["dropIndex"] = querySql
-				//fmt.Println("drop index query info: ", querySql)
 			}
 		}
 		//alter 语句
 		if strings.HasPrefix(strings.ToUpper(querySql), "ALTER") {
 			if strings.HasPrefix(strings.ToUpper(querySql), "ALTER DATABASE") {
 				querySqlMap["alterDatabase"] = querySql
-				//fmt.Println("alter database query info: ", querySql)
+
 			}
 			if strings.HasPrefix(strings.ToUpper(querySql), "ALTER EVENT") {
 				querySqlMap["alterEvent"] = querySql
-				//fmt.Println("alter event query info: ", querySql)
+
 			}
 			if strings.HasPrefix(strings.ToUpper(querySql), "ALTER TABLE") {
 				if strings.Contains(strings.ToUpper(querySql), "COLUMN") {
 					querySqlMap["alterTable"] = querySql
-					//fmt.Println("alter table query info: ", querySql)
+
 				}
 				if strings.Contains(strings.ToUpper(querySql), "MODIFY") {
 					querySqlMap["alterTable"] = querySql
-					//fmt.Println("alter table query info: ", querySql)
+
 				}
-				//if strings.Contains(strings.ToUpper(querySql), "PARTITION") {
-				//	fmt.Println("alter table query info: ", querySql)
-				//}
 				if strings.Contains(strings.ToUpper(querySql), "CHANGE") {
 					querySqlMap["alterTable"] = querySql
-					//fmt.Println("alter table query info: ", querySql)
+
 				}
 				if strings.Contains(strings.ToUpper(querySql), "INDEX") {
 					querySqlMap["alterTable"] = querySql
-					//fmt.Println("alter table query info: ", querySql)
+
 				}
 				if strings.Contains(strings.ToUpper(querySql), "KEY") {
 					querySqlMap["alterTable"] = querySql
-					//fmt.Println("alter table query info: ", querySql)
+
 				}
 			}
 		}
@@ -180,7 +169,7 @@ func (my MySQLIncDataBinlogPrepareStruct) binlogQuerySql(ev *replication.BinlogE
 }
 
 /*
-	输出xid信息，xid为事务执行完成准备提交的id信息
+输出xid信息，xid为事务执行完成准备提交的id信息
 */
 func (my MySQLIncDataBinlogPrepareStruct) binlogXid(ev *replication.BinlogEvent) uint64 {
 	var xid uint64
@@ -191,7 +180,7 @@ func (my MySQLIncDataBinlogPrepareStruct) binlogXid(ev *replication.BinlogEvent)
 }
 
 /*
-	解析binlog事件的dml语句
+解析binlog事件的dml语句
 */
 func (my MySQLIncDataBinlogPrepareStruct) binlogDmlPrepare(ev *replication.BinlogEvent) BinlogPrepareStruct {
 	var binlogPrepare = BinlogPrepareStruct{}
@@ -273,7 +262,7 @@ func (my MySQLIncDataBinlogPrepareStruct) binlogDmlPrepare(ev *replication.Binlo
 }
 
 /*
-	返回一个事务包含的所有sql语句
+返回一个事务包含的所有sql语句
 */
 func (my MySQLIncDataBinlogPrepareStruct) OneEventSql(block chan struct{}, trxEvent chan map[string][]string, dQ chan struct{}) {
 	var ad = &binlogTrxPrepareStruct{}
@@ -284,7 +273,7 @@ func (my MySQLIncDataBinlogPrepareStruct) OneEventSql(block chan struct{}, trxEv
 	var currityTrxType string
 
 	// Create a binlog syncer with a unique server id, the server id must be different from other MySQL's.
-	// flavor is mysql or mariadb
+	// mysql or mariadb
 	cfg := replication.BinlogSyncerConfig{
 		ServerID: my.ServerId,
 		Flavor:   my.Mytype,

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+
 	"github.com/go-mysql-org/go-mysql/mysql"
 	"github.com/go-mysql-org/go-mysql/replication"
 )
@@ -12,10 +13,10 @@ func PareBinlog() {
 	cfg := replication.BinlogSyncerConfig{
 		ServerID: 1613306,
 		Flavor:   "mysql",
-		Host:     "172.16.50.162",
+		Host:     "127.0.0.1",
 		Port:     3306,
-		User:     "pcms",
-		Password: "pcms@123",
+		User:     "gtchecksum",
+		Password: "gtchecksum",
 	}
 	syncer := replication.NewBinlogSyncer(cfg)
 	// Start sync with specified binlog file and position
@@ -30,9 +31,8 @@ func PareBinlog() {
 		var a string
 		buf := bytes.NewBufferString(a)
 		ev.Dump(buf)
-		fmt.Println("--------")
+		fmt.Println("Binlog buffer content:")
 		fmt.Println(buf)
-		fmt.Println("--------")
 
 	}
 

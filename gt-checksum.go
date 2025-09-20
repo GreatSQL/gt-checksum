@@ -26,14 +26,14 @@ func main() {
 	utils.MemoryMonitor(fmt.Sprintf("%dMB", m.SecondaryL.RulesV.MemoryLimit), m)
 
 	if !actions.SchemaTableInit(m).GlobalAccessPriCheck(1, 2) {
-		fmt.Println(fmt.Sprintf("gt-checksum report: The SESSION_VARIABLES_ADMIN and REPLICATION global privileges may not have been granted. Please check %s or set option \"logLevel=debug\" to get more information.", m.SecondaryL.LogV.LogFile))
+		fmt.Println(fmt.Sprintf("gt-checksum: Missing required global privileges (SESSION_VARIABLES_ADMIN and REPLICATION). Check %s for details or set logLevel=debug", m.SecondaryL.LogV.LogFile))
 		os.Exit(1)
 	}
 	//获取待校验表信息
 	var tableList, tableListColCheck, tableListPriCheck []string
 	schemaTableInstance := actions.SchemaTableInit(m)
 	if tableList, err = schemaTableInstance.SchemaTableFilter(3, 4); err != nil || len(tableList) == 0 {
-		fmt.Println(fmt.Sprintf("gt-checksum report: check table is empty. Please check %s or set option \"logLevel=debug\" to get more information.", m.SecondaryL.LogV.LogFile))
+		fmt.Println(fmt.Sprintf("gt-checksum: No tables to check. Check %s for details or set logLevel=debug", m.SecondaryL.LogV.LogFile))
 		os.Exit(1)
 	}
 	tableInfoTime = time.Since(beginTime) - setupTime
@@ -41,12 +41,12 @@ func main() {
 	switch m.SecondaryL.RulesV.CheckObject {
 	case "struct":
 		if err = schemaTableInstance.Struct(tableList, 5, 6); err != nil {
-			fmt.Println(fmt.Sprintf("gt-checksum report: Table structures verification failed. Please check %s or set option \"logLevel=debug\" to get more information.", m.SecondaryL.LogV.LogFile))
+			fmt.Println(fmt.Sprintf("gt-checksum: Table structure verification failed. Check %s for details or set logLevel=debug", m.SecondaryL.LogV.LogFile))
 			os.Exit(1)
 		}
 	case "index":
 		if err = schemaTableInstance.Index(tableList, 7, 8); err != nil {
-			fmt.Println("gt-checksum report: Indexes verification failed. Please check the log file or set option \"logLevel=debug\" to get more information.")
+			fmt.Println("gt-checksum: Index verification failed. Check log file or set logLevel=debug for details")
 			os.Exit(1)
 		}
 	case "partitions":
@@ -64,18 +64,18 @@ func main() {
 		//校验表结构
 		tableListColCheck, _, err = schemaTableInstance.TableColumnNameCheck(tableList, 9, 10)
 		if err != nil {
-			fmt.Println("gt-checksum report: Table structure verification failed. Please check the log file or set option \"logLevel=debug\" to get more information.")
+			fmt.Println("gt-checksum: Table structure verification failed. Check log file or set logLevel=debug for details")
 			os.Exit(1)
 		} else if len(tableListColCheck) == 0 {
-			fmt.Println("gt-checksum report: table checklist is empty. Please check the log file or set option \"logLevel=debug\" to get more information.")
+			fmt.Println("gt-checksum: No tables in checklist. Check log file or set logLevel=debug for details")
 			os.Exit(1)
 		}
 		//19、20
 		if tableListPriCheck, _, err = actions.SchemaTableInit(m).TableAccessPriCheck(tableList, 19, 20); err != nil {
-			fmt.Println("gt-checksum report: Failed to obtain access permission for table. Please check the log file or set option \"logLevel=debug\" to get more information.")
+			fmt.Println("gt-checksum: Failed to verify table access permissions. Check log file or set logLevel=debug for details")
 			os.Exit(1)
 		} else if len(tableListPriCheck) == 0 {
-			fmt.Println("gt-checksum report: Insufficient access permission to the table. Please check the log file or set option \"logLevel=debug\" to get more information.")
+			fmt.Println("gt-checksum: Insufficient table access permissions. Check log file or set logLevel=debug for details")
 			os.Exit(1)
 		}
 
@@ -96,21 +96,21 @@ func main() {
 		}
 
 		//根据要校验的表，获取该表的全部列信息
-		fmt.Println("gt-checksum is opening table columns")
+		fmt.Println("gt-checksum: Collecting table column information")
 		tableAllCol := schemaTableInstance.SchemaTableAllCol(tableList, 21, 22)
 		//根据要校验的表，筛选查询数据时使用到的索引列信息
-		fmt.Println("gt-checksum is opening table indexes")
+		fmt.Println("gt-checksum: Collecting table index information")
 		tableIndexColumnMap := schemaTableInstance.TableIndexColumn(tableList, 23, 24)
 
 		//初始化数据库连接池
-		fmt.Println("gt-checksum is opening srcDSN and dstDSN")
+		fmt.Println("gt-checksum: Establishing database connections")
 		connStart := time.Now()
 		sdc, _ := dbExec.GCN().GcnObject(m.ConnPoolV.PoolMin, m.SecondaryL.DsnsV.SrcJdbc, m.SecondaryL.DsnsV.SrcDrive).NewConnPool(27)
 		ddc, _ := dbExec.GCN().GcnObject(m.ConnPoolV.PoolMin, m.SecondaryL.DsnsV.DestJdbc, m.SecondaryL.DsnsV.DestDrive).NewConnPool(28)
 		connPoolTime = time.Since(connStart)
 
 		//针对待校验表生成查询条件计划清单
-		fmt.Println("gt-checksum is generating tables and data check plan")
+		fmt.Println("gt-checksum: Generating data checksum plan")
 		checkStart := time.Now()
 		switch m.SecondaryL.RulesV.CheckMode {
 		case "rows":
@@ -130,23 +130,22 @@ func main() {
 		sdc.Close(27)
 		ddc.Close(28)
 	default:
-		fmt.Println("gt-checksum report: The option \"checkObject\" is set incorrectly. Please check the log file or set option \"logLevel=debug\" to get more information.")
+		fmt.Println("gt-checksum: Invalid checkObject option value. Check log file or set logLevel=debug for details")
 		os.Exit(1)
 	}
-	global.Wlog.Info("gt-checksum check object {", m.SecondaryL.RulesV.CheckObject, "} complete !!!")
+	global.Wlog.Info(fmt.Sprintf("gt-checksum: Checksum completed for object %s", m.SecondaryL.RulesV.CheckObject))
 	//输出结果信息
-	fmt.Println("")
-	fmt.Println("Result Overview")
+	fmt.Println("\nChecksum Results Overview")
 	actions.CheckResultOut(m)
 
 	//输出详细耗时统计
 	totalTime := time.Since(beginTime)
-	fmt.Println("\nTime Breakdown:")
-	fmt.Printf("  Setup and initialization: %.2fs\n", setupTime.Seconds())
-	fmt.Printf("  Table information collection: %.2fs\n", tableInfoTime.Seconds())
-	fmt.Printf("  Connection pool setup: %.2fs\n", connPoolTime.Seconds())
-	fmt.Printf("  Data validation: %.2fs\n", checkTime.Seconds())
-	fmt.Printf("  Validation overhead (exact counts, file ops): %.2fs\n", extraOpsTime.Seconds())
-	fmt.Printf("  Other operations: %.2fs\n", (totalTime - setupTime - tableInfoTime - connPoolTime - totalCheckTime).Seconds())
-	fmt.Printf("Total elapsed time: %.2fs\n", totalTime.Seconds())
+	fmt.Println("\nPerformance Metrics:")
+	fmt.Printf("  Initialization: %.2fs\n", setupTime.Seconds())
+	fmt.Printf("  Metadata collection: %.2fs\n", tableInfoTime.Seconds())
+	fmt.Printf("  Connection setup: %.2fs\n", connPoolTime.Seconds())
+	fmt.Printf("  Data checksum: %.2fs\n", checkTime.Seconds())
+	fmt.Printf("  Additional operations: %.2fs\n", extraOpsTime.Seconds())
+	fmt.Printf("  Miscellaneous: %.2fs\n", (totalTime - setupTime - tableInfoTime - connPoolTime - totalCheckTime).Seconds())
+	fmt.Printf("Total execution time: %.2fs\n", totalTime.Seconds())
 }

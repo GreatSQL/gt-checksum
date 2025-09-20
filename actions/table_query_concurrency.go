@@ -84,7 +84,7 @@ func (sp *SchedulePlan) Schedulingtasks() {
 		sp.file, _ = os.OpenFile(sp.TmpFileName, os.O_CREATE|os.O_RDWR, 0777)
 		// 解析key中的源表和目标表信息
 		// key格式: sourceSchema/*gtchecksumSchemaTable*/sourceTable/*indexColumnType*/indexType/*mapping*/destSchema/*mappingTable*/destTable
-		vlog := fmt.Sprintf("Processing key: %s", k)
+		vlog := fmt.Sprintf("Processing table key: %s", k)
 		global.Wlog.Debug(vlog)
 
 		var sourceSchema, sourceTable, destSchema, destTable, indexType string
@@ -148,7 +148,7 @@ func (sp *SchedulePlan) Schedulingtasks() {
 		sp.destSchema = destSchema
 		sp.indexColumnType = indexType
 
-		vlog = fmt.Sprintf("Parsed key: sourceSchema=%s, sourceTable=%s, destSchema=%s, destTable=%s, indexType=%s",
+		vlog = fmt.Sprintf("Key parsed - Source: %s.%s, Target: %s.%s, Index: %s",
 			sourceSchema, sourceTable, destSchema, destTable, indexType)
 		global.Wlog.Debug(vlog)
 
@@ -161,17 +161,17 @@ func (sp *SchedulePlan) Schedulingtasks() {
 			sp.columnName = v
 			// 开始新表的进度显示
 			displayTableName := sp.getDisplayTableName()
-			tableName := fmt.Sprintf("begin checkSum index table %s", displayTableName)
+			tableName := fmt.Sprintf("Starting index checksum for table %s", displayTableName)
 			sp.bar.NewTableProgress(tableName)
 			sp.doIndexDataCheck() // 确保SchedulePlan结构体已定义此方法
 			fmt.Println()
 
 			// 显示映射关系信息
 			if sp.sourceSchema != sp.destSchema || sp.table != sp.table {
-				fmt.Println(fmt.Sprintf("table %s checksum complete (Schema: %s:%s, Table: %s:%s)",
+				fmt.Println(fmt.Sprintf("Table %s checksum completed (Schema: %s->%s, Table: %s->%s)",
 					displayTableName, sp.sourceSchema, sp.destSchema, sp.table, sp.table))
 			} else {
-				fmt.Println(fmt.Sprintf("table %s checksum complete", displayTableName))
+				fmt.Println(fmt.Sprintf("Table %s checksum completed", displayTableName))
 			}
 		}
 		sp.file.Close()

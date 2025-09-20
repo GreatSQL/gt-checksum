@@ -51,7 +51,7 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 	//查询源目标端索引列数据
 	idxc := dbExec.IndexColumnStruct{Schema: sp.sourceSchema, Table: sp.table, ColumnName: sp.columnName,
 		ChanrowCount: sp.chanrowCount, Drivce: sp.sdrive, SelectColumn: selectColumn[sp.sdrive], ColData: a}
-	vlog = fmt.Sprintf("(%d) Start to query the index column data of index column [%v] of source table [%v.%v]...", logThreadSeq, sp.columnName[level], sp.sourceSchema, sp.table)
+	vlog = fmt.Sprintf("(%d) Querying source table %s.%s index column %s", logThreadSeq, sp.sourceSchema, sp.table, sp.columnName[level])
 	global.Wlog.Debug(vlog)
 	SdataChan1, err := idxc.TableIndexColumn().TmpTableColumnGroupDataDispos(sdb, where, sp.columnName[level], logThreadSeq)
 	if err != nil {
@@ -59,7 +59,7 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 	}
 	idxcDest := dbExec.IndexColumnStruct{Schema: sp.destSchema, Table: sp.table, ColumnName: sp.columnName,
 		ChanrowCount: sp.chanrowCount, Drivce: sp.ddrive, SelectColumn: selectColumn[sp.ddrive], ColData: a}
-	vlog = fmt.Sprintf("(%d) Start to query the index column data of index column [%v] of dest table [%v.%v]...", logThreadSeq, sp.columnName[level], sp.destSchema, sp.table)
+	vlog = fmt.Sprintf("(%d) Querying target table %s.%s index column %s", logThreadSeq, sp.destSchema, sp.table, sp.columnName[level])
 	global.Wlog.Debug(vlog)
 	DdataChan1, err := idxcDest.TableIndexColumn().TmpTableColumnGroupDataDispos(ddb, where, sp.columnName[level], logThreadSeq)
 	if err != nil {
@@ -67,7 +67,7 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 	}
 	cMerge := dataDispos.DataInfo{ChanQueueDepth: sp.mqQueueDepth}
 	ascUniqSDDataChan := cMerge.ChangeMerge(SdataChan1, DdataChan1)
-	vlog = fmt.Sprintf("(%d) Start to recursively process the where condition of index column [%v] of table [%v.%v] according to the size of a single check block...", logThreadSeq, sp.columnName[level], sp.schema, sp.table)
+	vlog = fmt.Sprintf("(%d) Processing WHERE conditions for index column %s in %s.%s", logThreadSeq, sp.columnName[level], sp.schema, sp.table)
 	global.Wlog.Debug(vlog)
 	//处理原目标端索引列数据的集合，并按照单次校验数据块大小来进行数据截取，如果是多列索引，则需要递归查询截取
 	for {
@@ -85,10 +85,10 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 				}
 				return
 			}
-			vlog = fmt.Sprintf("(%d) The current index column level is [%v],the where condition is [%v], the index column is [%v], the query sequence number is [%v], the column value is [%v], and the number of repeated data in the column is [%v]", logThreadSeq, level, where, sp.columnName[level], autoIncSeq, key, value)
+			vlog = fmt.Sprintf("(%d) Index column %s level %d - WHERE: %s, value: %s, count: %v", logThreadSeq, sp.columnName[level], level, where, key, value)
 			global.Wlog.Debug(vlog)
 			if key == "<nil>" || key == "<entry>" {
-				vlog = fmt.Sprintf("(%d) The current index column level is [%v],the where condition is [%v], the index column is [%v], the query sequence number is [%v], Start processing null value data...", logThreadSeq, level, where, sp.columnName[level], autoIncSeq)
+				vlog = fmt.Sprintf("(%d) Processing NULL values for index column %s level %d", logThreadSeq, sp.columnName[level], level)
 				global.Wlog.Debug(vlog)
 				if e != "" { //假如null或者entry不是首行，则先处理原有数据条件
 					if key != "END" {
@@ -116,7 +116,7 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 					sqlwhere = fmt.Sprintf("%s %s is null ", whereExist, sp.columnName[level])
 				}
 				partFirstValue = true
-				vlog = fmt.Sprintf("(%d) The current index column level is [%v],the where condition is [%v], the index column is [%v], the query sequence number is [%v], the query sql-where is [%v], Null value data processing is complete!!!", logThreadSeq, level, where, sp.columnName[level], autoIncSeq, sqlwhere)
+				vlog = fmt.Sprintf("(%d) NULL values processed for index column %s level %d - WHERE: %s", logThreadSeq, sp.columnName[level], level, sqlwhere)
 				global.Wlog.Debug(vlog)
 				sqlWhere <- sqlwhere
 				sqlwhere = ""
@@ -125,7 +125,7 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 				if key != "END" && e == "" {
 					e = key
 				}
-				vlog = fmt.Sprintf("(%d) The current index column level is [%v],the where condition is [%v], the index column is [%v], the query sequence number is [%v], The starting value of the current index column is [%v].", logThreadSeq, level, where, sp.columnName[level], autoIncSeq, e)
+				vlog = fmt.Sprintf("(%d) Index column %s level %d starting value: %s", logThreadSeq, sp.columnName[level], level, e)
 				global.Wlog.Debug(vlog)
 				//获取每行的count值,并将count值记录及每次动态的值
 				if key != "END" {
@@ -139,7 +139,7 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 				}
 				//判断行数累加值是否小于要校验的值，并且是最后一条索引列数据
 				if d < queryNum && d > 0 && key == "END" {
-					vlog = fmt.Sprintf("(%d) The current index column level is [%v],the where condition is [%v], the index column is [%v], the query sequence number is [%v],{end index column} {end row data} start dispos...", logThreadSeq, level, where, sp.columnName[level], autoIncSeq)
+					vlog = fmt.Sprintf("(%d) Processing end of index column %s level %d", logThreadSeq, sp.columnName[level], level)
 					global.Wlog.Debug(vlog)
 					var whereExist string
 					if where != "" {
@@ -154,7 +154,7 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 
 					sqlWhere <- sqlwhere
 					sqlwhere = ""
-					vlog = fmt.Sprintf("(%d) The current index column level is [%v],the where condition is [%v], the index column is [%v], the query sequence number is [%v],the query sql where is [%v],{end index column} {end row data} dispos Finish!!!", logThreadSeq, level, where, sp.columnName[level], autoIncSeq, sqlwhere)
+					vlog = fmt.Sprintf("(%d) Completed processing end of index column %s level %d - WHERE: %s", logThreadSeq, sp.columnName[level], level, sqlwhere)
 					global.Wlog.Debug(vlog)
 				}
 			}
@@ -208,7 +208,7 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 			}
 		}
 	}
-	vlog = fmt.Sprintf("(%d) Recursively process the where condition of the index column [%v] of table [%v.%v] according to the size of the word check block!!!", logThreadSeq, sp.columnName[level], sp.schema, sp.table)
+	vlog = fmt.Sprintf("(%d) Completed WHERE condition processing for index column %s in %s.%s", logThreadSeq, sp.columnName[level], sp.schema, sp.table)
 	global.Wlog.Debug(vlog)
 }
 
@@ -220,7 +220,7 @@ func (sp *SchedulePlan) indexColumnDispos(sqlWhere chanString, selectColumn map[
 	time.Sleep(time.Nanosecond * 2)
 	rand.Seed(time.Now().UnixNano())
 	logThreadSeq = rand.Int63()
-	vlog = fmt.Sprintf("(%d) Check table %s.%s and start generating query sequence.", logThreadSeq, sp.schema, sp.table)
+	vlog = fmt.Sprintf("(%d) Generating query sequence for table %s.%s", logThreadSeq, sp.schema, sp.table)
 	global.Wlog.Info(vlog)
 
 	//查询表索引列数据并且生成查询的where条件
@@ -229,7 +229,7 @@ func (sp *SchedulePlan) indexColumnDispos(sqlWhere chanString, selectColumn map[
 	sp.recursiveIndexColumn(sqlWhere, sdb, ddb, 0, sp.chanrowCount, "", selectColumn, logThreadSeq)
 	sp.sdbPool.Put(sdb, logThreadSeq)
 	sp.ddbPool.Put(ddb, logThreadSeq)
-	vlog = fmt.Sprintf("(%d) Verify that table %s.%s query sequence is generated. !!!", logThreadSeq, sp.schema, sp.table)
+	vlog = fmt.Sprintf("(%d) Query sequence generated for table %s.%s", logThreadSeq, sp.schema, sp.table)
 	global.Wlog.Info(vlog)
 }
 
@@ -246,7 +246,7 @@ func (sp *SchedulePlan) queryTableSql(sqlWhere chanString, selectSql chanMap, cc
 		autoSeq int64
 		err     error
 	)
-	vlog = fmt.Sprintf("(%d) Start processing the block data verification query sql of the verification table ...", logThreadSeq)
+	vlog = fmt.Sprintf("(%d) Processing block data checksum queries", logThreadSeq)
 	global.Wlog.Debug(vlog)
 	for {
 		select {
@@ -314,7 +314,7 @@ func (sp *SchedulePlan) queryTableSql(sqlWhere chanString, selectSql chanMap, cc
 						return
 					}
 					lock.Unlock()
-					vlog = fmt.Sprintf("(%d) The block data verification query sql processing of the verification table is completed. !!!", logThreadSeq)
+					vlog = fmt.Sprintf("(%d) Block data checksum queries completed", logThreadSeq)
 					global.Wlog.Debug(vlog)
 					selectSql <- selectSqlMap
 				}(c, sdb, ddb, sp.sdbPool, sp.ddbPool)
@@ -379,11 +379,11 @@ func (sp *SchedulePlan) queryTableData(selectSql chanMap, diffQueryData chanDiff
 						<-curry
 					}()
 					//查询源端表数据
-					vlog = fmt.Sprintf("(%d) Start to query source table %s.%s block data...", logThreadSeq, sp.sourceSchema, sp.table)
+					vlog = fmt.Sprintf("(%d) Querying source table %s.%s block data", logThreadSeq, sp.sourceSchema, sp.table)
 					global.Wlog.Debug(vlog)
 					sdb := sp.sdbPool.Get(logThreadSeq)
 					stt, err := idxc.TableIndexColumn().GeneratingQueryCriteria(sdb, logThreadSeq)
-					vlog = fmt.Sprintf("(%d) Source %s table %s.%s query result: %v", logThreadSeq, sp.sdrive, sp.sourceSchema, sp.table, stt)
+					vlog = fmt.Sprintf("(%d) Source table %s.%s query result", logThreadSeq, sp.sourceSchema, sp.table)
 					global.Wlog.Debug(vlog)
 					sp.sdbPool.Put(sdb, logThreadSeq)
 					if err != nil {
@@ -403,18 +403,18 @@ func (sp *SchedulePlan) queryTableData(selectSql chanMap, diffQueryData chanDiff
 					}
 					ddb := sp.ddbPool.Get(logThreadSeq)
 					dtt, err := idxcDest.TableIndexColumn().GeneratingQueryCriteria(ddb, logThreadSeq)
-					vlog = fmt.Sprintf("(%d) Destination %s table %s.%s query result: %v", logThreadSeq, sp.ddrive, sp.destSchema, sp.table, dtt)
+					vlog = fmt.Sprintf("(%d) Target table %s.%s query result", logThreadSeq, sp.destSchema, sp.table)
 					global.Wlog.Debug(vlog)
 					sp.ddbPool.Put(ddb, logThreadSeq)
 					if err != nil {
-						vlog = fmt.Sprintf("(%d) Failed to query destination table %s.%s: %v", logThreadSeq, sp.destSchema, sp.table, err)
+						vlog = fmt.Sprintf("(%d) Failed to query target table %s.%s: %v", logThreadSeq, sp.destSchema, sp.table, err)
 						global.Wlog.Error(vlog)
 						return
 					}
-					vlog = fmt.Sprintf("(%d) Check table %s.%s to start checking the consistency of block data ...", logThreadSeq, sp.sourceSchema, sp.table)
+					vlog = fmt.Sprintf("(%d) Checking block data consistency for %s.%s", logThreadSeq, sp.sourceSchema, sp.table)
 					global.Wlog.Debug(vlog)
 					if aa.CheckMd5(stt) != aa.CheckMd5(dtt) {
-						vlog = fmt.Sprintf("(%d) Verification table %s.%s The block data verified by the original target end is inconsistent. query sql is {%s}.", logThreadSeq, sp.schema, sp.table, c1)
+						vlog = fmt.Sprintf("(%d) Data inconsistency found in %s.%s - Query: %s", logThreadSeq, sp.schema, sp.table, c1)
 						global.Wlog.Debug(vlog)
 						differencesData.Table = sp.table
 						differencesData.Schema = sp.schema
@@ -425,11 +425,11 @@ func (sp *SchedulePlan) queryTableData(selectSql chanMap, diffQueryData chanDiff
 							diffQueryData <- differencesData
 						}
 					} else {
-						vlog = fmt.Sprintf("(%d) Verification table %s.%s The block data verified by the original target end is consistent. query sql is {%s}.", logThreadSeq, sp.schema, sp.table, c1)
+						vlog = fmt.Sprintf("(%d) Data consistent in %s.%s - Query: %s", logThreadSeq, sp.schema, sp.table, c1)
 						global.Wlog.Debug(vlog)
 					}
 					stt, dtt = "", ""
-					vlog = fmt.Sprintf("(%d) The block data verification of check table %s.%s is completed !!!", logThreadSeq, sp.schema, sp.table)
+					vlog = fmt.Sprintf("(%d) Block data checksum completed for %s.%s", logThreadSeq, sp.schema, sp.table)
 					global.Wlog.Debug(vlog)
 				}(c, cc1)
 			}
@@ -453,7 +453,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 		//strsqlSliect []string
 		curry = make(chanStruct, sp.concurrency)
 	)
-	vlog = fmt.Sprintf("(%d) Check table %s.%s to start differential data processing and generate repair statements ...", logThreadSeq, sp.schema, sp.table)
+	vlog = fmt.Sprintf("(%d) Processing differences and generating repair statements for %s.%s", logThreadSeq, sp.schema, sp.table)
 	global.Wlog.Info(vlog)
 
 	for {
@@ -493,7 +493,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 					if aa.CheckMd5(stt) != aa.CheckMd5(dtt) {
 						add, del := aa.Arrcmp(strings.Split(stt, "/*go actions rowData*/"), strings.Split(dtt, "/*go actions rowData*/"))
 						stt, dtt = "", ""
-						vlog = fmt.Sprintf("(%d) There is difference data in check table %d.%d, start to generate repair statement.", logThreadSeq, c1.Schema, c1.Table)
+						vlog = fmt.Sprintf("(%d) Generating repair statements for %s.%s differences", logThreadSeq, c1.Schema, c1.Table)
 						global.Wlog.Debug(vlog)
 						if len(del) > 0 || len(add) > 0 {
 							dbf := dbExec.DataAbnormalFixStruct{Schema: c1.Schema, Table: c1.Table, ColData: colData.DColumnInfo, Sqlwhere: c1.SqlWhere[sp.ddrive], DestDevice: sp.ddrive, IndexColumn: sp.columnName, DatafixType: sp.datafixType}
@@ -505,7 +505,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 								dbf.IndexType = "mul"
 							}
 							if len(del) > 0 {
-								vlog = fmt.Sprintf("(%d) Start to generate the delete statement of check table %s.%s.", logThreadSeq, c1.Schema, c1.Table)
+								vlog = fmt.Sprintf("(%d) Generating DELETE statements for %s.%s", logThreadSeq, c1.Schema, c1.Table)
 								global.Wlog.Debug(vlog)
 								for _, i := range del {
 									dbf.RowData = i
@@ -517,11 +517,11 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 										cc <- sqlstr
 									}
 								}
-								vlog = fmt.Sprintf("(%d) The delete repair statement verifying table %s.%s is complete.", logThreadSeq, c1.Schema, c1.Table)
+								vlog = fmt.Sprintf("(%d) DELETE statements generated for %s.%s", logThreadSeq, c1.Schema, c1.Table)
 								global.Wlog.Debug(vlog)
 							}
 							if len(add) > 0 {
-								vlog = fmt.Sprintf("(%d) Start to generate the insert statement of check table %s.%s.", logThreadSeq, c1.Schema, c1.Table)
+								vlog = fmt.Sprintf("(%d) Generating INSERT statements for %s.%s", logThreadSeq, c1.Schema, c1.Table)
 								global.Wlog.Debug(vlog)
 								for _, i := range add {
 									dbf.RowData = i
@@ -533,7 +533,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 										cc <- sqlstr
 									}
 								}
-								vlog = fmt.Sprintf("(%d) The insert repair statement verifying table %s.%s is complete. ", logThreadSeq, c1.Schema, c1.Table)
+								vlog = fmt.Sprintf("(%d) INSERT statements generated for %s.%s", logThreadSeq, c1.Schema, c1.Table)
 								global.Wlog.Debug(vlog)
 							}
 						}
@@ -542,7 +542,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 			}
 		}
 	}
-	vlog = fmt.Sprintf("(%d) Check table %s.%s to complete differential data processing and generate repair statements. !!!", logThreadSeq, sp.schema, sp.table)
+	vlog = fmt.Sprintf("(%d) Completed difference processing and repair statements for %s.%s", logThreadSeq, sp.schema, sp.table)
 	global.Wlog.Info(vlog)
 }
 
@@ -553,7 +553,7 @@ func (sp SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 		increSeq int
 		sqlSlice []string
 	)
-	vlog = fmt.Sprintf("(%d) The current table %s.%s processes the repair statement on the target side.", logThreadSeq, sp.schema, sp.table)
+	vlog = fmt.Sprintf("(%d) Applying repair statements to target table %s.%s", logThreadSeq, sp.schema, sp.table)
 	global.Wlog.Info(vlog)
 	for {
 		select {
@@ -562,7 +562,7 @@ func (sp SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 				if len(noIndexD) == 0 {
 					if len(sqlSlice) > 0 {
 						ApplyDataFix(sqlSlice, sp.datafixType, sp.sfile, sp.ddrive, sp.djdbc, logThreadSeq)
-						vlog = fmt.Sprintf("(%d) The delete repair sql statements of table %s.%s are generated.", logThreadSeq, sp.schema, sp.table)
+						vlog = fmt.Sprintf("(%d) DELETE repair statements generated for %s.%s", logThreadSeq, sp.schema, sp.table)
 						global.Wlog.Debug(vlog)
 						sqlSlice = []string{}
 					} else {

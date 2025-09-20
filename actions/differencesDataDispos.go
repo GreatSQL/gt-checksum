@@ -6,15 +6,15 @@ import (
 	"strings"
 )
 
-//解析binlog event生成回滚的sql语句
+// 解析binlog event生成回滚的sql语句
 var rollbackSQL = func(sl []string) []string {
 	var newDelS []string
 	for _, i := range sl {
-		if strings.HasPrefix(i, "insert") {
+		if strings.HasPrefix(i, "INSERT") {
 			ii := strings.Replace(strings.Replace(i, "INSERT INTO", "DELETE FROM", 1), "VALUES", "WHERE", 1)
 			newDelS = append(newDelS, ii)
 		}
-		if strings.HasPrefix(i, "update") {
+		if strings.HasPrefix(i, "UPDATE") {
 			schemaTable := strings.TrimSpace(strings.Split(strings.Split(i, "WHERE")[0], "UPDATE")[1])
 			e := strings.Split(strings.Split(i, "WHERE")[1], "/*columnModify*/")
 			oldrow := strings.Replace(e[0], "(", "", 1)
@@ -23,7 +23,7 @@ var rollbackSQL = func(sl []string) []string {
 			addSql := fmt.Sprintf("INSERT INTO %s VALUES (%s);", schemaTable, oldrow)
 			newDelS = append(newDelS, delSql, addSql)
 		}
-		if strings.HasPrefix(i, "delete") {
+		if strings.HasPrefix(i, "DELETE") {
 			ii := strings.Replace(strings.Replace(i, "DELETE FROM", "INSERT INTO", 1), "WHERE", "VALUES", 1)
 			newDelS = append(newDelS, ii)
 		}
@@ -31,7 +31,7 @@ var rollbackSQL = func(sl []string) []string {
 	return newDelS
 }
 
-//解析binlog event生成正序的sql语句
+// 解析binlog event生成正序的sql语句
 var positiveSequenceSQL = func(sl []string) []string {
 	var newDelS []string
 	for _, i := range sl {
@@ -54,7 +54,7 @@ var positiveSequenceSQL = func(sl []string) []string {
 }
 
 /*
-	针对全量、增量数据的差异做处理，生成add和delete
+针对全量、增量数据的差异做处理，生成add和delete
 */
 func DifferencesDataDispos(SourceItemAbnormalDataChan chan SourceItemAbnormalDataStruct, addChan chan string, delChan chan string) {
 	for {
@@ -87,7 +87,7 @@ func DifferencesDataDispos(SourceItemAbnormalDataChan chan SourceItemAbnormalDat
 }
 
 /*
-	针对差异数据，生成修复语句，并根据修复方式进行处理,通过对字符串做hash值，使用map进行group by去重
+针对差异数据，生成修复语句，并根据修复方式进行处理,通过对字符串做hash值，使用map进行group by去重
 */
 func DataFixSql(addChan chan string, delChan chan string) {
 	var (

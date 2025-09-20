@@ -30,11 +30,11 @@ func (sp *SchedulePlan) DoCountDataCheck() {
 	)
 	rand.Seed(time.Now().UnixNano())
 	logThreadSeq := rand.Int63()
-	vlog = fmt.Sprintf("(%d) Start the table validation for the total number of rows ...", logThreadSeq)
+	vlog = fmt.Sprintf("(%d) Starting table row count checksum", logThreadSeq)
 	global.Wlog.Info(vlog)
 
 	// 添加调试日志，显示表索引映射
-	vlog = fmt.Sprintf("DoCountDataCheck tableIndexColumnMap keys: %v", sp.tableIndexColumnMap)
+	vlog = fmt.Sprintf("Table index column mapping options: %v", sp.tableIndexColumnMap)
 	global.Wlog.Debug(vlog)
 
 	for k, v := range sp.tableIndexColumnMap {
@@ -81,7 +81,7 @@ func (sp *SchedulePlan) DoCountDataCheck() {
 
 		// 如果解析失败，跳过此项
 		if sourceSchema == "" || sourceTable == "" {
-			vlog = fmt.Sprintf("(%d) Failed to parse table information from key: %s", logThreadSeq, k)
+			vlog = fmt.Sprintf("(%d) Unable to parse table information from key: %s", logThreadSeq, k)
 			global.Wlog.Warn(vlog)
 			continue
 		}
@@ -98,7 +98,7 @@ func (sp *SchedulePlan) DoCountDataCheck() {
 			displayTableName = fmt.Sprintf("%s.%s:%s.%s", sourceSchema, sourceTable, destSchema, destTable)
 		}
 
-		vlog = fmt.Sprintf("(%d) Check table %s initialization single check row number.", logThreadSeq, displayTableName)
+		vlog = fmt.Sprintf("(%d) Initializing row count checksum for table %s", logThreadSeq, displayTableName)
 		global.Wlog.Debug(vlog)
 
 		sdb := sp.sdbPool.Get(logThreadSeq)
@@ -106,7 +106,7 @@ func (sp *SchedulePlan) DoCountDataCheck() {
 		idxc := dbExec.IndexColumnStruct{Schema: sourceSchema, Table: sourceTable, ColumnName: sp.columnName, Drivce: sp.sdrive}
 		stmpTableCount, err = idxc.TableIndexColumn().TmpTableIndexColumnRowsCount(sdb, logThreadSeq)
 		if err != nil {
-			vlog = fmt.Sprintf("(%d) Error getting source table row count: %v", logThreadSeq, err)
+			vlog = fmt.Sprintf("(%d) Failed to retrieve source table row count: %v", logThreadSeq, err)
 			global.Wlog.Error(vlog)
 			return
 		}
@@ -117,7 +117,7 @@ func (sp *SchedulePlan) DoCountDataCheck() {
 		idxcDest := dbExec.IndexColumnStruct{Schema: destSchema, Table: destTable, ColumnName: sp.columnName, Drivce: sp.ddrive}
 		dtmpTableCount, err = idxcDest.TableIndexColumn().TmpTableIndexColumnRowsCount(ddb, logThreadSeq)
 		if err != nil {
-			vlog = fmt.Sprintf("(%d) Error getting destination table row count: %v", logThreadSeq, err)
+			vlog = fmt.Sprintf("(%d) Failed to retrieve target table row count: %v", logThreadSeq, err)
 			global.Wlog.Error(vlog)
 			return
 		}
@@ -137,26 +137,26 @@ func (sp *SchedulePlan) DoCountDataCheck() {
 			pods.Table = fmt.Sprintf("%s:%s.%s", pods.Table, destSchema, destTable)
 		}
 
-		vlog = fmt.Sprintf("(%d) Start to verify the total number of rows of table %s source and target ...", logThreadSeq, displayTableName)
+		vlog = fmt.Sprintf("(%d) Verifying row counts for table %s", logThreadSeq, displayTableName)
 		global.Wlog.Debug(vlog)
 
 		if stmpTableCount == dtmpTableCount {
-			vlog = fmt.Sprintf("(%d) Verify that the total number of rows at the source and destination of table %s is consistent", logThreadSeq, displayTableName)
+			vlog = fmt.Sprintf("(%d) Row counts match for table %s", logThreadSeq, displayTableName)
 			global.Wlog.Debug(vlog)
 			pods.DIFFS = "no"
 			pods.Rows = fmt.Sprintf("%d,%d", stmpTableCount, dtmpTableCount)
 		} else {
-			vlog = fmt.Sprintf("(%d) Verify that the total number of rows at the source and destination of table %s is inconsistent.", logThreadSeq, displayTableName)
+			vlog = fmt.Sprintf("(%d) Row counts differ for table %s", logThreadSeq, displayTableName)
 			global.Wlog.Debug(vlog)
 			pods.DIFFS = "yes"
 			pods.Rows = fmt.Sprintf("%d,%d", stmpTableCount, dtmpTableCount)
 		}
 
 		measuredDataPods = append(measuredDataPods, pods)
-		vlog = fmt.Sprintf("(%d) Check table %s The total number of rows at the source and target end has been checked.", logThreadSeq, displayTableName)
+		vlog = fmt.Sprintf("(%d) Row count checksum completed for table %s", logThreadSeq, displayTableName)
 		global.Wlog.Debug(vlog)
 	}
 
-	vlog = fmt.Sprintf("(%d) The total number of rows in the check table has been checked !!!", logThreadSeq)
+	vlog = fmt.Sprintf("(%d) All table row counts checksum completed", logThreadSeq)
 	global.Wlog.Info(vlog)
 }

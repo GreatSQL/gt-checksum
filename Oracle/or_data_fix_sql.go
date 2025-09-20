@@ -31,33 +31,7 @@ func (or *OracleDataAbnormalFixStruct) FixInsertSqlExec(db *sql.DB, sourceDrive 
 	//colData := or.ColData
 	vlog = fmt.Sprintf("(%d)  Oracle DB check table %s.%s starts to generate insert repair statement.", logThreadSeq, or.Schema, or.Table)
 	global.Wlog.Debug(vlog)
-	////处理mysql查询时间列时数据带时区问题  2021-01-23 10:16:29 +0800 CST
-	//for i := range or.ColData {
-	//	var tmpcolumnName string
-	//	if !strings.Contains(or.RowData, "/*go actions columnData*/") {
-	//		insertSql = fmt.Sprintf("insert into \"%s\".\"%s\" values(%s) ", strings.ToUpper(or.Schema), or.Table, or.RowData)
-	//	}
-	//	tmprowSlic := strings.Split(or.RowData, "/*go actions columnData*/")
-	//	tmpcolumnName = fmt.Sprintf("'%s'", tmprowSlic[i])
-	//	if strings.ToUpper(colData[i]["dataType"]) == "DATE" {
-	//		tmpColumnSeq, _ := strconv.Atoi(fmt.Sprintf("%v", colData[i]["columnSeq"]))
-	//		tmprowSLIC := strings.ReplaceAll(tmprowSlic[tmpColumnSeq-1], "'", "")
-	//		tmpcolumnName = fmt.Sprintf("TO_DATE('%s','YYYY-MM-DD HH24:MI:SS')", tmprowSLIC)
-	//	}
-	//	if strings.Contains(strings.ToUpper(colData[i]["dataType"]), "TIMESTAMP") {
-	//		tmpColumnSeq, _ := strconv.Atoi(fmt.Sprintf("%v", colData[i]["columnSeq"]))
-	//		tmprowSLIC := strings.ReplaceAll(tmprowSlic[tmpColumnSeq-1], "'", "")
-	//		tmpcolumnName = fmt.Sprintf("TO_TIMESTAMP('%s','YYYY-MM-DD HH24:MI:SS')", tmprowSLIC)
-	//	}
-	//	valuesNameSeq = append(valuesNameSeq, tmpcolumnName)
-	//}
-	//queryColumn := strings.Join(valuesNameSeq, ",")
-	//if strings.Contains(queryColumn, "'<nil>'") {
-	//	insertSql = fmt.Sprintf("insert into \"%s\".\"%s\" values(%s);", strings.ToUpper(or.Schema), or.Table, strings.ReplaceAll(queryColumn, "'<nil>'", "NULL"))
-	//} else {
-	//	insertSql = fmt.Sprintf("insert into \"%s\".\"%s\" values(%s);", strings.ToUpper(or.Schema), or.Table, queryColumn)
-	//}
-	//if sourceDrive == "mysql" && strings.Contains(insertSql,"'',")
+
 	for k, v := range strings.Split(or.RowData, "/*go actions columnData*/") {
 		var tmpcolumnName string
 		if strings.EqualFold(v, "<entry>") {
@@ -195,33 +169,7 @@ func (or *OracleDataAbnormalFixStruct) FixAlterIndexSqlExec(e, f []string, si ma
 	return sqlS
 }
 func (or *OracleDataAbnormalFixStruct) FixAlterColumnSqlDispos(alterType string, columnDataType []string, columnSeq int, lastColumn, curryColumn string, logThreadSeq int64) string {
-	//var sqlS []string
-	//for _, v := range e {
-	//	var c []string
-	//	for _, vi := range si[v] {
-	//		c = append(c, strings.TrimSpace(strings.Split(vi, "/*actions Column Type*/")[0]))
-	//	}
-	//	switch or.IndexType {
-	//	case "pri":
-	//		strsql = fmt.Sprintf("alter table %s.%s add primary key(`%s`);", or.Schema, or.Table, strings.Join(c, "`,`"))
-	//	case "uni":
-	//		strsql = fmt.Sprintf("alter table %s.%s add unique index %s(`%s`);", or.Schema, or.Table, v, strings.Join(c, "`,`"))
-	//	case "mul":
-	//		strsql = fmt.Sprintf("alter table %s.%s add index %s(`%s`);", or.Schema, or.Table, v, strings.Join(c, "`,`"))
-	//	}
-	//	sqlS = append(sqlS, strsql)
-	//}
-	//for _, v := range f {
-	//	switch or.IndexType {
-	//	case "pri":
-	//		strsql = fmt.Sprintf("alter table %s.%s drop primary key;", or.Schema, or.Table)
-	//	case "uni":
-	//		strsql = fmt.Sprintf("alter table %s.%s drop index %s;", or.Schema, or.Table, v)
-	//	case "mul":
-	//		strsql = fmt.Sprintf("alter table %s.%s drop index %s;", or.Schema, or.Table, v)
-	//	}
-	//	sqlS = append(sqlS, strsql)
-	//}
+
 	return ""
 }
 func (or *OracleDataAbnormalFixStruct) FixAlterColumnSqlGenerate(modifyColumn []string, logThreadSeq int64) []string {

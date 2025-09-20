@@ -87,7 +87,7 @@ func (stcls *schemaTable) tableColumnName(db *sql.DB, tc dbExec.TableColumnNameS
 	if queryData, err = tc.Query().TableColumnName(db, logThreadSeq2); err != nil {
 		return col, err
 	}
-	vlog = fmt.Sprintf("(%d) [%s] start checking columns", logThreadSeq, Event)
+	vlog = fmt.Sprintf("(%d) [%s] Starting column validation", logThreadSeq, Event)
 	global.Wlog.Debug(vlog)
 	for _, v := range queryData {
 		if fmt.Sprintf("%v", v["columnName"]) != "" {
@@ -98,7 +98,7 @@ func (stcls *schemaTable) tableColumnName(db *sql.DB, tc dbExec.TableColumnNameS
 	for _, v := range CS {
 		col = append(col, map[string][]string{v: A[v]})
 	}
-	vlog = fmt.Sprintf("(%d) [%s] columns checksum completed", logThreadSeq, Event)
+	vlog = fmt.Sprintf("(%d) [%s] Column validation completed", logThreadSeq, Event)
 	global.Wlog.Debug(vlog)
 	return col, nil
 }
@@ -115,7 +115,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 		tableAbnormalBool                    = false
 		event                                string
 	)
-	vlog = fmt.Sprintf("(%d) %s Start checking the differences between the table structure and columns of srcDSN and dstDSN", logThreadSeq, event)
+	vlog = fmt.Sprintf("(%d) %s Validating structure differences between source and target", logThreadSeq, event)
 	global.Wlog.Debug(vlog)
 	for _, v := range checkTableList {
 		// 从表列表中提取源端schema和表名
@@ -128,10 +128,10 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 			destSchema = mappedSchema
 		}
 
-		vlog = fmt.Sprintf("Table mapping check - source: %s, mapped: %s, mappings: %v", sourceSchema, destSchema, stcls.tableMappings)
+		vlog = fmt.Sprintf("Table mapping options - source: %s, target: %s, mappings: %v", sourceSchema, destSchema, stcls.tableMappings)
 		global.Wlog.Debug(vlog)
 
-		vlog = fmt.Sprintf("(%d %s Start checking structure of table %s.%s:[%s.%s]", logThreadSeq, event, sourceSchema, stcls.table, destSchema, stcls.table)
+		vlog = fmt.Sprintf("(%d %s Validating table structure %s.%s -> %s.%s", logThreadSeq, event, sourceSchema, stcls.table, destSchema, stcls.table)
 		global.Wlog.Debug(vlog)
 		var sColumn, dColumn []map[string][]string
 
@@ -139,11 +139,11 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 		tc := dbExec.TableColumnNameStruct{Schema: sourceSchema, Table: stcls.table, Drive: stcls.sourceDrive}
 		sColumn, err = stcls.tableColumnName(stcls.sourceDB, tc, logThreadSeq, logThreadSeq2)
 		if err != nil {
-			vlog = fmt.Sprintf("(%d) %s Obtain metadata of table %s.%s in srcDSN {%s} failed: {%s}", logThreadSeq, event, sourceSchema, stcls.table, stcls.sourceDrive, err)
+			vlog = fmt.Sprintf("(%d) %s Failed to get metadata for source table %s.%s: %v", logThreadSeq, event, sourceSchema, stcls.table, err)
 			global.Wlog.Error(vlog)
 			return nil, nil, err
 		}
-		vlog = fmt.Sprintf("(%d) %s srcDSN {%s} table: [%s.%s] [%d] columns: {%v}", logThreadSeq, event, stcls.sourceDrive, sourceSchema, stcls.table, len(sColumn), sColumn)
+		vlog = fmt.Sprintf("(%d) %s Source table %s.%s has %d columns", logThreadSeq, event, sourceSchema, stcls.table, len(sColumn))
 		global.Wlog.Debug(vlog)
 
 		// 使用目标端schema
@@ -151,11 +151,11 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 		tc.Drive = stcls.destDrive
 		dColumn, err = stcls.tableColumnName(stcls.destDB, tc, logThreadSeq, logThreadSeq2)
 		if err != nil {
-			vlog = fmt.Sprintf("(%d) %s Obtain metadata of table %s.%s in dstDSN {%s} failed: {%s}", logThreadSeq, event, destSchema, stcls.table, stcls.destDrive, err)
+			vlog = fmt.Sprintf("(%d) %s Failed to get metadata for target table %s.%s: %v", logThreadSeq, event, destSchema, stcls.table, err)
 			global.Wlog.Error(vlog)
 			return nil, nil, err
 		}
-		vlog = fmt.Sprintf("(%d) %s dstDSN {%s} table: [%s.%s] [%d] columns: {%v}", logThreadSeq, event, stcls.destDrive, destSchema, stcls.table, len(dColumn), dColumn)
+		vlog = fmt.Sprintf("(%d) %s Target table %s.%s has %d columns", logThreadSeq, event, destSchema, stcls.table, len(dColumn))
 		global.Wlog.Debug(vlog)
 
 		alterSlice := []string{}
@@ -197,7 +197,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 				newCheckTableList = append(newCheckTableList, fmt.Sprintf("%s.%s", destSchema, stcls.table))
 			} else {
 				// 使用正确的源和目标数据库名
-				vlog = fmt.Sprintf("(%d) %s The [%s.%s]:[%s.%s] table structure of srcDB and dstDB are different, the extra columns: {%v}, the missing columns: {%v}", logThreadSeq, event, sourceSchema, stcls.table, destSchema, stcls.table, addColumn, delColumn)
+				vlog = fmt.Sprintf("(%d) %s Structure mismatch %s.%s -> %s.%s - Extra: %v, Missing: %v", logThreadSeq, event, sourceSchema, stcls.table, destSchema, stcls.table, addColumn, delColumn)
 				global.Wlog.Error(vlog)
 				abnormalTableList = append(abnormalTableList, fmt.Sprintf("%s.%s", destSchema, stcls.table))
 			}
@@ -205,7 +205,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 			//continue
 		}
 
-		vlog = fmt.Sprintf("(%d) %s Some columns that should be deleted from dstDSN {%s}, table {%s.%s}, columns {%v}", logThreadSeq, event, stcls.destDrive, destSchema, stcls.table, delColumn)
+		vlog = fmt.Sprintf("(%d) %s Columns to remove from target %s.%s: %v", logThreadSeq, event, destSchema, stcls.table, delColumn)
 		global.Wlog.Debug(vlog)
 		// 先删除缺失的
 		if len(delColumn) > 0 {
@@ -221,7 +221,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 				delete(destColumnMap, col)
 			}
 		}
-		vlog = fmt.Sprintf("(%d) %s The DROP SQL on Table {%s.%s} on dstDSN {%s} should be \"%v\"", logThreadSeq, event, destSchema, stcls.table, stcls.destDrive, alterSlice)
+		vlog = fmt.Sprintf("(%d) %s DROP SQL for %s.%s: %v", logThreadSeq, event, destSchema, stcls.table, alterSlice)
 		global.Wlog.Debug(vlog)
 		for k1, v1 := range sourceColumnSlice {
 			lastcolumn := ""
@@ -238,7 +238,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 				alterColumnData = destColumnMap[v1]
 			default:
 				err = errors.New(fmt.Sprintf("unknown options"))
-				vlog = fmt.Sprintf("(%d) %s The option \"checkObject\" is set incorrectly, error: {%v}", logThreadSeq, event, err)
+				vlog = fmt.Sprintf("(%d) %s Invalid checkObject option: %v", logThreadSeq, event, err)
 				global.Wlog.Error(vlog)
 				return nil, nil, err
 			}
@@ -262,11 +262,11 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 					}
 					if tableAbnormalBool {
 						modifySql := dbf.DataAbnormalFix().FixAlterColumnSqlDispos("modify", alterColumnData, k1, lastcolumn, v1, logThreadSeq)
-						vlog = fmt.Sprintf("(%d) %s The column definition of table {%s.%s} is different, and ALTER SQL is \"%s\"", logThreadSeq, v1, destSchema, stcls.table, modifySql)
+						vlog = fmt.Sprintf("(%d) %s Column definition differs in %s.%s - ALTER: %s", logThreadSeq, v1, destSchema, stcls.table, modifySql)
 						global.Wlog.Warn(vlog)
 						alterSlice = append(alterSlice, modifySql)
 					} else {
-						vlog = fmt.Sprintf("(%d) %s The column definition of table {%s.%s} is consistent, no ALTER SQL needed", logThreadSeq, v1, destSchema, stcls.table)
+						vlog = fmt.Sprintf("(%d) %s Column definitions match in %s.%s", logThreadSeq, v1, destSchema, stcls.table)
 						global.Wlog.Debug(vlog)
 					}
 
@@ -285,8 +285,8 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 							tableAbnormalBool = false
 						}
 					default:
-						err = errors.New(fmt.Sprintf("unknown parameters"))
-						vlog = fmt.Sprintf("(%d) %s The validation mode of the correct table structure is not selected. error message is {%v}", logThreadSeq, event, err)
+						err = errors.New(fmt.Sprintf("unknown options"))
+						vlog = fmt.Sprintf("(%d) %s Invalid structure checksum mode: %v", logThreadSeq, event, err)
 						global.Wlog.Error(vlog)
 						return nil, nil, err
 					}
@@ -297,8 +297,8 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 						alterSlice = append(alterSlice, modifySql)
 					}
 				default:
-					err = errors.New(fmt.Sprintf("unknown parameters"))
-					vlog = fmt.Sprintf("(%d) %s The validation mode of the correct table structure is not selected. error message is {%v}", logThreadSeq, event, err)
+					err = errors.New(fmt.Sprintf("unknown options"))
+					vlog = fmt.Sprintf("(%d) %s The checksum mode of the correct table structure is not selected. error message is {%v}", logThreadSeq, event, err)
 					global.Wlog.Error(vlog)
 					return nil, nil, err
 				}
@@ -310,8 +310,8 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 				case "no":
 					lastcolumn = "alterNoAfter"
 				default:
-					err = errors.New(fmt.Sprintf("unknown parameters"))
-					vlog = fmt.Sprintf("(%d) %s The validation mode of the correct table structure is not selected. error message is {%v}", logThreadSeq, event, err)
+					err = errors.New(fmt.Sprintf("unknown options"))
+					vlog = fmt.Sprintf("(%d) %s The checksum mode of the correct table structure is not selected. error message is {%v}", logThreadSeq, event, err)
 					global.Wlog.Error(vlog)
 					return nil, nil, err
 				}
@@ -324,7 +324,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 					position = len(destColumnMap)
 				}
 				addSql := dbf.DataAbnormalFix().FixAlterColumnSqlDispos("add", sourceColumnMap[v1], position, lastcolumn, v1, logThreadSeq)
-				vlog = fmt.Sprintf("(%d) %s The column %s is missing in the dstDSN {%s} table %s.%s on the target side, and the add statement is generated, and the add statement is {%v}", logThreadSeq, event, v1, stcls.destDrive, destSchema, stcls.table, addSql)
+				vlog = fmt.Sprintf("(%d) %s Missing column %s in %s.%s - ADD: %v", logThreadSeq, event, v1, destSchema, stcls.table, addSql)
 				global.Wlog.Warn(vlog)
 				alterSlice = append(alterSlice, addSql)
 				delete(destColumnMap, v1)
@@ -336,19 +336,19 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 			newCheckTableList = append(newCheckTableList, fmt.Sprintf("%s.%s", destSchema, stcls.table))
 		}
 		sqlS := dbf.DataAbnormalFix().FixAlterColumnSqlGenerate(alterSlice, logThreadSeq)
-		vlog = fmt.Sprintf("(%d) %s The table structure consistency check of table %s.%s:[%s.%s] is completed.", logThreadSeq, event, stcls.schema, stcls.table, destSchema, stcls.table)
+		vlog = fmt.Sprintf("(%d) %s Structure validation completed for %s.%s -> %s.%s", logThreadSeq, event, stcls.schema, stcls.table, destSchema, stcls.table)
 		global.Wlog.Debug(vlog)
 		if len(sqlS) > 0 {
-			vlog = fmt.Sprintf("(%d) %s Start to repair the statement in dstDSN {%s} table %s.%s on the target side according to the specified repair method. The repair statement is {%v}.", logThreadSeq, event, stcls.destDrive, destSchema, stcls.table, sqlS)
+			vlog = fmt.Sprintf("(%d) %s Applying repair statements to %s.%s: %v", logThreadSeq, event, destSchema, stcls.table, sqlS)
 			global.Wlog.Debug(vlog)
 			if err = ApplyDataFix(sqlS, stcls.datefix, stcls.sfile, stcls.destDrive, stcls.djdbc, logThreadSeq); err != nil {
 				return nil, nil, err
 			}
-			vlog = fmt.Sprintf("(%d) %s dstDSN {%s} table %s.%s repair statement application is completed.", logThreadSeq, event, stcls.destDrive, destSchema, stcls.table)
+			vlog = fmt.Sprintf("(%d) %s Repair statements applied to %s.%s", logThreadSeq, event, destSchema, stcls.table)
 			global.Wlog.Debug(vlog)
 		}
 	}
-	vlog = fmt.Sprintf("(%d) %s The table structure checksum of srcDSN and dstDSN completed", logThreadSeq)
+	vlog = fmt.Sprintf("(%d) %s Table structure validation completed", logThreadSeq, event)
 	global.Wlog.Info(vlog)
 
 	return newCheckTableList, abnormalTableList, nil
@@ -398,7 +398,7 @@ func (stcls *schemaTable) FuzzyMatchingDispos(dbCheckNameList map[string]int, Ft
 	f := make(map[string]int)
 
 	// 添加调试日志，显示当前的映射规则
-	vlog = fmt.Sprintf("Current table mappings in FuzzyMatchingDispos: %v", stcls.tableMappings)
+	vlog = fmt.Sprintf("Current table mappings: %v", stcls.tableMappings)
 	global.Wlog.Debug(vlog)
 
 	//处理库的模糊查询
@@ -417,7 +417,7 @@ func (stcls *schemaTable) FuzzyMatchingDispos(dbCheckNameList map[string]int, Ft
 			}
 		}
 
-		vlog = fmt.Sprintf("Processing pattern: src=%s, dst=%s, hasMapping=%v", srcPattern, dstPattern, hasMappingRule)
+		vlog = fmt.Sprintf("Processing table pattern: source=%s, target=%s, mapped=%v", srcPattern, dstPattern, hasMappingRule)
 		global.Wlog.Debug(vlog)
 
 		if !strings.Contains(srcPattern, ".") {
@@ -537,7 +537,7 @@ func (stcls *schemaTable) FuzzyMatchingDispos(dbCheckNameList map[string]int, Ft
 		schema = strings.ReplaceAll(srcPattern[:strings.Index(srcPattern, ".")], "%", "")
 		table := srcPattern[strings.Index(srcPattern, ".")+1:]
 
-		vlog = fmt.Sprintf("Extracted schema=%s, table=%s", schema, table)
+		vlog = fmt.Sprintf("Parsed schema=%s, table=%s", schema, table)
 		global.Wlog.Debug(vlog)
 
 		// 处理表名通配符
@@ -546,7 +546,7 @@ func (stcls *schemaTable) FuzzyMatchingDispos(dbCheckNameList map[string]int, Ft
 			mappedSchema := dbSchema
 			if mapped, exists := stcls.tableMappings[dbSchema]; exists {
 				mappedSchema = mapped
-				vlog = fmt.Sprintf("Found mapping for schema %s -> %s", dbSchema, mappedSchema)
+				vlog = fmt.Sprintf("Found schema mapping: %s -> %s", dbSchema, mappedSchema)
 				global.Wlog.Debug(vlog)
 			}
 
@@ -570,13 +570,13 @@ func (stcls *schemaTable) FuzzyMatchingDispos(dbCheckNameList map[string]int, Ft
 					// 处理表名通配符
 					if table == "*" { // 处理schema.*
 						f[fmt.Sprintf("%s.%s", dbSchema, dbTableName)]++
-						vlog = fmt.Sprintf("Added wildcard table: %s.%s", dbSchema, dbTableName)
+						vlog = fmt.Sprintf("Added table pattern: %s.%s", dbSchema, dbTableName)
 						global.Wlog.Debug(vlog)
 					} else if strings.HasPrefix(table, "%") && !strings.HasSuffix(table, "%") { // 处理schema.%table
 						tmptable := strings.ReplaceAll(table, "%", "")
 						if strings.HasSuffix(dbTableName, tmptable) {
 							f[fmt.Sprintf("%s.%s", dbSchema, dbTableName)]++
-							vlog = fmt.Sprintf("Added %table match: %s.%s", dbSchema, dbTableName)
+							vlog = fmt.Sprintf("Added suffix pattern: %s.%s", dbSchema, dbTableName)
 							global.Wlog.Debug(vlog)
 						}
 					} else if !strings.HasPrefix(table, "%") && strings.HasSuffix(table, "%") { // 处理schema.table%
@@ -1129,8 +1129,8 @@ func (stcls *schemaTable) TableIndexColumn(dtabS []string, logThreadSeq, logThre
 			global.Wlog.Debug(vlog)
 		}
 	}
-	zlog := fmt.Sprintf("(%d) Table index listing information and appropriate index completion", logThreadSeq)
-	global.Wlog.Info(zlog)
+	vlog = fmt.Sprintf("(%d) Table index listing information and appropriate index completion", logThreadSeq)
+	global.Wlog.Info(vlog)
 	return tableIndexColumnMap
 }
 

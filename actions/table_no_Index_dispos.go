@@ -100,7 +100,7 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 			noIndexD = make(chan struct{}, sp.concurrency)
 		)
 		displayTableName := sp.getDisplayTableName()
-		vlog = fmt.Sprintf("(%d) Start to generate delete and insert sql statements for table %s.", logThreadSeq, displayTableName)
+		vlog = fmt.Sprintf("(%d) Generating DELETE/INSERT statements for table %s", logThreadSeq, displayTableName)
 		global.Wlog.Debug(vlog)
 		colData := sp.tableAllCol[fmt.Sprintf("%s_gtchecksum_%s", sp.schema, sp.table)]
 		dbf := dbExec.DataAbnormalFixStruct{Schema: sp.schema, Table: sp.table, ColData: colData.DColumnInfo, DestDevice: sp.ddrive, DatafixType: sp.datafixType}
@@ -127,7 +127,7 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 						ddb := sp.ddbPool.Get(logThreadSeq)
 						if sqlType == "delete" {
 							displayTableName := sp.getDisplayTableName()
-							vlog = fmt.Sprintf("(%d) Start to generate the delete of table %s to repair the sql statement.", logThreadSeq, displayTableName)
+							vlog = fmt.Sprintf("(%d) Generating DELETE repair statements for table %s", logThreadSeq, displayTableName)
 							global.Wlog.Debug(vlog)
 							dbf.RowData = rowData
 							sqlstr, err := dbf.DataAbnormalFix().FixDeleteSqlExec(ddb, sp.ddrive, logThreadSeq)
@@ -138,12 +138,12 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 								sqlStrExec <- sqlstr
 							}
 							displayTableName = sp.getDisplayTableName()
-							vlog = fmt.Sprintf("(%d) The delete repair sql statements of table %s are generated.", logThreadSeq, displayTableName)
+							vlog = fmt.Sprintf("(%d) DELETE repair statements generated for table %s", logThreadSeq, displayTableName)
 							global.Wlog.Debug(vlog)
 						}
 						if sqlType == "insert" {
 							displayTableName := sp.getDisplayTableName()
-							vlog = fmt.Sprintf("(%d) Start to generate the insert of table %s to repair the sql statement.", logThreadSeq, displayTableName)
+							vlog = fmt.Sprintf("(%d) Generating INSERT repair statements for table %s", logThreadSeq, displayTableName)
 							global.Wlog.Debug(vlog)
 							dbf.RowData = rowData
 							sqlstr, err := dbf.DataAbnormalFix().FixInsertSqlExec(ddb, sp.ddrive, logThreadSeq)
@@ -154,7 +154,7 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 								sqlStrExec <- sqlstr
 							}
 							displayTableName = sp.getDisplayTableName()
-							vlog = fmt.Sprintf("(%d) The insert repair sql statements of table %s are generated.", logThreadSeq, displayTableName)
+							vlog = fmt.Sprintf("(%d) INSERT repair statements generated for table %s", logThreadSeq, displayTableName)
 							global.Wlog.Debug(vlog)
 						}
 						sp.ddbPool.Put(ddb, logThreadSeq)
@@ -234,7 +234,7 @@ func (sp *SchedulePlan) QueryTableData(beginSeq uint64, chunkSeq uint64, chanrow
 		stt, dtt string
 	)
 	displayTableName := sp.getDisplayTableName()
-	vlog = fmt.Sprintf("(%d) There is currently no index table %s, and the cycle check data is started.", logThreadSeq, displayTableName)
+	vlog = fmt.Sprintf("(%d) Starting data checksum for table without index %s", logThreadSeq, displayTableName)
 	global.Wlog.Debug(vlog)
 	noIndexOrderCol := sp.tableAllCol[fmt.Sprintf("%s_gtchecksum_%s", sp.schema, sp.table)]
 	idxc := dbExec.IndexColumnStruct{Drivce: sp.sdrive, Schema: sp.sourceSchema, Table: sp.table, TableColumn: noIndexOrderCol.SColumnInfo, ChanrowCount: chanrowCount}
@@ -266,17 +266,17 @@ func (sp *SchedulePlan) QueryDataCheckSum(stt, dtt string, md5chan chan<- map[st
 		tmpAnDateMap = make(map[string]string)
 	)
 	displayTableName := sp.getDisplayTableName()
-	vlog = fmt.Sprintf("(%d) Start to check whether the row data blocks of the original target-side non-indexed table %s are consistent...", logThreadSeq, displayTableName)
+	vlog = fmt.Sprintf("(%d) Verifying data blocks for table without index %s", logThreadSeq, displayTableName)
 	global.Wlog.Debug(vlog)
 	if aa.CheckMd5(stt) != aa.CheckMd5(dtt) {
 		displayTableName := sp.getDisplayTableName()
-		vlog = fmt.Sprintf("(%d) There is currently no index table %s. The %d md5 check of the data consistency of the original target is abnormal.", logThreadSeq, displayTableName, chunkSeq)
+		vlog = fmt.Sprintf("(%d) MD5 checksum mismatch in round %d for table without index %s", logThreadSeq, chunkSeq, displayTableName)
 		global.Wlog.Debug(vlog)
 		add, del := aa.Arrcmp(strings.Split(stt, "/*go actions rowData*/"), strings.Split(dtt, "/*go actions rowData*/"))
 		if len(del) > 0 {
 			tmpAnDateMap = make(map[string]string)
 			displayTableName := sp.getDisplayTableName()
-			vlog = fmt.Sprintf("(%d) Start generating the redundant data in the difference data for table %s.", logThreadSeq, displayTableName)
+			vlog = fmt.Sprintf("(%d) Processing redundant data for table %s", logThreadSeq, displayTableName)
 			global.Wlog.Debug(vlog)
 			FileOpen.SqlType = "delete"
 			md5Slice, err := FileOpen.ConcurrencyWriteFile(del)
@@ -289,13 +289,13 @@ func (sp *SchedulePlan) QueryDataCheckSum(stt, dtt string, md5chan chan<- map[st
 			}
 			md5chan <- tmpAnDateMap
 			displayTableName = sp.getDisplayTableName()
-			vlog = fmt.Sprintf("(%d) The redundant data in the difference data of table %s is generated.", logThreadSeq, displayTableName)
+			vlog = fmt.Sprintf("(%d) Redundant data processed for table %s", logThreadSeq, displayTableName)
 			global.Wlog.Debug(vlog)
 		}
 		if len(add) > 0 {
 			tmpAnDateMap = make(map[string]string)
 			displayTableName := sp.getDisplayTableName()
-			vlog = fmt.Sprintf("(%d) The missing data in the difference data that starts generating table %s.", logThreadSeq, displayTableName)
+			vlog = fmt.Sprintf("(%d) Processing missing data for table %s", logThreadSeq, displayTableName)
 			global.Wlog.Debug(vlog)
 			//md5Slice := FileOperate{File: sp.file, BufSize: 1024 * 4 * 1024, SqlType: "insert", fileName: sp.TmpFileName}.ConcurrencyWriteFile(add)
 			FileOpen.SqlType = "insert"
@@ -308,12 +308,12 @@ func (sp *SchedulePlan) QueryDataCheckSum(stt, dtt string, md5chan chan<- map[st
 			}
 			md5chan <- tmpAnDateMap
 			displayTableName = sp.getDisplayTableName()
-			vlog = fmt.Sprintf("(%d) The missing data in the difference data of table %s is generated.", logThreadSeq, displayTableName)
+			vlog = fmt.Sprintf("(%d) Missing data processed for table %s", logThreadSeq, displayTableName)
 			global.Wlog.Debug(vlog)
 		}
 	}
 	displayTableName = sp.getDisplayTableName()
-	vlog = fmt.Sprintf("(%d) The consistency check of the row data block of table %s without index on the original target is completed!!!", logThreadSeq, displayTableName)
+	vlog = fmt.Sprintf("(%d) Data block checksum completed for table without index %s", logThreadSeq, displayTableName)
 	global.Wlog.Debug(vlog)
 }
 
@@ -356,8 +356,8 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 
 	displayTableName := sp.getDisplayTableName()
 
-	fmt.Println(fmt.Sprintf("Begin checksum for no-index table %s", displayTableName))
-	vlog = fmt.Sprintf("(%d) Start to verify the data of the original target end of the non-indexed table %s ...", logThreadSeq, displayTableName)
+	fmt.Printf("Starting checksum for table without index %s\n", displayTableName)
+	vlog = fmt.Sprintf("(%d) Verifying data for table without index %s", logThreadSeq, displayTableName)
 	global.Wlog.Info(vlog)
 	barTableRow := sp.NoIndexTableCount(logThreadSeq)
 	pods := Pod{Schema: sp.schema, Table: sp.table,
@@ -405,7 +405,7 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 				<-noIndexC
 			}()
 			displayTableName := sp.getDisplayTableName()
-			vlog = fmt.Sprintf("(%d) There is currently no index table %s, and the %d md5 check of the data consistency of the original target is started.", logThreadSeq, displayTableName, Cycles)
+			vlog = fmt.Sprintf("(%d) Starting MD5 checksum round %d for table without index %s", logThreadSeq, Cycles, displayTableName)
 			global.Wlog.Debug(vlog)
 			stt, dtt, err = sp.QueryTableData(beginSeq, Cycles, chanrowCount, int64(logThreadSeq))
 			if err != nil {
@@ -424,7 +424,7 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 			}
 			sp.QueryDataCheckSum(stt, dtt, md5Chan, FileOper, Cycles, logThreadSeq)
 			displayTableName = sp.getDisplayTableName()
-			vlog = fmt.Sprintf("(%d) There is currently no index table %s The %d round of data cycle verification is complete.", logThreadSeq, displayTableName, Cycles)
+			vlog = fmt.Sprintf("(%d) Completed MD5 checksum round %d for table without index %s", logThreadSeq, Cycles, displayTableName)
 			global.Wlog.Debug(vlog)
 		}(Cycles, beginSeq)
 		beginSeq = beginSeq + uint64(chanrowCount)
@@ -444,9 +444,9 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 	pods.Rows = fmt.Sprintf("%d,%d", sourceExactCount, targetExactCount)
 	measuredDataPods = append(measuredDataPods, pods)
 	displayTableName = sp.getDisplayTableName()
-	vlog = fmt.Sprintf("(%d) No index table %s The data consistency check of the original target end is completed", logThreadSeq, displayTableName)
+	vlog = fmt.Sprintf("(%d) Data checksum completed for table without index %s", logThreadSeq, displayTableName)
 	global.Wlog.Info(vlog)
-	fmt.Println(fmt.Sprintf("%s checksum completed", displayTableName))
+	fmt.Printf("%s checksum completed\n", displayTableName)
 }
 
 // getExactRowCount 查询表的精确行数
@@ -470,7 +470,7 @@ func (sp *SchedulePlan) getExactRowCount(dbPool *global.Pool, schema, table stri
 
 	// 确保schema不为空
 	if targetSchema == "" {
-		vlog := fmt.Sprintf("(%d) [getExactRowCount] Schema is empty for table %s, using default schema", logThreadSeq, table)
+		vlog := fmt.Sprintf("(%d) Using default schema for table %s", logThreadSeq, table)
 		global.Wlog.Warn(vlog)
 
 		if dbPool == sp.sdbPool {
@@ -480,7 +480,7 @@ func (sp *SchedulePlan) getExactRowCount(dbPool *global.Pool, schema, table stri
 		}
 
 		if targetSchema == "" {
-			vlog = fmt.Sprintf("(%d) [getExactRowCount] Unable to determine schema for table %s", logThreadSeq, table)
+			vlog = fmt.Sprintf("(%d) Cannot determine schema for table %s", logThreadSeq, table)
 			global.Wlog.Error(vlog)
 			return 0
 		}
@@ -488,17 +488,17 @@ func (sp *SchedulePlan) getExactRowCount(dbPool *global.Pool, schema, table stri
 
 	var count int64
 	query := fmt.Sprintf("SELECT COUNT(*) FROM `%s`.`%s`", targetSchema, table)
-	vlog := fmt.Sprintf("(%d) [getExactRowCount] Executing query: %s", logThreadSeq, query)
+	vlog := fmt.Sprintf("(%d) Executing row count query: %s", logThreadSeq, query)
 	global.Wlog.Debug(vlog)
 
 	err := db.QueryRow(query).Scan(&count)
 	if err != nil {
-		vlog = fmt.Sprintf("(%d) [getExactRowCount] Failed to get exact row count for %s.%s: %v", logThreadSeq, targetSchema, table, err)
+		vlog = fmt.Sprintf("(%d) Failed to get row count for %s.%s: %v", logThreadSeq, targetSchema, table, err)
 		global.Wlog.Error(vlog)
 		return 0
 	}
 
-	vlog = fmt.Sprintf("(%d) [getExactRowCount] Got exact row count for %s.%s: %d", logThreadSeq, targetSchema, table, count)
+	vlog = fmt.Sprintf("(%d) Row count for %s.%s: %d", logThreadSeq, targetSchema, table, count)
 	global.Wlog.Debug(vlog)
 
 	return count
