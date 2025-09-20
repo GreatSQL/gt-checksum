@@ -29,7 +29,7 @@ func (dbpos *DBdataDispos) ColumnTypeDispos(columnName string) (string, int, boo
 		indexColumnIsNull bool   //索引列数据类型是否允许为null
 		office            int    //浮点类型的偏移量
 	)
-	vlog = fmt.Sprintf("(%d) All column data information of table [%v.%v] is {%v}.", dbpos.LogThreadSeq, dbpos.Schema, dbpos.Table, dbpos.TableColumnType)
+	vlog = fmt.Sprintf("(%d) Table [%v.%v] column info: %v", dbpos.LogThreadSeq, dbpos.Schema, dbpos.Table, dbpos.TableColumnType)
 	global.Wlog.Debug(vlog)
 	IntType := []string{"TINYINT", "SMALLINT", "MEDIUMINT", "INT", "BIGINT"}
 	floatType := []string{"FLOAT", "DOUBLE", "DECIMAL"}
@@ -49,9 +49,9 @@ func (dbpos *DBdataDispos) ColumnTypeDispos(columnName string) (string, int, boo
 			}
 		}
 	}
-	vlog = fmt.Sprintf("(%d) The data type of index column [%v] of table [%v.%v] is {%v} and the null constraint is {%v}", dbpos.LogThreadSeq, columnName, dbpos.Schema, dbpos.Table, indexColumnType, indexColumnIsNull)
+	vlog = fmt.Sprintf("(%d) Table [%v.%v] column [%v] type: %v, nullable: %v", dbpos.LogThreadSeq, dbpos.Schema, dbpos.Table, columnName, indexColumnType, indexColumnIsNull)
 	global.Wlog.Debug(vlog)
-	vlog = fmt.Sprintf("(%d) The index column data type and null value constraint acquisition of index column [%v] of table [%v.%v] is completed!!!", dbpos.LogThreadSeq, columnName, dbpos.Schema, dbpos.Table)
+	vlog = fmt.Sprintf("(%d) Completed getting column [%v] metadata for table [%v.%v]", dbpos.LogThreadSeq, columnName, dbpos.Schema, dbpos.Table)
 	global.Wlog.Info(vlog)
 	return indexColumnType, office, indexColumnIsNull
 }
@@ -110,7 +110,7 @@ func (dbpos *DBdataDispos) DataAscSort(data map[string]interface{}, columnName s
 			}
 		}
 	}
-	vlog = fmt.Sprintf("(%d) The data merge of the index column [%v] of the source target segment table [%v.%v] is completed!!!", dbpos.LogThreadSeq, columnName, dbpos.Schema, dbpos.Table)
+	vlog = fmt.Sprintf("(%d) Data merge completed for index column [%v] in table [%v.%v]", dbpos.LogThreadSeq, columnName, dbpos.Schema, dbpos.Table)
 	global.Wlog.Info(vlog)
 
 	vlog = fmt.Sprintf("(%d) Start sorting the merged data of index column [%v] of source target segment table [%v.%v] in positive order...", dbpos.LogThreadSeq, columnName, dbpos.Schema, dbpos.Table)
@@ -122,7 +122,7 @@ func (dbpos *DBdataDispos) DataAscSort(data map[string]interface{}, columnName s
 		vlog = fmt.Sprintf("(%d) Start sorting index column data of type int,The index column data that needs to be sorted is [%v] ...", dbpos.LogThreadSeq, zint)
 		global.Wlog.Debug(vlog)
 		sort.Ints(zint)
-		vlog = fmt.Sprintf("(%d) The index column data of int type is sorted, and the data after sorting in positive order is [%v] !!!", dbpos.LogThreadSeq, zint)
+		vlog = fmt.Sprintf("(%d) Sorted int type index column data: [%v]", dbpos.LogThreadSeq, zint)
 		global.Wlog.Debug(vlog)
 		if _, ok := znull["<nil>"]; ok {
 			vlog = fmt.Sprintf("(%d) The index column data of int type and index column data is null values.", dbpos.LogThreadSeq)
@@ -139,7 +139,7 @@ func (dbpos *DBdataDispos) DataAscSort(data map[string]interface{}, columnName s
 		vlog = fmt.Sprintf("(%d) Start sorting index column data of type float,The index column data that needs to be sorted is [%v] ...", dbpos.LogThreadSeq, zfloat)
 		global.Wlog.Debug(vlog)
 		sort.Float64s(zfloat)
-		vlog = fmt.Sprintf("(%d) The index column data of float type is sorted, and the data after sorting in positive order is [%v] !!!", dbpos.LogThreadSeq, zfloat)
+		vlog = fmt.Sprintf("(%d) Sorted float type index column data: [%v]", dbpos.LogThreadSeq, zfloat)
 		global.Wlog.Debug(vlog)
 		if _, ok := znull["<nil>"]; ok {
 			vlog = fmt.Sprintf("(%d) The index column data of float type and index column data is null values.", dbpos.LogThreadSeq)
@@ -156,7 +156,7 @@ func (dbpos *DBdataDispos) DataAscSort(data map[string]interface{}, columnName s
 		vlog = fmt.Sprintf("(%d) Start sorting index column data of type char,The index column data that needs to be sorted is [%v] ...", dbpos.LogThreadSeq, zchar)
 		global.Wlog.Debug(vlog)
 		sort.Strings(zchar)
-		vlog = fmt.Sprintf("(%d) The index column data of char type is sorted, and the data after sorting in positive order is [%v] !!!", dbpos.LogThreadSeq, zchar)
+		vlog = fmt.Sprintf("(%d) Sorted char type index column data: [%v]", dbpos.LogThreadSeq, zchar)
 		global.Wlog.Debug(vlog)
 		if _, ok := znull["<nil>"]; ok {
 			vlog = fmt.Sprintf("(%d) The index column data of char type and index column data is null values.", dbpos.LogThreadSeq)
@@ -169,135 +169,9 @@ func (dbpos *DBdataDispos) DataAscSort(data map[string]interface{}, columnName s
 		}
 		zchar, z = nil, nil
 	}
-	vlog = fmt.Sprintf("(%d) The positive sequence sorting of the merged data of the index column [%v] of the source target segment table [%v.%v] is completed!!!", dbpos.LogThreadSeq, columnName, dbpos.Schema, dbpos.Table)
+	vlog = fmt.Sprintf("(%d) Completed sorting index column [%v] data for table [%v.%v]", dbpos.LogThreadSeq, columnName, dbpos.Schema, dbpos.Table)
 	global.Wlog.Info(vlog)
 	return indexColumnUniqueS
-}
-
-func (dbpos *DBdataDispos) DataSizeComparison(st1, st2 interface{}, columnName string) int {
-	//var (
-	//	vlog               string
-	//	indexColumnUniqueS []map[string]string
-	//	z                  = make(map[string]int)         //源目标端索引列数据的集合（无序的）
-	//	zint               []int                          //int类型的索引列集合，用于正序排序
-	//	zfloat             []float64                      //float类型的索引列集合，用于正序排序
-	//	zchar              []string                       //char类型的索引列集合，用于正序排序
-	//	znull              = make(map[string]interface{}) //针对null的值的一个处理
-	//	office             int                            //浮点类型的偏移量
-	//)
-	////原目标端索引列数据去重，并按照索引列数据类型进行分类合并索引列
-	//vlog = fmt.Sprintf("(%d) Start merging the data of index column [%v] of source target segment table [%v.%v]...", dbpos.LogThreadSeq, columnName, dbpos.Schema, dbpos.Table)
-	//global.Wlog.Info(vlog)
-	//indexColumnType, office, indexColumnIsNull := dbpos.ColumnTypeDispos(columnName)
-	//for k,v := range []interface{}{st1,st2}{
-	//	k1 := fmt.Sprintf("%v",k)
-	//	switch indexColumnType {
-	//	case "int":
-	//		if indexColumnIsNull {
-	//			if k1 != "<nil>" {
-	//				zc, _ := strconv.Atoi(k1)
-	//				zint = append(zint, zc)
-	//			} else {
-	//				znull["<nil>"] = v
-	//			}
-	//		} else {
-	//			zc, _ := strconv.Atoi(k1)
-	//			zint = append(zint, zc)
-	//		}
-	//	case "float":
-	//		//处理null值
-	//		if indexColumnIsNull {
-	//			if k1 != "<nil>" {
-	//				zc, _ := strconv.ParseFloat(k1, office)
-	//				zfloat = append(zfloat, zc)
-	//			} else {
-	//				znull["<nil>"] = v
-	//			}
-	//		} else {
-	//			zc, _ := strconv.ParseFloat(k1, office)
-	//			zfloat = append(zfloat, zc)
-	//		}
-	//	case "char":
-	//		if indexColumnIsNull {
-	//			if k1 != "<nil>" {
-	//				zchar = append(zchar, k1)
-	//			} else {
-	//				znull["<nil>"] = v
-	//			}
-	//		} else {
-	//			zchar = append(zchar, k1)
-	//		}
-	//	}
-	//}
-	//
-	//vlog = fmt.Sprintf("(%d) The data merge of the index column [%v] of the source target segment table [%v.%v] is completed!!!", dbpos.LogThreadSeq, columnName, dbpos.Schema, dbpos.Table)
-	//global.Wlog.Info(vlog)
-	//
-	//vlog = fmt.Sprintf("(%d) Start sorting the merged data of index column [%v] of source target segment table [%v.%v] in positive order...", dbpos.LogThreadSeq, columnName, dbpos.Schema, dbpos.Table)
-	//global.Wlog.Info(vlog)
-	//
-	////针对索引类数据进行正序排序
-	//switch indexColumnType {
-	//case "int":
-	//	vlog = fmt.Sprintf("(%d) Start sorting index column data of type int,The index column data that needs to be sorted is [%v] ...", dbpos.LogThreadSeq, zint)
-	//	global.Wlog.Debug(vlog)
-	//	sort.Ints(zint)
-	//	vlog = fmt.Sprintf("(%d) The index column data of int type is sorted, and the data after sorting in positive order is [%v] !!!", dbpos.LogThreadSeq, zint)
-	//	global.Wlog.Debug(vlog)
-	//	if _, ok := znull["<nil>"]; ok {
-	//		vlog = fmt.Sprintf("(%d) The index column data of int type and index column data is null values.", dbpos.LogThreadSeq)
-	//		global.Wlog.Debug(vlog)
-	//		indexColumnUniqueS = append(indexColumnUniqueS, map[string]string{"columnName": fmt.Sprintf("%v", "<nil>"), "count": fmt.Sprintf("%v", z[fmt.Sprintf("%v", "<nil>")])})
-	//	} else {
-	//		for _, i := range zint {
-	//			indexColumnUniqueS = append(indexColumnUniqueS, map[string]string{fmt.Sprintf("%v", i): fmt.Sprintf("%v", data[fmt.Sprintf("%v", i)])})
-	//		}
-	//	}
-	//	zint, z = nil, nil
-
-	//case "float":
-	//	vlog = fmt.Sprintf("(%d) Start sorting index column data of type float,The index column data that needs to be sorted is [%v] ...", dbpos.LogThreadSeq, zfloat)
-	//	global.Wlog.Debug(vlog)
-	//	sort.Float64s(zfloat)
-	//	vlog = fmt.Sprintf("(%d) The index column data of float type is sorted, and the data after sorting in positive order is [%v] !!!", dbpos.LogThreadSeq, zfloat)
-	//	global.Wlog.Debug(vlog)
-	//	if _, ok := znull["<nil>"]; ok {
-	//		vlog = fmt.Sprintf("(%d) The index column data of float type and index column data is null values.", dbpos.LogThreadSeq)
-	//		global.Wlog.Debug(vlog)
-	//		indexColumnUniqueS = append(indexColumnUniqueS, map[string]string{"columnName": fmt.Sprintf("%v", "<nil>"), "count": fmt.Sprintf("%v", z[fmt.Sprintf("%v", "<nil>")])})
-	//	} else {
-	//		for _, i := range zfloat {
-	//			ii := strconv.FormatFloat(i, 'f', 2, 64)
-	//			indexColumnUniqueS = append(indexColumnUniqueS, map[string]string{ii: fmt.Sprintf("%v", data[ii])})
-	//		}
-	//	}
-	//	zfloat, z = nil, nil
-	//case "char":
-	//	vlog = fmt.Sprintf("(%d) Start sorting index column data of type char,The index column data that needs to be sorted is [%v] ...", dbpos.LogThreadSeq, zchar)
-	//	global.Wlog.Debug(vlog)
-	//	sort.Strings(zchar)
-	//	vlog = fmt.Sprintf("(%d) The index column data of char type is sorted, and the data after sorting in positive order is [%v] !!!", dbpos.LogThreadSeq, zchar)
-	//	global.Wlog.Debug(vlog)
-	//	if _, ok := znull["<nil>"]; ok {
-	//		vlog = fmt.Sprintf("(%d) The index column data of char type and index column data is null values.", dbpos.LogThreadSeq)
-	//		global.Wlog.Debug(vlog)
-	//		indexColumnUniqueS = append(indexColumnUniqueS, map[string]string{"columnName": fmt.Sprintf("%v", "<nil>"), "count": fmt.Sprintf("%v", z[fmt.Sprintf("%v", "<nil>")])})
-	//	} else {
-	//		for _, i := range zchar {
-	//			indexColumnUniqueS = append(indexColumnUniqueS, map[string]string{i: fmt.Sprintf("%v", data[i])})
-	//		}
-	//	}
-	//	zchar, z = nil, nil
-	//}
-	//for k,v := range indexColumnUniqueS[0]{
-	//	strings.Compare()
-	//}
-	//
-	//vlog = fmt.Sprintf("(%d) The positive sequence sorting of the merged data of the index column [%v] of the source target segment table [%v.%v] is completed!!!", dbpos.LogThreadSeq, columnName, dbpos.Schema, dbpos.Table)
-	//global.Wlog.Info(vlog)
-	//
-	//return indexColumnUniqueS
-	return 0
 }
 
 // 处理行数据的null值
@@ -314,39 +188,6 @@ func (dbpos *DBdataDispos) RowsdataNullDispos(i map[string]interface{}) map[stri
 		znull[fmt.Sprintf("%v", i["columnName"])] = i["count"]
 	}
 
-	//switch indexColumnType {
-	//case "int":
-	//	if indexColumnIsNull {
-	//		if fmt.Sprintf("%v", i["columnName"]) != "<nil>" {
-	//			znull[fmt.Sprintf("%v", i["columnName"])] = c
-	//		} else {
-	//			znull["<nil>"] = c
-	//		}
-	//	} else {
-	//		znull[fmt.Sprintf("%v", i["columnName"])] = c
-	//	}
-	//case "float":
-	//	//处理null值
-	//	if indexColumnIsNull {
-	//		if fmt.Sprintf("%v", i["columnName"]) != "<nil>" {
-	//			znull[fmt.Sprintf("%v", i["columnName"])] = c
-	//		} else {
-	//			znull["<nil>"] = c
-	//		}
-	//	} else {
-	//		znull[fmt.Sprintf("%v", i["columnName"])] = c
-	//	}
-	//case "char":
-	//	if indexColumnIsNull {
-	//		if fmt.Sprintf("%v", i["columnName"]) != "<nil>" {
-	//			znull[fmt.Sprintf("%v", i["columnName"])] = c
-	//		} else {
-	//			znull["<nil>"] = c
-	//		}
-	//	} else {
-	//		znull[fmt.Sprintf("%v", i["columnName"])] = c
-	//	}
-	//}
 	return znull
 }
 

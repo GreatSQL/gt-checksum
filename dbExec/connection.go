@@ -3,12 +3,13 @@ package dbExec
 import (
 	"database/sql"
 	"fmt"
-	_ "github.com/go-sql-driver/mysql"
-	_ "github.com/godror/godror"
 	"gt-checksum/global"
 	"os"
 	"strings"
 	"time"
+
+	_ "github.com/go-sql-driver/mysql"
+	_ "github.com/godror/godror"
 )
 
 type DBConnStruct struct {
@@ -21,7 +22,7 @@ type DBConnStruct struct {
 }
 
 /*
-   连接数据库，返回连接内存地址
+连接数据库，返回连接内存地址
 */
 func (dbs *DBConnStruct) openDb() (*sql.DB, error) {
 	db, err := sql.Open(dbs.DBDevice, dbs.JDBC)
@@ -44,7 +45,7 @@ func (dbs *DBConnStruct) openDb() (*sql.DB, error) {
 func (dbs *DBConnStruct) OpenDB() (*sql.DB, error) {
 	defer func() {
 		if err := recover(); err != nil {
-			fmt.Println("database create session connection fail, Check the database connection information.")
+			global.Wlog.Error("Failed to create database session connection")
 			os.Exit(0)
 		}
 	}()
@@ -76,7 +77,7 @@ func (dbs *DBConnStruct) QPrepareRow(db *sql.DB, sqlStr string) (*sql.Rows, erro
 }
 
 /*
-   查询数据库，返回数据库接口切片，或返回json（包含列名）
+查询数据库，返回数据库接口切片，或返回json（包含列名）
 */
 func (dbs *DBConnStruct) QMapData(db *sql.DB, sqlStr string) ([]map[string]interface{}, error) {
 	var (
@@ -135,10 +136,10 @@ func GetDBexec(jdbcurl, dbDevice string) *DBConnStruct {
 }
 
 /*
-   长事务会话执行
+长事务会话执行
 */
 func (dbs *DBConnStruct) LongSessionExec(db *sql.DB, sqlstr string) error {
-	global.Wlog.Debug("GreatdbCheck executes \"", sqlstr, "\" at the MySQL")
+	global.Wlog.Debug("Executes \"", sqlstr, "\" at the MySQL")
 	_, err := db.Exec(sqlstr)
 	if err != nil {
 		global.Wlog.Error("exec sql fail. sql: ", sqlstr, "error info: ", err)
@@ -152,16 +153,16 @@ func (dbs *DBConnStruct) LongSessionExec(db *sql.DB, sqlstr string) error {
 */
 func (dbs *DBConnStruct) LSQInt(db *sql.DB, sqlstr string) (int, error) {
 	var tmpTableCount int
-	global.Wlog.Debug("GreatdbCheck prepare sql: \"", sqlstr, "\" at the MySQL")
+	global.Wlog.Debug("Prepare sql: \"", sqlstr, "\" at the MySQL")
 	stamt, err := db.Prepare(sqlstr)
 	if err != nil {
-		global.Wlog.Error("GreatdbCheck parpare sql fail. sql: ", sqlstr, "error info: ", err)
+		global.Wlog.Error("Parpare sql fail. sql: ", sqlstr, "error info: ", err)
 		return 0, err
 	}
-	global.Wlog.Debug("GreatdbCheck exec sql: \"", sqlstr, "\" at the MySQL")
+	global.Wlog.Debug("Execute sql: \"", sqlstr, "\" at the MySQL")
 	rows, err := stamt.Query()
 	if err != nil {
-		global.Wlog.Error("GreatdbCheck exec sql fail. sql: ", sqlstr, "error info: ", err)
+		global.Wlog.Error("Execute sql fail. sql: ", sqlstr, "error info: ", err)
 		return 0, err
 	}
 	for rows.Next() {
@@ -175,17 +176,17 @@ func (dbs *DBConnStruct) LSQInt(db *sql.DB, sqlstr string) (int, error) {
 */
 func (dbs *DBConnStruct) LSQSEInt(db *sql.DB, sqlstr string) ([]string, error) {
 	var tmpTableCount []string
-	global.Wlog.Debug("GreatdbCheck prepare sql: \"", sqlstr, "\" at the MySQL")
+	global.Wlog.Debug("Prepare sql: \"", sqlstr, "\" at the MySQL")
 	stmat, err := db.Prepare(sqlstr)
 	if err != err {
-		global.Wlog.Error("GreatdbCheck parpare sql fail. sql: ", sqlstr, "error info: ", err)
+		global.Wlog.Error("Prepare sql fail. sql: ", sqlstr, "error info: ", err)
 		return tmpTableCount, err
 	}
-	global.Wlog.Debug("GreatdbCheck exec sql: \"", sqlstr, "\" at the MySQL")
+	global.Wlog.Debug("Execute sql: \"", sqlstr, "\" at the MySQL")
 	rows, err := stmat.Query()
 	var num string
 	if err != err {
-		global.Wlog.Error("GreatdbCheck exec sql fail. sql: ", sqlstr, "error info: ", err)
+		global.Wlog.Error("Execute sql fail. sql: ", sqlstr, "error info: ", err)
 		return tmpTableCount, err
 	} else {
 		for rows.Next() {
@@ -203,21 +204,16 @@ func (dbs *DBConnStruct) DbSqlExecString(db *sql.DB, sqlstr string) (string, err
 		err           error
 		columns       []string
 	)
-	global.Wlog.Debug("GreatdbCheck prepare sql: \"", sqlstr, "\" at the MySQL")
-	//stmt, err = db.Prepare(sqlstr)
-	//if err != nil {
-	//	global.Wlog.Error("GreatdbCheck parpare sql fail. sql: ", sqlstr, "error info: ", err)
-	//}
-	//rows, err = stmt.Query()
+	global.Wlog.Debug("Prepare sql: \"", sqlstr, "\" at the MySQL")
 	rows, err = db.Query(sqlstr)
 	if err != nil {
-		fmt.Println(err)
+		global.Wlog.Error(fmt.Sprintf("Database error: %v", err))
 		rows, err = db.Query(sqlstr)
 	}
-	global.Wlog.Debug("GreatdbCheck exec sql: \"", sqlstr, "\" at the MySQL")
+	global.Wlog.Debug("Execute sql: \"", sqlstr, "\" at the MySQL")
 	columns, err = rows.Columns()
 	if err != nil {
-		global.Wlog.Error("GreatdbCheck exec sql fail. sql: ", sqlstr, "error info: ", err)
+		global.Wlog.Error("Execute sql fail. sql: ", sqlstr, "error info: ", err)
 		return "", err
 	}
 	valuePtrs := make([]interface{}, len(columns))

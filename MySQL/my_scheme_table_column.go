@@ -484,8 +484,6 @@ func (my *QueryTable) keyChoiceDispos(IndexColumnMap map[string][]string, indexT
 		indexChoisName       string
 	)
 	// ----- 处理唯一索引列，根据选择规则选择一个单列索引，（选择次序：int<--char<--year<--date<-time<-其他）
-	//infoStr := fmt.Sprintf("Greatdbcheck Checks whether table %s.%s has a unique key index", my.Schema, my.Table)
-	//global.Wlog.Debug(infoStr)
 	//先找出唯一联合索引数量最少的
 	for k, i := range IndexColumnMap {
 		if len(i) <= tmpSliceNum {

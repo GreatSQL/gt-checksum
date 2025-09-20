@@ -1,9 +1,5 @@
 package global
 
-import (
-	"fmt"
-)
-
 // 定义一个任务接口
 type Job interface {
 	DoDataCheck()
@@ -57,7 +53,7 @@ func NewWorkerPool(workerlen int) *WorkerPool {
 func (wp *WorkerPool) Run() {
 	defer func() {
 		if err := recover(); err != nil {
-			fmt.Println(err)
+			// Error output removed - use logs instead
 		}
 	}()
 	//初始化worker(多个Go程)

@@ -22,7 +22,7 @@ func isFile(file string) *os.File {
 		sfile, err = os.OpenFile(file, os.O_WRONLY|os.O_APPEND, 0666)
 	}
 	if err != nil {
-		fmt.Println("actions open datafix file fail. error msg is :", err)
+		fmt.Println("Failed to open datafix file. Error:", err)
 		global.Wlog.Error("actions open datafix file fail. error msg is :", err)
 		os.Exit(1)
 	}
@@ -37,25 +37,25 @@ func (rs rapirSqlStruct) execRapirSql(sqlstr []string, dbType string, logThreadS
 	var (
 		vlog string
 	)
-	vlog = fmt.Sprintf("(%d) Execute the repair statement on the target side for the current table.", logThreadSeq)
+	vlog = fmt.Sprintf("(%d) Executing repair statement on target table", logThreadSeq)
 	global.Wlog.Info(vlog)
 	db := dbOpenTest(rs.Drive, rs.JDBC)
 	ctx := context.Background()
 	conn, err := db.Conn(ctx)
 	if err != nil {
-		vlog = fmt.Sprintf("(%d) database create session connection fail. Error Info: %s", logThreadSeq, err)
+		vlog = fmt.Sprintf("(%d) Failed to create database session. Error: %s", logThreadSeq, err)
 		global.Wlog.Error(vlog)
 		return err
 	}
 	defer conn.Close()
 	if dbType == "mysql" {
-		sql1 := "set session sql_log_bin=off"
+		sql1 := "SET SESSION sql_log_bin=OFF"
 		if _, err1 := conn.ExecContext(ctx, sql1); err1 != nil {
-			vlog = fmt.Sprintf("(%d) actions prepare dataFix SQL fail. sql is:{%s}, error info is : {%s}", logThreadSeq, "set session sql_log_bin=off", err1)
+			vlog = fmt.Sprintf("(%d) Failed to prepare dataFix SQL: %s. Error: %s", logThreadSeq, "set session sql_log_bin=off", err1)
 			global.Wlog.Error(vlog)
 			return err1
 		}
-		sql2 := "set autocommit = 0;"
+		sql2 := "SET autocommit=0;"
 		if _, err1 := conn.ExecContext(ctx, sql2); err1 != nil {
 			vlog = fmt.Sprintf("(%d) actions prepare dataFix SQL fail. sql is:{%s}, error info is : {%s}", logThreadSeq, "set session sql_log_bin=off", err1)
 			global.Wlog.Error(vlog)
@@ -66,23 +66,23 @@ func (rs rapirSqlStruct) execRapirSql(sqlstr []string, dbType string, logThreadS
 	for _, i := range sqlstr {
 		if strings.HasPrefix(strings.ToUpper(i), "ALTER TABLE") {
 			if _, err = db.Exec(i); err != nil {
-				vlog = fmt.Sprintf("(%d) commit dataFix SQL fail. error info is {%s}", logThreadSeq, err)
+				vlog = fmt.Sprintf("(%d) Failed to commit dataFix SQL. Error: %s", logThreadSeq, err)
 				global.Wlog.Error(vlog)
 				return err
 			}
 		} else {
 			if _, err = conn.ExecContext(ctx, i); err != nil {
-				vlog = fmt.Sprintf("(%d) prepare dataFix SQL fail.start rollback! sql is {%s}, error info is {%s}.", logThreadSeq, i, err)
+				vlog = fmt.Sprintf("(%d) Failed to prepare dataFix SQL: %s. Error: %s. Starting rollback", logThreadSeq, i, err)
 				global.Wlog.Error(vlog)
-				conn.ExecContext(ctx, "rollback")
+				conn.ExecContext(ctx, "ROLLBACK")
 				return err
 			}
 		}
 
 	}
-	vlog = fmt.Sprintf("(%d) start commit dataFix SQL.", logThreadSeq)
+	vlog = fmt.Sprintf("(%d) Starting dataFix SQL commit", logThreadSeq)
 	global.Wlog.Info(vlog)
-	if _, err = conn.ExecContext(ctx, "commit"); err != nil {
+	if _, err = conn.ExecContext(ctx, "COMMIT"); err != nil {
 		vlog = fmt.Sprintf("(%d) commit dataFix SQL fail. error info is {%s}", logThreadSeq, err)
 		global.Wlog.Error(vlog)
 		return err
@@ -99,7 +99,7 @@ func (rs rapirSqlStruct) SqlFile(sfile *os.File, sql []string, logThreadSeq int6
 		vlog      string
 		sqlCommit []string
 	)
-	vlog = fmt.Sprintf("(%d) Start writing repair statements to the repair file.", logThreadSeq)
+	vlog = fmt.Sprintf("(%d) Writing repair statements to file", logThreadSeq)
 	global.Wlog.Debug(vlog)
 	if strings.HasPrefix(strings.ToUpper(strings.Join(sql, ";")), "ALTER TABLE") {
 		sqlCommit = sql
@@ -112,7 +112,7 @@ func (rs rapirSqlStruct) SqlFile(sfile *os.File, sql []string, logThreadSeq int6
 	if err != nil {
 		return err
 	}
-	vlog = fmt.Sprintf("(%d) Write the repair statement to the repair file successfully.", logThreadSeq)
+	vlog = fmt.Sprintf("(%d) Repair statements written to file successfully", logThreadSeq)
 	global.Wlog.Debug(vlog)
 	return nil
 }

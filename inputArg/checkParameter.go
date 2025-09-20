@@ -114,7 +114,7 @@ var schemaTableFilter = func(igschema, igtable string) string {
 
 func (rc *ConfigParameter) getErr(msg string, err error) {
 	if err != nil {
-		fmt.Println(err, ":", msg)
+		fmt.Println("Error:", msg, "Details:", err)
 		os.Exit(0)
 	}
 }
@@ -142,7 +142,7 @@ func (rc *ConfigParameter) checkPar() {
 	vlog = fmt.Sprintf("(%d) [%s] srcDSN is: {%s}", rc.LogThreadSeq, Event, rc.SecondaryL.DsnsV.SrcJdbc)
 	global.Wlog.Debug(vlog)
 	if _, err := tmpDbc.OpenDB(); err != nil {
-		fmt.Println(fmt.Sprintf("gt-checksum report: Failed to connect to srcDSN. Please check %s or set option \"logLevel=debug\" to get more information.", rc.SecondaryL.LogV.LogFile))
+		fmt.Println(fmt.Sprintf("gt-checksum: Failed to connect to source database. Check %s for details or set logLevel=debug", rc.SecondaryL.LogV.LogFile))
 		vlog = fmt.Sprintf("(%d) [%s] srcDSN connect failed: {%s}", rc.LogThreadSeq, Event, err)
 		global.Wlog.Error(vlog)
 		os.Exit(0)
@@ -155,7 +155,7 @@ func (rc *ConfigParameter) checkPar() {
 	vlog = fmt.Sprintf("(%d) [%s] dstDSN is: {%s}", rc.LogThreadSeq, Event, rc.SecondaryL.DsnsV.DestJdbc)
 	global.Wlog.Debug(vlog)
 	if _, err := tmpDbc.OpenDB(); err != nil {
-		fmt.Println(fmt.Sprintf("gt-checksum report: Failed to connect to dstDSN. Please check %s or set option \"logLevel=debug\" to get more information.", rc.SecondaryL.LogV.LogFile))
+		fmt.Println(fmt.Sprintf("gt-checksum: Failed to connect to destination database. Check %s for details or set logLevel=debug", rc.SecondaryL.LogV.LogFile))
 		vlog = fmt.Sprintf("(%d) [%s] dstDSN connect failed: {%s}", rc.LogThreadSeq, Event, err)
 		global.Wlog.Error(vlog)
 		os.Exit(1)
@@ -168,7 +168,7 @@ func (rc *ConfigParameter) checkPar() {
 
 	global.Wlog.Debug(vlog)
 	if rc.SecondaryL.SchemaV.Tables == "" {
-		fmt.Println(fmt.Sprintf("gt-checksum report: The option \"tables\" is set incorrectly. Please check %s.", rc.SecondaryL.LogV.LogFile))
+		fmt.Println(fmt.Sprintf("gt-checksum: Invalid tables option. Check %s for details", rc.SecondaryL.LogV.LogFile))
 		vlog = fmt.Sprintf("(%d) [%s] the option \"tables\" cannot be empty", rc.LogThreadSeq, Event)
 		global.Wlog.Error(vlog)
 		os.Exit(1)
@@ -177,7 +177,7 @@ func (rc *ConfigParameter) checkPar() {
 	rc.rexPat(tabr, rc.SecondaryL.SchemaV.Tables, illegalParameterStatus)
 	rc.rexPat(tabr, rc.SecondaryL.SchemaV.Tables, illegalParameterStatus)
 	if rc.SecondaryL.SchemaV.Tables == rc.SecondaryL.SchemaV.IgnoreTables {
-		fmt.Println(fmt.Sprintf("gt-checksum report: The option \"tables\" or \"ignoreTables\" is set incorrectly. Please check %s.", rc.SecondaryL.LogV.LogFile))
+		fmt.Println(fmt.Sprintf("gt-checksum: Invalid tables/ignoreTables options. Check %s for details", rc.SecondaryL.LogV.LogFile))
 		vlog = fmt.Sprintf("(%d) [%s] The option \"table\" and \"ignoreTables\" cannot be the same", rc.LogThreadSeq, Event)
 		global.Wlog.Error(vlog)
 		os.Exit(1)
@@ -188,7 +188,7 @@ func (rc *ConfigParameter) checkPar() {
 		for _, i := range strings.Split(table, ",") {
 			ii := strings.TrimSpace(i)
 			if ii != "" {
-				fmt.Println(fmt.Sprintf("gt-checksum report: The option \"tables\" is set incorrectly. Please check %s or set option \"logLevel=debug\" to get more information.", rc.SecondaryL.LogV.LogFile))
+				fmt.Println(fmt.Sprintf("gt-checksum: Invalid tables option. Check %s or set logLevel=debug for details", rc.SecondaryL.LogV.LogFile))
 				vlog = fmt.Sprintf("(%d) [%s] The table parameter configures *.* and contains other values! ", rc.LogThreadSeq, Event)
 				global.Wlog.Error(vlog)
 				os.Exit(1)
@@ -256,7 +256,7 @@ func (rc *ConfigParameter) checkPar() {
 		rc.fileExsit(rc.SecondaryL.RepairV.FixFileName)
 		rc.SecondaryL.RepairV.FixFileFINE, err = os.OpenFile(rc.SecondaryL.RepairV.FixFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 		if err != nil {
-			fmt.Println(fmt.Sprintf("gt-checksum report: Failed to open the \"fixFileName\". Please check %s or set option \"logLevel=debug\" to get more information.", rc.SecondaryL.LogV.LogFile))
+			fmt.Println(fmt.Sprintf("gt-checksum: Failed to open fixFileName. Check %s or set logLevel=debug for details", rc.SecondaryL.LogV.LogFile))
 			vlog = fmt.Sprintf("(%d) [%s] Repair the file {%s} handle opening failure, the failure information is {%s}.", rc.LogThreadSeq, Event, rc.SecondaryL.RepairV.FixFileName, err)
 			global.Wlog.Error(vlog)
 			os.Exit(1)
@@ -266,20 +266,20 @@ func (rc *ConfigParameter) checkPar() {
 	}
 	for _, v := range []int{rc.SecondaryL.RulesV.ChanRowCount, rc.SecondaryL.RulesV.QueueSize, rc.SecondaryL.RulesV.Ratio, rc.SecondaryL.RulesV.ParallelThds} {
 		if v < 1 {
-			fmt.Println(fmt.Sprintf("gt-checksum report: The options \"chunkSize || queueSize || ratio || parallelThds\" set incorrectly. Please check %s or set option \"logLevel=debug\" to get more information.", rc.SecondaryL.LogV.LogFile))
+			fmt.Println(fmt.Sprintf("gt-checksum: Invalid chunkSize/queueSize/ratio/parallelThds values. Check %s or set logLevel=debug for details", rc.SecondaryL.LogV.LogFile))
 			vlog = fmt.Sprintf("(%d) [%s] chunkSize || queueSize || ratio || parallelThds parameter must be greater than 0.", rc.LogThreadSeq, Event)
 			global.Wlog.Error(vlog)
 			os.Exit(1)
 		}
 	}
 	if rc.SecondaryL.RulesV.MemoryLimit < 100 || rc.SecondaryL.RulesV.MemoryLimit > 65536 {
-		fmt.Println(fmt.Sprintf("gt-checksum report: The option \"memoryLimit\" must be between 100 and 65536. Please check %s or set option \"logLevel=debug\" to get more information.", rc.SecondaryL.LogV.LogFile))
+		fmt.Println(fmt.Sprintf("gt-checksum: memoryLimit must be between 100-65536. Check %s or set logLevel=debug for details", rc.SecondaryL.LogV.LogFile))
 		vlog = fmt.Sprintf("(%d) [%s] option \"memoryLimit\" must be between 100 and 65536.", rc.LogThreadSeq, Event)
 		global.Wlog.Error(vlog)
 		os.Exit(1)
 	}
 	if rc.SecondaryL.RulesV.Ratio < 1 || rc.SecondaryL.RulesV.Ratio > 100 {
-		fmt.Println(fmt.Sprintf("gt-checksum report: The option \"Ratio\" must be between 1 and 100. Please check %s or set option \"logLevel=debug\" to get more information.", rc.SecondaryL.LogV.LogFile))
+		fmt.Println(fmt.Sprintf("gt-checksum: Ratio must be between 1-100. Check %s or set logLevel=debug for details", rc.SecondaryL.LogV.LogFile))
 		vlog = fmt.Sprintf("(%d) [%s] option \"Ratio\" must be between 1 and 100.", rc.LogThreadSeq, Event)
 		global.Wlog.Error(vlog)
 		os.Exit(1)

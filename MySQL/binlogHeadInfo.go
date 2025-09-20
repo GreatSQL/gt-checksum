@@ -3,6 +3,7 @@ package mysql
 import (
 	"encoding/hex"
 	"fmt"
+
 	"github.com/go-mysql-org/go-mysql/replication"
 	uuid "github.com/satori/go.uuid"
 )
@@ -43,7 +44,7 @@ type gtidInfoStruct struct {
 }
 
 /*
-	解析binlog的table信息
+解析binlog的table信息
 */
 func (my MySQLIncDataBinlogPrepareStruct) incBinlogTableInfo(ev *replication.BinlogEvent) {
 	fmt.Println("++++ table Map info +++++")
@@ -113,8 +114,6 @@ func (my MySQLIncDataBinlogPrepareStruct) incBinlogTableInfo(ev *replication.Bin
 					fmt.Println(fmt.Sprintf(nameFmt, tmEvent.ColumnName[i]))
 				}
 
-				//fmt.Println(fmt.Sprintf("  type=%-3d", tmEvtmEvent.realType(i)))
-
 				if tmEvent.IsNumericColumn(i) {
 					if len(unsignedMap) == 0 {
 						fmt.Println(fmt.Sprintf("  unsigned=<n/a>"))
@@ -182,7 +181,7 @@ func (my MySQLIncDataBinlogPrepareStruct) incBinlogTableInfo(ev *replication.Bin
 }
 
 /*
-	连接数据库解析增量数据的连接信息及增量位点
+连接数据库解析增量数据的连接信息及增量位点
 */
 func (my MySQLIncDataBinlogPrepareStruct) BinlogStreamer() interface{} {
 
@@ -197,19 +196,8 @@ func (my MySQLIncDataBinlogPrepareStruct) BinlogStreamerClose(cfg interface{}) {
 	syncer.Close()
 }
 
-//func (my *MySQLIncDataBinlogPrepareStruct) getEvent() *replication.BinlogEvent {
-//	streamer := my.binlogStreamer()
-//	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-//	ev, err := streamer.GetEvent(ctx)
-//	cancel()
-//	if err == context.DeadlineExceeded {
-//
-//	}
-//	return ev
-//}
-
 /*
-	输出binlog的头部信息
+输出binlog的头部信息
 */
 func (my MySQLIncDataBinlogPrepareStruct) incBinlogFormatInfo(ev *replication.BinlogEvent) {
 	if ev.Header.EventType == replication.FORMAT_DESCRIPTION_EVENT {
@@ -222,7 +210,7 @@ func (my MySQLIncDataBinlogPrepareStruct) incBinlogFormatInfo(ev *replication.Bi
 }
 
 /*
-	输出binlog日志的轮转信息
+输出binlog日志的轮转信息
 */
 func (my MySQLIncDataBinlogPrepareStruct) incBinlogRotateInfo(ev *replication.BinlogEvent) {
 	if ev.Header.EventType == replication.ROTATE_EVENT {
@@ -232,7 +220,7 @@ func (my MySQLIncDataBinlogPrepareStruct) incBinlogRotateInfo(ev *replication.Bi
 }
 
 /*
-	输出binlog的gtid信息
+输出binlog的gtid信息
 */
 func (my MySQLIncDataBinlogPrepareStruct) binlogGtid(ev *replication.BinlogEvent) gtidInfoStruct {
 	var gtid = gtidInfoStruct{}

@@ -2,9 +2,10 @@ package inputArg
 
 import (
 	"fmt"
-	"github.com/urfave/cli"
 	"os"
 	"strings"
+
+	"github.com/urfave/cli"
 )
 
 var jdbcDispos = func(jdbc string) (string, string) {
@@ -46,16 +47,16 @@ func (rc *ConfigParameter) cliHelp() {
 	app.Version = "1.2.2"
 	app.Flags = []cli.Flag{
 		cli.StringFlag{
-			Name:        "c,f",                                                           //命令名称
+			Name:        "c,f",                                                        //命令名称
 			Usage:       "Specify config file. For example: -c gc.conf or -f gc.conf", //命令说明
-			Value:       "",                                                                   //默认值
-			Destination: &rc.Config,                                                           //赋值
+			Value:       "",                                                           //默认值
+			Destination: &rc.Config,                                                   //赋值
 		},
 	}
 	app.Action = func(c *cli.Context) { //应用执行函数
 		if rc.Config == "" {
 			if _, err := os.Stat("gc.conf"); err != nil {
-				fmt.Println("No config file specified and there is no gc.conf in the current directory, run the command with -h or --help")
+				fmt.Println("No config file specified and no gc.conf found in current directory. Use -h or --help for usage")
 				os.Exit(0)
 			} else {
 				rc.Config = "gc.conf"

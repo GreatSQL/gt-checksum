@@ -215,7 +215,7 @@ func (bar *Bar) Play(cur int64) {
 		bar.percent = 100
 		// 计算实时耗时（秒）
 		elapsedMilliseconds := time.Now().UnixMilli() - bar.startTime
-		fmt.Printf("\r\033[K[%-20s]%3d%%  %s%5d/100     Elapsed time: %.2fs", bar.rate, bar.percent, fmt.Sprintf("%s:", bar.taskUnit), bar.percent, float64(elapsedMilliseconds)/1000)
+		fmt.Printf("\r\033[K[%-20s]%3d%%  %s%5d/100  Elapsed: %.2fs", bar.rate, bar.percent, fmt.Sprintf("%s:", bar.taskUnit), bar.percent, float64(elapsedMilliseconds)/1000)
 	} else if (bar.percent != last || bar.cur == bar.total) && (currentTime-bar.lastUpdate) >= bar.updateInterval {
 		// 只在百分比变化且达到更新时间间隔时才更新进度条
 		// 计算当前应该显示的进度条长度（每个█字符代表5%的进度）
@@ -236,7 +236,7 @@ func (bar *Bar) Play(cur int64) {
 // NewTableProgress 开始新表的进度显示，先输出换行再开始进度条
 func (bar *Bar) NewTableProgress(tableName string) {
 	// 先输出换行确保新表进度在新行开始
-	fmt.Printf("\n%-40s", tableName)
+	fmt.Printf("\n%-40s", fmt.Sprintf("Table: %s", tableName))
 }
 
 // 由于上面的打印没有打印换行符，因此，在进度全部结束之后（也就是跳出循环之外时），需要打印一个换行符，因此，封装了一个Finish函数，该函数纯粹的打印一个换行，表示进度条已经完成。
@@ -250,6 +250,6 @@ func (bar *Bar) Finish() {
 	endTime := time.Now().UnixMilli()
 	elapsedSeconds := float64(endTime-bar.startTime) / 1000.0
 
-	fmt.Printf("\r\033[K[%-20s]%3d%%  %s%5d/100 Elapsed time: %.2fs", bar.rate, bar.percent, fmt.Sprintf("%s:", bar.taskUnit), bar.percent, elapsedSeconds)
+	fmt.Printf("\r\033[K[%-20s]%3d%%  %s%5d/100  Elapsed: %.2fs", bar.rate, bar.percent, fmt.Sprintf("%s:", bar.taskUnit), bar.percent, elapsedSeconds)
 	fmt.Println()
 }

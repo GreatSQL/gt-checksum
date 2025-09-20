@@ -17,12 +17,6 @@ type IncDataBinlogPrepareInterface interface {
 type OracleIncDataBinlogPrepareStruct struct {
 }
 
-//func (my *MySQLIncDataBinlogPrepareStruct) aa() {
-//	ev := my.getEvent()
-//}
-
-//func (or *OracleIncDataBinlogPrepareStruct) aa() *replication.BinlogStreamer{}
-
 func (idbps IncDataBinlogPrepareStruct) IncBinlogPrepareInit(dbDrive, jdbcUrl string, gs map[string]string, checkTableMap map[string]int) IncDataBinlogPrepareInterface {
 	var incDbps IncDataBinlogPrepareInterface
 	if dbDrive == "mysql" {
@@ -47,9 +41,7 @@ func (idbps IncDataBinlogPrepareStruct) IncBinlogPrepareInit(dbDrive, jdbcUrl st
 			TableList:  checkTableMap,
 		}
 	}
-	//if dbDrive == "oracle" {
-	//	incDbps = &OracleIncDataBinlogPrepareStruct{}
-	//}
+
 	return incDbps
 }
 func IncDataBinlog() IncDataBinlogPrepareStruct {

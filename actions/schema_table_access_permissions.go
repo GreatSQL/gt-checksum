@@ -16,7 +16,7 @@ func (stcls *schemaTable) GlobalAccessPriCheck(logThreadSeq, logThreadSeq2 int64
 		err                    error
 		StableList, DtableList bool
 	)
-	vlog = fmt.Sprintf("(%d) Obtain the global privileges for both the srcDB and dstDB, and check that they are set correctly", logThreadSeq)
+	vlog = fmt.Sprintf("(%d) Retrieving global privileges for source and target databases", logThreadSeq)
 	global.Wlog.Info(vlog)
 	tc := dbExec.TableColumnNameStruct{Schema: stcls.schema, Table: stcls.table, Drive: stcls.sourceDrive, Datafix: stcls.datefix}
 	vlog = fmt.Sprintf("(%d) Obtain the global privileges for srcDB, and check that they are set correctly", logThreadSeq)
@@ -24,7 +24,7 @@ func (stcls *schemaTable) GlobalAccessPriCheck(logThreadSeq, logThreadSeq2 int64
 	if StableList, err = tc.Query().GlobalAccessPri(stcls.sourceDB, logThreadSeq2); err != nil {
 		return false
 	}
-	vlog = fmt.Sprintf("(%d) The global privileges for srcDB check completed: {%v}.", logThreadSeq, StableList)
+	vlog = fmt.Sprintf("(%d) Source database global privileges checksum result: %v", logThreadSeq, StableList)
 	global.Wlog.Debug(vlog)
 	tc.Drive = stcls.destDrive
 	vlog = fmt.Sprintf("(%d) Obtain the global privileges for dstDB, and check that they are set correctly", logThreadSeq)
@@ -33,14 +33,14 @@ func (stcls *schemaTable) GlobalAccessPriCheck(logThreadSeq, logThreadSeq2 int64
 	if DtableList, err = tc.Query().GlobalAccessPri(stcls.destDB, logThreadSeq2); err != nil {
 		return false
 	}
-	vlog = fmt.Sprintf("(%d) The global privileges for dstDB check completed: {%v}.", logThreadSeq, DtableList)
+	vlog = fmt.Sprintf("(%d) Target database global privileges checksum result: %v", logThreadSeq, DtableList)
 	global.Wlog.Debug(vlog)
 	if StableList && DtableList {
-		vlog = fmt.Sprintf("(%d) The global privileges for both srcDB and dstDB are check completed", logThreadSeq)
+		vlog = fmt.Sprintf("(%d) Global privileges checksum completed for both databases", logThreadSeq)
 		global.Wlog.Info(vlog)
 		return true
 	}
-	vlog = fmt.Sprintf("(%d) Insufficient global privileges for srcDB or dstDB, unable to continue", logThreadSeq)
+	vlog = fmt.Sprintf("(%d) Insufficient global privileges detected, operation terminated", logThreadSeq)
 	global.Wlog.Error(vlog)
 	return false
 }
@@ -51,11 +51,11 @@ func (stcls *schemaTable) TableAccessPriCheck(checkTableList []string, logThread
 		StableList, DtableList               map[string]int
 		newCheckTableList, abnormalTableList []string
 	)
-	vlog = fmt.Sprintf("(%d) Obtain the privileges for tables access for both the srcDB and dstDB, and check that they are set correctly", logThreadSeq)
+	vlog = fmt.Sprintf("(%d) Retrieving table access privileges for both databases", logThreadSeq)
 	global.Wlog.Info(vlog)
 
 	// 添加调试日志，显示传入的表列表
-	vlog = fmt.Sprintf("TableAccessPriCheck received checkTableList: %v", checkTableList)
+	vlog = fmt.Sprintf("Table access check options received: %v", checkTableList)
 	global.Wlog.Debug(vlog)
 
 	// 处理映射关系的表列表
@@ -75,7 +75,7 @@ func (stcls *schemaTable) TableAccessPriCheck(checkTableList []string, logThread
 		}
 	}
 
-	vlog = fmt.Sprintf("Processed table list for permission check: %v", processedTableList)
+	vlog = fmt.Sprintf("Processed table list for access checksum: %v", processedTableList)
 	global.Wlog.Debug(vlog)
 
 	tc := dbExec.TableColumnNameStruct{Schema: stcls.schema, Table: stcls.table, Drive: stcls.sourceDrive}
@@ -88,7 +88,7 @@ func (stcls *schemaTable) TableAccessPriCheck(checkTableList []string, logThread
 		vlog = fmt.Sprintf("(%d) The privileges for tables access for srcDB check failed: {%v}.", logThreadSeq, StableList)
 		global.Wlog.Error(vlog)
 	} else {
-		vlog = fmt.Sprintf("(%d) The privileges for tables access for srcDB check completed: {%v}.", logThreadSeq, StableList)
+		vlog = fmt.Sprintf("(%d) Source database table access checksum completed: %v", logThreadSeq, StableList)
 		global.Wlog.Debug(vlog)
 	}
 
@@ -122,7 +122,7 @@ func (stcls *schemaTable) TableAccessPriCheck(checkTableList []string, logThread
 		vlog = fmt.Sprintf("(%d) The privileges for tables access for dstDB check failed: {%v}.", logThreadSeq, DtableList)
 		global.Wlog.Error(vlog)
 	} else {
-		vlog = fmt.Sprintf("(%d) The privileges for tables access for dstDB check completed: {%v}.", logThreadSeq, DtableList)
+		vlog = fmt.Sprintf("(%d) Target database table access checksum completed: %v", logThreadSeq, DtableList)
 		global.Wlog.Debug(vlog)
 	}
 
@@ -163,7 +163,7 @@ func (stcls *schemaTable) TableAccessPriCheck(checkTableList []string, logThread
 		}
 	}
 
-	vlog = fmt.Sprintf("(%d) The checksum of srcDB and dstDB tables is complete. The [%d] consistent tables are: {%s}, and the [%d] inconsistent tables are: {%s}", logThreadSeq, len(newCheckTableList), newCheckTableList, len(abnormalTableList), abnormalTableList)
+	vlog = fmt.Sprintf("(%d) Table access checksum completed - Consistent tables: %d (%s), Inconsistent tables: %d (%s)", logThreadSeq, len(newCheckTableList), newCheckTableList, len(abnormalTableList), abnormalTableList)
 	global.Wlog.Info(vlog)
 	return newCheckTableList, abnormalTableList, nil
 }

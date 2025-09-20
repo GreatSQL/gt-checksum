@@ -2,13 +2,14 @@ package inputArg
 
 import (
 	"fmt"
-	"gopkg.in/ini.v1"
 	"gt-checksum/global"
 	"gt-checksum/go-log/log"
 	"os"
 	"runtime"
 	"strings"
 	"time"
+
+	"gopkg.in/ini.v1"
 )
 
 type FirstLevel struct {
@@ -28,9 +29,9 @@ type DSNsS struct {
 	DestJdbc  string
 }
 type SchemaS struct {
-	Tables              string
-	IgnoreTables        string
-	CheckNoIndexTable   string
+	Tables                  string
+	IgnoreTables            string
+	CheckNoIndexTable       string
 	CaseSensitiveObjectName string
 }
 type RulesS struct {
@@ -83,12 +84,12 @@ var rc ConfigParameter
 
 func init() {
 	rc.cliHelp()
-	fmt.Println("\ngt-checksum is initializing")
-	fmt.Println("gt-checksum is reading configuration files")
+	fmt.Println("Initializing gt-checksum")
+	fmt.Println("Reading configuration files")
 	if rc.Config == "" {
 		if _, err := os.Stat("gc.conf"); err == nil {
 			rc.Config = "gc.conf"
-			fmt.Println("gt-checksum: Automatically loading configuration file 'gc.conf' from current directory.")
+			fmt.Println("Automatically loading configuration file 'gc.conf' from current directory")
 		}
 	}
 	if rc.Config != "" {
@@ -103,14 +104,14 @@ func init() {
 		rc.getConfig()
 	}
 	//初始化日志文件
-	fmt.Println("gt-checksum is opening log files")
+	fmt.Println("Opening log files")
 	// 处理日期时间格式
 	logFile := rc.SecondaryL.LogV.LogFile
 	if strings.Contains(logFile, "%") {
 		logFile = replaceDateTimeFormat(logFile)
 	}
 	global.Wlog = log.NewWlog(logFile, rc.SecondaryL.LogV.LogLevel)
-	fmt.Println("gt-checksum is checking options")
+	fmt.Println("Checking configuration options")
 	rc.checkPar()
 }
 

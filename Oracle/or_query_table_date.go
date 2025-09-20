@@ -38,7 +38,7 @@ func (or *QueryTable) QueryTableIndexColumnInfo(db *sql.DB, logThreadSeq int64) 
 }
 
 /*
-	根据Oracle库下指定表的索引信息，筛选主键索引、唯一索引、普通索引
+根据Oracle库下指定表的索引信息，筛选主键索引、唯一索引、普通索引
 */
 func (or *QueryTable) IndexDisposF(queryData []map[string]interface{}, logThreadSeq int64) (map[string][]string, map[string][]string, map[string][]string) {
 	var (
@@ -51,34 +51,34 @@ func (or *QueryTable) IndexDisposF(queryData []map[string]interface{}, logThread
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start to filter the primary key index, unique index, and common index based on the index information of the specified table %s.%s under the %s library", logThreadSeq, Event, or.Schema, or.Table, DBType)
 	global.Wlog.Debug(vlog)
-	
+
 	// 用于临时存储每个索引的列顺序
 	indexColumns := make(map[string]map[string]string)
-	
+
 	for _, v := range queryData {
 		currIndexName = fmt.Sprintf("%s", v["indexName"])
 		if or.CaseSensitiveObjectName == "no" {
 			currIndexName = strings.ToUpper(fmt.Sprintf("%s", v["indexName"]))
 		}
-		
+
 		columnName := fmt.Sprintf("%s", v["columnName"])
 		indexSeq := fmt.Sprintf("%s", v["IndexSeq"])
 		columnType := fmt.Sprintf("%s", v["columnType"])
-		
+
 		// 初始化map
 		if _, exists := indexColumns[currIndexName]; !exists {
 			indexColumns[currIndexName] = make(map[string]string)
 		}
-		
+
 		// 存储列的顺序信息
 		indexColumns[currIndexName][indexSeq] = columnName + "/*seq*/" + indexSeq + "/*type*/" + columnType
-		
+
 		// 更新当前索引名
 		if currIndexName != indexName {
 			indexName = currIndexName
 		}
 	}
-	
+
 	// 按照索引序号排序并添加到最终的map中
 	for idxName, columns := range indexColumns {
 		// 获取所有序号并排序
@@ -88,14 +88,14 @@ func (or *QueryTable) IndexDisposF(queryData []map[string]interface{}, logThread
 			seqNums = append(seqNums, seqNum)
 		}
 		sort.Ints(seqNums)
-		
+
 		// 按序号顺序添加列
 		var orderedColumns []string
 		for _, seq := range seqNums {
 			seqStr := strconv.Itoa(seq)
 			orderedColumns = append(orderedColumns, columns[seqStr])
 		}
-		
+
 		// 根据索引类型添加到相应的map中
 		if idxName == "PRIMARY" {
 			priIndexColumnMap["pri"] = orderedColumns
@@ -108,7 +108,7 @@ func (or *QueryTable) IndexDisposF(queryData []map[string]interface{}, logThread
 					break
 				}
 			}
-			
+
 			if isUnique {
 				nultiseriateIndexColumnMap[idxName] = orderedColumns
 			} else {
@@ -116,15 +116,15 @@ func (or *QueryTable) IndexDisposF(queryData []map[string]interface{}, logThread
 			}
 		}
 	}
-	
+
 	vlog = fmt.Sprintf("(%d) [%s] The index information screening of the specified table %s.%s under the %s library is completed", logThreadSeq, Event, or.Schema, or.Table, DBType)
 	global.Wlog.Debug(vlog)
-	
+
 	return priIndexColumnMap, nultiseriateIndexColumnMap, multiseriateIndexColumnMap
 }
 
 /*
-	查询表，输出索引列数据的字符串长度，判断是否有null或空
+查询表，输出索引列数据的字符串长度，判断是否有null或空
 */
 func (or *QueryTable) TmpTableIndexColumnSelectDispos(logThreadSeq int64) map[string]string {
 	//根据索引列的多少，生成select 列条件，并生成列长度，为判断列是否为null或为空做判断
@@ -163,7 +163,7 @@ func (or *QueryTable) TmpTableIndexColumnSelectDispos(logThreadSeq int64) map[st
 }
 
 /*
-  Oracle 查询有索引表的总行数
+Oracle 查询有索引表的总行数
 */
 func (or *QueryTable) TmpTableIndexColumnRowsCount(db *sql.DB, logThreadSeq int64) (uint64, error) {
 	var (
@@ -192,7 +192,7 @@ func (or *QueryTable) TmpTableIndexColumnRowsCount(db *sql.DB, logThreadSeq int6
 }
 
 /*
-	Oracle库下查询表的索引列数据，并进行去重排序
+Oracle库下查询表的索引列数据，并进行去重排序
 */
 func (or *QueryTable) TmpTableColumnGroupDataDispos(db *sql.DB, where string, columnName string, logThreadSeq int64) (chan map[string]interface{}, error) {
 	var (
@@ -217,7 +217,7 @@ func (or *QueryTable) TmpTableColumnGroupDataDispos(db *sql.DB, where string, co
 }
 
 /*
-	MySQL 查询表的统计信息中行数
+MySQL 查询表的统计信息中行数
 */
 func (or *QueryTable) TableRows(db *sql.DB, logThreadSeq int64) (uint64, error) {
 	var (
@@ -245,7 +245,7 @@ func (or *QueryTable) TableRows(db *sql.DB, logThreadSeq int64) (uint64, error) 
 	return tmpTableCount, nil
 }
 
-//处理无索引表查询select的order by列，防止原目标端查询的段不一致情况
+// 处理无索引表查询select的order by列，防止原目标端查询的段不一致情况
 func (or *QueryTable) NoIndexOrderBySingerColumn(orderCol []map[string]string) []string {
 	//处理order by column
 	var selectC []string
@@ -318,7 +318,7 @@ func (or *QueryTable) NoIndexGeneratingQueryCriteria(db *sql.DB, beginSeq uint64
 }
 
 /*
-	Oracle 通过where条件查询表的分段数据（查询数据生成带有greatdbCheck标识的数据块）
+Oracle 通过where条件查询表的分段数据（查询数据生成带有greatdbCheck标识的数据块）
 */
 func (or *QueryTable) GeneratingQueryCriteria(db *sql.DB, logThreadSeq int64) (string, error) {
 	var (
@@ -340,7 +340,7 @@ func (or *QueryTable) GeneratingQueryCriteria(db *sql.DB, logThreadSeq int64) (s
 }
 
 /*
-	Oracle 生成查询数据的sql语句
+Oracle 生成查询数据的sql语句
 */
 func (or *QueryTable) GeneratingQuerySql(db *sql.DB, logThreadSeq int64) (string, error) {
 	var (
@@ -382,7 +382,6 @@ func (or *QueryTable) GeneratingQuerySql(db *sql.DB, logThreadSeq int64) (string
 		columnNameSeq = append(columnNameSeq, tmpcolumnName)
 	}
 	queryColumn := strings.Join(columnNameSeq, ",")
-	//sqlstr := fmt.Sprintf("select %s from \"%s\".\"%s\" as of scn %s where %s", queryColumn, schema, table, oracleScn, sqlWhere)
 	selectSql = fmt.Sprintf("SELECT %s FROM \"%s\".\"%s\" WHERE %s", queryColumn, strings.ToUpper(or.Schema), or.Table, or.Sqlwhere)
 	vlog = fmt.Sprintf("(%d) [%s] Complete the data query sql of table %s.%s in the %s database.", logThreadSeq, Event, or.Schema, or.Table, DBType)
 	global.Wlog.Debug(vlog)
