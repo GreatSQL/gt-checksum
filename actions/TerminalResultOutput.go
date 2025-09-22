@@ -179,7 +179,7 @@ func (bar *Bar) Play(cur int64) {
 		// 使用回车符覆盖当前行，避免刷屏
 		// 计算实时耗时（秒）
 		elapsedMilliseconds := currentTime - bar.startTime
-		fmt.Printf("\r\033[K[%-20s]%3d%%  %s%5d/100     Elapsed time: %.2fs", bar.rate, bar.percent, fmt.Sprintf("%s:", bar.taskUnit), bar.percent, float64(elapsedMilliseconds)/1000)
+		fmt.Printf("\r\033[K[%-20s]%3d%%  %s%5d/100     Elapsed: %.2fs", bar.rate, bar.percent, fmt.Sprintf("%s:", bar.taskUnit), bar.percent, float64(elapsedMilliseconds)/1000)
 	}
 }
 
@@ -200,6 +200,6 @@ func (bar *Bar) Finish() {
 	endTime := time.Now().UnixMilli()
 	elapsedSeconds := float64(endTime - bar.startTime) / 1000.0
 	
-	fmt.Printf("\r\033[K[%-20s]%3d%%  %s%5d/100 耗时: %.2fs", bar.rate, bar.percent, fmt.Sprintf("%s:", bar.taskUnit), bar.percent, elapsedSeconds)
+	fmt.Printf("\r\033[K[%-20s]%3d%%  %s%5d/100    Elapsed: %.2fs", bar.rate, bar.percent, fmt.Sprintf("%s:", bar.taskUnit), bar.percent, elapsedSeconds)
 	fmt.Println()
 }

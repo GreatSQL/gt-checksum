@@ -403,7 +403,7 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 	measuredDataPods = append(measuredDataPods, pods)
 	vlog = fmt.Sprintf("(%d) No index table %s.%s The data consistency check of the original target end is completed", logThreadSeq, sp.schema, sp.table)
 	global.Wlog.Info(vlog)
-	fmt.Println(fmt.Sprintf("%s.%s 校验完成", sp.schema, sp.table))
+	fmt.Println(fmt.Sprintf("table %s.%s checksum complete", sp.schema, sp.table))
 }
 // getExactRowCount 查询表的精确行数
 func (sp *SchedulePlan) getExactRowCount(dbPool *global.Pool, schema, table string, logThreadSeq int64) int64 {
