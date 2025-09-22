@@ -4,15 +4,14 @@ stages:
 variables:
   GIT_SUBMODULE_STRATEGY: recursive
 
-gt_checkout_build_x86:
+gt-checksum_build_x86:
   stage: build
   retry: 2
   only:
-    - schedules
     - master
     - v1.2.2
   tags:
-    - gt-tools-builder-x86
+    - gt-checksum-builder-x86
   script:
     - /bin/bash build-x86.sh
   artifacts:
@@ -20,15 +19,14 @@ gt_checkout_build_x86:
       - binary/
     expire_in: 7 days
 
-gt_checkout_build_arm:
+gt-checksum_build_arm:
   stage: build
   retry: 2
   only:
-    - schedules
     - master
     - v1.2.2
   tags:
-    - gt-tools-builder-arm
+    - gt-checksum-builder-arm
   script:
     - /bin/bash build-arm.sh
   artifacts:
