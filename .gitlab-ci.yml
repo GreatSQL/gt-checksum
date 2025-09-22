@@ -10,6 +10,7 @@ gt_checkout_build_x86:
   only:
     - schedules
     - master
+    - v1.2.2
   tags:
     - gt-tools-builder-x86
   script:
@@ -17,7 +18,7 @@ gt_checkout_build_x86:
   artifacts:
     paths:
       - binary/
-    expire_in: 30 days
+    expire_in: 7 days
 
 gt_checkout_build_arm:
   stage: build
@@ -25,6 +26,7 @@ gt_checkout_build_arm:
   only:
     - schedules
     - master
+    - v1.2.2
   tags:
     - gt-tools-builder-arm
   script:
@@ -32,4 +34,4 @@ gt_checkout_build_arm:
   artifacts:
     paths:
       - binary/
-    expire_in: 30 days
+    expire_in: 7 days
