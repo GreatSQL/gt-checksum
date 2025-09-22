@@ -107,7 +107,7 @@ func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive s
 	global.Wlog.Debug(vlog)
 	vlog = fmt.Sprintf("(%d) MySQL DB check table %s.%s Generate delete repair statement based on unique index.", logThreadSeq, my.Schema, my.Table)
 	global.Wlog.Debug(vlog)
-	if my.IndexType == "mui" {
+	if my.IndexType == "mul" {
 		var FB, AS []string
 		for _, i := range colData {
 			FB = append(FB, i["columnName"])

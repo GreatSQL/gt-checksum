@@ -98,7 +98,7 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 						sqlType = vi
 						//noIndexD <- struct{}{}
 						pods.DIFFS = "yes"
-						dbf.IndexType = "mui"
+						dbf.IndexType = "mul"
 						//go func() {
 						//	defer func() {
 						//		<-noIndexD
@@ -156,7 +156,7 @@ func (sp *SchedulePlan) FixSqlExec(sqlStrExec <-chan string, logThreadSeq int64)
 	global.Wlog.Debug(vlog)
 	colData := sp.tableAllCol[fmt.Sprintf("%s_greatdbCheck_%s", sp.schema, sp.table)]
 	dbf := dbExec.DataAbnormalFixStruct{Schema: sp.schema, Table: sp.table, ColData: colData.DColumnInfo, SourceDevice: sp.ddrive}
-	dbf.IndexColumnType = "mui"
+	dbf.IndexColumnType = "mul"
 	for {
 		select {
 		case v, ok := <-sqlStrExec:
