@@ -11,7 +11,7 @@ gt-checksum_build_x86:
     - master
     - v1.2.2
   tags:
-    - gt-checksum-builder-x86
+    - dbomb-golangci-lint
   script:
     - /bin/bash build.sh x86_64
   artifacts:
@@ -26,7 +26,7 @@ gt-checksum_build_arm:
     - master
     - v1.2.2
   tags:
-    - gt-checksum-builder-arm
+    - dbomb-golangci-lint
   script:
     - /bin/bash build.sh aarch64
   artifacts:

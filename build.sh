@@ -17,10 +17,12 @@ export CXXFLAGS="-stdlib=libstdc++" CC=/usr/bin/gcc CXX=/usr/bin/g++
 
 vs=`cat ./inputArg/flagHelp.go| grep "app.Version"|awk -F "=" '{print $2}'|sed 's/\"//g'|sed 's/\/\/版本//g'|sed 's/ //g'`
 OracleDrive="instantclient_11_2"
-if [ -z "$1" ] || [ "$1" != "x86_64" ] | [ "$1" != "aarch64" ] ; then
-  arch=x86_64
+if [ ! -z "`which uname > /dev/null 2>&1`" ] ; then
+  arch=`uname -m`
+elif [ ! -z "`echo $MACHTYPE`" ] ; then
+  arch=`echo $MACHTYPE|awk -F '-' '{print $1}'`
 else
-  arch=$1
+  arch=x86_64
 fi
 
 rm -fr gt-checksum-${vs}-linux-${arch} release
