@@ -177,7 +177,7 @@ func (idds IncDataDisposStruct) Aa(fullDataCompletionStatus chan struct{}, cqMq 
 
 		//读取源目端binlog的线程停止
 		if ok && ok1 {
-			fmt.Println("---退出__-")
+			fmt.Println("Exit!")
 			break
 		}
 	}
