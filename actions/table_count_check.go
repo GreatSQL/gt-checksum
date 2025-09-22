@@ -65,19 +65,19 @@ func (sp *SchedulePlan) DoCountDataCheck() {
 			Schema:      schema,
 			Table:       table,
 			CheckObject: sp.checkObject,
-			CheckMod:    sp.checkMod,
+			CheckMode:    sp.checkMod,
 		}
 		vlog = fmt.Sprintf("(%d) Start to verify the total number of rows of table %s.%s source and target ...", logThreadSeq, schema, table)
 		global.Wlog.Debug(vlog)
 		if stmpTableCount == dtmpTableCount {
 			vlog = fmt.Sprintf("(%d) Verify that the total number of rows at the source and destination of table %s.%s is consistent", logThreadSeq, schema, table)
 			global.Wlog.Debug(vlog)
-			pods.Differences = "no"
+			pods.DIFFS = "no"
 			pods.Rows = fmt.Sprintf("%d,%d", stmpTableCount, dtmpTableCount)
 		} else {
 			vlog = fmt.Sprintf("(%d) Verify that the total number of rows at the source and destination of table %s.%s is inconsistent.", logThreadSeq, schema, table)
 			global.Wlog.Debug(vlog)
-			pods.Differences = "yes"
+			pods.DIFFS = "yes"
 			pods.Rows = fmt.Sprintf("%d,%d", stmpTableCount, dtmpTableCount)
 		}
 		measuredDataPods = append(measuredDataPods, pods)

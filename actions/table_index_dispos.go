@@ -311,17 +311,17 @@ func (sp *SchedulePlan) queryTableData(selectSql chanMap, diffQueryData chanDiff
 			if sp.tableMaxRows%uint64(sp.chanrowCount) > 0 {
 				barTotal += 1
 			}
-			sp.bar.NewOption(0, barTotal, "task")
+			sp.bar.NewOption(0, barTotal, "Processing")
 		}
 	}
 	if sp.checkMod == "sample" {
-		sp.bar.NewOption(0, sp.sampDataGroupNumber, "task")
+		sp.bar.NewOption(0, sp.sampDataGroupNumber, "Processing")
 	}
 	for {
 		select {
 		case d, ok := <-sc:
 			if ok {
-				sp.bar.NewOption(0, d, "task")
+				sp.bar.NewOption(0, d, "Processing")
 			}
 		case c, ok := <-selectSql:
 			if !ok {
@@ -443,15 +443,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 					idxc.Sqlwhere = c1.SqlWhere[sp.ddrive]
 					idxc.TableColumn = colData.DColumnInfo
 					dtt, _ := idxc.TableIndexColumn().GeneratingQueryCriteria(ddb, logThreadSeq)
-					//对不同数据库的的null处理
-					//if aa.CheckMd5(stt) != aa.CheckMd5(dtt) {
-					//	if strings.Contains(stt, "/*go actions columnData*//*") {
-					//		stt = strings.ReplaceAll(stt, "/*go actions columnData*//*", "/*go actions columnData*/<nil>/*")
-					//	}
-					//	if strings.Contains(dtt, "/*go actions columnData*//*") {
-					//		dtt = strings.ReplaceAll(dtt, "/*go actions columnData*//*", "/*go actions columnData*/<nil>/*")
-					//	}
-					//}
+
 					if aa.CheckMd5(stt) != aa.CheckMd5(dtt) {
 						add, del := aa.Arrcmp(strings.Split(stt, "/*go actions rowData*/"), strings.Split(dtt, "/*go actions rowData*/"))
 						stt, dtt = "", ""
@@ -464,7 +456,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 							} else if strings.HasPrefix(c1.indexColumnType, "uni") {
 								dbf.IndexType = "uni"
 							} else {
-								dbf.IndexType = "mui"
+								dbf.IndexType = "mul"
 							}
 							if len(del) > 0 {
 								vlog = fmt.Sprintf("(%d) Start to generate the delete statement of check table %s.%s.", logThreadSeq, c1.Schema, c1.Table)
@@ -534,7 +526,7 @@ func (sp SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 				}
 			} else {
 				increSeq++
-				sp.pods.Differences = "yes"
+				sp.pods.DIFFS = "yes"
 				sqlSlice = append(sqlSlice, v)
 				if increSeq == sp.fixTrxNum {
 					var sqlSlice1 []string
@@ -584,9 +576,9 @@ func (sp SchedulePlan) doIndexDataCheck() {
 	sp.pods = &Pod{
 		Schema:      sp.schema,
 		Table:       sp.table,
-		IndexCol:    strings.TrimLeft(strings.Join(sp.columnName, ","), ","),
-		CheckMod:    sp.checkMod,
-		Differences: "no",
+		IndexColumn:    strings.TrimLeft(strings.Join(sp.columnName, ","), ","),
+		CheckMode:    sp.checkMod,
+		DIFFS: "no",
 		Datafix:     sp.datafixType,
 	}
 	idxc.Drivce = sp.sdrive
@@ -608,7 +600,10 @@ func (sp SchedulePlan) doIndexDataCheck() {
 	} else {
 		sp.tableMaxRows = B
 	}
-	sp.pods.Rows = fmt.Sprintf("%d,%d", A, B)
+	// 重新查询精确行数
+	sourceExactCount := sp.getExactRowCount(sp.sdbPool, sp.schema, sp.table, logThreadSeq)
+	targetExactCount := sp.getExactRowCount(sp.ddbPool, sp.schema, sp.table, logThreadSeq)
+	sp.pods.Rows = fmt.Sprintf("%d,%d", sourceExactCount, targetExactCount)
 	var scheduleCount = make(chan int64, 1)
 	go sp.indexColumnDispos(sqlWhere, selectColumnStringM)
 	go sp.queryTableSql(sqlWhere, selectSql, tableColumn, scheduleCount, logThreadSeq)

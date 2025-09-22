@@ -12,64 +12,71 @@ func (rc *ConfigParameter) LevelParameterCheck() {
 		err error
 	)
 	if rc.FirstL.DSNs, err = rc.ConfFine.GetSection("DSNs"); rc.FirstL.DSNs == nil && err != nil {
-		rc.getErr("Failed to get DSNs parameters", err)
+		rc.getErr("Failed to set [DSNs] options", err)
 	}
 	if rc.FirstL.Schema, err = rc.ConfFine.GetSection("Schema"); rc.FirstL.Schema == nil && err != nil {
-		rc.getErr("Failed to get Schema parameters", err)
+		rc.getErr("Failed to set [Schema] options", err)
 	}
 	//Source Destination connection 获取jdbc连接信息
 	for _, i := range []string{"srcDSN", "dstDSN"} {
 		if _, err = rc.FirstL.DSNs.GetKey(i); err != nil {
-			rc.getErr(fmt.Sprintf("Failed to get %s parameters", i), err)
+			rc.getErr(fmt.Sprintf("Failed to set option %s", i), err)
 		}
 	}
 	//Schema 获取校验库表信息
 	for _, i := range []string{"tables"} {
 		if _, err = rc.FirstL.Schema.GetKey(i); err != nil {
-			rc.getErr(fmt.Sprintf("Failed to get %s parameters", i), err)
+			rc.getErr(fmt.Sprintf("Failed to set option %s", i), err)
 		}
 	}
-	if rc.ParametersSwitch {
-		if rc.FirstL.Logs, err = rc.ConfFine.GetSection("Logs"); rc.FirstL.Logs == nil && err != nil {
-			rc.getErr("Failed to get Logs parameters", err)
+
+	if rc.FirstL.Logs, err = rc.ConfFine.GetSection("Logs"); rc.FirstL.Logs == nil && err != nil {
+		fmt.Println("Failed to set [Logs] options, using default values")
+	}
+	if rc.FirstL.Rules, err = rc.ConfFine.GetSection("Rules"); rc.FirstL.Rules == nil && err != nil {
+		fmt.Println("Failed to set [Rules] options, using default values")
+	}
+	if rc.FirstL.Repair, err = rc.ConfFine.GetSection("Repair"); rc.FirstL.Repair == nil && err != nil {
+		fmt.Println("Failed to set [Repair] options, using default values")
+	}
+	if rc.FirstL.Struct, err = rc.ConfFine.GetSection("Struct"); rc.FirstL.Repair == nil && err != nil {
+		fmt.Println("Failed to set [Struct] options, using default values")
+	}
+	//Schema 获取校验库表信息
+	for _, i := range []string{"checkNoIndexTable", "caseSensitiveObjectName"} {
+		if _, err = rc.FirstL.Schema.GetKey(i); err != nil {
+			fmt.Printf("Failed to set option %s, using default value\n", i)
 		}
-		if rc.FirstL.Rules, err = rc.ConfFine.GetSection("Rules"); rc.FirstL.Rules == nil && err != nil {
-			rc.getErr("Failed to get Rules parameters", err)
-		}
-		if rc.FirstL.Repair, err = rc.ConfFine.GetSection("Repair"); rc.FirstL.Repair == nil && err != nil {
-			rc.getErr("Failed to get Repair parameters", err)
-		}
-		if rc.FirstL.Struct, err = rc.ConfFine.GetSection("Struct"); rc.FirstL.Repair == nil && err != nil {
-			rc.getErr("Failed to get Struct parameters", err)
-		}
-		//Schema 获取校验库表信息
-		for _, i := range []string{"checkNoIndexTable", "lowerCaseTableNames"} {
-			if _, err = rc.FirstL.Schema.GetKey(i); err != nil {
-				rc.getErr(fmt.Sprintf("Failed to get %s parameters", i), err)
-			}
-		}
-		//Logs 二级参数信息
-		for _, i := range []string{"log", "logLevel"} {
+	}
+	//Logs 二级参数信息
+	if rc.FirstL.Logs != nil {
+		for _, i := range []string{"logFile", "logLevel"} {
 			if _, err = rc.FirstL.Logs.GetKey(i); err != nil {
-				rc.getErr(fmt.Sprintf("Failed to get %s parameters", i), err)
+				fmt.Printf("Failed to set option %s, using default value\n", i)
 			}
 		}
-		//Rules 二级参数检测
-		for _, i := range []string{"parallel-thds", "queue-size", "checkMode", "checkObject", "ratio", "chanRowCount"} {
+	}
+	//Rules 二级参数检测
+	if rc.FirstL.Rules != nil {
+		for _, i := range []string{"parallelThds", "queueSize", "checkMode", "checkObject", "ratio", "chunkSize", "memoryLimit"} {
 			if _, err = rc.FirstL.Rules.GetKey(i); err != nil {
-				rc.getErr(fmt.Sprintf("Failed to get %s parameters", i), err)
+				fmt.Printf("Failed to set option %s, using default value\n", i)
 			}
 		}
-		//Struct 二级参数检测
+	}
+	//Struct 二级参数检测
+	if rc.FirstL.Struct != nil {
 		for _, i := range []string{"ScheckMod", "ScheckOrder", "ScheckFixRule"} {
 			if _, err = rc.FirstL.Struct.GetKey(i); err != nil {
-				rc.getErr(fmt.Sprintf("Failed to get %s parameters", i), err)
+				fmt.Printf("Failed to set option %s, using default value\n", i)
 			}
 		}
-		//Repair 二级参数校验
+	}
+	//Repair 二级参数校验
+	if rc.FirstL.Repair != nil {
 		for _, i := range []string{"datafix", "fixTrxNum", "fixFileName"} {
 			if _, err = rc.FirstL.Repair.GetKey(i); err != nil {
-				rc.getErr(fmt.Sprintf("Failed to get %s parameters", i), err)
+				fmt.Printf("Failed to set option %s, using default value\n", i)
 			}
 		}
 	}
@@ -100,65 +107,130 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 
 	//校验库表设置
 	rc.SecondaryL.SchemaV.Tables = strings.TrimSpace(rc.FirstL.Schema.Key("tables").String())
-	rc.SecondaryL.SchemaV.IgnoreTables = strings.TrimSpace(rc.FirstL.Schema.Key("ignore-tables").String())
+	rc.SecondaryL.SchemaV.IgnoreTables = strings.TrimSpace(rc.FirstL.Schema.Key("ignoreTables").String())
 	if rc.SecondaryL.SchemaV.IgnoreTables == "" {
 		rc.SecondaryL.SchemaV.IgnoreTables = "nil"
 	}
-	if rc.ParametersSwitch {
-		rc.SecondaryL.SchemaV.LowerCaseTableNames = rc.FirstL.Schema.Key("lowerCaseTableNames").In("no", []string{"yes", "no"})
-		rc.SecondaryL.SchemaV.CheckNoIndexTable = rc.FirstL.Schema.Key("checkNoIndexTable").In("no", []string{"yes", "no"})
-		//Struct
+	rc.SecondaryL.SchemaV.CaseSensitiveObjectName = rc.FirstL.Schema.Key("caseSensitiveObjectName").In("no", []string{"yes", "no"})
+	rc.SecondaryL.SchemaV.CheckNoIndexTable = rc.FirstL.Schema.Key("checkNoIndexTable").In("no", []string{"yes", "no"})
+	//Struct
+	if rc.FirstL.Struct != nil {
 		rc.SecondaryL.StructV.ScheckMod = rc.FirstL.Struct.Key("ScheckMod").In("strict", []string{"loose", "strict"})
-		rc.SecondaryL.StructV.ScheckOrder = rc.FirstL.Struct.Key("ScheckOrder").In("no", []string{"yes", "no"})
-		rc.SecondaryL.StructV.ScheckFixRule = rc.FirstL.Struct.Key("ScheckFixRule").In("src", []string{"src", "dst"})
-
-		//Logs 获取相关参数
-		rc.SecondaryL.LogV.LogFile = rc.FirstL.Logs.Key("log").String()
-		if rc.SecondaryL.LogV.LogFile == "" {
-			rc.getErr("Failed to convert log parameter to int", err)
-		}
-		rc.SecondaryL.LogV.LogLevel = rc.FirstL.Logs.Key("logLevel").In("info", []string{"debug", "info", "warn", "error"})
-
-		if rc.SecondaryL.RulesV.ParallelThds, err = rc.FirstL.Rules.Key("parallel-thds").Int(); err != nil {
-			rc.getErr("Failed to convert parallel-thds parameter to int", err)
-		}
-		if rc.SecondaryL.RulesV.ChanRowCount, err = rc.FirstL.Rules.Key("chanRowCount").Int(); err != nil {
-			rc.getErr("Failed to convert chanRowCount parameter to int", err)
-		}
-		if rc.SecondaryL.RulesV.QueueSize, err = rc.FirstL.Rules.Key("queue-size").Int(); err != nil {
-			rc.getErr("Failed to convert queue-size parameter to int", err)
-		}
-		if rc.SecondaryL.RulesV.Ratio, err = rc.FirstL.Rules.Key("ratio").Int(); err != nil {
-			rc.getErr("Failed to convert Ratio parameter to int", err)
-		}
-		rc.SecondaryL.RulesV.CheckMode = rc.FirstL.Rules.Key("checkMode").In("rows", []string{"count", "rows", "sample"})
-		rc.SecondaryL.RulesV.CheckObject = rc.FirstL.Rules.Key("checkObject").In("data", []string{"data", "struct", "index", "partitions", "foreign", "trigger", "func", "proc"})
-
-		if rc.SecondaryL.RepairV.FixTrxNum, err = rc.FirstL.Repair.Key("fixTrxNum").Int(); err != nil {
-			rc.getErr("Failed to convert fixTrxNum parameter to int", err)
-		}
-		rc.SecondaryL.RepairV.Datafix = rc.FirstL.Repair.Key("datafix").In("file", []string{"file", "table"})
-		if rc.SecondaryL.RepairV.Datafix == "file" {
-			if _, err = rc.FirstL.Repair.GetKey("fixFileName"); err != nil {
-				rc.getErr("Failed to get fixFileName parameters", err)
-			}
-			rc.SecondaryL.RepairV.FixFileName = rc.FirstL.Repair.Key("fixFileName").String()
-		}
 	} else {
-		rc.SecondaryL.RulesV.ChanRowCount = 10000
-		rc.SecondaryL.RulesV.ParallelThds = 10
-		rc.SecondaryL.RulesV.QueueSize = 100
-		rc.SecondaryL.RulesV.Ratio = 10
-		rc.SecondaryL.LogV.LogFile = "./gt-checksum.log"
-		rc.SecondaryL.LogV.LogLevel = "info"
-		rc.SecondaryL.SchemaV.LowerCaseTableNames = "no"
-		rc.SecondaryL.SchemaV.CheckNoIndexTable = "no"
-		rc.SecondaryL.RulesV.CheckMode = "rows"
-		rc.SecondaryL.RulesV.CheckObject = "data"
-		rc.SecondaryL.RepairV.Datafix = "file"
-		rc.SecondaryL.RepairV.FixFileName = "./gt-checksum-DataFix.sql"
-		rc.SecondaryL.RepairV.FixTrxNum = 100
+		rc.SecondaryL.StructV.ScheckMod = "strict"
+		fmt.Println("Failed to set option ScheckMod, using default value strict")
 	}
+	if rc.FirstL.Struct != nil {
+		rc.SecondaryL.StructV.ScheckOrder = rc.FirstL.Struct.Key("ScheckOrder").In("no", []string{"yes", "no"})
+	} else {
+		rc.SecondaryL.StructV.ScheckOrder = "no"
+	}
+	if rc.FirstL.Struct != nil {
+		rc.SecondaryL.StructV.ScheckFixRule = rc.FirstL.Struct.Key("ScheckFixRule").In("src", []string{"src", "dst"})
+	} else {
+		rc.SecondaryL.StructV.ScheckFixRule = "src"
+	}
+
+	//Logs 获取相关参数
+	if rc.FirstL.Logs != nil {
+		rc.SecondaryL.LogV.LogFile = rc.FirstL.Logs.Key("logFile").String()
+		if rc.SecondaryL.LogV.LogFile == "" {
+			rc.SecondaryL.LogV.LogFile = "./gt-checksum.log"
+				fmt.Println("Failed to set option LogFile, using default value ./gt-checksum.log")
+			}
+		} else {
+			rc.SecondaryL.LogV.LogFile = "./gt-checksum.log"
+			fmt.Println("Failed to set option LogFile, using default value ./gt-checksum.log")
+		}
+		if rc.FirstL.Logs != nil {
+			rc.SecondaryL.LogV.LogLevel = rc.FirstL.Logs.Key("logLevel").In("info", []string{"debug", "info", "warn", "error"})
+		} else {
+			rc.SecondaryL.LogV.LogLevel = "info"
+		}
+
+		if rc.FirstL.Rules != nil {
+			if rc.SecondaryL.RulesV.ParallelThds, err = rc.FirstL.Rules.Key("parallelThds").Int(); err != nil {
+				fmt.Println("Failed to set option parallelThds, using default value 10")
+				rc.SecondaryL.RulesV.ParallelThds = 10
+			}
+		} else {
+			fmt.Println("Failed to set option parallelThds, using default value 10")
+			rc.SecondaryL.RulesV.ParallelThds = 10
+		}
+		if rc.FirstL.Rules != nil {
+			if rc.SecondaryL.RulesV.ChanRowCount, err = rc.FirstL.Rules.Key("chunkSize").Int(); err != nil {
+				fmt.Println("Failed to set option chunkSize, using default value 1000")
+				rc.SecondaryL.RulesV.ChanRowCount = 10000
+			}
+		} else {
+			fmt.Println("Failed to set option chunkSize, using default value 1000")
+			rc.SecondaryL.RulesV.ChanRowCount = 10000
+		}
+		if rc.FirstL.Rules != nil {
+			if rc.SecondaryL.RulesV.QueueSize, err = rc.FirstL.Rules.Key("queueSize").Int(); err != nil {
+				fmt.Println("Failed to set option queueSize, using default value 100")
+				rc.SecondaryL.RulesV.QueueSize = 1000
+			}
+		} else {
+			fmt.Println("Failed to set option queueSize, using default value 100")
+			rc.SecondaryL.RulesV.QueueSize = 1000
+		}
+		if rc.FirstL.Rules != nil {
+			if rc.SecondaryL.RulesV.Ratio, err = rc.FirstL.Rules.Key("ratio").Int(); err != nil {
+				fmt.Println("Failed to set option Ratio, using default value 10")
+				rc.SecondaryL.RulesV.Ratio = 10
+			}
+		} else {
+			fmt.Println("Failed to set option Ratio, using default value 10")
+			rc.SecondaryL.RulesV.Ratio = 10
+		}
+		if rc.FirstL.Rules != nil {
+			rc.SecondaryL.RulesV.CheckMode = rc.FirstL.Rules.Key("checkMode").In("rows", []string{"count", "rows", "sample"})
+		} else {
+			rc.SecondaryL.RulesV.CheckMode = "rows"
+		}
+		if rc.FirstL.Rules != nil {
+			rc.SecondaryL.RulesV.CheckObject = rc.FirstL.Rules.Key("checkObject").In("data", []string{"data", "struct", "index", "partitions", "foreign", "trigger", "func", "proc"})
+		} else {
+			rc.SecondaryL.RulesV.CheckObject = "data"
+		}
+		if rc.FirstL.Rules != nil {
+			if rc.SecondaryL.RulesV.MemoryLimit, err = rc.FirstL.Rules.Key("memoryLimit").Int(); err != nil {
+				fmt.Println("Failed to set option memoryLimit, using default value 1024")
+				rc.SecondaryL.RulesV.MemoryLimit = 1024
+			}
+		} else {
+			fmt.Println("Failed to set option memoryLimit, using default value 1024")
+			rc.SecondaryL.RulesV.MemoryLimit = 1024
+		}
+
+		if rc.FirstL.Repair != nil {
+			if rc.SecondaryL.RepairV.FixTrxNum, err = rc.FirstL.Repair.Key("fixTrxNum").Int(); err != nil {
+				fmt.Println("Failed to set option fixTrxNum, using default value 100")
+				rc.SecondaryL.RepairV.FixTrxNum = 100
+			}
+		} else {
+			fmt.Println("Failed to set option fixTrxNum, using default value 100")
+			rc.SecondaryL.RepairV.FixTrxNum = 100
+		}
+		if rc.FirstL.Repair != nil {
+			rc.SecondaryL.RepairV.Datafix = rc.FirstL.Repair.Key("datafix").In("file", []string{"file", "table"})
+		} else {
+			rc.SecondaryL.RepairV.Datafix = "file"
+		}
+		if rc.SecondaryL.RepairV.Datafix == "file" {
+			if rc.FirstL.Repair != nil {
+				if _, err = rc.FirstL.Repair.GetKey("fixFileName"); err != nil {
+					fmt.Println("Failed to set option fixFileName, using default value ./gt-checksum-DataFix.sql")
+					rc.SecondaryL.RepairV.FixFileName = "./gt-checksum-DataFix.sql"
+				} else {
+					rc.SecondaryL.RepairV.FixFileName = rc.FirstL.Repair.Key("fixFileName").String()
+				}
+			} else {
+				fmt.Println("Failed to set option fixFileName, using default value ./gt-checksum-DataFix.sql")
+				rc.SecondaryL.RepairV.FixFileName = "./gt-checksum-DataFix.sql"
+			}
+		}
 }
 
 /*
@@ -169,12 +241,7 @@ func (rc *ConfigParameter) getConfig() {
 		err error
 	)
 	//读取配置文件信息
-	if strings.HasSuffix(rc.Config, "gc.conf") {
-		rc.ParametersSwitch = true
-	}
-	if strings.HasSuffix(rc.Config, "gc.conf-simple") {
-		rc.ParametersSwitch = false
-	}
+
 	//处理配置文件中的特殊字符
 	rc.ConfFine, err = ini.LoadSources(ini.LoadOptions{IgnoreInlineComment: true}, rc.Config)
 	if err != nil {

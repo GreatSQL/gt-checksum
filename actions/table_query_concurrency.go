@@ -11,7 +11,7 @@ import (
 )
 
 type SchedulePlan struct {
-	singleIndexChanRowCount, jointIndexChanRowCount, mqQueueDepth int
+	chunkSize, mqQueueDepth int
 	schema, table                                                 string   //待校验库名、表名
 	columnName                                                    []string //待校验表的列名，有可能是多个
 	tmpTableDataFileDir                                           string   //临时表文件生成的相对路径
@@ -79,21 +79,15 @@ func (sp *SchedulePlan) Schedulingtasks() {
 			}
 		}
 		if len(v) == 0 { //校验无索引表
-			if sp.singleIndexChanRowCount <= sp.jointIndexChanRowCount {
-				sp.chanrowCount = sp.singleIndexChanRowCount
-			} else {
-				sp.chanrowCount = sp.jointIndexChanRowCount
-			}
+			sp.chanrowCount = sp.chunkSize
 			logThreadSeq := rand.Int63()
 			sp.SingleTableCheckProcessing(sp.chanrowCount, logThreadSeq)
 		} else { //校验有索引的表
-			if len(v) > 1 { //根据索引列数量觉得chanrowCount数
-				sp.chanrowCount = sp.jointIndexChanRowCount
-			} else {
-				sp.chanrowCount = sp.singleIndexChanRowCount
-			}
+			sp.chanrowCount = sp.chunkSize
 			sp.columnName = v
-			fmt.Println(fmt.Sprintf("begin checkSum index table %s.%s", sp.schema, sp.table))
+			// 开始新表的进度显示
+			tableName := fmt.Sprintf("begin checkSum index table %s.%s", sp.schema, sp.table)
+			sp.bar.NewTableProgress(tableName)
 			sp.doIndexDataCheck()
 			fmt.Println()
 			fmt.Println(fmt.Sprintf("table %s.%s checksum complete", sp.schema, sp.table))
@@ -108,8 +102,7 @@ func CheckTableQuerySchedule(sdb, ddb *global.Pool, tableIndexColumnMap map[stri
 		concurrency:             m.SecondaryL.RulesV.ParallelThds,
 		sdbPool:                 sdb,
 		ddbPool:                 ddb,
-		singleIndexChanRowCount: m.SecondaryL.RulesV.ChanRowCount,
-		jointIndexChanRowCount:  m.SecondaryL.RulesV.ChanRowCount,
+		chunkSize:				 m.SecondaryL.RulesV.ChanRowCount,
 		tableIndexColumnMap:     tableIndexColumnMap,
 		tableAllCol:             tableAllCol,
 		datafixType:             m.SecondaryL.RepairV.Datafix,

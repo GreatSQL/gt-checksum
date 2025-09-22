@@ -20,7 +20,7 @@ func (or *QueryTable) QueryTableIndexColumnInfo(db *sql.DB, logThreadSeq int64) 
 		tableData []map[string]interface{}
 		err       error
 	)
-	strsql = fmt.Sprintf("select c.COLUMN_NAME as \"columnName\",decode(c.DATA_TYPE,'DATE',c.data_type,c.DATA_TYPE || '(' || c.data_LENGTH || ')') as \"columnType\", decode(co.constraint_type, 'P','1','0') as \"columnKey\",i.UNIQUENESS as \"nonUnique\", ic.INDEX_NAME as \"indexName\", ic.COLUMN_POSITION as \"IndexSeq\", c.COLUMN_ID as \"columnSeq\" from all_tab_cols c inner join all_ind_columns ic on c.TABLE_NAME = ic.TABLE_NAME and c.OWNER = ic.INDEX_OWNER and c.COLUMN_NAME = ic.COLUMN_NAME inner join all_indexes i on ic.INDEX_OWNER = i.OWNER and ic.INDEX_NAME = i.INDEX_NAME and ic.TABLE_NAME = i.TABLE_NAME left join all_constraints co on co.owner = c.owner and co.table_name = c.table_name and co.index_name = i.index_name where c.OWNER = '%s' and c.TABLE_NAME = '%s' ORDER BY I.INDEX_NAME, ic.COLUMN_POSITION", strings.ToUpper(or.Schema), or.Table)
+	strsql = fmt.Sprintf("SELECT c.COLUMN_NAME AS \"columnName\", DECODE(c.DATA_TYPE, 'DATE', c.data_type, c.DATA_TYPE || '(' || c.data_LENGTH || ')') AS \"columnType\", DECODE(co.constraint_type, 'P', '1', '0') AS \"columnKey\", i.UNIQUENESS AS \"nonUnique\", ic.INDEX_NAME AS \"indexName\", ic.COLUMN_POSITION AS \"IndexSeq\", c.COLUMN_ID AS \"columnSeq\" FROM all_tab_cols c INNER JOIN all_ind_columns ic ON c.TABLE_NAME=ic.TABLE_NAME AND c.OWNER=ic.INDEX_OWNER AND c.COLUMN_NAME=ic.COLUMN_NAME INNER JOIN all_indexes i ON ic.INDEX_OWNER=i.OWNER AND ic.INDEX_NAME=i.INDEX_NAME AND ic.TABLE_NAME=i.TABLE_NAME LEFT JOIN all_constraints co ON co.owner=c.owner AND co.table_name=c.table_name AND co.index_name=i.index_name WHERE c.OWNER='%s' AND c.TABLE_NAME='%s' ORDER BY I.INDEX_NAME, ic.COLUMN_POSITION", strings.ToUpper(or.Schema), or.Table)
 	vlog = fmt.Sprintf("(%d) [%s] Generate a sql statement to query the index statistics of table %s.%s under the %s database.sql messige is {%s}", logThreadSeq, Event, or.Schema, or.Table, DBType, strsql)
 	global.Wlog.Debug(vlog)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
@@ -57,7 +57,7 @@ func (or *QueryTable) IndexDisposF(queryData []map[string]interface{}, logThread
 	
 	for _, v := range queryData {
 		currIndexName = fmt.Sprintf("%s", v["indexName"])
-		if or.LowerCaseTableNames == "no" {
+		if or.CaseSensitiveObjectName == "no" {
 			currIndexName = strings.ToUpper(fmt.Sprintf("%s", v["indexName"]))
 		}
 		
@@ -138,7 +138,7 @@ func (or *QueryTable) TmpTableIndexColumnSelectDispos(logThreadSeq int64) map[st
 	//根据索引列的多少，生成select 列条件，并生成列长度，为判断列是否为null或为空做判断
 	if len(columnName) == 1 {
 		columnSelect["selectColumnName"] = strings.Join(columnName, "")
-		columnSelect["selectColumnLength"] = fmt.Sprintf("LENGTH(trim(%s)) as %s_length", strings.Join(columnName, ""), strings.Join(columnName, ""))
+		columnSelect["selectColumnLength"] = fmt.Sprintf("LENGTH(trim(%s)) AS %s_length", strings.Join(columnName, ""), strings.Join(columnName, ""))
 		columnSelect["selectColumnLengthSlice"] = fmt.Sprintf("%s_length", strings.Join(columnName, ""))
 		columnSelect["selectColumnNull"] = fmt.Sprintf("%s is null ", strings.Join(columnName, ""))
 		columnSelect["selectColumnEmpty"] = fmt.Sprintf("%s = '' ", strings.Join(columnName, ""))
@@ -147,7 +147,7 @@ func (or *QueryTable) TmpTableIndexColumnSelectDispos(logThreadSeq int64) map[st
 		columnSelect["selectColumnName"] = strings.Join(columnName, "/*column*/")
 		var aa, bb, cc, dd []string
 		for i := range columnName {
-			aa = append(aa, fmt.Sprintf("LENGTH(trim(%s)) as %s_length", columnName[i], columnName[i]))
+			aa = append(aa, fmt.Sprintf("LENGTH(trim(%s)) AS %s_length", columnName[i], columnName[i]))
 			bb = append(bb, fmt.Sprintf("%s_length", columnName[i]))
 			cc = append(cc, fmt.Sprintf("%s is null ", columnName[i]))
 			dd = append(dd, fmt.Sprintf("%s = '' ", columnName[i]))
@@ -172,7 +172,7 @@ func (or *QueryTable) TmpTableIndexColumnRowsCount(db *sql.DB, logThreadSeq int6
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start to query the total number of rows in the following table %s.%s of the %s database.", logThreadSeq, Event, or.Schema, or.Table, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("select count(1) as \"sum\" from \"%s\".\"%s\"", or.Schema, or.Table)
+	strsql = fmt.Sprintf("SELECT COUNT(1) AS \"sum\" FROM \"%s\".\"%s\"", or.Schema, or.Table)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return 0, err
@@ -205,7 +205,7 @@ func (or *QueryTable) TmpTableColumnGroupDataDispos(db *sql.DB, where string, co
 	if where != "" {
 		whereExist = fmt.Sprintf("where %s ", where)
 	}
-	strsql = fmt.Sprintf("select %s as \"columnName\",count(1) as \"count\" from \"%s\".\"%s\" %s group by %s order by %s", columnName, or.Schema, or.Table, whereExist, columnName, columnName)
+	strsql = fmt.Sprintf("SELECT %s AS \"columnName\", COUNT(1) AS \"count\" FROM \"%s\".\"%s\" %s GROUP BY %s ORDER BY %s", columnName, or.Schema, or.Table, whereExist, columnName, columnName)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return nil, err
@@ -226,7 +226,7 @@ func (or *QueryTable) TableRows(db *sql.DB, logThreadSeq int64) (uint64, error) 
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start to query the total number of rows in the following table %s.%s of the %s database.", logThreadSeq, Event, or.Schema, or.Table, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("select count(1) as \"sum\" from \"%s\".\"%s\"", or.Schema, or.Table)
+	strsql = fmt.Sprintf("SELECT COUNT(1) AS \"sum\" FROM \"%s\".\"%s\"", or.Schema, or.Table)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return 0, err
@@ -356,10 +356,10 @@ func (or *QueryTable) GeneratingQuerySql(db *sql.DB, logThreadSeq int64) (string
 		nu := "0"
 		tmpcolumnName := fmt.Sprintf("\"%s\"", i["columnName"])
 		if strings.ToUpper(i["dataType"]) == "DATE" {
-			tmpcolumnName = fmt.Sprintf("to_char(%s,'YYYY-MM-DD HH24:MI:SS')", tmpcolumnName)
+			tmpcolumnName = fmt.Sprintf("TO_CHAR(%s,'YYYY-MM-DD HH24:MI:SS')", tmpcolumnName)
 		}
 		if strings.Contains(strings.ToUpper(i["dataType"]), "TIMESTAMP") {
-			tmpcolumnName = fmt.Sprintf("to_char(%s,'YYYY-MM-DD HH24:MI:SS')", tmpcolumnName)
+			tmpcolumnName = fmt.Sprintf("TO_CHAR(%s,'YYYY-MM-DD HH24:MI:SS')", tmpcolumnName)
 		}
 		if strings.HasPrefix(strings.ToUpper(i["dataType"]), "NUMBER(") {
 			dianAfter := strings.ReplaceAll(strings.Split(i["dataType"], ",")[1], ")", "")
@@ -374,16 +374,16 @@ func (or *QueryTable) GeneratingQuerySql(db *sql.DB, logThreadSeq int64) (string
 				tmpb = append(tmpb, mu)
 			}
 			if bb == 0 {
-				tmpcolumnName = fmt.Sprintf("to_char(%s,'FM%s0')", tmpcolumnName, strings.Join(tmpb, ""))
+				tmpcolumnName = fmt.Sprintf("TO_CHAR(%s,'FM%s0')", tmpcolumnName, strings.Join(tmpb, ""))
 			} else {
-				tmpcolumnName = fmt.Sprintf("to_char(%s,'FM%s0.%s')", tmpcolumnName, strings.Join(tmpb, ""), strings.Join(tmpa, ""))
+				tmpcolumnName = fmt.Sprintf("TO_CHAR(%s,'FM%s0.%s')", tmpcolumnName, strings.Join(tmpb, ""), strings.Join(tmpa, ""))
 			}
 		}
 		columnNameSeq = append(columnNameSeq, tmpcolumnName)
 	}
 	queryColumn := strings.Join(columnNameSeq, ",")
 	//sqlstr := fmt.Sprintf("select %s from \"%s\".\"%s\" as of scn %s where %s", queryColumn, schema, table, oracleScn, sqlWhere)
-	selectSql = fmt.Sprintf("select %s from \"%s\".\"%s\" where %s", queryColumn, strings.ToUpper(or.Schema), or.Table, or.Sqlwhere)
+	selectSql = fmt.Sprintf("SELECT %s FROM \"%s\".\"%s\" WHERE %s", queryColumn, strings.ToUpper(or.Schema), or.Table, or.Sqlwhere)
 	vlog = fmt.Sprintf("(%d) [%s] Complete the data query sql of table %s.%s in the %s database.", logThreadSeq, Event, or.Schema, or.Table, DBType)
 	global.Wlog.Debug(vlog)
 	return selectSql, nil

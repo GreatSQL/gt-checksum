@@ -16,7 +16,7 @@ type GlobalCS struct {
 }
 
 func (or *GlobalCS) flushTable(db *sql.DB, logThreadSeq int) error {
-	sqlstr := fmt.Sprintf("alter system checkpoint")
+	sqlstr := fmt.Sprintf("ALTER SYSTEM CHECKPOINT")
 	alog := fmt.Sprintf("(%d) Oracle DB alter system checkpoint...", logThreadSeq)
 	global.Wlog.Info(alog)
 	if _, err := db.Exec(sqlstr); err != nil {
@@ -113,7 +113,7 @@ func (or *GlobalCS) globalConsistencyPoint(db *sql.DB, logThreadSeq int) (map[st
 	var position string
 	var rows *sql.Rows
 	var globalPoint = make(map[string]string)
-	sqlstr := fmt.Sprintf("select current_scn as \"globalScn\" from v$database")
+	sqlstr := fmt.Sprintf("SELECT CURRENT_SCN AS \"globalScn\" FROM v$database")
 	alog := fmt.Sprintf("(%d) Oracle DB start select current_scn from v$database...", logThreadSeq)
 	global.Wlog.Info(alog)
 	rows, err := db.Query(sqlstr)
