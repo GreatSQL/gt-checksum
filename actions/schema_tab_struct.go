@@ -319,13 +319,13 @@ func (stcls *schemaTable) tableIndexAlgorithm(indexType map[string][]string) (st
 		}
 
 		//有单列索引存在
-		if len(indexType["mui_single"]) >= 1 {
-			return "mui_single", indexType["mui_single"]
+		if len(indexType["mul_single"]) >= 1 {
+			return "mul_single", indexType["mul_single"]
 		}
 
 		//有无单列普通索引，和多列普通索引，选择多列普通索引
-		if len(indexType["mui_multiseriate"]) > 1 {
-			return "mui_multiseriate", indexType["mui_multiseriate"]
+		if len(indexType["mul_multiseriate"]) > 1 {
+			return "mul_multiseriate", indexType["mul_multiseriate"]
 		}
 	} else {
 		var err = errors.New("Missing indexes")

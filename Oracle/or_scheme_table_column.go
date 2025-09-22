@@ -493,7 +493,7 @@ func (or *QueryTable) TableIndexChoice(queryData []map[string]interface{}, logTh
 	}
 	//vlog = fmt.Sprintf("(%d) MySQL DB nounique key index starts to choose the best.", logThreadSeq)
 	//global.Wlog.Debug(vlog)
-	f := or.keyChoiceDispos(multiseriateIndexColumnMap, "mui")
+	f := or.keyChoiceDispos(multiseriateIndexColumnMap, "mul")
 	for k, v := range f {
 		if len(v) > 0 {
 			indexChoice[k] = v
