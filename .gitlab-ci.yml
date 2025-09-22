@@ -13,10 +13,10 @@ gt-checksum_build_x86:
   tags:
     - gt-checksum-builder-x86
   script:
-    - /bin/bash build-x86.sh
+    - /bin/bash build.sh x86_64
   artifacts:
     paths:
-      - binary/
+      - release/
     expire_in: 7 days
 
 gt-checksum_build_arm:
@@ -28,8 +28,8 @@ gt-checksum_build_arm:
   tags:
     - gt-checksum-builder-arm
   script:
-    - /bin/bash build-arm.sh
+    - /bin/bash build.sh aarch64
   artifacts:
     paths:
-      - binary/
+      - release/
     expire_in: 7 days
