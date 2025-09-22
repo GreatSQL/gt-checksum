@@ -8,12 +8,11 @@ gt-checksum_build_x86:
   stage: build
   retry: 2
   only:
-    - master
     - v1.2.2
   tags:
-    - dbomb-golangci-lint
+    - golangci-x86
   script:
-    - /bin/bash build.sh x86_64
+    - /bin/bash build.sh
   artifacts:
     paths:
       - release/
@@ -23,12 +22,11 @@ gt-checksum_build_arm:
   stage: build
   retry: 2
   only:
-    - master
     - v1.2.2
   tags:
-    - dbomb-golangci-lint
+    - golangci-arm
   script:
-    - /bin/bash build.sh aarch64
+    - /bin/bash build.sh
   artifacts:
     paths:
       - release/
