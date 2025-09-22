@@ -97,8 +97,8 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 						rowData = ki
 						sqlType = vi
 						//noIndexD <- struct{}{}
-						pods.Differences = "yes"
-						dbf.IndexType = "mui"
+						pods.DIFFS = "yes"
+						dbf.IndexType = "mul"
 						//go func() {
 						//	defer func() {
 						//		<-noIndexD
@@ -156,7 +156,7 @@ func (sp *SchedulePlan) FixSqlExec(sqlStrExec <-chan string, logThreadSeq int64)
 	global.Wlog.Debug(vlog)
 	colData := sp.tableAllCol[fmt.Sprintf("%s_greatdbCheck_%s", sp.schema, sp.table)]
 	dbf := dbExec.DataAbnormalFixStruct{Schema: sp.schema, Table: sp.table, ColData: colData.DColumnInfo, SourceDevice: sp.ddrive}
-	dbf.IndexColumnType = "mui"
+	dbf.IndexColumnType = "mul"
 	for {
 		select {
 		case v, ok := <-sqlStrExec:
@@ -322,9 +322,9 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 	global.Wlog.Info(vlog)
 	barTableRow := sp.NoIndexTableCount(logThreadSeq)
 	pods := Pod{Schema: sp.schema, Table: sp.table,
-		IndexCol:    "noIndex",
-		CheckMod:    sp.checkMod,
-		Differences: "no",
+		IndexColumn:    "noIndex",
+		CheckMode:    sp.checkMod,
+		DIFFS: "no",
 		Datafix:     sp.datafixType,
 	}
 	sp.bar.NewOption(0, barTableRow, "rows")
@@ -396,9 +396,28 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 	sp.bar.Finish()
 	sp.FixSqlExec(sqlStrExec, int64(logThreadSeq))
 	//输出校验结果信息
-	pods.Rows = fmt.Sprintf("%v", maxTableCount)
+	// 重新查询精确行数
+	sourceExactCount := sp.getExactRowCount(sp.sdbPool, sp.schema, sp.table, logThreadSeq)
+	targetExactCount := sp.getExactRowCount(sp.ddbPool, sp.schema, sp.table, logThreadSeq)
+	pods.Rows = fmt.Sprintf("%d,%d", sourceExactCount, targetExactCount)
 	measuredDataPods = append(measuredDataPods, pods)
 	vlog = fmt.Sprintf("(%d) No index table %s.%s The data consistency check of the original target end is completed", logThreadSeq, sp.schema, sp.table)
 	global.Wlog.Info(vlog)
-	fmt.Println(fmt.Sprintf("%s.%s 校验完成", sp.schema, sp.table))
+	fmt.Println(fmt.Sprintf("table %s.%s checksum complete", sp.schema, sp.table))
+}
+// getExactRowCount 查询表的精确行数
+func (sp *SchedulePlan) getExactRowCount(dbPool *global.Pool, schema, table string, logThreadSeq int64) int64 {
+	db := dbPool.Get(logThreadSeq)
+	defer dbPool.Put(db, logThreadSeq)
+	
+	var count int64
+	query := fmt.Sprintf("SELECT COUNT(*) FROM %s.%s", schema, table)
+	err := db.QueryRow(query).Scan(&count)
+	if err != nil {
+		// 如果查询失败，返回0
+		vlog := fmt.Sprintf("(%d) Failed to get exact row count for %s.%s: %v", logThreadSeq, schema, table, err)
+		global.Wlog.Error(vlog)
+		return 0
+	}
+	return count
 }

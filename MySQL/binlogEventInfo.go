@@ -53,13 +53,13 @@ func (my MySQLIncDataBinlogPrepareStruct) binlogSqlTransition(a []BinlogPrepareS
 		table := strings.Split(a[i].dmlTableName, "/*SchemaTable*/")[1]
 		switch a[i].dmlSqlType {
 		case "insert":
-			tmpSql := fmt.Sprintf("insert into `%s`.`%s` values (%s);", schema, table, strings.Join(a[i].dmlSqlCollection, "),("))
+			tmpSql := fmt.Sprintf("INSERT INTO `%s`.`%s` VALUES (%s);", schema, table, strings.Join(a[i].dmlSqlCollection, "),("))
 			sql = append(sql, tmpSql)
 		case "update":
-			tmpSql := fmt.Sprintf("update `%s`.`%s` where (%s);", schema, table, strings.Join(a[i].dmlSqlCollection, "),("))
+			tmpSql := fmt.Sprintf("UPDATE `%s`.`%s` WHERE (%s);", schema, table, strings.Join(a[i].dmlSqlCollection, "),("))
 			sql = append(sql, tmpSql)
 		case "delete":
-			tmpSql := fmt.Sprintf("delete from `%s`.`%s` where (%s);", schema, table, strings.Join(a[i].dmlSqlCollection, "),("))
+			tmpSql := fmt.Sprintf("DELETE FROM `%s`.`%s` WHERE (%s);", schema, table, strings.Join(a[i].dmlSqlCollection, "),("))
 			sql = append(sql, tmpSql)
 		}
 	}

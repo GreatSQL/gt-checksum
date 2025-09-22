@@ -78,10 +78,10 @@ func (or *OracleDataAbnormalFixStruct) FixInsertSqlExec(db *sql.DB, sourceDrive 
 	if len(valuesNameSeq) > 0 {
 		queryColumn := strings.Join(valuesNameSeq, ",")
 		if or.DatafixType == "file" {
-			insertSql = fmt.Sprintf("insert into \"%s\".\"%s\" values(%s);", or.Schema, or.Table, queryColumn)
+			insertSql = fmt.Sprintf("INSERT INTO \"%s\".\"%s\" VALUES(%s);", or.Schema, or.Table, queryColumn)
 		}
 		if or.DatafixType == "table" {
-			insertSql = fmt.Sprintf("insert into \"%s\".\"%s\" values(%s)", or.Schema, or.Table, queryColumn)
+			insertSql = fmt.Sprintf("INSERT INTO \"%s\".\"%s\" VALUES(%s)", or.Schema, or.Table, queryColumn)
 		}
 	}
 	return insertSql, nil
@@ -105,7 +105,7 @@ func (or *OracleDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive 
 	global.Wlog.Debug(vlog)
 	vlog = fmt.Sprintf("(%d) MySQL DB check table %s.%s Generate delete repair statement based on unique index.", logThreadSeq, or.Schema, or.Table)
 	global.Wlog.Debug(vlog)
-	if or.IndexType == "mui" {
+	if or.IndexType == "mul" {
 		var FB, AS []string
 		for _, i := range colData {
 			FB = append(FB, i["columnName"])
@@ -113,16 +113,16 @@ func (or *OracleDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive 
 		rowData := strings.ReplaceAll(or.RowData, "/*go actions columnData*/<nil>/*go actions columnData*/", "/*go actions columnData*/greatdbNull/*go actions columnData*/")
 		for k, v := range strings.Split(rowData, "/*go actions columnData*/") {
 			if v == "<nil>" {
-				AS = append(AS, fmt.Sprintf(" %s is null ", FB[k]))
+				AS = append(AS, fmt.Sprintf(" %s IS NULL ", FB[k]))
 			} else if v == "<entry>" {
 				AS = append(AS, fmt.Sprintf(" %s = ''", FB[k]))
 			} else if v == acc["double"] {
-				AS = append(AS, fmt.Sprintf("  concat(%s,'') = '%s'", FB[k], v))
+				AS = append(AS, fmt.Sprintf("  CONCAT(%s,'') = '%s'", FB[k], v))
 			} else {
 				AS = append(AS, fmt.Sprintf(" %s = '%s' ", FB[k], v))
 			}
 		}
-		deleteSqlWhere = strings.Join(AS, " and ")
+		deleteSqlWhere = strings.Join(AS, " AND ")
 	}
 	if or.IndexType == "pri" || or.IndexType == "uni" {
 		var FB []string
@@ -138,25 +138,25 @@ func (or *OracleDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive 
 			for l, I := range FB {
 				if I == strconv.Itoa(k+1) {
 					if v == "<nil>" {
-						AS = append(AS, fmt.Sprintf(" %s is null ", or.IndexColumn[l]))
+						AS = append(AS, fmt.Sprintf(" %s IS NULL ", or.IndexColumn[l]))
 					} else if v == "<entry>" {
 						AS = append(AS, fmt.Sprintf(" %s = ''", FB[k]))
 					} else if v == acc["double"] {
-						AS = append(AS, fmt.Sprintf("  concat(%s,'') = '%s'", or.IndexColumn[l], v))
+						AS = append(AS, fmt.Sprintf("  CONCAT(%s,'') = '%s'", or.IndexColumn[l], v))
 					} else {
 						AS = append(AS, fmt.Sprintf(" %s = '%s' ", or.IndexColumn[l], v))
 					}
 				}
-				deleteSqlWhere = strings.Join(AS, " and ")
+				deleteSqlWhere = strings.Join(AS, " AND ")
 			}
 		}
 	}
 	if len(deleteSqlWhere) > 0 {
 		if or.DatafixType == "file" {
-			deleteSql = fmt.Sprintf("delete from \"%s\".\"%s\" where %s;", or.Schema, or.Table, deleteSqlWhere)
+			deleteSql = fmt.Sprintf("DELETE FROM \"%s\".\"%s\" WHERE %s;", or.Schema, or.Table, deleteSqlWhere)
 		}
 		if or.DatafixType == "table" {
-			deleteSql = fmt.Sprintf("delete from \"%s\".\"%s\" where %s", or.Schema, or.Table, deleteSqlWhere)
+			deleteSql = fmt.Sprintf("DELETE FROM \"%s\".\"%s\" WHERE %s", or.Schema, or.Table, deleteSqlWhere)
 		}
 	}
 	return deleteSql, nil
@@ -173,22 +173,22 @@ func (or *OracleDataAbnormalFixStruct) FixAlterIndexSqlExec(e, f []string, si ma
 		}
 		switch or.IndexType {
 		case "pri":
-			strsql = fmt.Sprintf("alter table %s.%s add primary key(`%s`);", or.Schema, or.Table, strings.Join(c, "`,`"))
+			strsql = fmt.Sprintf("ALTER TABLE %s.%s ADD PRIMARY KEY(`%s`);", or.Schema, or.Table, strings.Join(c, "`,`"))
 		case "uni":
-			strsql = fmt.Sprintf("alter table %s.%s add unique index %s(`%s`);", or.Schema, or.Table, v, strings.Join(c, "`,`"))
+			strsql = fmt.Sprintf("ALTER TABLE %s.%s ADD UNIQUE INDEX %s(`%s`);", or.Schema, or.Table, v, strings.Join(c, "`,`"))
 		case "mul":
-			strsql = fmt.Sprintf("alter table %s.%s add index %s(`%s`);", or.Schema, or.Table, v, strings.Join(c, "`,`"))
+			strsql = fmt.Sprintf("ALTER TABLE %s.%s ADD INDEX %s(`%s`);", or.Schema, or.Table, v, strings.Join(c, "`,`"))
 		}
 		sqlS = append(sqlS, strsql)
 	}
 	for _, v := range f {
 		switch or.IndexType {
 		case "pri":
-			strsql = fmt.Sprintf("alter table %s.%s drop primary key;", or.Schema, or.Table)
+			strsql = fmt.Sprintf("ALTER TABLE %s.%s DROP PRIMARY KEY;", or.Schema, or.Table)
 		case "uni":
-			strsql = fmt.Sprintf("alter table %s.%s drop index %s;", or.Schema, or.Table, v)
+			strsql = fmt.Sprintf("ALTER TABLE %s.%s DROP INDEX %s;", or.Schema, or.Table, v)
 		case "mul":
-			strsql = fmt.Sprintf("alter table %s.%s drop index %s;", or.Schema, or.Table, v)
+			strsql = fmt.Sprintf("ALTER TABLE %s.%s DROP INDEX %s;", or.Schema, or.Table, v)
 		}
 		sqlS = append(sqlS, strsql)
 	}
@@ -227,7 +227,7 @@ func (or *OracleDataAbnormalFixStruct) FixAlterColumnSqlDispos(alterType string,
 func (or *OracleDataAbnormalFixStruct) FixAlterColumnSqlGenerate(modifyColumn []string, logThreadSeq int64) []string {
 	var alterSql []string
 	if len(modifyColumn) > 0 {
-		alterSql = append(alterSql, fmt.Sprintf("alter table `%s`.`%s` %s", or.Schema, or.Table, strings.Join(modifyColumn, ",")))
+		alterSql = append(alterSql, fmt.Sprintf("ALTER TABLE `%s`.`%s` %s", or.Schema, or.Table, strings.Join(modifyColumn, ",")))
 	}
 	return alterSql
 }

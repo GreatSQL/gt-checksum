@@ -13,7 +13,7 @@ type TableColumnNameStruct struct {
 	Drive               string
 	Db                  *sql.DB
 	Datafix             string
-	LowerCaseTableNames string
+	CaseSensitiveObjectName string
 }
 
 type QueryTableColumnNameInterface interface {
@@ -38,7 +38,7 @@ func (tcns *TableColumnNameStruct) Query() QueryTableColumnNameInterface {
 			Schema:              tcns.Schema,
 			Table:               tcns.Table,
 			Db:                  tcns.Db,
-			LowerCaseTableNames: tcns.LowerCaseTableNames,
+			CaseSensitiveObjectName: tcns.CaseSensitiveObjectName,
 		}
 	}
 	if tcns.Drive == "godror" {
@@ -46,7 +46,7 @@ func (tcns *TableColumnNameStruct) Query() QueryTableColumnNameInterface {
 			Schema:              tcns.Schema,
 			Table:               tcns.Table,
 			Db:                  tcns.Db,
-			LowerCaseTableNames: tcns.LowerCaseTableNames,
+			CaseSensitiveObjectName: tcns.CaseSensitiveObjectName,
 		}
 	}
 	return aa

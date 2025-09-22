@@ -8,6 +8,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"time"
 )
 
 type FirstLevel struct {
@@ -30,7 +31,7 @@ type SchemaS struct {
 	Tables              string
 	IgnoreTables        string
 	CheckNoIndexTable   string
-	LowerCaseTableNames string
+	CaseSensitiveObjectName string
 }
 type RulesS struct {
 	ParallelThds int
@@ -39,6 +40,7 @@ type RulesS struct {
 	CheckMode    string
 	Ratio        int
 	CheckObject  string
+	MemoryLimit  int
 }
 type StructS struct {
 	ScheckMod     string
@@ -72,7 +74,6 @@ type ConfigParameter struct {
 	SecondaryL          SecondaryLevel
 	ConfFine            *ini.File
 	ConnPoolV           ConnPool
-	ParametersSwitch    bool
 	Config              string //配置文件信息
 	LogThreadSeq        int64
 	NoIndexTableTmpFile string
@@ -82,7 +83,14 @@ var rc ConfigParameter
 
 func init() {
 	rc.cliHelp()
-	fmt.Println("-- gt-checksum init configuration files -- ")
+	fmt.Println("\ngt-checksum is initializing")
+	fmt.Println("gt-checksum is reading configuration files")
+	if rc.Config == "" {
+		if _, err := os.Stat("gc.conf"); err == nil {
+			rc.Config = "gc.conf"
+			fmt.Println("gt-checksum: Automatically loading configuration file 'gc.conf' from current directory.")
+		}
+	}
 	if rc.Config != "" {
 		if !strings.Contains(rc.Config, "/") {
 			sysType := runtime.GOOS
@@ -95,13 +103,33 @@ func init() {
 		rc.getConfig()
 	}
 	//初始化日志文件
-	fmt.Println("-- gt-checksum init log files -- ")
-	global.Wlog = log.NewWlog(rc.SecondaryL.LogV.LogFile, rc.SecondaryL.LogV.LogLevel)
-	fmt.Println("-- gt-checksum init check parameter --")
+	fmt.Println("gt-checksum is opening log files")
+	// 处理日期时间格式
+	logFile := rc.SecondaryL.LogV.LogFile
+	if strings.Contains(logFile, "%") {
+		logFile = replaceDateTimeFormat(logFile)
+	}
+	global.Wlog = log.NewWlog(logFile, rc.SecondaryL.LogV.LogLevel)
+	fmt.Println("gt-checksum is checking options")
 	rc.checkPar()
 }
 
 func ConfigInit(logThreadSeq int64) *ConfigParameter {
 	rc.LogThreadSeq = logThreadSeq
 	return &rc
+}
+
+// replaceDateTimeFormat 替换日期时间格式符为实际值
+func replaceDateTimeFormat(filename string) string {
+	now := time.Now()
+	result := strings.ReplaceAll(filename, "%Y", now.Format("2006"))
+	result = strings.ReplaceAll(result, "%m", now.Format("01"))
+	result = strings.ReplaceAll(result, "%d", now.Format("02"))
+	result = strings.ReplaceAll(result, "%H", now.Format("15"))
+	result = strings.ReplaceAll(result, "%M", now.Format("04"))
+	result = strings.ReplaceAll(result, "%S", now.Format("05"))
+	result = strings.ReplaceAll(result, "%s", fmt.Sprintf("%d", now.Unix()))
+	result = strings.ReplaceAll(result, "%F", now.Format("2006-01-02"))
+	result = strings.ReplaceAll(result, "%T", now.Format("15:04:05"))
+	return result
 }

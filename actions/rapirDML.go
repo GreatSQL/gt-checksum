@@ -100,20 +100,20 @@ func (rs rapirSqlStruct) SqlFile(sfile *os.File, sql []string, logThreadSeq int6
 		sqlCommit []string
 	)
 	vlog = fmt.Sprintf("(%d) Start writing repair statements to the repair file.", logThreadSeq)
-	global.Wlog.Info(vlog)
+	global.Wlog.Debug(vlog)
 	if strings.HasPrefix(strings.ToUpper(strings.Join(sql, ";")), "ALTER TABLE") {
 		sqlCommit = sql
 	} else {
-		sqlCommit = []string{"begin;"}
+		sqlCommit = []string{"BEGIN;"}
 		sqlCommit = append(sqlCommit, sql...)
-		sqlCommit = append(sqlCommit, "commit;")
+		sqlCommit = append(sqlCommit, "COMMIT;")
 	}
 	_, err := FileOperate{File: sfile, BufSize: 1024 * 4 * 1024, SqlType: "sql"}.ConcurrencyWriteFile(sqlCommit)
 	if err != nil {
 		return err
 	}
 	vlog = fmt.Sprintf("(%d) Write the repair statement to the repair file successfully.", logThreadSeq)
-	global.Wlog.Info(vlog)
+	global.Wlog.Debug(vlog)
 	return nil
 }
 func ApplyDataFix(fixSql []string, datafixType string, sfile *os.File, ddrive, jdbc string, logThreadSeq int64) error {
