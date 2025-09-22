@@ -1,13 +1,9 @@
 #
 # build gt-checksum
-# Requires go version 1.21.2 or higher
+# Requires go version 1.17 or higher
 # 
 # run as:
-# sh ./build.sh x86_64
-# run `sh ./build.sh` is the same as `sh ./build.sh x86_64`
-# 
-# or build for aarch64
-# sh ./build.sh aarch64
+# sh ./build.sh
 #
 
 export PATH=$PATH:/usr/local/go/bin
@@ -17,6 +13,8 @@ export CXXFLAGS="-stdlib=libstdc++" CC=/usr/bin/gcc CXX=/usr/bin/g++
 
 vs=`cat ./inputArg/flagHelp.go| grep "app.Version"|awk -F "=" '{print $2}'|sed 's/\"//g'|sed 's/\/\/版本//g'|sed 's/ //g'`
 OracleDrive="instantclient_11_2"
+
+# 自动适配CPU架构类型
 if [ ! -z "`which uname > /dev/null 2>&1`" ] ; then
   arch=`uname -m`
 elif [ ! -z "`echo $MACHTYPE`" ] ; then
