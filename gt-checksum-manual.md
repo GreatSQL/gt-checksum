@@ -125,6 +125,8 @@ $ echo "export LD_LIBRARY_PATH=/usr/local/instantclient_11_2:$LD_LIBRARY_PATH" >
 $ source /etc/profile
 ```
 
+> 我们提供下载的二进制包中已包含 instantclient_11_2.tar.xz 压缩包，下载后解开即可直接使用，无需再次下载。
+
 ## 源码编译
 **gt-checksum** 工具采用Go语言开发，您可以下载源码编译生成二进制文件。
 
