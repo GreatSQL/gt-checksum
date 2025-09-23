@@ -267,7 +267,7 @@ func (my *QueryTable) GlobalAccessPri(db *sql.DB, logThreadSeq int64) (bool, err
 /*
 MySQL 查询用户是否有表的读写权限
 */
-func (my *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, datefix string, logThreadSeq int64) (map[string]int, error) {
+func (my *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, datafix string, logThreadSeq int64) (map[string]int, error) {
 	var (
 		globalPri         = make(map[string]int)
 		newCheckTableList = make(map[string]int)
@@ -280,7 +280,7 @@ func (my *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 
 	//针对要校验的库做去重（库级别的）
 	globalPri["SELECT"] = 0
-	if strings.ToUpper(datefix) == "TABLE" {
+	if strings.ToUpper(datafix) == "TABLE" {
 		globalPri["INSERT"] = 0
 		globalPri["DELETE"] = 0
 		globalPri["ALTER"] = 0

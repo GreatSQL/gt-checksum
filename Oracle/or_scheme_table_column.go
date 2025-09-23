@@ -159,7 +159,7 @@ func (or *QueryTable) GlobalAccessPri(db *sql.DB, logThreadSeq int64) (bool, err
 /*
 Oracle 查询用户是否有表的查询权限
 */
-func (or *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, datefix string, logThreadSeq int64) (map[string]int, error) {
+func (or *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, datafix string, logThreadSeq int64) (map[string]int, error) {
 	var (
 		globalPri, globalPriAllTab = make(map[string]int), make(map[string]int)
 		newCheckTableList          = make(map[string]int)
@@ -199,7 +199,7 @@ func (or *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 	)
 	globalPri["SELECT"] = 0
 	globalPriAllTab["SELECT ANY TABLE"] = 0
-	if strings.ToUpper(datefix) == "TABLE" {
+	if strings.ToUpper(datafix) == "TABLE" {
 		globalPri["INSERT"] = 0
 		globalPriAllTab["INSERT ANY TABLE"] = 0
 		globalPri["DELETE"] = 0

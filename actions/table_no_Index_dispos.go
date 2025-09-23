@@ -9,7 +9,7 @@ import (
 )
 
 /*
-针对差异数据行做md5校验，并去除重复值
+Perform MD5 verification on different data rows and remove duplicate values
 */
 func (sp *SchedulePlan) AbDataMd5Unique(md5Chan <-chan map[string]string, logThreadSeq int64) chan map[string]string {
 	var A = make(chan map[string]string, 1)
@@ -38,28 +38,33 @@ func (sp *SchedulePlan) AbDataMd5Unique(md5Chan <-chan map[string]string, logThr
 }
 
 /*
-无索引表的表统计信息行数
+Row count statistics for tables without indexes
 */
 func (sp *SchedulePlan) NoIndexTableCount(logThreadSeq int64) int64 {
 	var (
 		A, B uint64
 		err  error
 	)
-	// 获取有效的列名
+	// Get valid column names
 	var columnNames []string
 	if len(sp.columnName) > 0 {
 		columnNames = sp.columnName
 	} else if cols, ok := sp.tableAllCol[fmt.Sprintf("%s_gtchecksum_%s", sp.schema, sp.table)]; ok {
-		// 从表结构信息中获取所有列名
+		// Get all column names from table structure information
 		for _, colInfo := range cols.SColumnInfo {
 			if name, ok := colInfo["COLUMN_NAME"]; ok {
+				columnNames = append(columnNames, name)
+			} else if name, ok := colInfo["columnName"]; ok {
+				// Try using lowercase key name
 				columnNames = append(columnNames, name)
 			}
 		}
 	}
 
-	// 如果没有列名，使用"0"作为默认值
+	// If no column names, use "0" as default value
 	if len(columnNames) == 0 {
+		vlog := fmt.Sprintf("(%d) Warning: Table %s has no valid column names, using default column", logThreadSeq, sp.table)
+		global.Wlog.Warn(vlog)
 		columnNames = []string{"0"}
 	}
 
@@ -90,7 +95,7 @@ func (sp *SchedulePlan) NoIndexTableCount(logThreadSeq int64) int64 {
 }
 
 /*
-针对差异数据行做md5校验，并去除重复值
+Perform MD5 verification on different data rows and remove duplicate values
 */
 func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *Pod, logThreadSeq int64) chan string {
 	var sqlStrExec = make(chan string, sp.mqQueueDepth)
@@ -103,7 +108,44 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 		vlog = fmt.Sprintf("(%d) Generating DELETE/INSERT statements for table %s", logThreadSeq, displayTableName)
 		global.Wlog.Debug(vlog)
 		colData := sp.tableAllCol[fmt.Sprintf("%s_gtchecksum_%s", sp.schema, sp.table)]
-		dbf := dbExec.DataAbnormalFixStruct{Schema: sp.schema, Table: sp.table, ColData: colData.DColumnInfo, DestDevice: sp.ddrive, DatafixType: sp.datafixType}
+
+		// Get valid column names for index columns
+		var indexColumns []string
+		if len(sp.columnName) > 0 {
+			// If column names already exist, use them directly
+			indexColumns = sp.columnName
+		} else {
+			// Otherwise get all column names from table structure as conditions
+			for _, colInfo := range colData.DColumnInfo {
+				if colName, ok := colInfo["columnName"]; ok {
+					indexColumns = append(indexColumns, colName)
+				} else if colName, ok := colInfo["COLUMN_NAME"]; ok {
+					// Try using uppercase key name
+					indexColumns = append(indexColumns, colName)
+				}
+			}
+			// Log information
+			vlog = fmt.Sprintf("(%d) Table %s has no index, using all columns as conditions, found %d columns", logThreadSeq, displayTableName, len(indexColumns))
+			global.Wlog.Debug(vlog)
+
+			// If still no column names, log warning and use default value
+			if len(indexColumns) == 0 {
+				vlog = fmt.Sprintf("(%d) Warning: Unable to get column names from table structure, will use default column", logThreadSeq, displayTableName)
+				global.Wlog.Warn(vlog)
+				// Add a default column to avoid subsequent processing failure
+				indexColumns = []string{"id"}
+			}
+		}
+
+		dbf := dbExec.DataAbnormalFixStruct{
+			Schema:       sp.destSchema,   // 使用目标schema而不是原始schema
+			SourceSchema: sp.sourceSchema, // 添加源schema用于处理映射关系
+			Table:        sp.table,
+			ColData:      colData.DColumnInfo,
+			DestDevice:   sp.ddrive,
+			DatafixType:  sp.datafixType,
+			IndexColumn:  indexColumns, // 添加索引列信息
+		}
 		for {
 			select {
 			case v, ok := <-tmpAnDateMap:
@@ -130,8 +172,39 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 							vlog = fmt.Sprintf("(%d) Generating DELETE repair statements for table %s", logThreadSeq, displayTableName)
 							global.Wlog.Debug(vlog)
 							dbf.RowData = rowData
+
+							// Ensure IndexColumn is not empty
+							if len(dbf.IndexColumn) == 0 {
+								vlog = fmt.Sprintf("(%d) Warning: Table %s has no index columns, trying to use all columns as conditions", logThreadSeq, displayTableName)
+								global.Wlog.Warn(vlog)
+
+								// Get all column names from table structure
+								for _, colInfo := range colData.DColumnInfo {
+									if colName, ok := colInfo["columnName"]; ok {
+										dbf.IndexColumn = append(dbf.IndexColumn, colName)
+									} else if colName, ok := colInfo["COLUMN_NAME"]; ok {
+										// Try using uppercase key name
+										dbf.IndexColumn = append(dbf.IndexColumn, colName)
+									}
+								}
+
+								// If still no column names, log error and use default column
+								if len(dbf.IndexColumn) == 0 {
+									vlog = fmt.Sprintf("(%d) Error: Unable to get column names from table structure, will use default column", logThreadSeq, displayTableName)
+									global.Wlog.Error(vlog)
+									// Add a default column to avoid subsequent processing failure
+									dbf.IndexColumn = []string{"id"}
+									// Ensure RowData is not empty
+									if dbf.RowData == "" {
+										dbf.RowData = "id=0"
+									}
+								}
+							}
+
 							sqlstr, err := dbf.DataAbnormalFix().FixDeleteSqlExec(ddb, sp.ddrive, logThreadSeq)
 							if err != nil {
+								vlog = fmt.Sprintf("(%d) Failed to generate DELETE statement: %v", logThreadSeq, err)
+								global.Wlog.Error(vlog)
 								return
 							}
 							if sqlstr != "" {
@@ -146,8 +219,39 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 							vlog = fmt.Sprintf("(%d) Generating INSERT repair statements for table %s", logThreadSeq, displayTableName)
 							global.Wlog.Debug(vlog)
 							dbf.RowData = rowData
+
+							// 确保IndexColumn不为空
+							if len(dbf.IndexColumn) == 0 {
+								vlog = fmt.Sprintf("(%d) Warn：table %s has no index column, try to using all columns", logThreadSeq, displayTableName)
+								global.Wlog.Warn(vlog)
+
+								// 从表结构中获取所有列名
+								for _, colInfo := range colData.DColumnInfo {
+									if colName, ok := colInfo["columnName"]; ok {
+										dbf.IndexColumn = append(dbf.IndexColumn, colName)
+									} else if colName, ok := colInfo["COLUMN_NAME"]; ok {
+										// 尝试使用大写键名
+										dbf.IndexColumn = append(dbf.IndexColumn, colName)
+									}
+								}
+
+								// 如果仍然没有列名，记录错误并使用默认列
+								if len(dbf.IndexColumn) == 0 {
+									vlog = fmt.Sprintf("(%d) Error：can not obtain columns from table structure, will use default column", logThreadSeq, displayTableName)
+									global.Wlog.Error(vlog)
+									// 添加一个默认列，避免后续处理失败
+									dbf.IndexColumn = []string{"id"}
+									// 确保RowData不为空
+									if dbf.RowData == "" {
+										dbf.RowData = "id=0"
+									}
+								}
+							}
+
 							sqlstr, err := dbf.DataAbnormalFix().FixInsertSqlExec(ddb, sp.ddrive, logThreadSeq)
 							if err != nil {
+								vlog = fmt.Sprintf("(%d) Failed to generate INSERT statement: %v", logThreadSeq, err)
+								global.Wlog.Error(vlog)
 								return
 							}
 							if sqlstr != "" {
@@ -168,7 +272,7 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 }
 
 /*
-针对差异数据行做md5校验，并去除重复值
+Perform MD5 verification on different data rows and remove duplicate values
 */
 func (sp *SchedulePlan) FixSqlExec(sqlStrExec <-chan string, logThreadSeq int64) {
 	var (
@@ -225,7 +329,7 @@ func (sp *SchedulePlan) FixSqlExec(sqlStrExec <-chan string, logThreadSeq int64)
 }
 
 /*
-查询无索引表数据
+Query data from tables without indexes
 */
 func (sp *SchedulePlan) QueryTableData(beginSeq uint64, chunkSeq uint64, chanrowCount int, logThreadSeq int64) (string, string, error) {
 	var (
@@ -257,7 +361,7 @@ func (sp *SchedulePlan) QueryTableData(beginSeq uint64, chunkSeq uint64, chanrow
 }
 
 /*
-针对查询的字符串进行md5校验，字符串不一致则进行差异处理
+Perform MD5 verification on query strings, process differences if strings don't match
 */
 func (sp *SchedulePlan) QueryDataCheckSum(stt, dtt string, md5chan chan<- map[string]string, FileOpen FileOperate, chunkSeq uint64, logThreadSeq int64) {
 	var (
@@ -317,10 +421,10 @@ func (sp *SchedulePlan) QueryDataCheckSum(stt, dtt string, md5chan chan<- map[st
 	global.Wlog.Debug(vlog)
 }
 
-// 无索引表读取临时文件，并返回差异的数据
+// Read temporary files for tables without indexes and return difference data
 func (sp *SchedulePlan) noIndexTableAbdataRead(uniqMD5C chan map[string]string, logThreadSeq int64) chan map[string]string {
 	var dataFixC = make(chan map[string]string, sp.mqQueueDepth)
-	//检测临时文件，并按照一定条件读取
+	//Detect temporary files and read according to certain conditions
 	go func() {
 		for {
 			select {
@@ -338,7 +442,7 @@ func (sp *SchedulePlan) noIndexTableAbdataRead(uniqMD5C chan map[string]string, 
 }
 
 /*
-单表的数据循环校验
+Single table data cycle verification
 */
 func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSeq int64) {
 	var (
@@ -361,13 +465,13 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 	global.Wlog.Info(vlog)
 	barTableRow := sp.NoIndexTableCount(logThreadSeq)
 	pods := Pod{Schema: sp.schema, Table: sp.table,
-		IndexColumn: "noIndex",
+		IndexColumn: "NULL",
 		CheckMode:   sp.checkMod,
 		DIFFS:       "no",
 		Datafix:     sp.datafixType,
 	}
 	sp.bar.NewOption(0, barTableRow, "rows")
-	//统计表的总行数
+	//Count the total number of rows in the table
 	go func() {
 		var cc int
 		for {
@@ -382,14 +486,14 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 		}
 	}()
 
-	//去重
+	//Deduplicate
 	uniqMD5C := sp.AbDataMd5Unique(md5Chan, logThreadSeq)
-	//根据去重后的数据读取文件，找出差异数据
+	//Read files based on deduplicated data to find differences
 	dataFixC := sp.noIndexTableAbdataRead(uniqMD5C, logThreadSeq)
 	sqlStrExec := sp.DataFixSql(dataFixC, &pods, logThreadSeq)
 
 	FileOper := FileOperate{File: sp.file, BufSize: 1024 * 4 * 1024, fileName: sp.TmpFileName}
-	//循环读取表行数，并进行数据校验
+	//Loop through table rows and perform data verification
 	for {
 		if rowEnd && len(noIndexC) == 0 {
 			close(md5Chan)
@@ -437,7 +541,7 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 	}
 	sp.bar.Finish()
 	sp.FixSqlExec(sqlStrExec, int64(logThreadSeq))
-	//输出校验结果信息
+	//Output verification result information
 	// 重新查询精确行数
 	sourceExactCount := sp.getExactRowCount(sp.sdbPool, sp.schema, sp.table, logThreadSeq)
 	targetExactCount := sp.getExactRowCount(sp.ddbPool, sp.schema, sp.table, logThreadSeq)
@@ -449,18 +553,18 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 	fmt.Printf("%s checksum completed\n", displayTableName)
 }
 
-// getExactRowCount 查询表的精确行数
+// getExactRowCount Query the exact number of rows in a table
 func (sp *SchedulePlan) getExactRowCount(dbPool *global.Pool, schema, table string, logThreadSeq int64) int64 {
 	db := dbPool.Get(logThreadSeq)
 	defer dbPool.Put(db, logThreadSeq)
 
-	// 处理库名映射
+	// Handle schema name mapping
 	var targetSchema string
 	if dbPool == sp.sdbPool {
-		// 源端使用原始schema
+		// Source uses original schema
 		targetSchema = schema
 	} else if dbPool == sp.ddbPool {
-		// 目标端检查是否有映射关系
+		// Target checks if there is a mapping relationship
 		if mappedSchema, exists := sp.tableMappings[schema]; exists {
 			targetSchema = mappedSchema
 		} else {
@@ -468,7 +572,7 @@ func (sp *SchedulePlan) getExactRowCount(dbPool *global.Pool, schema, table stri
 		}
 	}
 
-	// 确保schema不为空
+	// Ensure schema is not empty
 	if targetSchema == "" {
 		vlog := fmt.Sprintf("(%d) Using default schema for table %s", logThreadSeq, table)
 		global.Wlog.Warn(vlog)

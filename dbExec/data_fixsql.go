@@ -18,6 +18,7 @@ type DataAbnormalFixStruct struct {
 	IndexType       string
 	IndexColumn     []string
 	DatafixType     string
+	SourceSchema    string // 源端schema，用于处理数据库映射关系
 }
 type DataAbnormalFixInterface interface {
 	FixInsertSqlExec(db *sql.DB, sourceDrive string, logThreadSeq int64) (string, error)
@@ -40,9 +41,13 @@ func (dafs DataAbnormalFixStruct) DataAbnormalFix() DataAbnormalFixInterface {
 			ColData:         dafs.ColData,
 			IndexType:       dafs.IndexType,
 			IndexColumn:     dafs.IndexColumn,
+			DatafixType:     dafs.DatafixType,
+			SourceSchema:    dafs.SourceSchema, // 传递源端schema信息
 		}
 	}
 	if dafs.DestDevice == "godror" {
+		// 创建Oracle数据修复结构体
+		// 注意：Oracle结构体不支持SourceSchema字段，所以我们只传递基本字段
 		tqaci = &oracle.OracleDataAbnormalFixStruct{
 			Schema:          dafs.Schema,
 			Table:           dafs.Table,

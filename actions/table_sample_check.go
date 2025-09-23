@@ -39,7 +39,7 @@ func (sp *SchedulePlan) sampSingleTableCheckProcessing(chanrowCount int, sampDat
 	sp.ddbPool.Put(ddb, int64(logThreadSeq))
 
 	pods := Pod{Schema: sp.schema, Table: sp.table,
-		IndexColumn: "noIndex",
+		IndexColumn: "NULL",
 		CheckMode:   sp.checkMod,
 		DIFFS:       "no",
 		Datafix:     sp.datafixType,
@@ -337,7 +337,7 @@ func (sp *SchedulePlan) DoSampleDataCheck() {
 		sp.pods.Sample = fmt.Sprintf("%d,%d", stmpTableCount, stmpTableCount/100*uint64(sp.ratio))
 
 		if len(v) == 0 {
-			sp.pods.IndexColumn = "noIndex"
+			sp.pods.IndexColumn = "NULL"
 			sp.sampSingleTableCheckProcessing(sp.chanrowCount, sampDataGroupNumber, logThreadSeq)
 			fmt.Println()
 			global.Wlog.Info(fmt.Sprintf("Table %s checksum completed", displayTableName))
