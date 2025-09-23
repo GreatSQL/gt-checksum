@@ -289,9 +289,21 @@ func (sp *SchedulePlan) queryTableSql(sqlWhere chanString, selectSql chanMap, cc
 					if err != nil {
 						vlog = fmt.Sprintf("(%d) [doIndexDataCheck] Failed to generate source query SQL for %s.%s: %v", logThreadSeq, sp.sourceSchema, sp.table, err)
 						global.Wlog.Error(vlog)
+						lock.Unlock()
 						return
 					}
 					lock.Unlock()
+
+					// 确保目标数据库存在
+					ddb := sp.ddbPool.Get(logThreadSeq)
+					_, err = ddb.Exec(fmt.Sprintf("USE `%s`", sp.destSchema))
+					if err != nil {
+						vlog = fmt.Sprintf("(%d) [doIndexDataCheck] Target database %s does not exist", logThreadSeq, sp.destSchema)
+						global.Wlog.Error(vlog)
+						sp.ddbPool.Put(ddb, logThreadSeq)
+						return
+					}
+					sp.ddbPool.Put(ddb, logThreadSeq)
 
 					// 为目标端生成WHERE条件
 					destWhere := strings.Replace(c1, fmt.Sprintf("%s.%s", sp.sourceSchema, sp.table), fmt.Sprintf("%s.%s", sp.destSchema, sp.table), -1)
@@ -306,6 +318,16 @@ func (sp *SchedulePlan) queryTableSql(sqlWhere chanString, selectSql chanMap, cc
 						Drivce:      sp.ddrive,
 						ColData:     cc1.DColumnInfo,
 					}
+					// 添加对目标表存在的检查
+					ddb = sp.ddbPool.Get(logThreadSeq)
+					_, err = ddb.Exec(fmt.Sprintf("SELECT 1 FROM `%s`.`%s` LIMIT 1", sp.destSchema, sp.table))
+					if err != nil {
+						vlog = fmt.Sprintf("(%d) [doIndexDataCheck] Target table %s.%s does not exist", logThreadSeq, sp.destSchema, sp.table)
+						global.Wlog.Error(vlog)
+						sp.ddbPool.Put(ddb, logThreadSeq)
+						return
+					}
+					sp.ddbPool.Put(ddb, logThreadSeq)
 					lock.Lock()
 					selectSqlMap[sp.ddrive], err = idxcDest.TableIndexColumn().GeneratingQuerySql(dd, logThreadSeq)
 					if err != nil {
@@ -474,21 +496,67 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 						sp.sdbPool.Put(sdb, logThreadSeq)
 						sp.ddbPool.Put(ddb, logThreadSeq)
 					}()
-					colData := sp.tableAllCol[fmt.Sprintf("%s_gtchecksum_%s", c1.Schema, c1.Table)]
+					// 使用映射后的源端和目标端schema和table
+					sourceSchema := sp.sourceSchema
+					destSchema := sp.destSchema
+					table := sp.table
+
+					// 获取列数据时使用原始schema.table组合
+					colData := sp.tableAllCol[fmt.Sprintf("%s_gtchecksum_%s", sourceSchema, table)]
+
+					// 处理源端SQL条件，确保使用源端schema
+					sourceSqlWhere := c1.SqlWhere[sp.sdrive]
+					// 如果源端SQL条件中包含目标端schema，替换为源端schema
+					if strings.Contains(sourceSqlWhere, fmt.Sprintf("`%s`", destSchema)) {
+						sourceSqlWhere = strings.Replace(sourceSqlWhere,
+							fmt.Sprintf("`%s`", destSchema),
+							fmt.Sprintf("`%s`", sourceSchema), -1)
+					}
+					if strings.Contains(sourceSqlWhere, fmt.Sprintf("%s.", destSchema)) {
+						sourceSqlWhere = strings.Replace(sourceSqlWhere,
+							fmt.Sprintf("%s.", destSchema),
+							fmt.Sprintf("%s.", sourceSchema), -1)
+					}
+
+					// 处理目标端SQL条件，确保使用目标端schema
+					destSqlWhere := c1.SqlWhere[sp.ddrive]
+					// 如果目标端SQL条件中包含源端schema，替换为目标端schema
+					if strings.Contains(destSqlWhere, fmt.Sprintf("`%s`", sourceSchema)) {
+						destSqlWhere = strings.Replace(destSqlWhere,
+							fmt.Sprintf("`%s`", sourceSchema),
+							fmt.Sprintf("`%s`", destSchema), -1)
+					}
+					if strings.Contains(destSqlWhere, fmt.Sprintf("%s.", sourceSchema)) {
+						destSqlWhere = strings.Replace(destSqlWhere,
+							fmt.Sprintf("%s.", sourceSchema),
+							fmt.Sprintf("%s.", destSchema), -1)
+					}
+
+					// Log for debugging
+					vlog = fmt.Sprintf("(%d) AbnormalDataDispos - Source SQL condition: %s", logThreadSeq, sourceSqlWhere)
+					global.Wlog.Debug(vlog)
+					vlog = fmt.Sprintf("(%d) AbnormalDataDispos - Target SQL condition: %s", logThreadSeq, destSqlWhere)
+					global.Wlog.Debug(vlog)
+
+					// 源端查询使用sourceSchema和table
 					idxc := dbExec.IndexColumnStruct{
-						Schema:      sp.schema,
-						Table:       sp.table,
+						Schema:      sourceSchema,
+						Table:       table,
 						TableColumn: colData.SColumnInfo,
 						Drivce:      sp.sdrive,
+						Sqlwhere:    sourceSqlWhere, // 使用处理后的源端SQL条件
 					}
-					idxc.Schema = sp.sourceSchema
-					idxc.Sqlwhere = c1.SqlWhere[sp.sdrive]
 					stt, _ := idxc.TableIndexColumn().GeneratingQueryCriteria(sdb, logThreadSeq)
-					idxc.Schema = sp.destSchema
-					idxc.Drivce = sp.ddrive
-					idxc.Sqlwhere = c1.SqlWhere[sp.ddrive]
-					idxc.TableColumn = colData.DColumnInfo
-					dtt, _ := idxc.TableIndexColumn().GeneratingQueryCriteria(ddb, logThreadSeq)
+
+					// 目标端查询使用destSchema和table
+					idxcDest := dbExec.IndexColumnStruct{
+						Schema:      destSchema,
+						Table:       table,
+						TableColumn: colData.DColumnInfo,
+						Drivce:      sp.ddrive,
+						Sqlwhere:    destSqlWhere, // 使用处理后的目标端SQL条件
+					}
+					dtt, _ := idxcDest.TableIndexColumn().GeneratingQueryCriteria(ddb, logThreadSeq)
 
 					if aa.CheckMd5(stt) != aa.CheckMd5(dtt) {
 						add, del := aa.Arrcmp(strings.Split(stt, "/*go actions rowData*/"), strings.Split(dtt, "/*go actions rowData*/"))
@@ -496,7 +564,78 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 						vlog = fmt.Sprintf("(%d) Generating repair statements for %s.%s differences", logThreadSeq, c1.Schema, c1.Table)
 						global.Wlog.Debug(vlog)
 						if len(del) > 0 || len(add) > 0 {
-							dbf := dbExec.DataAbnormalFixStruct{Schema: c1.Schema, Table: c1.Table, ColData: colData.DColumnInfo, Sqlwhere: c1.SqlWhere[sp.ddrive], DestDevice: sp.ddrive, IndexColumn: sp.columnName, DatafixType: sp.datafixType}
+							// 确保使用正确的源和目标schema
+							sourceSchema := sp.sourceSchema
+							destSchema := sp.destSchema
+							if sourceSchema == "" {
+								sourceSchema = c1.Schema
+							}
+							if destSchema == "" {
+								destSchema = c1.Schema
+							}
+
+							// 添加对空IndexColumn的检查
+							indexColumns := sp.columnName
+							if len(indexColumns) == 0 {
+								// 如果没有索引列，使用所有列作为条件
+								indexColumns = make([]string, 0, len(colData.DColumnInfo))
+								for _, colInfo := range colData.DColumnInfo {
+									if colName, ok := colInfo["columnName"]; ok {
+										indexColumns = append(indexColumns, colName)
+									}
+								}
+							}
+
+							// 处理源端和目标端SQL条件
+							// 获取原始SQL条件
+							originalSourceSqlWhere := c1.SqlWhere[sp.sdrive]
+							originalDestSqlWhere := c1.SqlWhere[sp.ddrive]
+
+							// 处理源端SQL条件，确保使用源端schema
+							sourceSqlWhere := originalSourceSqlWhere
+							// 如果源端SQL条件中包含目标端schema，替换为源端schema
+							if strings.Contains(sourceSqlWhere, fmt.Sprintf("`%s`", destSchema)) {
+								sourceSqlWhere = strings.Replace(sourceSqlWhere,
+									fmt.Sprintf("`%s`", destSchema),
+									fmt.Sprintf("`%s`", sourceSchema), -1)
+							}
+							if strings.Contains(sourceSqlWhere, fmt.Sprintf("%s.", destSchema)) {
+								sourceSqlWhere = strings.Replace(sourceSqlWhere,
+									fmt.Sprintf("%s.", destSchema),
+									fmt.Sprintf("%s.", sourceSchema), -1)
+							}
+
+							// 处理目标端SQL条件，确保使用目标端schema
+							destSqlWhere := originalDestSqlWhere
+							// 如果目标端SQL条件中包含源端schema，替换为目标端schema
+							if strings.Contains(destSqlWhere, fmt.Sprintf("`%s`", sourceSchema)) {
+								destSqlWhere = strings.Replace(destSqlWhere,
+									fmt.Sprintf("`%s`", sourceSchema),
+									fmt.Sprintf("`%s`", destSchema), -1)
+							}
+							if strings.Contains(destSqlWhere, fmt.Sprintf("%s.", sourceSchema)) {
+								destSqlWhere = strings.Replace(destSqlWhere,
+									fmt.Sprintf("%s.", sourceSchema),
+									fmt.Sprintf("%s.", destSchema), -1)
+							}
+
+							// Log for debugging
+							vlog = fmt.Sprintf("(%d) DataFixSql - Source SQL condition: %s", logThreadSeq, sourceSqlWhere)
+							global.Wlog.Debug(vlog)
+							vlog = fmt.Sprintf("(%d) DataFixSql - Target SQL condition: %s", logThreadSeq, destSqlWhere)
+							global.Wlog.Debug(vlog)
+
+							// 修复SQL生成时使用正确的schema映射
+							dbf := dbExec.DataAbnormalFixStruct{
+								Schema:       destSchema,   // 目标schema
+								SourceSchema: sourceSchema, // 源端schema，用于处理数据库映射关系
+								Table:        table,        // 使用映射后的表名
+								ColData:      colData.DColumnInfo,
+								Sqlwhere:     destSqlWhere, // 使用处理后的目标端SQL条件
+								DestDevice:   sp.ddrive,
+								IndexColumn:  indexColumns,
+								DatafixType:  sp.datafixType,
+							}
 							if strings.HasPrefix(c1.indexColumnType, "pri") {
 								dbf.IndexType = "pri"
 							} else if strings.HasPrefix(c1.indexColumnType, "uni") {
@@ -511,7 +650,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 									dbf.RowData = i
 									sqlstr, err := dbf.DataAbnormalFix().FixDeleteSqlExec(ddb, sp.ddrive, logThreadSeq)
 									if err != nil {
-										sp.getErr(fmt.Sprintf("dest: checkSum table %s.%s generate delete sql error.", c1.Schema, c1.Table), err)
+										sp.getErr(fmt.Sprintf("\ndest: checksum table %s.%s generate DELETE sql error.", c1.Schema, c1.Table), err)
 									}
 									if sqlstr != "" {
 										cc <- sqlstr
@@ -527,7 +666,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 									dbf.RowData = i
 									sqlstr, err := dbf.DataAbnormalFix().FixInsertSqlExec(ddb, sp.ddrive, logThreadSeq)
 									if err != nil {
-										sp.getErr(fmt.Sprintf("dest: checkSum table %s.%s generate insert sql error.", c1.Schema, c1.Table), err)
+										sp.getErr(fmt.Sprintf("dest: checksum table %s.%s generate INSERT sql error.", c1.Schema, c1.Table), err)
 									}
 									if sqlstr != "" {
 										cc <- sqlstr

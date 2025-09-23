@@ -18,7 +18,7 @@ func (stcls *schemaTable) GlobalAccessPriCheck(logThreadSeq, logThreadSeq2 int64
 	)
 	vlog = fmt.Sprintf("(%d) Retrieving global privileges for source and target databases", logThreadSeq)
 	global.Wlog.Info(vlog)
-	tc := dbExec.TableColumnNameStruct{Schema: stcls.schema, Table: stcls.table, Drive: stcls.sourceDrive, Datafix: stcls.datefix}
+	tc := dbExec.TableColumnNameStruct{Schema: stcls.schema, Table: stcls.table, Drive: stcls.sourceDrive, Datafix: stcls.datafix}
 	vlog = fmt.Sprintf("(%d) Obtain the global privileges for srcDB, and check that they are set correctly", logThreadSeq)
 	global.Wlog.Debug(vlog)
 	if StableList, err = tc.Query().GlobalAccessPri(stcls.sourceDB, logThreadSeq2); err != nil {
@@ -81,7 +81,7 @@ func (stcls *schemaTable) TableAccessPriCheck(checkTableList []string, logThread
 	tc := dbExec.TableColumnNameStruct{Schema: stcls.schema, Table: stcls.table, Drive: stcls.sourceDrive}
 	vlog = fmt.Sprintf("(%d) Obtain the privileges for tables access for srcDB, and check that they are set correctly", logThreadSeq)
 	global.Wlog.Debug(vlog)
-	if StableList, err = tc.Query().TableAccessPriCheck(stcls.sourceDB, processedTableList, stcls.datefix, logThreadSeq2); err != nil {
+	if StableList, err = tc.Query().TableAccessPriCheck(stcls.sourceDB, processedTableList, stcls.datafix, logThreadSeq2); err != nil {
 		return nil, nil, err
 	}
 	if len(StableList) == 0 {
@@ -115,7 +115,7 @@ func (stcls *schemaTable) TableAccessPriCheck(checkTableList []string, logThread
 	tc.Drive = stcls.destDrive
 	vlog = fmt.Sprintf("(%d) Obtain the privileges for tables access for dstDB, and check that they are set correctly", logThreadSeq)
 	global.Wlog.Debug(vlog)
-	if DtableList, err = tc.Query().TableAccessPriCheck(stcls.destDB, destTableList, stcls.datefix, logThreadSeq2); err != nil {
+	if DtableList, err = tc.Query().TableAccessPriCheck(stcls.destDB, destTableList, stcls.datafix, logThreadSeq2); err != nil {
 		return nil, nil, err
 	}
 	if len(DtableList) == 0 {

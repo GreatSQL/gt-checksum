@@ -91,7 +91,7 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 			}
 
 			if hasMappings {
-				table.AddRow("Schema", "Table", "checkObject", "checkMode", "Rows", "Diffs", "Mapping")
+				table.AddRow("Schema", "Table", "CheckObject", "CheckMode", "Rows", "Diffs", "Mapping")
 				for _, pod := range measuredDataPods {
 					mappingInfo := pod.MappingInfo
 					if mappingInfo == "" {
@@ -100,7 +100,7 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 					table.AddRow(color.RedString(pod.Schema), color.GreenString(pod.Table), color.RedString(pod.CheckObject), color.GreenString(pod.CheckMode), color.RedString(pod.Rows), color.YellowString(pod.DIFFS), color.CyanString(mappingInfo))
 				}
 			} else {
-				table.AddRow("Schema", "Table", "checkObject", "checkMode", "Rows", "Diffs")
+				table.AddRow("Schema", "Table", "CheckObject", "CheckMode", "Rows", "Diffs")
 				for _, pod := range measuredDataPods {
 					table.AddRow(color.RedString(pod.Schema), color.GreenString(pod.Table), color.RedString(pod.CheckObject), color.GreenString(pod.CheckMode), color.RedString(pod.Rows), color.YellowString(pod.DIFFS))
 				}
@@ -109,10 +109,10 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 		case "sample":
 			for _, pod := range measuredDataPods {
 				if pod.Sample == "" {
-					table.AddRow("Schema", "Table", "IndexColumn", "checkObject", "checkMode", "Rows", "Diffs")
+					table.AddRow("Schema", "Table", "IndexColumn", "CheckObject", "CheckMode", "Rows", "Diffs")
 					table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.IndexColumn), color.YellowString(pod.CheckObject), color.BlueString(pod.CheckMode), color.BlueString(pod.Rows), color.GreenString(pod.DIFFS))
 				} else {
-					table.AddRow("Schema", "Table", "IndexColumn", "checkObject", "checkMode", "Rows", "Samp", "Diffs")
+					table.AddRow("Schema", "Table", "IndexColumn", "CheckObject", "CheckMode", "Rows", "Samp", "Diffs")
 					table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.IndexColumn), color.YellowString(pod.CheckObject), color.BlueString(pod.CheckMode), color.BlueString(pod.Rows), color.RedString(pod.Sample), color.GreenString(pod.DIFFS))
 				}
 			}
@@ -128,7 +128,7 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 			}
 
 			if hasMappings {
-				table.AddRow("Schema", "Table", "IndexColumn", "checkMode", "Rows", "Diffs", "Datafix", "Mapping")
+				table.AddRow("Schema", "Table", "IndexColumn", "CheckMode", "Rows", "Diffs", "Datafix", "Mapping")
 				for _, pod := range measuredDataPods {
 					var differences = pod.DIFFS
 					for k, _ := range differencesSchemaTable {
@@ -146,7 +146,7 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 					table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.IndexColumn), color.BlueString(pod.CheckMode), color.BlueString(pod.Rows), color.GreenString(differences), color.YellowString(pod.Datafix), color.CyanString(mappingInfo))
 				}
 			} else {
-				table.AddRow("Schema", "Table", "IndexColumn", "checkMode", "Rows", "Diffs", "Datafix")
+				table.AddRow("Schema", "Table", "IndexColumn", "CheckMode", "Rows", "Diffs", "Datafix")
 				for _, pod := range measuredDataPods {
 					var differences = pod.DIFFS
 					for k, _ := range differencesSchemaTable {

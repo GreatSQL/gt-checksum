@@ -23,7 +23,7 @@ type schemaTable struct {
 	sourceDB                *sql.DB
 	destDB                  *sql.DB
 	caseSensitiveObjectName string
-	datefix                 string
+	datafix                 string
 	sfile                   *os.File
 	djdbc                   string
 	checkMode               string //列的校验模式，分为宽松模式和严格模式
@@ -135,7 +135,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 		global.Wlog.Debug(vlog)
 		var sColumn, dColumn []map[string][]string
 
-		dbf := dbExec.DataAbnormalFixStruct{Schema: sourceSchema, Table: stcls.table, DestDevice: stcls.destDrive, DatafixType: stcls.datefix}
+		dbf := dbExec.DataAbnormalFixStruct{Schema: sourceSchema, Table: stcls.table, DestDevice: stcls.destDrive, DatafixType: stcls.datafix}
 		tc := dbExec.TableColumnNameStruct{Schema: sourceSchema, Table: stcls.table, Drive: stcls.sourceDrive}
 		sColumn, err = stcls.tableColumnName(stcls.sourceDB, tc, logThreadSeq, logThreadSeq2)
 		if err != nil {
@@ -341,7 +341,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 		if len(sqlS) > 0 {
 			vlog = fmt.Sprintf("(%d) %s Applying repair statements to %s.%s: %v", logThreadSeq, event, destSchema, stcls.table, sqlS)
 			global.Wlog.Debug(vlog)
-			if err = ApplyDataFix(sqlS, stcls.datefix, stcls.sfile, stcls.destDrive, stcls.djdbc, logThreadSeq); err != nil {
+			if err = ApplyDataFix(sqlS, stcls.datafix, stcls.sfile, stcls.destDrive, stcls.djdbc, logThreadSeq); err != nil {
 				return nil, nil, err
 			}
 			vlog = fmt.Sprintf("(%d) %s Repair statements applied to %s.%s", logThreadSeq, event, destSchema, stcls.table)
@@ -1688,7 +1688,7 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 				SourceDevice: stcls.sourceDrive,
 				DestDevice:   stcls.destDrive,
 				IndexType:    indexType,
-				DatafixType:  stcls.datefix,
+				DatafixType:  stcls.datafix,
 			}
 
 			// 首先比较索引名称
@@ -1807,7 +1807,7 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 		global.Wlog.Debug(vlog)
 
 		var pods = Pod{
-			Datafix:     stcls.datefix,
+			Datafix:     stcls.datafix,
 			CheckObject: "Index",
 
 			DIFFS:  "no",
@@ -1836,7 +1836,7 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 		if len(sqlS) > 0 {
 			pods.DIFFS = "yes"
 
-			err := ApplyDataFix(sqlS, stcls.datefix, stcls.sfile, stcls.destDrive, stcls.djdbc, logThreadSeq)
+			err := ApplyDataFix(sqlS, stcls.datafix, stcls.sfile, stcls.destDrive, stcls.djdbc, logThreadSeq)
 			if err != nil {
 				return err
 			}
@@ -1872,7 +1872,7 @@ func (stcls *schemaTable) Struct(dtabS []string, logThreadSeq, logThreadSeq2 int
 	global.Wlog.Debug(vlog)
 	//输出校验结果信息
 	var pods = Pod{
-		Datafix:     stcls.datefix,
+		Datafix:     stcls.datafix,
 		CheckObject: "Struct",
 	}
 	for _, i := range normal {
@@ -1928,7 +1928,7 @@ func SchemaTableInit(m *inputArg.ConfigParameter) *schemaTable {
 		sourceDB:                sdb,
 		destDB:                  ddb,
 		caseSensitiveObjectName: m.SecondaryL.SchemaV.CaseSensitiveObjectName,
-		datefix:                 m.SecondaryL.RepairV.Datafix,
+		datafix:                 m.SecondaryL.RepairV.Datafix,
 		sfile:                   m.SecondaryL.RepairV.FixFileFINE,
 		djdbc:                   m.SecondaryL.DsnsV.DestJdbc,
 		structRul:               m.SecondaryL.StructV,

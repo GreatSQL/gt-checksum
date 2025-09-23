@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-type rapirSqlStruct struct {
+type repairSqlStruct struct {
 	Drive string
 	JDBC  string
 }
@@ -32,7 +32,7 @@ func isFile(file string) *os.File {
 /*
 向目标端执行修复sql语句
 */
-func (rs rapirSqlStruct) execRapirSql(sqlstr []string, dbType string, logThreadSeq int64) error {
+func (rs repairSqlStruct) execRepairSql(sqlstr []string, dbType string, logThreadSeq int64) error {
 	//执行sql语句不记录binlog
 	var (
 		vlog string
@@ -94,7 +94,7 @@ func (rs rapirSqlStruct) execRapirSql(sqlstr []string, dbType string, logThreadS
 /*
 生成修复sql语句，并写入到文件中
 */
-func (rs rapirSqlStruct) SqlFile(sfile *os.File, sql []string, logThreadSeq int64) error { //在/tmp/下创建数据修复文件，将在目标端数据修复的语句写入到文件中
+func (rs repairSqlStruct) SqlFile(sfile *os.File, sql []string, logThreadSeq int64) error { //在/tmp/下创建数据修复文件，将在目标端数据修复的语句写入到文件中
 	var (
 		vlog      string
 		sqlCommit []string
@@ -118,19 +118,19 @@ func (rs rapirSqlStruct) SqlFile(sfile *os.File, sql []string, logThreadSeq int6
 }
 func ApplyDataFix(fixSql []string, datafixType string, sfile *os.File, ddrive, jdbc string, logThreadSeq int64) error {
 	var (
-		err      error
-		rapirdml = rapirSqlStruct{
+		err       error
+		repairdml = repairSqlStruct{
 			Drive: ddrive,
 			JDBC:  jdbc,
 		}
 	)
 	if datafixType == "file" {
-		if err = rapirdml.SqlFile(sfile, fixSql, logThreadSeq); err != nil {
+		if err = repairdml.SqlFile(sfile, fixSql, logThreadSeq); err != nil {
 			return err
 		}
 	}
 	if datafixType == "table" {
-		if err = rapirdml.execRapirSql(fixSql, ddrive, logThreadSeq); err != nil {
+		if err = repairdml.execRepairSql(fixSql, ddrive, logThreadSeq); err != nil {
 			return err
 		}
 	}

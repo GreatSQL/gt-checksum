@@ -161,7 +161,7 @@ func (sp *SchedulePlan) Schedulingtasks() {
 			sp.columnName = v
 			// 开始新表的进度显示
 			displayTableName := sp.getDisplayTableName()
-			tableName := fmt.Sprintf("Starting index checksum for table %s", displayTableName)
+			tableName := fmt.Sprintf("Starting index checksum for table %s\n", displayTableName)
 			sp.bar.NewTableProgress(tableName)
 			sp.doIndexDataCheck() // 确保SchedulePlan结构体已定义此方法
 			fmt.Println()

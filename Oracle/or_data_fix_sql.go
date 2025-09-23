@@ -28,8 +28,9 @@ func (or *OracleDataAbnormalFixStruct) FixInsertSqlExec(db *sql.DB, sourceDrive 
 		insertSql     string
 		valuesNameSeq []string
 	)
+
 	//colData := or.ColData
-	vlog = fmt.Sprintf("(%d)  Oracle DB check table %s.%s starts to generate insert repair statement.", logThreadSeq, or.Schema, or.Table)
+	vlog = fmt.Sprintf("(%d) Oracle DB check table %s.%s starts to generate insert repair statement.", logThreadSeq, or.Schema, or.Table)
 	global.Wlog.Debug(vlog)
 
 	for k, v := range strings.Split(or.RowData, "/*go actions columnData*/") {
@@ -67,6 +68,7 @@ func (or *OracleDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive 
 		ad                        = make(map[string]int)
 		acc                       = make(map[string]string) //判断特殊数据类型
 	)
+
 	colData := or.ColData
 	for _, i := range colData {
 		cls, _ := strconv.Atoi(fmt.Sprintf("%s", i["columnSeq"]))

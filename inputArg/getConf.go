@@ -223,14 +223,14 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 	if rc.SecondaryL.RepairV.Datafix == "file" {
 		if rc.FirstL.Repair != nil {
 			if _, err = rc.FirstL.Repair.GetKey("fixFileName"); err != nil {
-				fmt.Println("Using default value './gt-checksum-DataFix.sql' for option fixFileName")
-				rc.SecondaryL.RepairV.FixFileName = "./gt-checksum-DataFix.sql"
+				fmt.Println("Using default value './gt-checksum-datafix.sql' for option fixFileName")
+				rc.SecondaryL.RepairV.FixFileName = "./gt-checksum-datafix.sql"
 			} else {
 				rc.SecondaryL.RepairV.FixFileName = rc.FirstL.Repair.Key("fixFileName").String()
 			}
 		} else {
-			fmt.Println("Using default value './gt-checksum-DataFix.sql' for option fixFileName")
-			rc.SecondaryL.RepairV.FixFileName = "./gt-checksum-DataFix.sql"
+			fmt.Println("Using default value './gt-checksum-datafix.sql' for option fixFileName")
+			rc.SecondaryL.RepairV.FixFileName = "./gt-checksum-datafix.sql"
 		}
 	}
 }
