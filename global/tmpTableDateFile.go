@@ -48,7 +48,7 @@ func (tds TableDateFileStruct) WriteFile(file *os.File, writeMapString []string)
 	for is, i := range writeMapString {
 		write.WriteString(i)
 		if is < len(i)-1 {
-			write.WriteString("/*greatdbCheckColumnSplict*/")
+			write.WriteString("/*gtchecksumColumnSplict*/")
 		}
 		Wlog.Debug(fmt.Sprintf("Writing data to temp file %s: %s", tds.FileName, i))
 	}

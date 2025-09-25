@@ -27,6 +27,61 @@ type Pod struct {
 	Schema, Table, IndexColumn, CheckMode, Rows, DIFFS, CheckObject, Datafix, FuncName, Definer, ProcName, Sample, TriggerName, MappingInfo string
 }
 
+// 获取表的映射信息
+func getTableMappingInfo(schema, table string) string {
+	// 遍历全局映射关系列表
+	for _, mapping := range TableMappingRelations {
+		parts := strings.Split(mapping, ":")
+		if len(parts) == 2 {
+			sourceParts := strings.Split(parts[0], ".")
+			destParts := strings.Split(parts[1], ".")
+
+			if len(sourceParts) == 2 && len(destParts) == 2 {
+				sourceSchema := sourceParts[0]
+				sourceTable := sourceParts[1]
+				destSchema := destParts[0]
+				destTable := destParts[1]
+
+				// 如果当前表是源表或目标表，返回映射信息
+				if (schema == sourceSchema && table == sourceTable) ||
+					(schema == destSchema && table == destTable) {
+					// 返回格式为 "Schema: sourceSchema:destSchema"
+					return fmt.Sprintf("Schema: %s:%s", sourceSchema, destSchema)
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// 检查是否存在映射关系
+func hasMappingRelations() bool {
+	return len(TableMappingRelations) > 0
+}
+
+// 获取schema级别的映射关系
+func getSchemaMappings() map[string]string {
+	schemaMap := make(map[string]string)
+
+	for _, mapping := range TableMappingRelations {
+		parts := strings.Split(mapping, ":")
+		if len(parts) == 2 {
+			sourceParts := strings.Split(parts[0], ".")
+			destParts := strings.Split(parts[1], ".")
+
+			if len(sourceParts) >= 1 && len(destParts) >= 1 {
+				sourceSchema := sourceParts[0]
+				destSchema := destParts[0]
+
+				// 添加到映射表中
+				schemaMap[sourceSchema] = destSchema
+			}
+		}
+	}
+
+	return schemaMap
+}
+
 var measuredDataPods []Pod
 var differencesSchemaTable = make(map[string]string)
 
@@ -35,68 +90,455 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 	table.MaxColWidth = 200
 	table.RightAlign(20)
 
+	// 检查是否有映射关系
+	hasMappings := hasMappingRelations()
+
 	switch m.SecondaryL.RulesV.CheckObject {
 	case "struct":
-		table.AddRow("Schema", "Table", " CheckObject ", "Diffs", "Datafix")
+		if hasMappings {
+			table.AddRow("Schema", "Table", "CheckObject", "Diffs", "Datafix", "Mapping")
+		} else {
+			table.AddRow("Schema", "Table", "CheckObject", "Diffs", "Datafix")
+		}
+
 		for _, pod := range measuredDataPods {
-			table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.CheckObject), color.GreenString(pod.DIFFS), color.YellowString(pod.Datafix))
+			// 检查Table字段是否包含schema.table或schema:table格式
+			tableName := pod.Table
+			schemaName := pod.Schema
+
+			// 特殊处理"db1.*:db2.*"这种映射格式
+			if strings.Contains(tableName, ".*:") {
+				parts := strings.Split(tableName, ".*:")
+				if len(parts) == 2 {
+					// 这里是映射规则，需要将db2作为schema，t1作为table
+					// 假设pod.Schema存储的是表名(如t1)，pod.Table存储的是"db1.*:db2.*"
+					schemaName = parts[1] // db2
+					// tableName保持不变，因为它可能是t1
+				}
+				// 如果不包含".*:"但包含":"，则按照普通的冒号分隔处理
+			} else if strings.Contains(tableName, ":") {
+				parts := strings.Split(tableName, ":")
+				if len(parts) == 2 {
+					// 如果Schema为空，则第一部分是schema
+					if schemaName == "" {
+						schemaName = parts[0]
+						tableName = parts[1]
+					} else {
+						// 如果Schema已有值，则这是一个表名映射，只保留冒号前的部分作为表名
+						tableName = parts[0] // 只保留冒号前的部分作为表名
+					}
+				}
+			}
+
+			// 处理点号分隔的情况 (schema.table)
+			if strings.Contains(tableName, ".") {
+				parts := strings.Split(tableName, ".")
+				if len(parts) == 2 && schemaName == "" {
+					schemaName = parts[0]
+					tableName = parts[1]
+				}
+			}
+
+			// 获取映射信息
+			mappingInfo := "-"
+			if hasMappings {
+				// 获取schema级别的映射
+				schemaMap := getSchemaMappings()
+				if destSchema, exists := schemaMap[schemaName]; exists {
+					mappingInfo = fmt.Sprintf("Schema: %s:%s", schemaName, destSchema)
+				}
+			}
+
+			if hasMappings {
+				table.AddRow(color.RedString(schemaName), color.WhiteString(tableName), color.RedString(pod.CheckObject), color.GreenString(pod.DIFFS), color.YellowString(pod.Datafix), color.CyanString(mappingInfo))
+			} else {
+				table.AddRow(color.RedString(schemaName), color.WhiteString(tableName), color.RedString(pod.CheckObject), color.GreenString(pod.DIFFS), color.YellowString(pod.Datafix))
+			}
 		}
 		fmt.Println(table)
 	case "index":
-		table.AddRow("Schema", "Table", "CheckObject ", "Diffs", "Datafix")
+		if hasMappings {
+			table.AddRow("Schema", "Table", "CheckObject", "Diffs", "Datafix", "Mapping")
+		} else {
+			table.AddRow("Schema", "Table", "CheckObject", "Diffs", "Datafix")
+		}
+
 		for _, pod := range measuredDataPods {
-			table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.CheckObject), color.GreenString(pod.DIFFS), color.YellowString(pod.Datafix))
+			// 检查Table字段是否包含schema.table或schema:table格式
+			tableName := pod.Table
+			schemaName := pod.Schema
+
+			// 特殊处理"db1.*:db2.*"这种映射格式
+			if strings.Contains(tableName, ".*:") {
+				parts := strings.Split(tableName, ".*:")
+				if len(parts) == 2 {
+					// 这里是映射规则，需要将db2作为schema，t1作为table
+					// 假设pod.Schema存储的是表名(如t1)，pod.Table存储的是"db1.*:db2.*"
+					schemaName = parts[1] // db2
+					// tableName保持不变，因为它可能是t1
+				}
+				// 如果不包含".*:"但包含":"，则按照普通的冒号分隔处理
+			} else if strings.Contains(tableName, ":") {
+				parts := strings.Split(tableName, ":")
+				if len(parts) == 2 {
+					// 如果Schema为空，则第一部分是schema
+					if schemaName == "" {
+						schemaName = parts[0]
+						tableName = parts[1]
+					} else {
+						// 如果Schema已有值，则这是一个表名映射，只保留冒号前的部分作为表名
+						tableName = parts[0] // 只保留冒号前的部分作为表名
+					}
+				}
+			}
+
+			// 处理点号分隔的情况 (schema.table)
+			if strings.Contains(tableName, ".") {
+				parts := strings.Split(tableName, ".")
+				if len(parts) == 2 && schemaName == "" {
+					schemaName = parts[0]
+					tableName = parts[1]
+				}
+			}
+
+			// 获取映射信息
+			mappingInfo := "-"
+			if hasMappings {
+				// 获取schema级别的映射
+				schemaMap := getSchemaMappings()
+				if destSchema, exists := schemaMap[schemaName]; exists {
+					mappingInfo = fmt.Sprintf("Schema: %s:%s", schemaName, destSchema)
+				}
+			}
+
+			if hasMappings {
+				table.AddRow(color.RedString(schemaName), color.WhiteString(tableName), color.RedString(pod.CheckObject), color.GreenString(pod.DIFFS), color.YellowString(pod.Datafix), color.CyanString(mappingInfo))
+			} else {
+				table.AddRow(color.RedString(schemaName), color.WhiteString(tableName), color.RedString(pod.CheckObject), color.GreenString(pod.DIFFS), color.YellowString(pod.Datafix))
+			}
 		}
 		fmt.Println(table)
 	case "partitions":
-		table.AddRow("Schema", "Table", "checkObject ", "Diffs", "Datafix")
+		if hasMappings {
+			table.AddRow("Schema", "Table", "CheckObject", "Diffs", "Datafix", "Mapping")
+		} else {
+			table.AddRow("Schema", "Table", "CheckObject", "Diffs", "Datafix")
+		}
+
 		for _, pod := range measuredDataPods {
-			table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.CheckObject), color.GreenString(pod.DIFFS), color.YellowString(pod.Datafix))
+			// 检查Table字段是否包含schema.table或schema:table格式
+			tableName := pod.Table
+			schemaName := pod.Schema
+
+			// 特殊处理"db1.*:db2.*"这种映射格式
+			if strings.Contains(tableName, ".*:") {
+				parts := strings.Split(tableName, ".*:")
+				if len(parts) == 2 {
+					// 这里是映射规则，需要将db2作为schema，t1作为table
+					// 假设pod.Schema存储的是表名(如t1)，pod.Table存储的是"db1.*:db2.*"
+					schemaName = parts[1] // db2
+					// tableName保持不变，因为它可能是t1
+				}
+				// 如果不包含".*:"但包含":"，则按照普通的冒号分隔处理
+			} else if strings.Contains(tableName, ":") {
+				parts := strings.Split(tableName, ":")
+				if len(parts) == 2 {
+					// 如果Schema为空，则第一部分是schema
+					if schemaName == "" {
+						schemaName = parts[0]
+						tableName = parts[1]
+					} else {
+						// 如果Schema已有值，则这是一个表名映射，只保留冒号前的部分作为表名
+						tableName = parts[0] // 只保留冒号前的部分作为表名
+					}
+				}
+			}
+
+			// 处理点号分隔的情况 (schema.table)
+			if strings.Contains(tableName, ".") {
+				parts := strings.Split(tableName, ".")
+				if len(parts) == 2 && schemaName == "" {
+					schemaName = parts[0]
+					tableName = parts[1]
+				}
+			}
+
+			// 获取映射信息
+			mappingInfo := "-"
+			if hasMappings {
+				// 获取schema级别的映射
+				schemaMap := getSchemaMappings()
+				if destSchema, exists := schemaMap[schemaName]; exists {
+					mappingInfo = fmt.Sprintf("Schema: %s:%s", schemaName, destSchema)
+				}
+			}
+
+			if hasMappings {
+				table.AddRow(color.RedString(schemaName), color.WhiteString(tableName), color.RedString(pod.CheckObject), color.GreenString(pod.DIFFS), color.YellowString(pod.Datafix), color.CyanString(mappingInfo))
+			} else {
+				table.AddRow(color.RedString(schemaName), color.WhiteString(tableName), color.RedString(pod.CheckObject), color.GreenString(pod.DIFFS), color.YellowString(pod.Datafix))
+			}
 		}
 		fmt.Println(table)
 	case "foreign":
-		table.AddRow("Schema", "Table", "checkObject ", "Diffs", "Datafix")
+		if hasMappings {
+			table.AddRow("Schema", "Table", "CheckObject", "Diffs", "Datafix", "Mapping")
+		} else {
+			table.AddRow("Schema", "Table", "CheckObject", "Diffs", "Datafix")
+		}
+
 		for _, pod := range measuredDataPods {
-			table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.CheckObject), color.GreenString(pod.DIFFS), color.YellowString(pod.Datafix))
+			// 检查Table字段是否包含schema.table或schema:table格式
+			tableName := pod.Table
+			schemaName := pod.Schema
+
+			// 特殊处理"db1.*:db2.*"这种映射格式
+			if strings.Contains(tableName, ".*:") {
+				parts := strings.Split(tableName, ".*:")
+				if len(parts) == 2 {
+					// 这里是映射规则，需要将db2作为schema，t1作为table
+					// 假设pod.Schema存储的是表名(如t1)，pod.Table存储的是"db1.*:db2.*"
+					schemaName = parts[1] // db2
+					// tableName保持不变，因为它可能是t1
+				}
+				// 如果不包含".*:"但包含":"，则按照普通的冒号分隔处理
+			} else if strings.Contains(tableName, ":") {
+				parts := strings.Split(tableName, ":")
+				if len(parts) == 2 {
+					// 如果Schema为空，则第一部分是schema
+					if schemaName == "" {
+						schemaName = parts[0]
+						tableName = parts[1]
+					} else {
+						// 如果Schema已有值，则这是一个表名映射，只保留冒号前的部分作为表名
+						tableName = parts[0] // 只保留冒号前的部分作为表名
+					}
+				}
+			}
+
+			// 处理点号分隔的情况 (schema.table)
+			if strings.Contains(tableName, ".") {
+				parts := strings.Split(tableName, ".")
+				if len(parts) == 2 && schemaName == "" {
+					schemaName = parts[0]
+					tableName = parts[1]
+				}
+			}
+
+			// 获取映射信息
+			mappingInfo := "-"
+			if hasMappings {
+				// 获取schema级别的映射
+				schemaMap := getSchemaMappings()
+				if destSchema, exists := schemaMap[schemaName]; exists {
+					mappingInfo = fmt.Sprintf("Schema: %s:%s", schemaName, destSchema)
+				}
+			}
+
+			if hasMappings {
+				table.AddRow(color.RedString(schemaName), color.WhiteString(tableName), color.RedString(pod.CheckObject), color.GreenString(pod.DIFFS), color.YellowString(pod.Datafix), color.CyanString(mappingInfo))
+			} else {
+				table.AddRow(color.RedString(schemaName), color.WhiteString(tableName), color.RedString(pod.CheckObject), color.GreenString(pod.DIFFS), color.YellowString(pod.Datafix))
+			}
 		}
 		fmt.Println(table)
 	case "func":
-		table.AddRow("Schema ", "funcName ", "checkObject ", "DIFFS ", "Datafix ")
+		if hasMappings {
+			table.AddRow("Schema", "funcName", "CheckObject", "DIFFS", "Datafix", "Mapping")
+		} else {
+			table.AddRow("Schema", "funcName", "CheckObject", "DIFFS", "Datafix")
+		}
+
 		for _, pod := range measuredDataPods {
-			table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.FuncName), color.RedString(pod.CheckObject), color.GreenString(pod.DIFFS), color.YellowString(pod.Datafix))
+			// 检查Schema和FuncName字段
+			schemaName := pod.Schema
+			funcName := pod.FuncName
+
+			// 特殊处理"db1.*:db2.*"这种映射格式
+			if strings.Contains(funcName, ".*:") {
+				parts := strings.Split(funcName, ".*:")
+				if len(parts) == 2 {
+					// 这里是映射规则，需要将db2作为schema，func作为函数名
+					schemaName = parts[1] // db2
+					// funcName保持不变，因为它可能是函数名
+				}
+				// 如果不包含".*:"但包含":"，则按照普通的冒号分隔处理
+			} else if strings.Contains(funcName, ":") {
+				parts := strings.Split(funcName, ":")
+				if len(parts) == 2 {
+					// 如果Schema为空，则第一部分是schema
+					if schemaName == "" {
+						schemaName = parts[0]
+						funcName = parts[1]
+					} else {
+						// 如果Schema已有值，则这是一个函数名映射，只保留冒号前的部分作为函数名
+						funcName = parts[0] // 只保留冒号前的部分作为函数名
+					}
+				}
+			}
+
+			// 处理点号分隔的情况 (schema.func)
+			if schemaName == "" && strings.Contains(funcName, ".") {
+				parts := strings.Split(funcName, ".")
+				if len(parts) == 2 {
+					schemaName = parts[0]
+					funcName = parts[1]
+				}
+			}
+
+			// 获取映射信息
+			mappingInfo := "-"
+			if hasMappings {
+				// 获取schema级别的映射
+				schemaMap := getSchemaMappings()
+				if destSchema, exists := schemaMap[schemaName]; exists {
+					mappingInfo = fmt.Sprintf("Schema: %s:%s", schemaName, destSchema)
+				}
+			}
+
+			if hasMappings {
+				table.AddRow(color.RedString(schemaName), color.WhiteString(funcName), color.RedString(pod.CheckObject), color.GreenString(pod.DIFFS), color.YellowString(pod.Datafix), color.CyanString(mappingInfo))
+			} else {
+				table.AddRow(color.RedString(schemaName), color.WhiteString(funcName), color.RedString(pod.CheckObject), color.GreenString(pod.DIFFS), color.YellowString(pod.Datafix))
+			}
 		}
 		fmt.Println(table)
 	case "proc":
-		table.AddRow("Schema ", "procName ", "checkObject ", "DIFFS ", "Datafix ")
+		if hasMappings {
+			table.AddRow("Schema", "ProcName", "CheckObject", "DIFFS", "Datafix", "Mapping")
+		} else {
+			table.AddRow("Schema", "ProcName", "CheckObject", "DIFFS", "Datafix")
+		}
+
 		for _, pod := range measuredDataPods {
-			table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.ProcName), color.RedString(pod.CheckObject), color.GreenString(pod.DIFFS), color.YellowString(pod.Datafix))
+			// 检查Schema和ProcName字段
+			schemaName := pod.Schema
+			procName := pod.ProcName
+
+			// 特殊处理"db1.*:db2.*"这种映射格式
+			if strings.Contains(procName, ".*:") {
+				parts := strings.Split(procName, ".*:")
+				if len(parts) == 2 {
+					// 这里是映射规则，需要将db2作为schema，proc作为存储过程名
+					schemaName = parts[1] // db2
+					// procName保持不变，因为它可能是存储过程名
+				}
+				// 如果不包含".*:"但包含":"，则按照普通的冒号分隔处理
+			} else if strings.Contains(procName, ":") {
+				parts := strings.Split(procName, ":")
+				if len(parts) == 2 {
+					// 如果Schema为空，则第一部分是schema
+					if schemaName == "" {
+						schemaName = parts[0]
+						procName = parts[1]
+					} else {
+						// 如果Schema已有值，则这是一个存储过程名映射，只保留冒号前的部分作为存储过程名
+						procName = parts[0] // 只保留冒号前的部分作为存储过程名
+					}
+				}
+			}
+
+			// 处理点号分隔的情况 (schema.proc)
+			if schemaName == "" && strings.Contains(procName, ".") {
+				parts := strings.Split(procName, ".")
+				if len(parts) == 2 {
+					schemaName = parts[0]
+					procName = parts[1]
+				}
+			}
+
+			// 获取映射信息
+			mappingInfo := "-"
+			if hasMappings {
+				// 获取schema级别的映射
+				schemaMap := getSchemaMappings()
+				if destSchema, exists := schemaMap[schemaName]; exists {
+					mappingInfo = fmt.Sprintf("Schema: %s:%s", schemaName, destSchema)
+				}
+			}
+
+			if hasMappings {
+				table.AddRow(color.RedString(schemaName), color.WhiteString(procName), color.RedString(pod.CheckObject), color.GreenString(pod.DIFFS), color.YellowString(pod.Datafix), color.CyanString(mappingInfo))
+			} else {
+				table.AddRow(color.RedString(schemaName), color.WhiteString(procName), color.RedString(pod.CheckObject), color.GreenString(pod.DIFFS), color.YellowString(pod.Datafix))
+			}
 		}
 		fmt.Println(table)
 	case "trigger":
-		table.AddRow("Schema ", "triggerName ", "checkObject ", "Diffs ", "Datafix ")
+		if hasMappings {
+			table.AddRow("Schema", "TriggerName", "CheckObject", "Diffs", "Datafix", "Mapping")
+		} else {
+			table.AddRow("Schema", "TriggerName", "CheckObject", "Diffs", "Datafix")
+		}
+
 		for _, pod := range measuredDataPods {
-			table.AddRow(color.RedString(pod.Schema), color.GreenString(pod.TriggerName), color.RedString(pod.CheckObject), color.GreenString(pod.DIFFS), color.YellowString(pod.Datafix))
+			// 检查Schema和TriggerName字段
+			schemaName := pod.Schema
+			triggerName := pod.TriggerName
+
+			// 特殊处理"db1.*:db2.*"这种映射格式
+			if strings.Contains(triggerName, ".*:") {
+				parts := strings.Split(triggerName, ".*:")
+				if len(parts) == 2 {
+					// 这里是映射规则，需要将db2作为schema，trigger作为触发器名
+					schemaName = parts[1] // db2
+					// triggerName保持不变，因为它可能是触发器名
+				}
+				// 如果不包含".*:"但包含":"，则按照普通的冒号分隔处理
+			} else if strings.Contains(triggerName, ":") {
+				parts := strings.Split(triggerName, ":")
+				if len(parts) == 2 {
+					// 如果Schema为空，则第一部分是schema
+					if schemaName == "" {
+						schemaName = parts[0]
+						triggerName = parts[1]
+					} else {
+						// 如果Schema已有值，则这是一个触发器名映射，只保留冒号前的部分作为触发器名
+						triggerName = parts[0] // 只保留冒号前的部分作为触发器名
+					}
+				}
+			}
+
+			// 处理点号分隔的情况 (schema.trigger)
+			if schemaName == "" && strings.Contains(triggerName, ".") {
+				parts := strings.Split(triggerName, ".")
+				if len(parts) == 2 {
+					schemaName = parts[0]
+					triggerName = parts[1]
+				}
+			}
+
+			// 获取映射信息
+			mappingInfo := "-"
+			if hasMappings {
+				// 获取schema级别的映射
+				schemaMap := getSchemaMappings()
+				if destSchema, exists := schemaMap[schemaName]; exists {
+					mappingInfo = fmt.Sprintf("Schema: %s:%s", schemaName, destSchema)
+				}
+			}
+
+			if hasMappings {
+				table.AddRow(color.RedString(schemaName), color.GreenString(triggerName), color.RedString(pod.CheckObject), color.GreenString(pod.DIFFS), color.YellowString(pod.Datafix), color.CyanString(mappingInfo))
+			} else {
+				table.AddRow(color.RedString(schemaName), color.GreenString(triggerName), color.RedString(pod.CheckObject), color.GreenString(pod.DIFFS), color.YellowString(pod.Datafix))
+			}
 		}
 		fmt.Println(table)
 	case "data":
 		switch m.SecondaryL.RulesV.CheckMode {
 		case "count":
-			// 检查是否有映射关系
-			hasMappings := false
-			for _, pod := range measuredDataPods {
-				if pod.MappingInfo != "" {
-					hasMappings = true
-					break
-				}
-			}
-
 			if hasMappings {
 				table.AddRow("Schema", "Table", "CheckObject", "CheckMode", "Rows", "Diffs", "Mapping")
 				for _, pod := range measuredDataPods {
-					mappingInfo := pod.MappingInfo
-					if mappingInfo == "" {
-						mappingInfo = "-"
+					// 获取映射信息
+					mappingInfo := "-"
+					// 获取schema级别的映射
+					schemaMap := getSchemaMappings()
+					if destSchema, exists := schemaMap[pod.Schema]; exists {
+						mappingInfo = fmt.Sprintf("Schema: %s:%s", pod.Schema, destSchema)
 					}
+
 					table.AddRow(color.RedString(pod.Schema), color.GreenString(pod.Table), color.RedString(pod.CheckObject), color.GreenString(pod.CheckMode), color.RedString(pod.Rows), color.YellowString(pod.DIFFS), color.CyanString(mappingInfo))
 				}
 			} else {
@@ -107,42 +549,58 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 			}
 			fmt.Println(table)
 		case "sample":
-			for _, pod := range measuredDataPods {
-				if pod.Sample == "" {
-					table.AddRow("Schema", "Table", "IndexColumn", "CheckObject", "CheckMode", "Rows", "Diffs")
-					table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.IndexColumn), color.YellowString(pod.CheckObject), color.BlueString(pod.CheckMode), color.BlueString(pod.Rows), color.GreenString(pod.DIFFS))
-				} else {
-					table.AddRow("Schema", "Table", "IndexColumn", "CheckObject", "CheckMode", "Rows", "Samp", "Diffs")
-					table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.IndexColumn), color.YellowString(pod.CheckObject), color.BlueString(pod.CheckMode), color.BlueString(pod.Rows), color.RedString(pod.Sample), color.GreenString(pod.DIFFS))
+			if hasMappings {
+				for _, pod := range measuredDataPods {
+					// 获取映射信息
+					mappingInfo := "-"
+					// 获取schema级别的映射
+					schemaMap := getSchemaMappings()
+					if destSchema, exists := schemaMap[pod.Schema]; exists {
+						mappingInfo = fmt.Sprintf("Schema: %s:%s", pod.Schema, destSchema)
+					}
+
+					if pod.Sample == "" {
+						table.AddRow("Schema", "Table", "IndexColumn", "CheckObject", "CheckMode", "Rows", "Diffs", "Mapping")
+						table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.IndexColumn), color.YellowString(pod.CheckObject), color.BlueString(pod.CheckMode), color.BlueString(pod.Rows), color.GreenString(pod.DIFFS), color.CyanString(mappingInfo))
+					} else {
+						table.AddRow("Schema", "Table", "IndexColumn", "CheckObject", "CheckMode", "Rows", "Samp", "Diffs", "Mapping")
+						table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.IndexColumn), color.YellowString(pod.CheckObject), color.BlueString(pod.CheckMode), color.BlueString(pod.Rows), color.RedString(pod.Sample), color.GreenString(pod.DIFFS), color.CyanString(mappingInfo))
+					}
+				}
+			} else {
+				for _, pod := range measuredDataPods {
+					if pod.Sample == "" {
+						table.AddRow("Schema", "Table", "IndexColumn", "CheckObject", "CheckMode", "Rows", "Diffs")
+						table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.IndexColumn), color.YellowString(pod.CheckObject), color.BlueString(pod.CheckMode), color.BlueString(pod.Rows), color.GreenString(pod.DIFFS))
+					} else {
+						table.AddRow("Schema", "Table", "IndexColumn", "CheckObject", "CheckMode", "Rows", "Samp", "Diffs")
+						table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.IndexColumn), color.YellowString(pod.CheckObject), color.BlueString(pod.CheckMode), color.BlueString(pod.Rows), color.RedString(pod.Sample), color.GreenString(pod.DIFFS))
+					}
 				}
 			}
 			fmt.Println(table)
 		case "rows":
-			// 检查是否有映射关系
-			hasMappings := false
-			for _, pod := range measuredDataPods {
-				if pod.MappingInfo != "" {
-					hasMappings = true
-					break
-				}
-			}
-
 			if hasMappings {
 				table.AddRow("Schema", "Table", "IndexColumn", "CheckMode", "Rows", "Diffs", "Datafix", "Mapping")
 				for _, pod := range measuredDataPods {
 					var differences = pod.DIFFS
 					for k, _ := range differencesSchemaTable {
 						if k != "" {
-							KI := strings.Split(k, "greatdbCheck_greatdbCheck")
+							KI := strings.Split(k, "gtchecksum_gtchecksum")
 							if pod.Schema == KI[0] && pod.Table == KI[1] {
 								differences = "yes"
 							}
 						}
 					}
-					mappingInfo := pod.MappingInfo
-					if mappingInfo == "" {
-						mappingInfo = "-"
+
+					// 获取映射信息
+					mappingInfo := "-"
+					// 获取schema级别的映射
+					schemaMap := getSchemaMappings()
+					if destSchema, exists := schemaMap[pod.Schema]; exists {
+						mappingInfo = fmt.Sprintf("Schema: %s:%s", pod.Schema, destSchema)
 					}
+
 					table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.IndexColumn), color.BlueString(pod.CheckMode), color.BlueString(pod.Rows), color.GreenString(differences), color.YellowString(pod.Datafix), color.CyanString(mappingInfo))
 				}
 			} else {
@@ -151,7 +609,7 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 					var differences = pod.DIFFS
 					for k, _ := range differencesSchemaTable {
 						if k != "" {
-							KI := strings.Split(k, "greatdbCheck_greatdbCheck")
+							KI := strings.Split(k, "gtchecksum_gtchecksum")
 							if pod.Schema == KI[0] && pod.Table == KI[1] {
 								differences = "yes"
 							}
