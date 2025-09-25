@@ -13,6 +13,9 @@ import (
 	"strings"
 )
 
+// 全局变量，用于存储表映射关系
+var TableMappingRelations []string
+
 type schemaTable struct {
 	schema                  string
 	table                   string
@@ -891,6 +894,23 @@ func (stcls *schemaTable) SchemaTableFilter(logThreadSeq1, logThreadSeq2 int64) 
 		// 构建包含映射信息的表名
 		mappedTableName := fmt.Sprintf("%s.%s:%s.%s", mapping.SourceSchema, mapping.SourceTable, mapping.DestSchema, mapping.DestTable)
 		f = append(f, mappedTableName)
+
+		// 如果源表和目标表不同，则添加到映射关系列表中
+		if mapping.SourceSchema != mapping.DestSchema || mapping.SourceTable != mapping.DestTable {
+			mappingRelation := fmt.Sprintf("%s.%s:%s.%s", mapping.SourceSchema, mapping.SourceTable, mapping.DestSchema, mapping.DestTable)
+			// 检查是否已存在相同的映射关系
+			exists := false
+			for _, existingMapping := range TableMappingRelations {
+				if existingMapping == mappingRelation {
+					exists = true
+					break
+				}
+			}
+			if !exists {
+				TableMappingRelations = append(TableMappingRelations, mappingRelation)
+			}
+		}
+
 		vlog = fmt.Sprintf("Final mapped table: %s", mappedTableName)
 		global.Wlog.Debug(vlog)
 	}
@@ -1217,11 +1237,12 @@ func (stcls *schemaTable) parseTableMappings(Ftable string) {
 */
 func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 int64) {
 	var (
-		vlog string
-		tmpM = make(map[string]int)
-		z    = make(map[string]int)
-		c, d []string
-		pods = Pod{
+		vlog       string
+		tmpM       = make(map[string]int)
+		schemaMap  = make(map[string]int)
+		triggerMap = make(map[string]string) // 存储具体的触发器名称
+		c, d       []string
+		pods       = Pod{
 			Datafix:     "no",
 			CheckObject: "trigger",
 		}
@@ -1231,43 +1252,138 @@ func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 in
 
 	vlog = fmt.Sprintf("(%d) Start init check source and target DB Trigger. to check it...", logThreadSeq)
 	global.Wlog.Info(vlog)
+
+	// 从dtabS中提取schema信息和触发器名称
 	for _, i := range dtabS {
-		i = strings.Split(i, ".")[0]
-		if stcls.caseSensitiveObjectName == "yes" {
-			i = strings.ToUpper(i)
-			z[i]++
-		}
-		// yejr存疑，这段代码是否多余，或者和上一段代码是否冲突？
-		if stcls.caseSensitiveObjectName == "no" {
-			z[i]++
+		// 处理映射格式 schema.trigger:schema.trigger
+		if strings.Contains(i, ":") {
+			parts := strings.Split(i, ":")
+			if len(parts) == 2 {
+				sourceParts := strings.Split(parts[0], ".")
+				if len(sourceParts) >= 1 {
+					schema := sourceParts[0]
+					if stcls.caseSensitiveObjectName == "no" {
+						schema = strings.ToUpper(schema)
+					}
+					schemaMap[schema] = 1
+
+					// 如果指定了具体的触发器名称
+					if len(sourceParts) >= 2 && sourceParts[1] != "*" {
+						triggerName := sourceParts[1]
+						if stcls.caseSensitiveObjectName == "no" {
+							triggerName = strings.ToUpper(triggerName)
+						}
+						triggerMap[schema+"."+triggerName] = triggerName
+					}
+				}
+			}
+		} else {
+			// 处理普通格式 schema.trigger 或 schema.*
+			parts := strings.Split(i, ".")
+			if len(parts) >= 1 {
+				schema := parts[0]
+				if stcls.caseSensitiveObjectName == "no" {
+					schema = strings.ToUpper(schema)
+				}
+				schemaMap[schema] = 1
+
+				// 如果指定了具体的触发器名称
+				if len(parts) >= 2 && parts[1] != "*" {
+					triggerName := parts[1]
+					if stcls.caseSensitiveObjectName == "no" {
+						triggerName = strings.ToUpper(triggerName)
+					}
+					triggerMap[schema+"."+triggerName] = triggerName
+				}
+			}
 		}
 	}
-	//校验触发器
-	for i, _ := range z {
-		pods.Schema = stcls.schema
-		vlog = fmt.Sprintf("(%d) Start processing dstDSN {%s} data databases %s Trigger. to dispos it...", logThreadSeq, stcls.sourceDrive, stcls.schema)
+
+	// 如果schemaMap为空，但stcls.schema不为空，则使用stcls.schema
+	if len(schemaMap) == 0 && stcls.schema != "" {
+		schema := stcls.schema
+		if stcls.caseSensitiveObjectName == "no" {
+			schema = strings.ToUpper(schema)
+		}
+		schemaMap[schema] = 1
+		vlog = fmt.Sprintf("(%d) No schema found in dtabS, using default schema: %s", logThreadSeq, schema)
 		global.Wlog.Debug(vlog)
-		tc := dbExec.TableColumnNameStruct{Schema: i, Drive: stcls.sourceDrive}
+	}
+	//校验触发器
+	for schema, _ := range schemaMap {
+		pods.Schema = schema
+		vlog = fmt.Sprintf("(%d) Start processing srcDSN {%s} databases %s Trigger. to dispos it...", logThreadSeq, stcls.sourceDrive, schema)
+		global.Wlog.Debug(vlog)
+		tc := dbExec.TableColumnNameStruct{
+			Schema:                  schema,
+			Drive:                   stcls.sourceDrive,
+			CaseSensitiveObjectName: stcls.caseSensitiveObjectName,
+		}
+
+		// 获取源数据库的触发器
 		if sourceTrigger, err = tc.Query().Trigger(stcls.sourceDB, logThreadSeq2); err != nil {
+			vlog = fmt.Sprintf("(%d) Error querying source triggers: %v", logThreadSeq, err)
+			global.Wlog.Error(vlog)
 			return
 		}
-		vlog = fmt.Sprintf("(%d) dstDSN {%s} data databases %s message is {%s}", logThreadSeq, stcls.sourceDrive, stcls.schema, sourceTrigger)
+
+		// 如果有指定具体的触发器，则过滤结果
+		if len(triggerMap) > 0 {
+			filteredSourceTrigger := make(map[string]string)
+			for k, v := range sourceTrigger {
+				triggerKey := schema + "." + strings.ReplaceAll(strings.Split(k, ".")[1], "\"", "")
+				if stcls.caseSensitiveObjectName == "no" {
+					triggerKey = strings.ToUpper(triggerKey)
+				}
+
+				if _, exists := triggerMap[triggerKey]; exists {
+					filteredSourceTrigger[k] = v
+				}
+			}
+			sourceTrigger = filteredSourceTrigger
+		}
+
+		vlog = fmt.Sprintf("(%d) srcDSN {%s} databases %s message is {%s}", logThreadSeq, stcls.sourceDrive, schema, sourceTrigger)
 		global.Wlog.Debug(vlog)
-		vlog = fmt.Sprintf("(%d) Start processing dstDSN {%s} databases %s Trigger data. to dispos it...", logThreadSeq, stcls.destDrive, stcls.schema)
+
+		vlog = fmt.Sprintf("(%d) Start processing dstDSN {%s} databases %s Trigger data. to dispos it...", logThreadSeq, stcls.destDrive, schema)
 		global.Wlog.Debug(vlog)
 		tc.Drive = stcls.destDrive
+
+		// 获取目标数据库的触发器
 		if destTrigger, err = tc.Query().Trigger(stcls.destDB, logThreadSeq2); err != nil {
+			vlog = fmt.Sprintf("(%d) Error querying destination triggers: %v", logThreadSeq, err)
+			global.Wlog.Error(vlog)
 			return
 		}
-		vlog = fmt.Sprintf("(%d) dstDSN {%s} databases %s message is {%s}", logThreadSeq, stcls.destDrive, stcls.schema, destTrigger)
+
+		// 如果有指定具体的触发器，则过滤结果
+		if len(triggerMap) > 0 {
+			filteredDestTrigger := make(map[string]string)
+			for k, v := range destTrigger {
+				triggerKey := schema + "." + strings.ReplaceAll(strings.Split(k, ".")[1], "\"", "")
+				if stcls.caseSensitiveObjectName == "no" {
+					triggerKey = strings.ToUpper(triggerKey)
+				}
+
+				if _, exists := triggerMap[triggerKey]; exists {
+					filteredDestTrigger[k] = v
+				}
+			}
+			destTrigger = filteredDestTrigger
+		}
+
+		vlog = fmt.Sprintf("(%d) dstDSN {%s} databases %s message is {%s}", logThreadSeq, stcls.destDrive, schema, destTrigger)
 		global.Wlog.Debug(vlog)
+
 		if len(sourceTrigger) == 0 && len(destTrigger) == 0 {
-			vlog = fmt.Sprintf("(%d) The current original target data is empty, and the verification of this databases %s will be skipped", logThreadSeq, stcls.schema)
+			vlog = fmt.Sprintf("(%d) The current original target data is empty, and the verification of this databases %s will be skipped", logThreadSeq, schema)
 			global.Wlog.Debug(vlog)
 			continue
 		}
+
 		tmpM = make(map[string]int)
-		vlog = fmt.Sprintf("(%d) Start seeking the union of the source and target databases %s Trigger. to dispos it...", logThreadSeq, stcls.schema)
+		vlog = fmt.Sprintf("(%d) Start seeking the union of the source and target databases %s Trigger. to dispos it...", logThreadSeq, schema)
 		global.Wlog.Debug(vlog)
 		for k, _ := range sourceTrigger {
 			tmpM[k]++
@@ -1286,9 +1402,9 @@ func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 in
 				pods.DIFFS = "no"
 				c = append(c, k)
 			}
-			vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment databases %s Trigger. normal databases message is {%s} num [%d] abnormal databases message is {%s} num [%d]", logThreadSeq, stcls.schema, c, len(c), d, len(d))
+			vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment databases %s Trigger. normal databases message is {%s} num [%d] abnormal databases message is {%s} num [%d]", logThreadSeq, schema, c, len(c), d, len(d))
 			global.Wlog.Debug(vlog)
-			vlog = fmt.Sprintf("(%d) The source target segment databases %s Trigger data verification is completed", logThreadSeq, stcls.schema)
+			vlog = fmt.Sprintf("(%d) The source target segment databases %s Trigger data verification is completed", logThreadSeq, schema)
 			global.Wlog.Debug(vlog)
 			measuredDataPods = append(measuredDataPods, pods)
 		}
@@ -1305,6 +1421,7 @@ func (stcls *schemaTable) Proc(dtabS []string, logThreadSeq, logThreadSeq2 int64
 		vlog      string
 		c, d      []string
 		schemaMap = make(map[string]int)
+		procMap   = make(map[string]string) // 存储具体的存储过程名称
 		pods      = Pod{
 			Datafix:     "no",
 			CheckObject: "proc",
@@ -1315,35 +1432,148 @@ func (stcls *schemaTable) Proc(dtabS []string, logThreadSeq, logThreadSeq2 int64
 	)
 	vlog = fmt.Sprintf("(%d) Start init check source and target DB Stored Procedure. to check it...", logThreadSeq)
 	global.Wlog.Info(vlog)
+
+	// 从dtabS中提取schema信息和存储过程名称
 	for _, i := range dtabS {
-		schemaMap[strings.Split(i, ".")[0]] = +schemaMap[strings.Split(i, ".")[0]]
+		// 处理映射格式 schema.proc:schema.proc
+		if strings.Contains(i, ":") {
+			parts := strings.Split(i, ":")
+			if len(parts) == 2 {
+				sourceParts := strings.Split(parts[0], ".")
+				if len(sourceParts) >= 1 {
+					schema := sourceParts[0]
+					if stcls.caseSensitiveObjectName == "no" {
+						schema = strings.ToLower(schema)
+					}
+					schemaMap[schema] = 1
+
+					// 如果指定了具体的存储过程名称
+					if len(sourceParts) >= 2 && sourceParts[1] != "*" {
+						procName := sourceParts[1]
+						if stcls.caseSensitiveObjectName == "no" {
+							procName = strings.ToLower(procName)
+						}
+						procMap[schema+"."+procName] = procName
+					}
+				}
+			}
+		} else {
+			// 处理普通格式 schema.proc 或 schema.*
+			parts := strings.Split(i, ".")
+			if len(parts) >= 1 {
+				schema := parts[0]
+				if stcls.caseSensitiveObjectName == "no" {
+					schema = strings.ToLower(schema)
+				}
+				schemaMap[schema] = 1
+
+				// 如果指定了具体的存储过程名称
+				if len(parts) >= 2 && parts[1] != "*" {
+					procName := parts[1]
+					if stcls.caseSensitiveObjectName == "no" {
+						procName = strings.ToLower(procName)
+					}
+					procMap[schema+"."+procName] = procName
+				}
+			}
+		}
+	}
+
+	// 如果schemaMap为空，但stcls.schema不为空，则使用stcls.schema
+	if len(schemaMap) == 0 && stcls.schema != "" {
+		schema := stcls.schema
+		if stcls.caseSensitiveObjectName == "no" {
+			schema = strings.ToLower(schema)
+		}
+		schemaMap[schema] = 1
+		vlog = fmt.Sprintf("(%d) No schema found in dtabS, using default schema: %s", logThreadSeq, schema)
+		global.Wlog.Debug(vlog)
 	}
 
 	for schema, _ := range schemaMap {
-		vlog = fmt.Sprintf("(%d) Start processing srcDSN {%s} databases %s Stored Procedure. to dispos it...", logThreadSeq, stcls.sourceDrive, stcls.schema)
+		vlog = fmt.Sprintf("(%d) Start processing srcDSN {%s} databases %s Stored Procedure. to dispos it...", logThreadSeq, stcls.sourceDrive, schema)
 		global.Wlog.Debug(vlog)
-		tc := dbExec.TableColumnNameStruct{Schema: schema, Drive: stcls.sourceDrive}
+		tc := dbExec.TableColumnNameStruct{
+			Schema:                  schema,
+			Drive:                   stcls.sourceDrive,
+			CaseSensitiveObjectName: stcls.caseSensitiveObjectName,
+		}
+
+		// 获取源数据库的存储过程
 		if sourceProc, err = tc.Query().Proc(stcls.sourceDB, logThreadSeq2); err != nil {
+			vlog = fmt.Sprintf("(%d) Error querying source procedures: %v", logThreadSeq, err)
+			global.Wlog.Error(vlog)
 			return
 		}
-		vlog = fmt.Sprintf("(%d) srcDSN {%s} databases %s message is {%s}", logThreadSeq, stcls.sourceDrive, stcls.schema, sourceProc)
+
+		// 如果有指定具体的存储过程，则过滤结果
+		if len(procMap) > 0 {
+			filteredSourceProc := make(map[string]string)
+			for k, v := range sourceProc {
+				if k == "DEFINER" {
+					filteredSourceProc[k] = v
+					continue
+				}
+
+				procKey := schema + "." + k
+				if stcls.caseSensitiveObjectName == "no" {
+					procKey = strings.ToLower(procKey)
+				}
+
+				if _, exists := procMap[procKey]; exists {
+					filteredSourceProc[k] = v
+				}
+			}
+			sourceProc = filteredSourceProc
+		}
+
+		vlog = fmt.Sprintf("(%d) srcDSN {%s} databases %s message is {%s}", logThreadSeq, stcls.sourceDrive, schema, sourceProc)
 		global.Wlog.Debug(vlog)
+
+		// 设置目标端查询参数
 		tc.Drive = stcls.destDrive
-		vlog = fmt.Sprintf("(%d) Start processing dstDSN {%s} table %s Stored Procedure data. to dispos it...", logThreadSeq, stcls.destDrive, stcls.schema, stcls.table)
+		vlog = fmt.Sprintf("(%d) Start processing dstDSN {%s} databases %s Stored Procedure data. to dispos it...", logThreadSeq, stcls.destDrive, schema)
 		global.Wlog.Debug(vlog)
+
+		// 获取目标数据库的存储过程
 		if destProc, err = tc.Query().Proc(stcls.destDB, logThreadSeq2); err != nil {
+			vlog = fmt.Sprintf("(%d) Error querying destination procedures: %v", logThreadSeq, err)
+			global.Wlog.Error(vlog)
 			return
 		}
-		vlog = fmt.Sprintf("(%d) dstDSN {%s} databases %s message is {%s}", logThreadSeq, stcls.destDrive, stcls.schema, destProc)
+
+		// 如果有指定具体的存储过程，则过滤结果
+		if len(procMap) > 0 {
+			filteredDestProc := make(map[string]string)
+			for k, v := range destProc {
+				if k == "DEFINER" {
+					filteredDestProc[k] = v
+					continue
+				}
+
+				procKey := schema + "." + k
+				if stcls.caseSensitiveObjectName == "no" {
+					procKey = strings.ToLower(procKey)
+				}
+
+				if _, exists := procMap[procKey]; exists {
+					filteredDestProc[k] = v
+				}
+			}
+			destProc = filteredDestProc
+		}
+
+		vlog = fmt.Sprintf("(%d) dstDSN {%s} databases %s message is {%s}", logThreadSeq, stcls.destDrive, schema, destProc)
 		global.Wlog.Debug(vlog)
+
 		if len(sourceProc) == 0 && len(destProc) == 0 {
-			vlog = fmt.Sprintf("(%d) The current original target data is empty, and the verification of this databases %s will be skipped", logThreadSeq, stcls.schema)
+			vlog = fmt.Sprintf("(%d) The current original target data is empty, and the verification of this databases %s will be skipped", logThreadSeq, schema)
 			global.Wlog.Warn(vlog)
 			continue
 		}
 
 		tmpM = make(map[string]int)
-		vlog = fmt.Sprintf("(%d) Start seeking the union of the source and target databases %s Stored Procedure. to dispos it...", logThreadSeq, stcls.schema)
+		vlog = fmt.Sprintf("(%d) Start seeking the union of the source and target databases %s Stored Procedure. to dispos it...", logThreadSeq, schema)
 		global.Wlog.Debug(vlog)
 		for k, _ := range sourceProc {
 			if k == "DEFINER" {
@@ -1382,9 +1612,9 @@ func (stcls *schemaTable) Proc(dtabS []string, logThreadSeq, logThreadSeq2 int64
 					c = append(c, k)
 				}
 			}
-			vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment databases %s Stored Procedure. normal databases message is {%s} num [%d] abnormal databases message is {%s} num [%d]", logThreadSeq, stcls.schema, c, len(c), d, len(d))
+			vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment databases %s Stored Procedure. normal databases message is {%s} num [%d] abnormal databases message is {%s} num [%d]", logThreadSeq, schema, c, len(c), d, len(d))
 			global.Wlog.Debug(vlog)
-			vlog = fmt.Sprintf("(%d) The source target segment databases %s Stored Procedure data verification is completed", logThreadSeq, stcls.schema)
+			vlog = fmt.Sprintf("(%d) The source target segment databases %s Stored Procedure data verification is completed", logThreadSeq, schema)
 			global.Wlog.Debug(vlog)
 			measuredDataPods = append(measuredDataPods, pods)
 		}
@@ -1402,6 +1632,7 @@ func (stcls *schemaTable) Func(dtabS []string, logThreadSeq, logThreadSeq2 int64
 		sourceFunc, destFunc map[string]string
 		tmpM                 = make(map[string]int)
 		schemaMap            = make(map[string]int)
+		funcMap              = make(map[string]string) // 存储具体的函数名称
 		pods                 = Pod{
 			Datafix:     "no",
 			CheckObject: "func",
@@ -1412,37 +1643,137 @@ func (stcls *schemaTable) Func(dtabS []string, logThreadSeq, logThreadSeq2 int64
 
 	vlog = fmt.Sprintf("(%d) Start init check source and target DB Stored Function. to check it...", logThreadSeq)
 	global.Wlog.Info(vlog)
+
+	// 从dtabS中提取schema信息和函数名称
 	for _, i := range dtabS {
-		schemaMap[strings.Split(i, ".")[0]] = +schemaMap[strings.Split(i, ".")[0]]
+		// 处理映射格式 schema.func:schema.func
+		if strings.Contains(i, ":") {
+			parts := strings.Split(i, ":")
+			if len(parts) == 2 {
+				sourceParts := strings.Split(parts[0], ".")
+				if len(sourceParts) >= 1 {
+					schema := sourceParts[0]
+					if stcls.caseSensitiveObjectName == "no" {
+						schema = strings.ToLower(schema)
+					}
+					schemaMap[schema] = 1
+
+					// 如果指定了具体的函数名称
+					if len(sourceParts) >= 2 && sourceParts[1] != "*" {
+						funcName := sourceParts[1]
+						if stcls.caseSensitiveObjectName == "no" {
+							funcName = strings.ToLower(funcName)
+						}
+						funcMap[schema+"."+funcName] = funcName
+					}
+				}
+			}
+		} else {
+			// 处理普通格式 schema.func 或 schema.*
+			parts := strings.Split(i, ".")
+			if len(parts) >= 1 {
+				schema := parts[0]
+				if stcls.caseSensitiveObjectName == "no" {
+					schema = strings.ToLower(schema)
+				}
+				schemaMap[schema] = 1
+
+				// 如果指定了具体的函数名称
+				if len(parts) >= 2 && parts[1] != "*" {
+					funcName := parts[1]
+					if stcls.caseSensitiveObjectName == "no" {
+						funcName = strings.ToLower(funcName)
+					}
+					funcMap[schema+"."+funcName] = funcName
+				}
+			}
+		}
+	}
+
+	// 如果schemaMap为空，但stcls.schema不为空，则使用stcls.schema
+	if len(schemaMap) == 0 && stcls.schema != "" {
+		schema := stcls.schema
+		if stcls.caseSensitiveObjectName == "no" {
+			schema = strings.ToLower(schema)
+		}
+		schemaMap[schema] = 1
+		vlog = fmt.Sprintf("(%d) No schema found in dtabS, using default schema: %s", logThreadSeq, schema)
+		global.Wlog.Debug(vlog)
 	}
 
 	for schema, _ := range schemaMap {
-		vlog = fmt.Sprintf("(%d) Start processing srcDSN {%s} databases %s Stored Function. to dispos it...", logThreadSeq, stcls.sourceDrive, stcls.schema)
+		vlog = fmt.Sprintf("(%d) Start processing srcDSN {%s} databases %s Stored Function. to dispos it...", logThreadSeq, stcls.sourceDrive, schema)
 		global.Wlog.Debug(vlog)
-		tc := dbExec.TableColumnNameStruct{Schema: schema, Drive: stcls.sourceDrive}
+		tc := dbExec.TableColumnNameStruct{
+			Schema:                  schema,
+			Drive:                   stcls.sourceDrive,
+			CaseSensitiveObjectName: stcls.caseSensitiveObjectName,
+		}
+
+		// 获取源数据库的函数
 		if sourceFunc, err = tc.Query().Func(stcls.sourceDB, logThreadSeq2); err != nil {
+			vlog = fmt.Sprintf("(%d) Error querying source functions: %v", logThreadSeq, err)
+			global.Wlog.Error(vlog)
 			return
 		}
-		vlog = fmt.Sprintf("(%d) srcDSN {%s} databases %s message is {%s}", logThreadSeq, stcls.sourceDrive, stcls.schema, sourceFunc)
+
+		// 如果有指定具体的函数，则过滤结果
+		if len(funcMap) > 0 {
+			filteredSourceFunc := make(map[string]string)
+			for k, v := range sourceFunc {
+				funcKey := schema + "." + k
+				if stcls.caseSensitiveObjectName == "no" {
+					funcKey = strings.ToLower(funcKey)
+				}
+
+				if _, exists := funcMap[funcKey]; exists {
+					filteredSourceFunc[k] = v
+				}
+			}
+			sourceFunc = filteredSourceFunc
+		}
+
+		vlog = fmt.Sprintf("(%d) srcDSN {%s} databases %s message is {%s}", logThreadSeq, stcls.sourceDrive, schema, sourceFunc)
 		global.Wlog.Debug(vlog)
 
 		tc.Drive = stcls.destDrive
-		vlog = fmt.Sprintf("(%d) Start processing dstDSN {%s} table %s Stored Function data. to dispos it...", logThreadSeq, stcls.destDrive, stcls.schema, stcls.table)
+		vlog = fmt.Sprintf("(%d) Start processing dstDSN {%s} databases %s Stored Function data. to dispos it...", logThreadSeq, stcls.destDrive, schema)
 		global.Wlog.Debug(vlog)
+
+		// 获取目标数据库的函数
 		if destFunc, err = tc.Query().Func(stcls.destDB, logThreadSeq2); err != nil {
+			vlog = fmt.Sprintf("(%d) Error querying destination functions: %v", logThreadSeq, err)
+			global.Wlog.Error(vlog)
 			return
 		}
-		vlog = fmt.Sprintf("(%d) dstDSN {%s} databases %s message is {%s}", logThreadSeq, stcls.destDrive, stcls.schema, destFunc)
+
+		// 如果有指定具体的函数，则过滤结果
+		if len(funcMap) > 0 {
+			filteredDestFunc := make(map[string]string)
+			for k, v := range destFunc {
+				funcKey := schema + "." + k
+				if stcls.caseSensitiveObjectName == "no" {
+					funcKey = strings.ToLower(funcKey)
+				}
+
+				if _, exists := funcMap[funcKey]; exists {
+					filteredDestFunc[k] = v
+				}
+			}
+			destFunc = filteredDestFunc
+		}
+
+		vlog = fmt.Sprintf("(%d) dstDSN {%s} databases %s message is {%s}", logThreadSeq, stcls.destDrive, schema, destFunc)
 		global.Wlog.Debug(vlog)
 
 		if len(sourceFunc) == 0 && len(destFunc) == 0 {
-			vlog = fmt.Sprintf("(%d) The current original target data is empty, and the verification of this databases %s will be skipped", logThreadSeq, stcls.schema)
+			vlog = fmt.Sprintf("(%d) The current original target data is empty, and the verification of this databases %s will be skipped", logThreadSeq, schema)
 			global.Wlog.Debug(vlog)
 			continue
 		}
 
 		tmpM = make(map[string]int)
-		vlog = fmt.Sprintf("(%d) Start seeking the union of the source and target databases %s Stored Function. to dispos it...", logThreadSeq, stcls.schema)
+		vlog = fmt.Sprintf("(%d) Start seeking the union of the source and target databases %s Stored Function. to dispos it...", logThreadSeq, schema)
 		global.Wlog.Debug(vlog)
 		for k, _ := range sourceFunc {
 			tmpM[k]++
@@ -1477,9 +1808,9 @@ func (stcls *schemaTable) Func(dtabS []string, logThreadSeq, logThreadSeq2 int64
 					c = append(c, k)
 				}
 			}
-			vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment databases %s Stored Function. normal databases message is {%s} num [%d] abnormal databases message is {%s} num [%d]", logThreadSeq, stcls.schema, c, len(c), d, len(d))
+			vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment databases %s Stored Function. normal databases message is {%s} num [%d] abnormal databases message is {%s} num [%d]", logThreadSeq, schema, c, len(c), d, len(d))
 			global.Wlog.Debug(vlog)
-			vlog = fmt.Sprintf("(%d) The source target segment databases %s Stored Function data verification is completed", logThreadSeq, stcls.schema)
+			vlog = fmt.Sprintf("(%d) The source target segment databases %s Stored Function data verification is completed", logThreadSeq, schema)
 			global.Wlog.Debug(vlog)
 			measuredDataPods = append(measuredDataPods, pods)
 		}
@@ -1496,7 +1827,7 @@ func (stcls *schemaTable) Foreign(dtabS []string, logThreadSeq, logThreadSeq2 in
 		err                        error
 		pods                       = Pod{
 			Datafix:     "no",
-			CheckObject: "Foreign",
+			CheckObject: "foreign",
 		}
 	)
 
@@ -1571,7 +1902,7 @@ func (stcls *schemaTable) Partitions(dtabS []string, logThreadSeq, logThreadSeq2
 		sourcePartitions, destPartitions map[string]string
 		pods                             = Pod{
 			Datafix:     "no",
-			CheckObject: "Partitions",
+			CheckObject: "partitions",
 		}
 		tmpM = make(map[string]int)
 	)
@@ -1753,8 +2084,42 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 	global.Wlog.Info(vlog)
 	for _, i := range dtabS {
 		// 从表列表中提取源端schema和表名
-		sourceSchema := strings.Split(i, ".")[0]
-		stcls.table = strings.Split(i, ".")[1]
+		sourceSchema := ""
+		tableName := ""
+
+		// 检查是否是映射格式 (db1.t1:db2.t1)
+		if strings.Contains(i, ":") {
+			// 处理映射格式
+			parts := strings.Split(i, ":")
+			if len(parts) == 2 {
+				// 处理源端
+				if strings.Contains(parts[0], ".") {
+					sourceParts := strings.Split(parts[0], ".")
+					if len(sourceParts) == 2 {
+						sourceSchema = sourceParts[0]
+						tableName = sourceParts[1]
+					}
+				}
+
+				// 处理目标端，提取schema存入映射表
+				if strings.Contains(parts[1], ".") {
+					destParts := strings.Split(parts[1], ".")
+					if len(destParts) >= 1 {
+						stcls.tableMappings[sourceSchema] = destParts[0]
+					}
+				}
+			}
+		} else if strings.Contains(i, ".") {
+			// 处理普通格式 (schema.table)
+			parts := strings.Split(i, ".")
+			if len(parts) == 2 {
+				sourceSchema = parts[0]
+				tableName = parts[1]
+			}
+		}
+
+		stcls.table = tableName
+		stcls.schema = sourceSchema // 设置stcls.schema为sourceSchema
 
 		// 根据映射规则确定目标端schema
 		destSchema := sourceSchema
@@ -1804,11 +2169,10 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 			duni,
 			dmul)
 		global.Wlog.Debug(vlog)
-		global.Wlog.Debug(vlog)
 
 		var pods = Pod{
 			Datafix:     stcls.datafix,
-			CheckObject: "Index",
+			CheckObject: "index",
 
 			DIFFS:  "no",
 			Schema: stcls.schema,
@@ -1870,23 +2234,95 @@ func (stcls *schemaTable) Struct(dtabS []string, logThreadSeq, logThreadSeq2 int
 	}
 	vlog = fmt.Sprintf("(%d) %s Table structure and column checksum of srcDB and dstDB completed. The consistent result is {%s}(num [%d]), and the inconsistent result is {%s}(num [%d])", logThreadSeq, event, normal, len(normal), abnormal, len(abnormal))
 	global.Wlog.Debug(vlog)
-	//输出校验结果信息
-	var pods = Pod{
-		Datafix:     stcls.datafix,
-		CheckObject: "Struct",
-	}
+	// 处理正常表
 	for _, i := range normal {
 		aa := strings.Split(i, ".")
-		pods.Schema = aa[0]
-		pods.Table = aa[1]
-		pods.DIFFS = "no"
+		destSchema := aa[0]
+		tableName := aa[1]
+
+		// 查找源端schema
+		sourceSchema := destSchema
+		for src, dst := range stcls.tableMappings {
+			if dst == destSchema {
+				sourceSchema = src
+				break
+			}
+		}
+
+		// 为每个表创建新的Pod实例
+		pods := Pod{
+			Datafix:     stcls.datafix,
+			CheckObject: "struct",
+			Schema:      sourceSchema,
+			Table:       tableName,
+			DIFFS:       "no",
+		}
+
+		// 设置映射信息
+		if sourceSchema != destSchema {
+			// 记录映射关系到全局变量
+			mappingRelation := fmt.Sprintf("%s.%s:%s.%s", sourceSchema, tableName, destSchema, tableName)
+			exists := false
+			for _, existingMapping := range TableMappingRelations {
+				if existingMapping == mappingRelation {
+					exists = true
+					break
+				}
+			}
+			if !exists {
+				TableMappingRelations = append(TableMappingRelations, mappingRelation)
+			}
+
+			// 设置映射信息
+			pods.MappingInfo = fmt.Sprintf("Schema: %s:%s", sourceSchema, destSchema)
+		}
+
 		measuredDataPods = append(measuredDataPods, pods)
 	}
+
+	// 处理异常表
 	for _, i := range abnormal {
 		aa := strings.Split(i, ".")
-		pods.Schema = aa[0]
-		pods.Table = aa[1]
-		pods.DIFFS = "yes"
+		destSchema := aa[0]
+		tableName := aa[1]
+
+		// 查找源端schema
+		sourceSchema := destSchema
+		for src, dst := range stcls.tableMappings {
+			if dst == destSchema {
+				sourceSchema = src
+				break
+			}
+		}
+
+		// 为每个表创建新的Pod实例
+		pods := Pod{
+			Datafix:     stcls.datafix,
+			CheckObject: "struct",
+			Schema:      sourceSchema,
+			Table:       tableName,
+			DIFFS:       "yes",
+		}
+
+		// 设置映射信息
+		if sourceSchema != destSchema {
+			// 记录映射关系到全局变量
+			mappingRelation := fmt.Sprintf("%s.%s:%s.%s", sourceSchema, tableName, destSchema, tableName)
+			exists := false
+			for _, existingMapping := range TableMappingRelations {
+				if existingMapping == mappingRelation {
+					exists = true
+					break
+				}
+			}
+			if !exists {
+				TableMappingRelations = append(TableMappingRelations, mappingRelation)
+			}
+
+			// 设置映射信息
+			pods.MappingInfo = fmt.Sprintf("Schema: %s:%s", sourceSchema, destSchema)
+		}
+
 		measuredDataPods = append(measuredDataPods, pods)
 	}
 	fmt.Println("gt-checksum: Table structure verification completed")
@@ -1920,6 +2356,39 @@ func dbOpenTest(drive, jdbc string) *sql.DB {
 func SchemaTableInit(m *inputArg.ConfigParameter) *schemaTable {
 	sdb := dbOpenTest(m.SecondaryL.DsnsV.SrcDrive, m.SecondaryL.DsnsV.SrcJdbc)
 	ddb := dbOpenTest(m.SecondaryL.DsnsV.DestDrive, m.SecondaryL.DsnsV.DestJdbc)
+
+	// 初始化表映射关系
+	tableMappings := make(map[string]string)
+
+	// 解析tables参数中的映射关系
+	tables := m.SecondaryL.SchemaV.Tables
+	for _, tableItem := range strings.Split(tables, ",") {
+		if strings.Contains(tableItem, ":") {
+			parts := strings.Split(tableItem, ":")
+			if len(parts) == 2 {
+				// 处理db1.*:db2.*格式
+				if strings.Contains(parts[0], ".*") && strings.Contains(parts[1], ".*") {
+					sourceSchema := strings.TrimSuffix(parts[0], ".*")
+					destSchema := strings.TrimSuffix(parts[1], ".*")
+					tableMappings[sourceSchema] = destSchema
+				} else {
+					// 处理db1.table1:db2.table2格式
+					sourceParts := strings.Split(parts[0], ".")
+					destParts := strings.Split(parts[1], ".")
+					if len(sourceParts) >= 1 && len(destParts) >= 1 {
+						sourceSchema := sourceParts[0]
+						destSchema := destParts[0]
+						tableMappings[sourceSchema] = destSchema
+					}
+				}
+			}
+		}
+	}
+
+	// 添加调试日志
+	vlog := fmt.Sprintf("Initialized table mappings: %v", tableMappings)
+	global.Wlog.Debug(vlog)
+
 	return &schemaTable{
 		ignoreTable:             m.SecondaryL.SchemaV.IgnoreTables,
 		table:                   m.SecondaryL.SchemaV.Tables,
@@ -1933,6 +2402,7 @@ func SchemaTableInit(m *inputArg.ConfigParameter) *schemaTable {
 		djdbc:                   m.SecondaryL.DsnsV.DestJdbc,
 		structRul:               m.SecondaryL.StructV,
 		checkRules:              m.SecondaryL.RulesV,
+		tableMappings:           tableMappings,
 	}
 }
 

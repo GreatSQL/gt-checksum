@@ -379,7 +379,7 @@ func (my *QueryTable) NoIndexGeneratingQueryCriteria(db *sql.DB, beginSeq uint64
 		columnNameSeq []string
 		Event         = "Q_table_Data"
 	)
-	
+
 	// 如果没有列信息，使用"*"查询所有列
 	if len(my.TableColumn) == 0 {
 		strsql := fmt.Sprintf("SELECT * FROM `%s`.`%s` LIMIT %d,%d", my.Schema, my.Table, beginSeq, chanrowCount)
@@ -434,7 +434,7 @@ func (my *QueryTable) NoIndexGeneratingQueryCriteria(db *sql.DB, beginSeq uint64
 }
 
 /*
-MySQL 通过where条件查询表的分段数据（查询数据生成带有greatdbCheck标识的数据块）
+MySQL 通过where条件查询表的分段数据（查询数据生成带有gtchecksum标识的数据块）
 */
 func (my QueryTable) GeneratingQueryCriteria(db *sql.DB, logThreadSeq int64) (string, error) {
 	var (

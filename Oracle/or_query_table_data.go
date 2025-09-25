@@ -318,7 +318,7 @@ func (or *QueryTable) NoIndexGeneratingQueryCriteria(db *sql.DB, beginSeq uint64
 }
 
 /*
-Oracle 通过where条件查询表的分段数据（查询数据生成带有greatdbCheck标识的数据块）
+Oracle 通过where条件查询表的分段数据（查询数据生成带有gtchecksum标识的数据块）
 */
 func (or *QueryTable) GeneratingQueryCriteria(db *sql.DB, logThreadSeq int64) (string, error) {
 	var (
