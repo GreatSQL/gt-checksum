@@ -59,25 +59,48 @@ $ gt-checksum -c ./gc.conf
 ```bash
 $ gt-checksum -f ./gc.conf
 
-gt-checksum is initializing
-gt-checksum is reading configuration files
-gt-checksum is opening log files
-gt-checksum is checking options
-gt-checksum is opening check tables
-gt-checksum is opening table columns
-gt-checksum is opening table indexes
-gt-checksum is opening srcDSN and dstDSN
-gt-checksum is generating tables and data check plan
-begin checkSum index table db1.t1
-[█████████████████████████████████████████████████████████████████████████████████████████████████████████████████]113%  task:     678/600
-table db1.t1 checksum complete
+Initializing gt-checksum
+Reading configuration files
+Opening log files
+Checking configuration options
+gt-checksum: Starting table checks
+gt-checksum: Collecting table column information
+gt-checksum: Collecting table index information
+gt-checksum: Establishing database connections
+gt-checksum: Generating data checksum plan
 
-** gt-checksum Overview of results **
-Check time:  73.81s
-Schema  Table                   IndexColumn                             checkMode       Rows            Diffs     Datafix
-db1     t1                      ol_w_id,ol_d_id,ol_o_id,ol_number       rows            5995934,5995918 yes       file
+gt-checksum: Starting index checksum for table sbtest.sbtest2
+gt-checksum: Table sbtest.sbtest2 checksum completed
+
+Checksum Results Overview
+Schema  Table   IndexColumn     CheckObject     Rows            Diffs   Datafix
+sbtest  sbtest2 id              data            4999,4999       yes     file
+
+Performance Metrics:
+  Initialization: 0.00s
+  Metadata collection: 0.00s
+  Connection setup: 0.02s
+  Data checksum: 0.06s
+  Additional operations: 0.02s
+  Miscellaneous: 0.01s
+Total execution time: 0.11s
 ```
 
+如果参数 `tables` 设置了映射规则，例如 `tables=db1.*:db2.*,sbtest.sbtest2`，则校验结果如下：
+
+```bash
+... 此处忽略前面的内容
+...
+Checksum Results Overview
+Schema  Table                           IndexColumn     CheckObject     Rows            Diffs   Datafix Mapping
+db1     test2                           NULL            data            0,0             no      file    Schema: db1:db2
+db1     indext                          id              data            0,0             no      file    Schema: db1:db2
+db1     tb_emp6                         id              data            0,0             no      file    Schema: db1:db2
+sbtest  sbtest2                         id              data            4999,4999       yes     file    -
+db1     testbin                         NULL            data            1,1             no      file    Schema: db1:db2
+```
+
+输出结果中，除了 **sbtest.sbtest2** 这个表所在行中 **Mapping** 列的值为 **-** 外，其他表的 **Mapping** 列的值都为 **Schema: db1:db2**，表示该表在源端和目标端的映射关系为 **db1.test2** 和 **db2.test2**。
 
 ## 配置参数详解
 
@@ -147,7 +170,7 @@ $ mv gt-checksum /usr/local/bin
 
 ## 已知缺陷
 
-截止最新的v1.2.2版本，已知存在以下几个问题。
+截止最新的v1.2.3版本，已知存在以下几个问题。
 
 - 不支持对非InnoDB引擎表的数据校验。
 
@@ -212,8 +235,8 @@ mysql> SELECT * FROM t1;
 ...
 ** gt-checksum Overview of results **
 Check time:  0.30s
-Schema  Table   IndexColumn     checkMode       Rows    Diffs     Datafix
-t1      T1      id,code         rows            10,8    no        file
+Schema  Table   IndexColumn      Rows    Diffs     Datafix
+t1      T1      id,code          10,8    no        file
 ```
 这个问题我们会在未来的版本中尽快修复。
 

@@ -466,7 +466,7 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 	barTableRow := sp.NoIndexTableCount(logThreadSeq)
 	pods := Pod{Schema: sp.schema, Table: sp.table,
 		IndexColumn: "NULL",
-		CheckMode:   sp.checkMod,
+		CheckObject: sp.checkObject,
 		DIFFS:       "no",
 		Datafix:     sp.datafixType,
 	}

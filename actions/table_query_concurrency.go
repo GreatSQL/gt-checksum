@@ -13,20 +13,20 @@ import (
 type SchedulePlan struct {
 	chunkSize, mqQueueDepth int
 
-	schema, table             string   //待校验库名、表名
-	sourceSchema, destSchema  string   //源端和目标端库名
-	columnName                []string //待校验表的列名，有可能是多个
-	tmpTableDataFileDir       string   //临时表文件生成的相对路径
-	tableIndexColumnMap       map[string][]string
-	sdbPool, ddbPool          *global.Pool
-	datafixType               string
-	datafixSql                string
-	sdrive, ddrive            string
-	sfile                     *os.File
-	checkMod, checkObject     string
-	checkNoIndexTable         string //是否检查无索引表
-	tableAllCol               map[string]global.TableAllColumnInfoS
-	ratio                     int
+	schema, table            string   //待校验库名、表名
+	sourceSchema, destSchema string   //源端和目标端库名
+	columnName               []string //待校验表的列名，有可能是多个
+	tmpTableDataFileDir      string   //临时表文件生成的相对路径
+	tableIndexColumnMap      map[string][]string
+	sdbPool, ddbPool         *global.Pool
+	datafixType              string
+	datafixSql               string
+	sdrive, ddrive           string
+	sfile                    *os.File
+	checkObject              string
+	checkNoIndexTable        string //是否检查无索引表
+	tableAllCol              map[string]global.TableAllColumnInfoS
+
 	file                      *os.File
 	TmpFileName               string
 	bar                       *Bar
@@ -37,7 +37,6 @@ type SchedulePlan struct {
 	indexColumnType           string
 	pods                      *Pod
 	tableMaxRows              uint64
-	sampDataGroupNumber       int64
 	djdbc                     string
 	tableMappings             map[string]string // 表映射关系
 }
@@ -161,17 +160,16 @@ func (sp *SchedulePlan) Schedulingtasks() {
 			sp.columnName = v
 			// 开始新表的进度显示
 			displayTableName := sp.getDisplayTableName()
-			tableName := fmt.Sprintf("Starting index checksum for table %s\n", displayTableName)
+			tableName := fmt.Sprintf("gt-checksum: Starting index checksum for table %s\n", displayTableName)
 			sp.bar.NewTableProgress(tableName)
 			sp.doIndexDataCheck() // 确保SchedulePlan结构体已定义此方法
-			fmt.Println()
 
 			// 显示映射关系信息
 			if sp.sourceSchema != sp.destSchema || sp.table != sp.table {
-				fmt.Println(fmt.Sprintf("Table %s checksum completed (Schema: %s->%s, Table: %s->%s)",
+				fmt.Println(fmt.Sprintf("gt-checksum: Table %s checksum completed (Schema: %s->%s, Table: %s->%s)",
 					displayTableName, sp.sourceSchema, sp.destSchema, sp.table, sp.table))
 			} else {
-				fmt.Println(fmt.Sprintf("Table %s checksum completed", displayTableName))
+				fmt.Println(fmt.Sprintf("gt-checksum: Table %s checksum completed", displayTableName))
 			}
 		}
 		sp.file.Close()
@@ -226,8 +224,6 @@ func CheckTableQuerySchedule(sdb, ddb *global.Pool, tableIndexColumnMap map[stri
 		ddrive:              m.SecondaryL.DsnsV.DestDrive,
 		mqQueueDepth:        m.SecondaryL.RulesV.QueueSize,
 		checkNoIndexTable:   m.SecondaryL.SchemaV.CheckNoIndexTable,
-		checkMod:            m.SecondaryL.RulesV.CheckMode,
-		ratio:               m.SecondaryL.RulesV.Ratio,
 		sfile:               m.SecondaryL.RepairV.FixFileFINE,
 		checkObject:         m.SecondaryL.RulesV.CheckObject,
 		TmpFileName:         m.NoIndexTableTmpFile,

@@ -50,7 +50,7 @@ gt-checksum is reading configuration files
 
 ```bash
 $  gt-checksum -v
-gt-checksum version 1.2.1
+gt-checksum version 1.2.3
 ```
 
 - 查看使用帮助
@@ -71,23 +71,31 @@ USAGE:
 ```bash
 $  gt-checksum -c ./gc.conf
 
-gt-checksum is initializing
-gt-checksum is reading configuration files
-gt-checksum is opening log files
-gt-checksum is checking options
-gt-checksum is opening check tables
-gt-checksum is opening table columns
-gt-checksum is opening table indexes
-gt-checksum is opening srcDSN and dstDSN
-gt-checksum is generating tables and data check plan
-begin checkSum index table db1.t1
-[█████████████████████████████████████████████████████████████████████████████████████████████████████████████████]113%  task:     678/600
-table db1.t1 checksum complete
+Initializing gt-checksum
+Reading configuration files
+Opening log files
+Checking configuration options
+gt-checksum: Starting table checks
+gt-checksum: Collecting table column information
+gt-checksum: Collecting table index information
+gt-checksum: Establishing database connections
+gt-checksum: Generating data checksum plan
 
-** gt-checksum Overview of results **
-Check time:  73.81s (Seconds)
-Schema  Table         IndexColumn                             checkMode       Rows            Diffs     Datafix
-db1     t1            ol_w_id,ol_d_id,ol_o_id,ol_number       rows            5995934,5995918 yes       file
+gt-checksum: Starting index checksum for table sbtest.sbtest2
+gt-checksum: Table sbtest.sbtest2 checksum completed
+
+Checksum Results Overview
+Schema  Table   IndexColumn     CheckObject     Rows            Diffs   Datafix
+sbtest  sbtest2 id              data            4999,4999       yes     file
+
+Performance Metrics:
+  Initialization: 0.00s
+  Metadata collection: 0.00s
+  Connection setup: 0.02s
+  Data checksum: 0.06s
+  Additional operations: 0.02s
+  Miscellaneous: 0.01s
+Total execution time: 0.11s
 ```
 
 > 开始执行数据校验前，要先在源和目标数据库创建相应的专属账号并授权。详情参考：[**gt-checksum 手册**](./gt-checksum-manual.md#数据库授权)。
