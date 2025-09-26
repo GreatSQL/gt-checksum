@@ -40,9 +40,7 @@ func (rc *ConfigParameter) LevelParameterCheck() {
 	if rc.FirstL.Repair, err = rc.ConfFine.GetSection("Repair"); rc.FirstL.Repair == nil && err != nil {
 		fmt.Println("Using default values for [Repair] options")
 	}
-	if rc.FirstL.Struct, err = rc.ConfFine.GetSection("Struct"); rc.FirstL.Repair == nil && err != nil {
-		fmt.Println("Using default values for [Struct] options")
-	}
+	// 已删除对[Struct]区间参数的读取
 	//Schema 获取校验库表信息
 	for _, i := range []string{"checkNoIndexTable", "caseSensitiveObjectName"} {
 		if _, err = rc.FirstL.Schema.GetKey(i); err != nil {
@@ -59,20 +57,13 @@ func (rc *ConfigParameter) LevelParameterCheck() {
 	}
 	//Rules 二级参数检测
 	if rc.FirstL.Rules != nil {
-		for _, i := range []string{"parallelThds", "queueSize", "checkMode", "checkObject", "ratio", "chunkSize", "memoryLimit"} {
+		for _, i := range []string{"parallelThds", "queueSize", "checkObject", "chunkSize", "memoryLimit"} {
 			if _, err = rc.FirstL.Rules.GetKey(i); err != nil {
 				fmt.Printf("Failed to set option %s, using default value\n", i)
 			}
 		}
 	}
-	//Struct 二级参数检测
-	if rc.FirstL.Struct != nil {
-		for _, i := range []string{"ScheckMod", "ScheckOrder", "ScheckFixRule"} {
-			if _, err = rc.FirstL.Struct.GetKey(i); err != nil {
-				fmt.Printf("Failed to set option %s, using default value\n", i)
-			}
-		}
-	}
+	// 已删除Struct二级参数检测
 	//Repair 二级参数校验
 	if rc.FirstL.Repair != nil {
 		for _, i := range []string{"datafix", "fixTrxNum", "fixFileName"} {
@@ -115,23 +106,6 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 
 	rc.SecondaryL.SchemaV.CaseSensitiveObjectName = rc.FirstL.Schema.Key("caseSensitiveObjectName").In("no", []string{"yes", "no"})
 	rc.SecondaryL.SchemaV.CheckNoIndexTable = rc.FirstL.Schema.Key("checkNoIndexTable").In("no", []string{"yes", "no"})
-	//Struct
-	if rc.FirstL.Struct != nil {
-		rc.SecondaryL.StructV.ScheckMod = rc.FirstL.Struct.Key("ScheckMod").In("strict", []string{"loose", "strict"})
-	} else {
-		rc.SecondaryL.StructV.ScheckMod = "strict"
-		fmt.Println("Using default value 'strict' for option ScheckMod")
-	}
-	if rc.FirstL.Struct != nil {
-		rc.SecondaryL.StructV.ScheckOrder = rc.FirstL.Struct.Key("ScheckOrder").In("no", []string{"yes", "no"})
-	} else {
-		rc.SecondaryL.StructV.ScheckOrder = "no"
-	}
-	if rc.FirstL.Struct != nil {
-		rc.SecondaryL.StructV.ScheckFixRule = rc.FirstL.Struct.Key("ScheckFixRule").In("src", []string{"src", "dst"})
-	} else {
-		rc.SecondaryL.StructV.ScheckFixRule = "src"
-	}
 
 	//Logs 获取相关参数
 	if rc.FirstL.Logs != nil {
@@ -177,23 +151,21 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 		fmt.Println("Using default value '100' for option queueSize")
 		rc.SecondaryL.RulesV.QueueSize = 1000
 	}
+
 	if rc.FirstL.Rules != nil {
-		if rc.SecondaryL.RulesV.Ratio, err = rc.FirstL.Rules.Key("ratio").Int(); err != nil {
-			fmt.Println("Using default value '10' for option Ratio")
-			rc.SecondaryL.RulesV.Ratio = 10
-		}
-	} else {
-		fmt.Println("Using default value '10' for option Ratio")
-		rc.SecondaryL.RulesV.Ratio = 10
-	}
-	if rc.FirstL.Rules != nil {
-		rc.SecondaryL.RulesV.CheckMode = rc.FirstL.Rules.Key("checkMode").In("rows", []string{"count", "rows", "sample"})
-	} else {
-		rc.SecondaryL.RulesV.CheckMode = "rows"
-	}
-	if rc.FirstL.Rules != nil {
+		// 获取用户设置的原始值
+		userSetCheckObject := rc.FirstL.Rules.Key("checkObject").String()
+		// 获取验证后的值（如果无效则使用默认值"data"）
 		rc.SecondaryL.RulesV.CheckObject = rc.FirstL.Rules.Key("checkObject").In("data", []string{"data", "struct", "index", "partitions", "foreign", "trigger", "func", "proc"})
+
+		// 如果用户设置了值但与验证后的值不同，说明使用了默认值
+		if userSetCheckObject != "" && userSetCheckObject != rc.SecondaryL.RulesV.CheckObject {
+			fmt.Printf("Warning: Invalid checkObject value '%s', using default value 'data' instead\n", userSetCheckObject)
+		}
+
+		// 删除对checkMode和ratio参数的解析，始终使用rows模式（全量校验）
 	} else {
+		fmt.Println("Using default value 'data' for option checkObject")
 		rc.SecondaryL.RulesV.CheckObject = "data"
 	}
 	if rc.FirstL.Rules != nil {
@@ -238,7 +210,7 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 /*
 该函数用于读取配置文件中的配置参数
 */
-func (rc *ConfigParameter) getConfig() {
+func (rc *ConfigParameter) GetConfig() {
 	var (
 		err error
 	)

@@ -360,17 +360,13 @@ func (sp *SchedulePlan) queryTableData(selectSql chanMap, diffQueryData chanDiff
 		autoSeq1, autoSeq2 int64
 	)
 	sp.bar = &Bar{}
-	if sp.checkMod == "rows" {
-		if sp.tableMaxRows > 0 {
-			barTotal := int64(sp.tableMaxRows / uint64(sp.chanrowCount))
-			if sp.tableMaxRows%uint64(sp.chanrowCount) > 0 {
-				barTotal += 1
-			}
-			sp.bar.NewOption(0, barTotal, "Processing")
+	// 始终使用rows模式
+	if sp.tableMaxRows > 0 {
+		barTotal := int64(sp.tableMaxRows / uint64(sp.chanrowCount))
+		if sp.tableMaxRows%uint64(sp.chanrowCount) > 0 {
+			barTotal += 1
 		}
-	}
-	if sp.checkMod == "sample" {
-		sp.bar.NewOption(0, sp.sampDataGroupNumber, "Processing")
+		sp.bar.NewOption(0, barTotal, "Processing")
 	}
 	for {
 		select {
@@ -775,7 +771,7 @@ func (sp SchedulePlan) doIndexDataCheck() {
 		Schema:      sp.schema,
 		Table:       sp.table,
 		IndexColumn: strings.TrimLeft(strings.Join(sp.columnName, ","), ","),
-		CheckMode:   sp.checkMod,
+		CheckObject: sp.checkObject, // 添加CheckObject字段
 		DIFFS:       "no",
 		Datafix:     sp.datafixType,
 		MappingInfo: mappingInfo,

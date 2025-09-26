@@ -112,14 +112,8 @@ func main() {
 		//针对待校验表生成查询条件计划清单
 		fmt.Println("gt-checksum: Generating data checksum plan")
 		checkStart := time.Now()
-		switch m.SecondaryL.RulesV.CheckMode {
-		case "rows":
-			actions.CheckTableQuerySchedule(sdc, ddc, tableIndexColumnMap, tableAllCol, *m).Schedulingtasks()
-		case "count":
-			actions.CheckTableQuerySchedule(sdc, ddc, tableIndexColumnMap, tableAllCol, *m).DoCountDataCheck()
-		case "sample":
-			actions.CheckTableQuerySchedule(sdc, ddc, tableIndexColumnMap, tableAllCol, *m).DoSampleDataCheck()
-		}
+
+		actions.CheckTableQuerySchedule(sdc, ddc, tableIndexColumnMap, tableAllCol, *m).Schedulingtasks()
 		totalCheckTime = time.Since(checkStart)
 
 		// 计算实际数据校验耗时（从总校验时间中减去精确行数查询等额外操作耗时）

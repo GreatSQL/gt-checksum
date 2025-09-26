@@ -128,8 +128,6 @@ func (sp *SchedulePlan) DoCountDataCheck() {
 			Schema:      sourceSchema,
 			Table:       sourceTable,
 			CheckObject: sp.checkObject,
-			CheckMode:   sp.checkMod,
-			// 添加映射信息到表名中，而不是使用MappingInfo字段
 		}
 
 		// 如果存在映射关系，将映射信息添加到表名中

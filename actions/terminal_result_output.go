@@ -24,7 +24,7 @@ type Bar struct {
 }
 
 type Pod struct {
-	Schema, Table, IndexColumn, CheckMode, Rows, DIFFS, CheckObject, Datafix, FuncName, Definer, ProcName, Sample, TriggerName, MappingInfo string
+	Schema, Table, IndexColumn, Rows, DIFFS, CheckObject, Datafix, FuncName, Definer, ProcName, TriggerName, MappingInfo string
 }
 
 // 获取表的映射信息
@@ -526,100 +526,46 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 		}
 		fmt.Println(table)
 	case "data":
-		switch m.SecondaryL.RulesV.CheckMode {
-		case "count":
-			if hasMappings {
-				table.AddRow("Schema", "Table", "CheckObject", "CheckMode", "Rows", "Diffs", "Mapping")
-				for _, pod := range measuredDataPods {
-					// 获取映射信息
-					mappingInfo := "-"
-					// 获取schema级别的映射
-					schemaMap := getSchemaMappings()
-					if destSchema, exists := schemaMap[pod.Schema]; exists {
-						mappingInfo = fmt.Sprintf("Schema: %s:%s", pod.Schema, destSchema)
-					}
-
-					table.AddRow(color.RedString(pod.Schema), color.GreenString(pod.Table), color.RedString(pod.CheckObject), color.GreenString(pod.CheckMode), color.RedString(pod.Rows), color.YellowString(pod.DIFFS), color.CyanString(mappingInfo))
-				}
-			} else {
-				table.AddRow("Schema", "Table", "CheckObject", "CheckMode", "Rows", "Diffs")
-				for _, pod := range measuredDataPods {
-					table.AddRow(color.RedString(pod.Schema), color.GreenString(pod.Table), color.RedString(pod.CheckObject), color.GreenString(pod.CheckMode), color.RedString(pod.Rows), color.YellowString(pod.DIFFS))
-				}
-			}
-			fmt.Println(table)
-		case "sample":
-			if hasMappings {
-				for _, pod := range measuredDataPods {
-					// 获取映射信息
-					mappingInfo := "-"
-					// 获取schema级别的映射
-					schemaMap := getSchemaMappings()
-					if destSchema, exists := schemaMap[pod.Schema]; exists {
-						mappingInfo = fmt.Sprintf("Schema: %s:%s", pod.Schema, destSchema)
-					}
-
-					if pod.Sample == "" {
-						table.AddRow("Schema", "Table", "IndexColumn", "CheckObject", "CheckMode", "Rows", "Diffs", "Mapping")
-						table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.IndexColumn), color.YellowString(pod.CheckObject), color.BlueString(pod.CheckMode), color.BlueString(pod.Rows), color.GreenString(pod.DIFFS), color.CyanString(mappingInfo))
-					} else {
-						table.AddRow("Schema", "Table", "IndexColumn", "CheckObject", "CheckMode", "Rows", "Samp", "Diffs", "Mapping")
-						table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.IndexColumn), color.YellowString(pod.CheckObject), color.BlueString(pod.CheckMode), color.BlueString(pod.Rows), color.RedString(pod.Sample), color.GreenString(pod.DIFFS), color.CyanString(mappingInfo))
-					}
-				}
-			} else {
-				for _, pod := range measuredDataPods {
-					if pod.Sample == "" {
-						table.AddRow("Schema", "Table", "IndexColumn", "CheckObject", "CheckMode", "Rows", "Diffs")
-						table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.IndexColumn), color.YellowString(pod.CheckObject), color.BlueString(pod.CheckMode), color.BlueString(pod.Rows), color.GreenString(pod.DIFFS))
-					} else {
-						table.AddRow("Schema", "Table", "IndexColumn", "CheckObject", "CheckMode", "Rows", "Samp", "Diffs")
-						table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.IndexColumn), color.YellowString(pod.CheckObject), color.BlueString(pod.CheckMode), color.BlueString(pod.Rows), color.RedString(pod.Sample), color.GreenString(pod.DIFFS))
-					}
-				}
-			}
-			fmt.Println(table)
-		case "rows":
-			if hasMappings {
-				table.AddRow("Schema", "Table", "IndexColumn", "CheckMode", "Rows", "Diffs", "Datafix", "Mapping")
-				for _, pod := range measuredDataPods {
-					var differences = pod.DIFFS
-					for k, _ := range differencesSchemaTable {
-						if k != "" {
-							KI := strings.Split(k, "gtchecksum_gtchecksum")
-							if pod.Schema == KI[0] && pod.Table == KI[1] {
-								differences = "yes"
-							}
+		// 直接使用rows模式的代码，不再使用switch
+		if hasMappings {
+			table.AddRow("Schema", "Table", "IndexColumn", "CheckObject", "Rows", "Diffs", "Datafix", "Mapping")
+			for _, pod := range measuredDataPods {
+				var differences = pod.DIFFS
+				for k, _ := range differencesSchemaTable {
+					if k != "" {
+						KI := strings.Split(k, "gtchecksum_gtchecksum")
+						if pod.Schema == KI[0] && pod.Table == KI[1] {
+							differences = "yes"
 						}
 					}
-
-					// 获取映射信息
-					mappingInfo := "-"
-					// 获取schema级别的映射
-					schemaMap := getSchemaMappings()
-					if destSchema, exists := schemaMap[pod.Schema]; exists {
-						mappingInfo = fmt.Sprintf("Schema: %s:%s", pod.Schema, destSchema)
-					}
-
-					table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.IndexColumn), color.BlueString(pod.CheckMode), color.BlueString(pod.Rows), color.GreenString(differences), color.YellowString(pod.Datafix), color.CyanString(mappingInfo))
 				}
-			} else {
-				table.AddRow("Schema", "Table", "IndexColumn", "CheckMode", "Rows", "Diffs", "Datafix")
-				for _, pod := range measuredDataPods {
-					var differences = pod.DIFFS
-					for k, _ := range differencesSchemaTable {
-						if k != "" {
-							KI := strings.Split(k, "gtchecksum_gtchecksum")
-							if pod.Schema == KI[0] && pod.Table == KI[1] {
-								differences = "yes"
-							}
+
+				// 获取映射信息
+				mappingInfo := "-"
+				// 获取schema级别的映射
+				schemaMap := getSchemaMappings()
+				if destSchema, exists := schemaMap[pod.Schema]; exists {
+					mappingInfo = fmt.Sprintf("Schema: %s:%s", pod.Schema, destSchema)
+				}
+
+				table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.IndexColumn), color.YellowString(pod.CheckObject), color.BlueString(pod.Rows), color.GreenString(differences), color.YellowString(pod.Datafix), color.CyanString(mappingInfo))
+			}
+		} else {
+			table.AddRow("Schema", "Table", "IndexColumn", "CheckObject", "Rows", "Diffs", "Datafix")
+			for _, pod := range measuredDataPods {
+				var differences = pod.DIFFS
+				for k, _ := range differencesSchemaTable {
+					if k != "" {
+						KI := strings.Split(k, "gtchecksum_gtchecksum")
+						if pod.Schema == KI[0] && pod.Table == KI[1] {
+							differences = "yes"
 						}
 					}
-					table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.IndexColumn), color.BlueString(pod.CheckMode), color.BlueString(pod.Rows), color.GreenString(differences), color.YellowString(pod.Datafix))
 				}
+				table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.IndexColumn), color.YellowString(pod.CheckObject), color.BlueString(pod.Rows), color.GreenString(differences), color.YellowString(pod.Datafix))
 			}
-			fmt.Println(table)
 		}
+		fmt.Println(table)
 	}
 }
 
@@ -694,7 +640,7 @@ func (bar *Bar) Play(cur int64) {
 // NewTableProgress 开始新表的进度显示，先输出换行再开始进度条
 func (bar *Bar) NewTableProgress(tableName string) {
 	// 先输出换行确保新表进度在新行开始
-	fmt.Printf("\n%-40s", fmt.Sprintf("Table: %s", tableName))
+	fmt.Printf("\n%-40s", fmt.Sprintf("%s", tableName))
 }
 
 // 由于上面的打印没有打印换行符，因此，在进度全部结束之后（也就是跳出循环之外时），需要打印一个换行符，因此，封装了一个Finish函数，该函数纯粹的打印一个换行，表示进度条已经完成。

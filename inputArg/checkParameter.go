@@ -12,26 +12,6 @@ import (
 	"time"
 )
 
-//type ConfigParameter struct {
-//	config                                       string   //配置文件信息
-//	SourceJdbc, DestJdbc, SourceDrive, DestDrive string   //源端的连接信息
-//	PoolMin                                      int      //数据库连接池最小值
-//	Table, Igtable                               string   //待校验的表和忽略的表
-//	CheckNoIndexTable                            string   //是否校验无索引表
-//	CaseSensitiveObjectName                          string   //是否忽略校验表的大小写
-//	LogFile, LogLevel                            string   //关于日志输出信息配置
-//	Concurrency                                  int      //查询并发度
-//	ChunkSize                      				 int      //校验数据块长度
-//	QueueDepth                                   int      //数据块长度
-//	Datafix, FixFileName                         string   //差异数据修复的方式及配置
-//	IncCheckSwitch                               string   //增量数据校验
-//	CheckMode                                    string   //校验的方式，可以为count(*)或者是校验row数据
-//	CheckObject                                  string   //校验的对象，可以是struct或者是data
-//	Ratio                                        int      //配置数据抽检时配置的比例
-//	Sfile                                        *os.File //修复文件的文件句柄
-//	FixTrxNum                                    int      //单并发修复语句的事务数量
-//}
-
 var illegalParameterStatus = false
 
 // 判断库表配置参数是否存在非法参数
@@ -220,12 +200,6 @@ func (rc *ConfigParameter) checkPar() {
 	vlog = fmt.Sprintf("(%d) [%s] check object parameter message is {%s}.", rc.LogThreadSeq, Event, rc.SecondaryL.RulesV.CheckObject)
 	global.Wlog.Debug(vlog)
 
-	vlog = fmt.Sprintf("(%d) [%s] start init check mode values.", rc.LogThreadSeq, Event)
-	global.Wlog.Debug(vlog)
-	rc.SecondaryL.RulesV.CheckMode = strings.ToLower(rc.SecondaryL.RulesV.CheckMode)
-	vlog = fmt.Sprintf("(%d) [%s] check mode parameter message is {%s}.", rc.LogThreadSeq, Event, rc.SecondaryL.RulesV.CheckMode)
-	global.Wlog.Debug(vlog)
-
 	vlog = fmt.Sprintf("(%d) [%s] start init no index table values.", rc.LogThreadSeq, Event)
 	global.Wlog.Debug(vlog)
 	rc.SecondaryL.SchemaV.CheckNoIndexTable = strings.ToLower(rc.SecondaryL.SchemaV.CheckNoIndexTable)
@@ -264,10 +238,10 @@ func (rc *ConfigParameter) checkPar() {
 		vlog = fmt.Sprintf("(%d) [%s] check data fix file parameter message is {%s}.", rc.LogThreadSeq, Event, rc.SecondaryL.RepairV.FixFileName)
 		global.Wlog.Debug(vlog)
 	}
-	for _, v := range []int{rc.SecondaryL.RulesV.ChanRowCount, rc.SecondaryL.RulesV.QueueSize, rc.SecondaryL.RulesV.Ratio, rc.SecondaryL.RulesV.ParallelThds} {
+	for _, v := range []int{rc.SecondaryL.RulesV.ChanRowCount, rc.SecondaryL.RulesV.QueueSize, rc.SecondaryL.RulesV.ParallelThds} {
 		if v < 1 {
-			fmt.Println(fmt.Sprintf("gt-checksum: Invalid chunkSize/queueSize/ratio/parallelThds values. Check %s or set logLevel=debug for details", rc.SecondaryL.LogV.LogFile))
-			vlog = fmt.Sprintf("(%d) [%s] chunkSize || queueSize || ratio || parallelThds parameter must be greater than 0.", rc.LogThreadSeq, Event)
+			fmt.Println(fmt.Sprintf("gt-checksum: Invalid chunkSize/queueSize/parallelThds values. Check %s or set logLevel=debug for details", rc.SecondaryL.LogV.LogFile))
+			vlog = fmt.Sprintf("(%d) [%s] chunkSize || queueSize || parallelThds parameter must be greater than 0.", rc.LogThreadSeq, Event)
 			global.Wlog.Error(vlog)
 			os.Exit(1)
 		}
@@ -278,19 +252,8 @@ func (rc *ConfigParameter) checkPar() {
 		global.Wlog.Error(vlog)
 		os.Exit(1)
 	}
-	if rc.SecondaryL.RulesV.Ratio < 1 || rc.SecondaryL.RulesV.Ratio > 100 {
-		fmt.Println(fmt.Sprintf("gt-checksum: Ratio must be between 1-100. Check %s or set logLevel=debug for details", rc.SecondaryL.LogV.LogFile))
-		vlog = fmt.Sprintf("(%d) [%s] option \"Ratio\" must be between 1 and 100.", rc.LogThreadSeq, Event)
-		global.Wlog.Error(vlog)
-		os.Exit(1)
-	}
 
-	vlog = fmt.Sprintf("(%d) [%s] start init check mode values.", rc.LogThreadSeq, Event)
-	global.Wlog.Debug(vlog)
-	if rc.SecondaryL.RulesV.CheckMode == "count" {
-		rc.SecondaryL.RepairV.Datafix = "no"
-	}
-	vlog = fmt.Sprintf("(%d) [%s] check check mode parameter message is {%s}.", rc.LogThreadSeq, Event, rc.SecondaryL.RulesV.CheckMode)
+	vlog = fmt.Sprintf("(%d) [%s] data fix is allowed if configured.", rc.LogThreadSeq, Event)
 	global.Wlog.Debug(vlog)
 
 	vlog = fmt.Sprintf("(%d) [%s] start init trx conn pool values.", rc.LogThreadSeq, Event)
@@ -300,10 +263,6 @@ func (rc *ConfigParameter) checkPar() {
 	global.Wlog.Debug(vlog)
 
 	rc.NoIndexTableTmpFile = "tmp_file"
-	if rc.SecondaryL.RulesV.CheckObject == "data" {
-		rc.SecondaryL.StructV.ScheckMod = "loose"
-
-	}
 	vlog = fmt.Sprintf("(%d) [%s] All options check have passed", rc.LogThreadSeq, Event)
 	global.Wlog.Info(vlog)
 }

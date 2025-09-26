@@ -12,7 +12,7 @@ import (
 /*
 单表的数据循环校验
 */
-func (sp *SchedulePlan) sampSingleTableCheckProcessing(chanrowCount int, sampDataGroupNumber uint64, logThreadSeq int64) {
+func (sp *SchedulePlan) sampSingleTableCheckProcessing(chanrowCount int, logThreadSeq int64) {
 	var (
 		vlog          string
 		beginSeq      uint64
@@ -40,7 +40,7 @@ func (sp *SchedulePlan) sampSingleTableCheckProcessing(chanrowCount int, sampDat
 
 	pods := Pod{Schema: sp.schema, Table: sp.table,
 		IndexColumn: "NULL",
-		CheckMode:   sp.checkMod,
+		CheckObject: "data", // 设置CheckObject字段为"data"
 		DIFFS:       "no",
 		Datafix:     sp.datafixType,
 	}
@@ -83,9 +83,7 @@ func (sp *SchedulePlan) sampSingleTableCheckProcessing(chanrowCount int, sampDat
 		if rowEnd {
 			continue
 		}
-		if beginSeq%sampDataGroupNumber != 0 {
-			continue
-		}
+		// 不再使用采样逻辑，始终校验所有数据
 		Cycles++
 		noIndexC <- struct{}{}
 		go func(a, beginSeq uint64) {
@@ -127,7 +125,7 @@ func (sp *SchedulePlan) sampSingleTableCheckProcessing(chanrowCount int, sampDat
 }
 
 /*
-做数据的抽样检查，先使用count*，针对count*数量一致的表在进行部分数据的抽样检查
+做数据的全量校验，先使用count*，针对count*数量一致的表再进行全量数据校验
 */
 func (sp *SchedulePlan) DoSampleDataCheck() {
 	var (
@@ -241,7 +239,6 @@ func (sp *SchedulePlan) DoSampleDataCheck() {
 		//输出校验结果信息
 		sp.pods = &Pod{
 			CheckObject: sp.checkObject,
-			CheckMode:   sp.checkMod,
 			DIFFS:       "no",
 			Schema:      sourceSchema,
 			Table:       sourceTable,
@@ -322,23 +319,19 @@ func (sp *SchedulePlan) DoSampleDataCheck() {
 		vlog = fmt.Sprintf("(%d) Row counts match for table %s", logThreadSeq, displayTableName)
 		global.Wlog.Debug(vlog)
 
-		var sampDataGroupNumber, dataGroupNumber uint64
+		var dataGroupNumber uint64
 		var selectColumnStringM = make(map[string]map[string]string)
 		dataGroupNumber = stmpTableCount / uint64(sp.chanrowCount)
 		if (stmpTableCount/uint64(sp.chanrowCount))%uint64(sp.chanrowCount) > 0 {
 			dataGroupNumber = dataGroupNumber + 1
 		}
-		sp.sampDataGroupNumber = int64(stmpTableCount / 100 * uint64(sp.ratio) / uint64(sp.chanrowCount))
-		if (stmpTableCount/100*uint64(sp.ratio))%uint64(sp.chanrowCount) > 0 {
-			sp.sampDataGroupNumber = sp.sampDataGroupNumber + 1
-		}
+		// 始终使用全量校验
 		sp.tableMaxRows = stmpTableCount
 		sp.pods.Rows = fmt.Sprintf("%d,%d", stmpTableCount, dtmpTableCount)
-		sp.pods.Sample = fmt.Sprintf("%d,%d", stmpTableCount, stmpTableCount/100*uint64(sp.ratio))
 
 		if len(v) == 0 {
 			sp.pods.IndexColumn = "NULL"
-			sp.sampSingleTableCheckProcessing(sp.chanrowCount, sampDataGroupNumber, logThreadSeq)
+			sp.sampSingleTableCheckProcessing(sp.chanrowCount, logThreadSeq) // 移除sampDataGroupNumber参数
 			fmt.Println()
 			global.Wlog.Info(fmt.Sprintf("Table %s checksum completed", displayTableName))
 			vlog = fmt.Sprintf("(%d) Check table %s The total number of rows at the source and target end has been checked.", logThreadSeq, displayTableName)

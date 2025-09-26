@@ -2,7 +2,6 @@ package actions
 
 import (
 	"database/sql"
-	"errors"
 	"fmt"
 	"gt-checksum/dbExec"
 	"gt-checksum/global"
@@ -29,8 +28,6 @@ type schemaTable struct {
 	datafix                 string
 	sfile                   *os.File
 	djdbc                   string
-	checkMode               string //列的校验模式，分为宽松模式和严格模式
-	structRul               inputArg.StructS
 	checkRules              inputArg.RulesS
 	// 添加表映射规则
 	tableMappings map[string]string
@@ -121,14 +118,41 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 	vlog = fmt.Sprintf("(%d) %s Validating structure differences between source and target", logThreadSeq, event)
 	global.Wlog.Debug(vlog)
 	for _, v := range checkTableList {
-		// 从表列表中提取源端schema和表名
-		sourceSchema := strings.Split(v, ".")[0]
-		stcls.table = strings.Split(v, ".")[1]
+		// 处理可能存在的映射规则（格式：sourceSchema.sourceTable:destSchema.destTable）
+		sourceTable := v
+		destTable := v
 
-		// 根据映射规则确定目标端schema
-		destSchema := sourceSchema
-		if mappedSchema, exists := stcls.tableMappings[sourceSchema]; exists {
-			destSchema = mappedSchema
+		// 检查是否包含映射规则（是否包含":"字符）
+		if strings.Contains(v, ":") {
+			parts := strings.Split(v, ":")
+			sourceTable = parts[0]
+			destTable = parts[1]
+		}
+
+		// 从表列表中提取源端schema和表名
+		sourceParts := strings.Split(sourceTable, ".")
+		if len(sourceParts) < 2 {
+			vlog = fmt.Sprintf("(%d) %s Invalid table format: %s, expected schema.table", logThreadSeq, event, sourceTable)
+			global.Wlog.Error(vlog)
+			continue
+		}
+		sourceSchema := sourceParts[0]
+		stcls.table = sourceParts[1]
+
+		// 从表列表中提取目标端schema和表名
+		destParts := strings.Split(destTable, ".")
+		if len(destParts) < 2 {
+			vlog = fmt.Sprintf("(%d) %s Invalid table format: %s, expected schema.table", logThreadSeq, event, destTable)
+			global.Wlog.Error(vlog)
+			continue
+		}
+		destSchema := destParts[0]
+
+		// 如果没有明确的映射规则，则检查全局映射规则
+		if sourceTable == destTable && sourceSchema == destSchema {
+			if mappedSchema, exists := stcls.tableMappings[sourceSchema]; exists {
+				destSchema = mappedSchema
+			}
 		}
 
 		vlog = fmt.Sprintf("Table mapping options - source: %s, target: %s, mappings: %v", sourceSchema, destSchema, stcls.tableMappings)
@@ -234,98 +258,134 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 			} else {
 				lastcolumn = sourceColumnSlice[k1-1]
 			}
-			switch stcls.structRul.ScheckFixRule {
-			case "src":
-				alterColumnData = sourceColumnMap[v1]
-			case "dst":
-				alterColumnData = destColumnMap[v1]
-			default:
-				err = errors.New(fmt.Sprintf("unknown options"))
-				vlog = fmt.Sprintf("(%d) %s Invalid checkObject option: %v", logThreadSeq, event, err)
-				global.Wlog.Error(vlog)
-				return nil, nil, err
-			}
+			// 始终使用src作为修复规则
+			alterColumnData = sourceColumnMap[v1]
 			if _, ok := destColumnMap[v1]; ok {
-				switch stcls.structRul.ScheckMod {
-				case "loose":
-					switch stcls.structRul.ScheckOrder {
-					case "yes":
-						if sourceColumnSeq[v1] != destColumnSeq[v1] {
-							tableAbnormalBool = true
-						} else {
-							tableAbnormalBool = false
-						}
-					case "no":
-						tableAbnormalBool = false
-					default:
-						err = errors.New(fmt.Sprintf("unknown options"))
-						vlog = fmt.Sprintf("(%d) %s The option \"checkObject\" is set incorrectly, error: {%v}", logThreadSeq, event, err)
-						global.Wlog.Error(vlog)
-						return nil, nil, err
-					}
-					if tableAbnormalBool {
-						modifySql := dbf.DataAbnormalFix().FixAlterColumnSqlDispos("modify", alterColumnData, k1, lastcolumn, v1, logThreadSeq)
-						vlog = fmt.Sprintf("(%d) %s Column definition differs in %s.%s - ALTER: %s", logThreadSeq, v1, destSchema, stcls.table, modifySql)
-						global.Wlog.Warn(vlog)
-						alterSlice = append(alterSlice, modifySql)
-					} else {
-						vlog = fmt.Sprintf("(%d) %s Column definitions match in %s.%s", logThreadSeq, v1, destSchema, stcls.table)
-						global.Wlog.Debug(vlog)
-					}
+				// 直接使用strict模式，删除了永远不会执行的loose分支
+				// 使用固定值：ScheckMod=strict
+				// 严格比较列的所有属性
+				tableAbnormalBool = false
 
-				case "strict":
-					switch stcls.structRul.ScheckOrder {
-					case "yes":
-						if CheckSum().CheckMd5(strings.Join(sourceColumnMap[v1], "")) != CheckSum().CheckMd5(strings.Join(destColumnMap[v1], "")) || sourceColumnSeq[v1] != destColumnSeq[v1] {
-							tableAbnormalBool = true
-						} else {
-							tableAbnormalBool = false
-						}
-					case "no":
-						if CheckSum().CheckMd5(strings.Join(sourceColumnMap[v1], "")) != CheckSum().CheckMd5(strings.Join(destColumnMap[v1], "")) {
-							tableAbnormalBool = true
-						} else {
-							tableAbnormalBool = false
-						}
-					default:
-						err = errors.New(fmt.Sprintf("unknown options"))
-						vlog = fmt.Sprintf("(%d) %s Invalid structure checksum mode: %v", logThreadSeq, event, err)
-						global.Wlog.Error(vlog)
-						return nil, nil, err
-					}
-					if tableAbnormalBool {
-						modifySql := dbf.DataAbnormalFix().FixAlterColumnSqlDispos("modify", alterColumnData, k1, lastcolumn, v1, logThreadSeq)
-						vlog = fmt.Sprintf("(%d) %s The column name of column %s of the source and target table %s.%s:[%s.%s] is the same, but the definition of the column is inconsistent, and a modify statement is generated, and the modification statement is {%v}", logThreadSeq, v1, stcls.schema, stcls.table, destSchema, stcls.table, modifySql)
+				// 比较列类型
+				sourceType := ""
+				destType := ""
+				if len(sourceColumnMap[v1]) > 0 {
+					sourceType = sourceColumnMap[v1][0]
+				}
+				if len(destColumnMap[v1]) > 0 {
+					destType = destColumnMap[v1][0]
+				}
+
+				// 打印调试信息
+				vlog = fmt.Sprintf("(%d) %s Column %s type comparison: source=%s, dest=%s", logThreadSeq, event, v1, sourceType, destType)
+				global.Wlog.Debug(vlog)
+
+				// 比较列类型
+				if sourceType != destType {
+					tableAbnormalBool = true
+					vlog = fmt.Sprintf("(%d) %s Column %s type mismatch: source=%s, dest=%s", logThreadSeq, event, v1, sourceType, destType)
+					global.Wlog.Warn(vlog)
+				}
+
+				// 比较字符集
+				sourceCharset := ""
+				destCharset := ""
+				if len(sourceColumnMap[v1]) > 1 {
+					sourceCharset = sourceColumnMap[v1][1]
+				}
+				if len(destColumnMap[v1]) > 1 {
+					destCharset = destColumnMap[v1][1]
+				}
+
+				// 如果两者都不为空或null，则比较
+				if (sourceCharset != "null" && sourceCharset != "") ||
+					(destCharset != "null" && destCharset != "") {
+					if sourceCharset != destCharset {
+						tableAbnormalBool = true
+						vlog = fmt.Sprintf("(%d) %s Column %s charset mismatch: source=%s, dest=%s",
+							logThreadSeq, event, v1, sourceCharset, destCharset)
 						global.Wlog.Warn(vlog)
-						alterSlice = append(alterSlice, modifySql)
 					}
-				default:
-					err = errors.New(fmt.Sprintf("unknown options"))
-					vlog = fmt.Sprintf("(%d) %s The checksum mode of the correct table structure is not selected. error message is {%v}", logThreadSeq, event, err)
-					global.Wlog.Error(vlog)
-					return nil, nil, err
+				}
+
+				// 比较排序规则
+				sourceCollation := ""
+				destCollation := ""
+				if len(sourceColumnMap[v1]) > 2 {
+					sourceCollation = sourceColumnMap[v1][2]
+				}
+				if len(destColumnMap[v1]) > 2 {
+					destCollation = destColumnMap[v1][2]
+				}
+
+				// 如果两者都不为空或null，则比较
+				if (sourceCollation != "null" && sourceCollation != "") ||
+					(destCollation != "null" && destCollation != "") {
+					if sourceCollation != destCollation {
+						tableAbnormalBool = true
+						vlog = fmt.Sprintf("(%d) %s Column %s collation mismatch: source=%s, dest=%s",
+							logThreadSeq, event, v1, sourceCollation, destCollation)
+						global.Wlog.Warn(vlog)
+					}
+				}
+
+				// 比较是否允许NULL
+				sourceIsNull := ""
+				destIsNull := ""
+				if len(sourceColumnMap[v1]) > 3 {
+					sourceIsNull = sourceColumnMap[v1][3]
+				}
+				if len(destColumnMap[v1]) > 3 {
+					destIsNull = destColumnMap[v1][3]
+				}
+
+				if sourceIsNull != destIsNull {
+					tableAbnormalBool = true
+					vlog = fmt.Sprintf("(%d) %s Column %s NULL constraint mismatch: source=%s, dest=%s",
+						logThreadSeq, event, v1, sourceIsNull, destIsNull)
+					global.Wlog.Warn(vlog)
+				}
+
+				// 比较默认值
+				sourceDefault := ""
+				destDefault := ""
+				if len(sourceColumnMap[v1]) > 4 {
+					sourceDefault = sourceColumnMap[v1][4]
+				}
+				if len(destColumnMap[v1]) > 4 {
+					destDefault = destColumnMap[v1][4]
+				}
+
+				// 如果两者都不为null，则比较
+				if sourceDefault != "null" && destDefault != "null" {
+					if sourceDefault != destDefault {
+						tableAbnormalBool = true
+						vlog = fmt.Sprintf("(%d) %s Column %s default value mismatch: source=%s, dest=%s",
+							logThreadSeq, event, v1, sourceDefault, destDefault)
+						global.Wlog.Warn(vlog)
+					}
+				}
+
+				// 比较列顺序
+				if sourceColumnSeq[v1] != destColumnSeq[v1] {
+					tableAbnormalBool = true
+					vlog = fmt.Sprintf("(%d) %s Column %s sequence mismatch: source=%d, dest=%d",
+						logThreadSeq, event, v1, sourceColumnSeq[v1], destColumnSeq[v1])
+					global.Wlog.Warn(vlog)
+				}
+				if tableAbnormalBool {
+					modifySql := dbf.DataAbnormalFix().FixAlterColumnSqlDispos("modify", alterColumnData, k1, lastcolumn, v1, logThreadSeq)
+					vlog = fmt.Sprintf("(%d) %s The column name of column %s of the source and target table %s.%s:[%s.%s] is the same, but the definition of the column is inconsistent, and a modify statement is generated, and the modification statement is {%v}", logThreadSeq, v1, stcls.schema, stcls.table, destSchema, stcls.table, modifySql)
+					global.Wlog.Warn(vlog)
+					alterSlice = append(alterSlice, modifySql)
 				}
 				delete(destColumnMap, v1)
 			} else {
-				switch stcls.structRul.ScheckOrder {
-				case "yes":
-					lastcolumn = lastcolumn
-				case "no":
-					lastcolumn = "alterNoAfter"
-				default:
-					err = errors.New(fmt.Sprintf("unknown options"))
-					vlog = fmt.Sprintf("(%d) %s The checksum mode of the correct table structure is not selected. error message is {%v}", logThreadSeq, event, err)
-					global.Wlog.Error(vlog)
-					return nil, nil, err
-				}
+				// 使用固定值：ScheckOrder=yes
+				lastcolumn = lastcolumn
 				var position int
-				if stcls.structRul.ScheckOrder == "yes" {
-					// Use the source column's actual position
-					position = k1
-				} else {
-					// In loose mode, append at the end
-					position = len(destColumnMap)
-				}
+				// 使用固定值：ScheckOrder=yes，总是使用源列的实际位置
+				position = k1
 				addSql := dbf.DataAbnormalFix().FixAlterColumnSqlDispos("add", sourceColumnMap[v1], position, lastcolumn, v1, logThreadSeq)
 				vlog = fmt.Sprintf("(%d) %s Missing column %s in %s.%s - ADD: %v", logThreadSeq, event, v1, destSchema, stcls.table, addSql)
 				global.Wlog.Warn(vlog)
@@ -2400,7 +2460,6 @@ func SchemaTableInit(m *inputArg.ConfigParameter) *schemaTable {
 		datafix:                 m.SecondaryL.RepairV.Datafix,
 		sfile:                   m.SecondaryL.RepairV.FixFileFINE,
 		djdbc:                   m.SecondaryL.DsnsV.DestJdbc,
-		structRul:               m.SecondaryL.StructV,
 		checkRules:              m.SecondaryL.RulesV,
 		tableMappings:           tableMappings,
 	}

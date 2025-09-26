@@ -1,5 +1,9 @@
 ## 1.2.3
 - 增加数据库名映射功能，支持将源端数据库名映射为目标端不同名数据库，例如"db1.*:db2.*"
+- 删除checkMode和ratio参数，也即总是校验所有数据，不再支持仅采样和仅查总数两种校验方式
+- 删除ScheckMod参数，也即总是严格校验表结构，不只是校验列名
+- 删除ScheckOrder参数，也即总是按照源端数据表中列的正序进行校验
+- 删除ScheckFixRule参数，即总是针对目标端执行修复数据方案，如果需要反向修复，自行调整DSN配置即可
 
 ## 1.2.2(2025.09.22)
 - 合并`jointIndexChanRowCount`和`singleIndexChanRowCount`两个参数为新的参数`chunkSize`

@@ -16,7 +16,6 @@ type FirstLevel struct {
 	DSNs   *ini.Section
 	Schema *ini.Section
 	Rules  *ini.Section
-	Struct *ini.Section
 	Logs   *ini.Section
 	Repair *ini.Section
 }
@@ -38,16 +37,10 @@ type RulesS struct {
 	ParallelThds int
 	ChanRowCount int
 	QueueSize    int
-	CheckMode    string
-	Ratio        int
 	CheckObject  string
 	MemoryLimit  int
 }
-type StructS struct {
-	ScheckMod     string
-	ScheckOrder   string
-	ScheckFixRule string
-}
+
 type LogS struct {
 	LogFile  string
 	LogLevel string
@@ -62,7 +55,6 @@ type SecondaryLevel struct {
 	DsnsV   DSNsS
 	SchemaV SchemaS
 	RulesV  RulesS
-	StructV StructS
 	LogV    LogS
 	RepairV RepairS
 }
@@ -101,7 +93,7 @@ func init() {
 				rc.Config = fmt.Sprintf(".\\%s", rc.Config)
 			}
 		}
-		rc.getConfig()
+		rc.GetConfig()
 	}
 	//初始化日志文件
 	fmt.Println("Opening log files")
