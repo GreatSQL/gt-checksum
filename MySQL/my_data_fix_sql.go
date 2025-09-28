@@ -116,8 +116,71 @@ func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive s
 		deleteSql, deleteSqlWhere string
 		ad                        = make(map[string]int)
 		acc                       = make(map[string]string) //判断特殊数据类型
+		vlog                      string
 	)
 	var targetSchema = my.Schema // 默认使用目标schema
+
+	// 检查表是否有主键，如果有，强制使用主键作为条件
+	hasPrimaryKey := false
+	primaryKeyColumns := []string{}
+
+	// 查询表的主键信息
+	query := fmt.Sprintf("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA = '%s' AND TABLE_NAME = '%s' AND CONSTRAINT_NAME = 'PRIMARY' ORDER BY ORDINAL_POSITION", targetSchema, my.Table)
+	rows, err := db.Query(query)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var columnName string
+			if err := rows.Scan(&columnName); err == nil {
+				hasPrimaryKey = true
+				primaryKeyColumns = append(primaryKeyColumns, columnName)
+			}
+		}
+	}
+
+	// 如果表有主键，强制使用主键作为条件
+	if hasPrimaryKey && len(primaryKeyColumns) > 0 {
+		my.IndexType = "pri"
+		my.IndexColumn = primaryKeyColumns
+		vlog = fmt.Sprintf("(%d) Found primary key for table %s.%s: %v, forcing IndexType to 'pri'", logThreadSeq, targetSchema, my.Table, primaryKeyColumns)
+		global.Wlog.Debug(vlog)
+	} else {
+		// 如果没有主键，检查是否有唯一键
+		hasUniqueKey := false
+		uniqueKeyColumns := []string{}
+
+		// 查询表的唯一键信息
+		uniqueQuery := fmt.Sprintf("SELECT INDEX_NAME, COLUMN_NAME FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = '%s' AND TABLE_NAME = '%s' AND NON_UNIQUE = 0 AND INDEX_NAME != 'PRIMARY' ORDER BY INDEX_NAME, SEQ_IN_INDEX", targetSchema, my.Table)
+		uniqueRows, uniqueErr := db.Query(uniqueQuery)
+		if uniqueErr == nil {
+			defer uniqueRows.Close()
+
+			// 使用map来按索引名称分组列
+			uniqueIndices := make(map[string][]string)
+
+			for uniqueRows.Next() {
+				var indexName, columnName string
+				if uniqueErr := uniqueRows.Scan(&indexName, &columnName); uniqueErr == nil {
+					uniqueIndices[indexName] = append(uniqueIndices[indexName], columnName)
+				}
+			}
+
+			// 如果有唯一键，使用第一个唯一键
+			for indexName, columns := range uniqueIndices {
+				hasUniqueKey = true
+				uniqueKeyColumns = columns
+				vlog = fmt.Sprintf("(%d) Found unique key '%s' for table %s.%s: %v, forcing IndexType to 'uni'", logThreadSeq, indexName, targetSchema, my.Table, uniqueKeyColumns)
+				global.Wlog.Debug(vlog)
+				break // 只使用第一个唯一键
+			}
+		}
+
+		// 如果表有唯一键，强制使用唯一键作为条件
+		if hasUniqueKey && len(uniqueKeyColumns) > 0 {
+			my.IndexType = "uni"
+			my.IndexColumn = uniqueKeyColumns
+		}
+	}
 
 	// 确保ColData不为空
 	if len(my.ColData) == 0 {
@@ -205,7 +268,7 @@ func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive s
 			} else if v == "<entry>" {
 				AS = append(AS, fmt.Sprintf(" %s = ''", FB[k]))
 			} else if v == acc["double"] {
-				AS = append(AS, fmt.Sprintf("  CONCAT(%s,'') = '%s'", FB[k], v))
+				AS = append(AS, fmt.Sprintf(" CONCAT(%s,'') = '%s'", FB[k], v))
 			} else {
 				AS = append(AS, fmt.Sprintf(" %s = '%s' ", FB[k], v))
 			}
@@ -224,41 +287,35 @@ func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive s
 			return "", fmt.Errorf("no index columns defined for table %s.%s", targetSchema, my.Table)
 		}
 
-		var FB []string
-		for _, i := range colData {
-			colName, ok := i["columnName"]
-			if !ok {
+		// 创建一个映射，将列名映射到列序号和值
+		columnMap := make(map[string]string)
+		rowParts := strings.Split(my.RowData, "/*go actions columnData*/")
+
+		for i, col := range colData {
+			colName, ok := col["columnName"]
+			if !ok || i >= len(rowParts) {
 				continue
 			}
-			for _, v := range my.IndexColumn {
-				if strings.EqualFold(v, colName) {
-					if seq, ok := i["columnSeq"]; ok {
-						FB = append(FB, seq)
-					}
+			columnMap[colName] = rowParts[i]
+		}
+
+		// 只使用索引列（主键或唯一键）作为WHERE条件
+		var AS []string
+		for _, colName := range my.IndexColumn {
+			if value, ok := columnMap[colName]; ok {
+				if value == "<nil>" {
+					AS = append(AS, fmt.Sprintf(" %s IS NULL ", colName))
+				} else if value == "<entry>" {
+					AS = append(AS, fmt.Sprintf(" %s = '' ", colName))
+				} else if value == acc["double"] {
+					AS = append(AS, fmt.Sprintf(" CONCAT(%s,'') = '%s'", colName, value))
+				} else {
+					AS = append(AS, fmt.Sprintf(" %s = '%s' ", colName, value))
 				}
 			}
 		}
 
-		var AS []string
-		rowParts := strings.Split(my.RowData, "/*go actions columnData*/")
-		for k, v := range rowParts {
-			if k >= len(FB) {
-				continue
-			}
-			for l, I := range FB {
-				if I == strconv.Itoa(k+1) && l < len(my.IndexColumn) {
-					colName := my.IndexColumn[l]
-					if v == "<nil>" {
-						AS = append(AS, fmt.Sprintf(" %s IS NULL ", colName))
-					} else if v == "<entry>" {
-						AS = append(AS, fmt.Sprintf(" %s = '' ", colName))
-					} else if v == acc["double"] {
-						AS = append(AS, fmt.Sprintf("  CONCAT(%s,'') = '%s'", colName, v))
-					} else {
-						AS = append(AS, fmt.Sprintf(" %s = '%s' ", colName, v))
-					}
-				}
-			}
+		if len(AS) > 0 {
 			deleteSqlWhere = strings.Join(AS, " AND ")
 		}
 	}
@@ -329,6 +386,8 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterColumnSqlDispos(alterType string, 
 		collumnDefaultN = fmt.Sprintf("DEFAULT ''")
 	} else if columnDataType[4] == "NULL" {
 		collumnDefaultN = ""
+	} else if columnDataType[4] == "null" {
+		collumnDefaultN = fmt.Sprintf("DEFAULT NULL")
 	} else {
 		collumnDefaultN = fmt.Sprintf("DEFAULT '%s'", columnDataType[4])
 	}
@@ -347,11 +406,11 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterColumnSqlDispos(alterType string, 
 	}
 	switch alterType {
 	case "add":
-		sqlS = fmt.Sprintf(" ADD COLUMN `%s` %s %s %s %s %s %s %s", curryColumn, columnDataType[0], charsetN, collationN, nullS, collumnDefaultN, commantS, columnLocation)
+		sqlS = fmt.Sprintf("ADD COLUMN `%s` %s %s %s %s %s %s %s", curryColumn, columnDataType[0], charsetN, collationN, nullS, collumnDefaultN, commantS, columnLocation)
 	case "modify":
-		sqlS = fmt.Sprintf(" MODIFY COLUMN `%s` %s %s %s %s %s %s %s", curryColumn, columnDataType[0], charsetN, collationN, nullS, collumnDefaultN, commantS, columnLocation)
+		sqlS = fmt.Sprintf("MODIFY COLUMN `%s` %s %s %s %s %s %s %s", curryColumn, columnDataType[0], charsetN, collationN, nullS, collumnDefaultN, commantS, columnLocation)
 	case "drop":
-		sqlS = fmt.Sprintf(" DROP COLUMN `%s` ", curryColumn)
+		sqlS = fmt.Sprintf("DROP COLUMN `%s` ", curryColumn)
 	}
 	return sqlS
 }
