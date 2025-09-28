@@ -18,6 +18,7 @@ var TableMappingRelations []string
 type schemaTable struct {
 	schema                  string
 	table                   string
+	destTable               string // 目标表名，可能与源表名不同
 	ignoreSchema            string
 	ignoreTable             string
 	sourceDrive             string
@@ -31,6 +32,8 @@ type schemaTable struct {
 	checkRules              inputArg.RulesS
 	// 添加表映射规则
 	tableMappings map[string]string
+	// 需要跳过索引检查的表列表
+	skipIndexCheckTables []string
 }
 
 // getDisplayTableName 返回表的显示名称，包含映射关系信息
@@ -137,7 +140,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 			continue
 		}
 		sourceSchema := sourceParts[0]
-		stcls.table = sourceParts[1]
+		sourceTableName := sourceParts[1]
 
 		// 从表列表中提取目标端schema和表名
 		destParts := strings.Split(destTable, ".")
@@ -147,6 +150,12 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 			continue
 		}
 		destSchema := destParts[0]
+		destTableName := destParts[1]
+
+		// 设置当前处理的表名
+		stcls.table = sourceTableName
+		// 记录目标表名，用于后续操作
+		stcls.destTable = destTableName
 
 		// 如果没有明确的映射规则，则检查全局映射规则
 		if sourceTable == destTable && sourceSchema == destSchema {
@@ -160,6 +169,87 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 
 		vlog = fmt.Sprintf("(%d %s Validating table structure %s.%s -> %s.%s", logThreadSeq, event, sourceSchema, stcls.table, destSchema, stcls.table)
 		global.Wlog.Debug(vlog)
+
+		// 检查源表是否存在
+		sourceTableExists := true
+		sourceTableQuery := fmt.Sprintf("SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA = '%s' AND TABLE_NAME = '%s'", sourceSchema, sourceTableName)
+		var exists int
+		err = stcls.sourceDB.QueryRow(sourceTableQuery).Scan(&exists)
+		if err == sql.ErrNoRows {
+			sourceTableExists = false
+			vlog = fmt.Sprintf("(%d) %s Source table %s.%s does not exist", logThreadSeq, event, sourceSchema, stcls.table)
+			global.Wlog.Warn(vlog)
+		} else if err != nil {
+			vlog = fmt.Sprintf("(%d) %s Error checking source table existence %s.%s: %v", logThreadSeq, event, sourceSchema, stcls.table, err)
+			global.Wlog.Error(vlog)
+			return nil, nil, err
+		}
+
+		// 检查目标表是否存在
+		destTableExists := true
+		destTableQuery := fmt.Sprintf("SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA = '%s' AND TABLE_NAME = '%s'", destSchema, destTableName)
+		err = stcls.destDB.QueryRow(destTableQuery).Scan(&exists)
+		if err == sql.ErrNoRows {
+			destTableExists = false
+			vlog = fmt.Sprintf("(%d) %s Target table %s.%s does not exist", logThreadSeq, event, destSchema, stcls.table)
+			global.Wlog.Warn(vlog)
+		} else if err != nil {
+			vlog = fmt.Sprintf("(%d) %s Error checking target table existence %s.%s: %v", logThreadSeq, event, destSchema, stcls.table, err)
+			global.Wlog.Error(vlog)
+			return nil, nil, err
+		}
+
+		// 处理特殊情况：源表存在但目标表不存在
+		if sourceTableExists && !destTableExists {
+			// 生成CREATE TABLE语句
+			createTableSql, err := generateCreateTableSql(stcls.sourceDB, sourceSchema, destSchema, sourceTableName, logThreadSeq)
+			if err != nil {
+				vlog = fmt.Sprintf("(%d) %s Error generating CREATE TABLE statement for %s.%s: %v", logThreadSeq, event, destSchema, stcls.table, err)
+				global.Wlog.Error(vlog)
+				return nil, nil, err
+			}
+
+			vlog = fmt.Sprintf("(%d) %s Generated CREATE TABLE statement for %s.%s: %s", logThreadSeq, event, destSchema, destTableName, createTableSql)
+			global.Wlog.Debug(vlog)
+
+			// 应用修复SQL
+			vlog = fmt.Sprintf("(%d) %s Applying CREATE TABLE statement to %s.%s", logThreadSeq, event, destSchema, destTableName)
+			global.Wlog.Debug(vlog)
+			if err = ApplyDataFix([]string{createTableSql}, stcls.datafix, stcls.sfile, stcls.destDrive, stcls.djdbc, logThreadSeq); err != nil {
+				return nil, nil, err
+			}
+
+			abnormalTableList = append(abnormalTableList, fmt.Sprintf("%s.%s", destSchema, destTableName))
+			continue
+		}
+
+		// 处理特殊情况：源表不存在但目标表存在
+		if !sourceTableExists && destTableExists {
+			// 生成DROP TABLE语句
+			dropTableSql := fmt.Sprintf("DROP TABLE IF EXISTS `%s`.`%s`;", destSchema, destTableName)
+
+			vlog = fmt.Sprintf("(%d) %s Generated DROP TABLE statement for %s.%s: %s", logThreadSeq, event, destSchema, destTableName, dropTableSql)
+			global.Wlog.Debug(vlog)
+
+			// 应用修复SQL
+			vlog = fmt.Sprintf("(%d) %s Applying DROP TABLE statement to %s.%s", logThreadSeq, event, destSchema, destTableName)
+			global.Wlog.Debug(vlog)
+			if err = ApplyDataFix([]string{dropTableSql}, stcls.datafix, stcls.sfile, stcls.destDrive, stcls.djdbc, logThreadSeq); err != nil {
+				return nil, nil, err
+			}
+
+			// 将表添加到异常列表中
+			abnormalTableList = append(abnormalTableList, fmt.Sprintf("%s.%s", destSchema, destTableName))
+
+			// 重要：将此表标记为已处理，以防止后续的索引比较逻辑生成额外的DROP语句
+			// 使用局部变量来跟踪需要删除的表
+			tableKey := fmt.Sprintf("%s.%s", destSchema, destTableName)
+			stcls.skipIndexCheckTables = append(stcls.skipIndexCheckTables, tableKey)
+
+			continue
+		}
+
+		// 如果源表和目标表都存在，则继续原有的比较逻辑
 		var sColumn, dColumn []map[string][]string
 
 		dbf := dbExec.DataAbnormalFixStruct{
@@ -399,14 +489,90 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 				delete(destColumnMap, v1)
 			}
 		}
+
+		// 在TableColumnNameCheck函数中，在比较完列级别的属性后，添加表级别字符集和排序规则的比较
+		// 在生成alterSlice后，添加以下代码
+
+		// 检查表级别的字符集和排序规则
+		tableCharsetCollationQuery := fmt.Sprintf(`
+    SELECT t.TABLE_COLLATION, c.CHARACTER_SET_NAME 
+    FROM information_schema.TABLES t 
+    JOIN information_schema.COLLATIONS c ON t.TABLE_COLLATION = c.COLLATION_NAME 
+    WHERE t.TABLE_SCHEMA = '%s' AND t.TABLE_NAME = '%s'
+`, sourceSchema, stcls.table)
+
+		var sourceTableCollation, sourceTableCharset string
+		rows, err := stcls.sourceDB.Query(tableCharsetCollationQuery)
+		if err == nil {
+			defer rows.Close()
+			if rows.Next() {
+				err = rows.Scan(&sourceTableCollation, &sourceTableCharset)
+				if err != nil {
+					vlog = fmt.Sprintf("(%d) %s Failed to scan source table charset/collation: %v", logThreadSeq, event, err)
+					global.Wlog.Error(vlog)
+				}
+			}
+		}
+
+		tableCharsetCollationQuery = fmt.Sprintf(`
+    SELECT t.TABLE_COLLATION, c.CHARACTER_SET_NAME 
+    FROM information_schema.TABLES t 
+    JOIN information_schema.COLLATIONS c ON t.TABLE_COLLATION = c.COLLATION_NAME 
+    WHERE t.TABLE_SCHEMA = '%s' AND t.TABLE_NAME = '%s'
+`, destSchema, stcls.table)
+
+		var destTableCollation, destTableCharset string
+		rows, err = stcls.destDB.Query(tableCharsetCollationQuery)
+		if err == nil {
+			defer rows.Close()
+			if rows.Next() {
+				err = rows.Scan(&destTableCollation, &destTableCharset)
+				if err != nil {
+					vlog = fmt.Sprintf("(%d) %s Failed to scan dest table charset/collation: %v", logThreadSeq, event, err)
+					global.Wlog.Error(vlog)
+				}
+			}
+		}
+
+		// 比较表级别的字符集和排序规则
+		tableCharsetDifferent := false
+		if sourceTableCharset != "" && destTableCharset != "" && sourceTableCharset != destTableCharset {
+			tableCharsetDifferent = true
+			vlog = fmt.Sprintf("(%d) %s Table charset mismatch: source=%s, dest=%s",
+				logThreadSeq, event, sourceTableCharset, destTableCharset)
+			global.Wlog.Warn(vlog)
+		}
+
+		tableCollationDifferent := false
+		if sourceTableCollation != "" && destTableCollation != "" && sourceTableCollation != destTableCollation {
+			tableCollationDifferent = true
+			vlog = fmt.Sprintf("(%d) %s Table collation mismatch: source=%s, dest=%s",
+				logThreadSeq, event, sourceTableCollation, destTableCollation)
+			global.Wlog.Warn(vlog)
+		}
+
+		// 先生成列级别的修复SQL
+		sqlS := dbf.DataAbnormalFix().FixAlterColumnSqlGenerate(alterSlice, logThreadSeq)
+
+		// 如果表级别的字符集或排序规则不一致，生成修复SQL
+		if tableCharsetDifferent || tableCollationDifferent {
+			// 生成表级别字符集转换的SQL语句
+			convertSqlS := dbf.DataAbnormalFix().FixTableCharsetSqlGenerate(sourceTableCharset, sourceTableCollation, logThreadSeq)
+
+			// 无论datafix是什么值，都将表级别字符集转换的SQL语句添加到sqlS中
+			sqlS = append(sqlS, convertSqlS...)
+		}
+
 		if len(alterSlice) > 0 {
 			abnormalTableList = append(abnormalTableList, fmt.Sprintf("%s.%s", destSchema, stcls.table))
 		} else {
 			newCheckTableList = append(newCheckTableList, fmt.Sprintf("%s.%s", destSchema, stcls.table))
 		}
-		sqlS := dbf.DataAbnormalFix().FixAlterColumnSqlGenerate(alterSlice, logThreadSeq)
+
 		vlog = fmt.Sprintf("(%d) %s Structure validation completed for %s.%s -> %s.%s", logThreadSeq, event, stcls.schema, stcls.table, destSchema, stcls.table)
 		global.Wlog.Debug(vlog)
+
+		// 如果sqlS不为空（表示没有应用过列级别修复），则应用它
 		if len(sqlS) > 0 {
 			vlog = fmt.Sprintf("(%d) %s Applying repair statements to %s.%s: %v", logThreadSeq, event, destSchema, stcls.table, sqlS)
 			global.Wlog.Debug(vlog)
@@ -2094,6 +2260,12 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 			colName := strings.TrimSpace(parts[0])
 			seqStr := strings.Split(parts[1], "/*type*/")[0]
 			seq, _ := strconv.Atoi(seqStr)
+
+			// 如果设置了大小写不敏感，则将列名转换为大写
+			if stcls.caseSensitiveObjectName == "no" {
+				colName = strings.ToUpper(colName)
+			}
+
 			return colName, seq
 		}
 
@@ -2167,8 +2339,35 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 				// 即使索引名称相同，也要比较索引的具体内容
 				for k, sColumns := range smu {
 					if dColumns, exists := dmu[k]; exists {
+						// 比较同名索引的列及其顺序
+						// 如果设置了大小写不敏感，则在比较前将列名转换为大写
+						sColumnsForCompare := sColumns
+						dColumnsForCompare := dColumns
+
+						// 当caseSensitiveObjectName=no时，需要特殊处理列名大小写
+						if stcls.caseSensitiveObjectName == "no" {
+							// 提取并转换源端列名
+							sSortedColumns := sortColumns(sColumns)
+							dSortedColumns := sortColumns(dColumns)
+
+							// 如果列名只是大小写不同，则认为它们是相同的
+							if len(sSortedColumns) == len(dSortedColumns) {
+								allMatch := true
+								for i := 0; i < len(sSortedColumns); i++ {
+									if strings.ToUpper(sSortedColumns[i]) != strings.ToUpper(dSortedColumns[i]) {
+										allMatch = false
+										break
+									}
+								}
+								if allMatch {
+									// 列名只是大小写不同，跳过修改
+									continue
+								}
+							}
+						}
+
 						// 比较同名索引的列及其顺序（包含序号信息的比较）
-						if a.CheckMd5(strings.Join(sColumns, ",")) != a.CheckMd5(strings.Join(dColumns, ",")) {
+						if a.CheckMd5(strings.Join(sColumnsForCompare, ",")) != a.CheckMd5(strings.Join(dColumnsForCompare, ",")) {
 							// 1. 先生成删除旧索引的SQL
 							// 根据映射规则确定目标端schema
 							destSchema := stcls.schema
@@ -2258,6 +2457,21 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 		destSchema := sourceSchema
 		if mappedSchema, exists := stcls.tableMappings[sourceSchema]; exists {
 			destSchema = mappedSchema
+		}
+
+		// 检查表是否在skipIndexCheckTables列表中，如果是，则跳过
+		tableKey := fmt.Sprintf("%s.%s", destSchema, tableName)
+		isDropped := false
+		for _, droppedTable := range stcls.skipIndexCheckTables {
+			if strings.EqualFold(droppedTable, tableKey) {
+				vlog = fmt.Sprintf("(%d) %s Skipping index check for table %s as it is marked for deletion", logThreadSeq, event, tableKey)
+				global.Wlog.Info(vlog)
+				isDropped = true
+				break
+			}
+		}
+		if isDropped {
+			continue
 		}
 
 		idxc := dbExec.IndexColumnStruct{Schema: sourceSchema, Table: stcls.table, Drivce: stcls.sourceDrive}
@@ -2752,4 +2966,133 @@ func (stcls *schemaTable) GetSourceDB() *sql.DB {
 */
 func (stcls *schemaTable) GetDestDB() *sql.DB {
 	return stcls.destDB
+}
+
+// generateCreateTableSql 生成创建表的SQL语句，包括表级别的字符集和排序规则
+func generateCreateTableSql(sourceDB *sql.DB, sourceSchema string, destSchema string, tableName string, logThreadSeq int64) (string, error) {
+	var (
+		vlog  string
+		event = "generateCreateTableSql"
+	)
+
+	// 查询源表的完整DDL，包括AUTO_INCREMENT, TABLE_COLLATION, CREATE_OPTIONS, TABLE_COMMENT等属性
+	showCreateTableQuery := fmt.Sprintf("SHOW CREATE TABLE `%s`.`%s`", sourceSchema, tableName)
+	var tableName2, createTableStmt string
+	err := sourceDB.QueryRow(showCreateTableQuery).Scan(&tableName2, &createTableStmt)
+	if err != nil {
+		vlog = fmt.Sprintf("(%d) %s Error getting CREATE TABLE statement for %s.%s: %v", logThreadSeq, event, sourceSchema, tableName, err)
+		global.Wlog.Error(vlog)
+		return "", err
+	}
+
+	// 替换schema名称
+	createTableStmt = strings.Replace(createTableStmt, fmt.Sprintf("`%s`", sourceSchema), fmt.Sprintf("`%s`", destSchema), -1)
+
+	// 添加IF NOT EXISTS前缀
+	if !strings.Contains(strings.ToUpper(createTableStmt), "IF NOT EXISTS") {
+		// 查找"CREATE TABLE"后的位置，并在其后添加"IF NOT EXISTS"
+		createTableIndex := strings.Index(strings.ToUpper(createTableStmt), "CREATE TABLE")
+		if createTableIndex != -1 {
+			// 找到"CREATE TABLE"之后的位置
+			afterCreateTable := createTableIndex + len("CREATE TABLE")
+			// 在"CREATE TABLE"之后插入" IF NOT EXISTS"
+			createTableStmt = createTableStmt[:afterCreateTable] + " IF NOT EXISTS" + createTableStmt[afterCreateTable:]
+		}
+	}
+
+	// 确保CREATE TABLE语句包含表级别的字符集和排序规则
+	// 查询表的字符集和排序规则
+	tableCharsetCollationQuery := fmt.Sprintf(`
+		SELECT t.TABLE_COLLATION, c.CHARACTER_SET_NAME, t.AUTO_INCREMENT, t.CREATE_OPTIONS, t.TABLE_COMMENT
+		FROM information_schema.TABLES t 
+		JOIN information_schema.COLLATIONS c ON t.TABLE_COLLATION = c.COLLATION_NAME 
+		WHERE t.TABLE_SCHEMA = '%s' AND t.TABLE_NAME = '%s'
+	`, sourceSchema, tableName)
+
+	var tableCollation, tableCharset string
+	var autoIncrement sql.NullInt64
+	var createOptions, tableComment string
+	err = sourceDB.QueryRow(tableCharsetCollationQuery).Scan(&tableCollation, &tableCharset, &autoIncrement, &createOptions, &tableComment)
+	if err != nil {
+		vlog = fmt.Sprintf("(%d) %s Error getting table properties for %s.%s: %v", logThreadSeq, event, sourceSchema, tableName, err)
+		global.Wlog.Error(vlog)
+		// 即使获取表属性失败，我们仍然可以继续使用原始的CREATE TABLE语句
+		return createTableStmt, nil
+	}
+
+	// 检查CREATE TABLE语句是否已经包含字符集和排序规则定义
+	hasCharset := strings.Contains(strings.ToUpper(createTableStmt), "CHARACTER SET") || strings.Contains(strings.ToUpper(createTableStmt), "CHARSET")
+	hasCollation := strings.Contains(strings.ToUpper(createTableStmt), "COLLATE")
+
+	// 如果没有包含字符集和排序规则，添加它们
+	if !hasCharset && !hasCollation && tableCharset != "" && tableCollation != "" {
+		// 在语句末尾添加字符集和排序规则定义
+		// 通常CREATE TABLE语句以ENGINE=xxx结尾，我们需要在这之后添加字符集和排序规则
+		if strings.Contains(createTableStmt, "ENGINE=") {
+			parts := strings.SplitN(createTableStmt, "ENGINE=", 2)
+			if len(parts) == 2 {
+				enginePart := parts[1]
+				endIndex := strings.Index(enginePart, ";")
+				if endIndex != -1 {
+					// 在分号前添加字符集和排序规则定义
+					createTableStmt = parts[0] + "ENGINE=" + enginePart[:endIndex] +
+						fmt.Sprintf(" CHARACTER SET %s COLLATE %s", tableCharset, tableCollation) +
+						enginePart[endIndex:]
+				} else {
+					// 如果没有分号，直接在末尾添加
+					createTableStmt = createTableStmt +
+						fmt.Sprintf(" CHARACTER SET %s COLLATE %s", tableCharset, tableCollation)
+				}
+			}
+		} else {
+			// 如果没有ENGINE=，直接在末尾添加（去掉最后的分号，然后再加上）
+			if strings.HasSuffix(createTableStmt, ";") {
+				createTableStmt = createTableStmt[:len(createTableStmt)-1] +
+					fmt.Sprintf(" CHARACTER SET %s COLLATE %s;", tableCharset, tableCollation)
+			} else {
+				createTableStmt = createTableStmt +
+					fmt.Sprintf(" CHARACTER SET %s COLLATE %s;", tableCharset, tableCollation)
+			}
+		}
+	}
+
+	// 确保AUTO_INCREMENT值被正确设置
+	if autoIncrement.Valid && autoIncrement.Int64 > 0 {
+		// 检查CREATE TABLE语句是否已经包含AUTO_INCREMENT定义
+		hasAutoIncrement := strings.Contains(strings.ToUpper(createTableStmt), "AUTO_INCREMENT")
+
+		if !hasAutoIncrement {
+			// 在语句末尾添加AUTO_INCREMENT定义
+			if strings.HasSuffix(createTableStmt, ";") {
+				createTableStmt = createTableStmt[:len(createTableStmt)-1] +
+					fmt.Sprintf(" AUTO_INCREMENT=%d;", autoIncrement.Int64)
+			} else {
+				createTableStmt = createTableStmt +
+					fmt.Sprintf(" AUTO_INCREMENT=%d;", autoIncrement.Int64)
+			}
+		}
+	}
+
+	// 确保表注释被正确设置
+	if tableComment != "" && !strings.Contains(strings.ToUpper(createTableStmt), "COMMENT") {
+		// 在语句末尾添加表注释
+		if strings.HasSuffix(createTableStmt, ";") {
+			createTableStmt = createTableStmt[:len(createTableStmt)-1] +
+				fmt.Sprintf(" COMMENT='%s';", strings.Replace(tableComment, "'", "\\'", -1))
+		} else {
+			createTableStmt = createTableStmt +
+				fmt.Sprintf(" COMMENT='%s';", strings.Replace(tableComment, "'", "\\'", -1))
+		}
+	}
+
+	vlog = fmt.Sprintf("(%d) %s Generated CREATE TABLE statement for %s.%s with charset %s and collation %s",
+		logThreadSeq, event, destSchema, tableName, tableCharset, tableCollation)
+	global.Wlog.Debug(vlog)
+
+	// 确保SQL语句末尾有分号
+	if !strings.HasSuffix(createTableStmt, ";") {
+		createTableStmt = createTableStmt + ";"
+	}
+
+	return createTableStmt, nil
 }

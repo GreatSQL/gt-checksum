@@ -181,3 +181,13 @@ func (or *OracleDataAbnormalFixStruct) FixAlterColumnSqlGenerate(modifyColumn []
 	}
 	return alterSql
 }
+
+// FixTableCharsetSqlGenerate 生成表级别字符集转换的SQL语句
+// 注意：Oracle不支持MySQL的CONVERT TO CHARACTER SET语法，这里只是为了满足接口要求
+func (or *OracleDataAbnormalFixStruct) FixTableCharsetSqlGenerate(charset, collation string, logThreadSeq int64) []string {
+	// Oracle不支持MySQL的CONVERT TO CHARACTER SET语法，返回空数组
+	vlog = fmt.Sprintf("(%d) Oracle does not support CONVERT TO CHARACTER SET syntax, skipping charset conversion for %s.%s",
+		logThreadSeq, or.Schema, or.Table)
+	global.Wlog.Warn(vlog)
+	return []string{}
+}

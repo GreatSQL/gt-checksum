@@ -40,26 +40,18 @@ func main() {
 
 	switch m.SecondaryL.RulesV.CheckObject {
 	case "struct":
+		// 当checkObject=struct时，执行所有结构相关的检查（包括表结构、索引、分区和外键）
 		if err = schemaTableInstance.Struct(tableList, 5, 6); err != nil {
 			fmt.Println(fmt.Sprintf("gt-checksum: Table structure verification failed. Check %s for details or set logLevel=debug", m.SecondaryL.LogV.LogFile))
 			os.Exit(1)
 		}
-	case "index":
-		if err = schemaTableInstance.Index(tableList, 7, 8); err != nil {
-			fmt.Println("gt-checksum: Index verification failed. Check log file or set logLevel=debug for details")
-			os.Exit(1)
-		}
-	case "partitions":
-		schemaTableInstance.Partitions(tableList, 9, 10)
+		// 注意：index、partitions和foreign的功能已经合并到struct中，不再需要单独的case
 	case "trigger":
 		schemaTableInstance.Trigger(tableList, 11, 12)
 	case "proc":
 		schemaTableInstance.Proc(tableList, 13, 14)
 	case "func":
 		schemaTableInstance.Func(tableList, 15, 16)
-	case "foreign":
-		// 部分ok，异构数据库需要部分内容进行手动验证，例如：触发器结构体中包含的sql语句不一致的情况
-		schemaTableInstance.Foreign(tableList, 17, 18)
 	case "data":
 		//校验表结构
 		tableListColCheck, _, err = schemaTableInstance.TableColumnNameCheck(tableList, 9, 10)

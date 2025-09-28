@@ -161,7 +161,13 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 
 		// 如果用户设置了值但与验证后的值不同，说明使用了默认值
 		if userSetCheckObject != "" && userSetCheckObject != rc.SecondaryL.RulesV.CheckObject {
-			fmt.Printf("Warning: Invalid checkObject value '%s', using default value 'data' instead\n", userSetCheckObject)
+			// 检查是否使用了已合并到struct的选项
+			if userSetCheckObject == "index" || userSetCheckObject == "partitions" || userSetCheckObject == "foreign" {
+				fmt.Printf("Note: checkObject value '%s' has been merged into 'struct'. Using 'struct' instead.\n", userSetCheckObject)
+				rc.SecondaryL.RulesV.CheckObject = "struct"
+			} else {
+				fmt.Printf("Warning: Invalid checkObject value '%s', using default value 'data' instead\n", userSetCheckObject)
+			}
 		}
 
 		// 删除对checkMode和ratio参数的解析，始终使用rows模式（全量校验）
