@@ -26,6 +26,7 @@ type DataAbnormalFixInterface interface {
 	FixAlterIndexSqlExec(e, f []string, si map[string][]string, sourceDrive string, logThreadSeq int64) []string
 	FixAlterColumnSqlDispos(alterType string, columnDataType []string, columnSeq int, lastColumn, curryColumn string, logThreadSeq int64) string
 	FixAlterColumnSqlGenerate(modifyColumn []string, logThreadSeq int64) []string
+	FixTableCharsetSqlGenerate(charset, collation string, logThreadSeq int64) []string
 }
 
 func (dafs DataAbnormalFixStruct) DataAbnormalFix() DataAbnormalFixInterface {

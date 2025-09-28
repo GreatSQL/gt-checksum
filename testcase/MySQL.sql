@@ -14,7 +14,7 @@ CREATE TABLE testInt(
     f5 INT(5) ZEROFILL,
     f6 INT UNSIGNED,
     f7 BIGINT
-) CHARACTER SET 'utf8';
+);
 ALTER TABLE testInt ADD INDEX idx_1(f1);
 INSERT INTO testInt(f1,f2,f3,f4,f5,f6,f7) VALUES(1,2,3,4,5,6,7);
 
@@ -24,7 +24,7 @@ CREATE TABLE testFlod(
   f2 FLOAT(5,2),
   f3 DOUBLE,
   f4 DOUBLE(5,3)
-) CHARACTER SET 'utf8';
+);
 ALTER TABLE testFlod ADD INDEX idx_1(f1);
 INSERT INTO testFlod(f1,f2,f3,f4) VALUES(123.45,123.45,123.45,12.456);
 
@@ -34,7 +34,7 @@ CREATE TABLE testBit(
     f1 BIT,
     f2 BIT(5),
     f3 BIT(64)
-) CHARACTER SET 'utf8';
+);
 ALTER TABLE testBit ADD INDEX idx_1(f1);
 INSERT INTO testBit VALUES(1,31,65);
 
@@ -50,7 +50,7 @@ CREATE TABLE testTime(
      f4 TIME,
      f5 DATETIME,
      f6 TIMESTAMP
-) CHARACTER SET 'utf8';
+);
 ALTER TABLE testTime ADD INDEX idx_1(f1);
 INSERT INTO testTime(f1,f2,f3,f4,f5,f6) VALUES('2022',2022,'2022-07-12','2 12:30:29','2022-07-12 14:53:00','2022-07-12 14:54:00');
 
@@ -66,7 +66,7 @@ CREATE TABLE testString(
    f7 LONGTEXT,
    f8 ENUM('a','b','c','d'),
    f9 SET('aa','bb','cc','dd')
-) CHARACTER SET 'utf8';
+);
 ALTER TABLE testString ADD INDEX idx_1(f1);
 INSERT INTO testString(f1,f2,f3,f4,f5,f6,f7,f8,f9) VALUES('1','abcde','ab123','1adf','hello gt-checksum','aa','hello gt-checksum','d','aa,bb');
 
@@ -80,7 +80,7 @@ CREATE TABLE testBin(
     f5 BLOB,
     f6 MEDIUMBLOB,
     f7 LONGBLOB
-) CHARACTER SET 'utf8';
+);
 ALTER TABLE testBin ADD INDEX idx_1(f1);
 INSERT INTO testBin(f1,f2,f3,f4,f5,f6,f7) VALUES('a','abc','ab','01010101','0x9023123123','hello gt-checksum','hello gt-checksum');
 
@@ -279,4 +279,4 @@ CREATE TABLE IndexT(
     PRIMARY KEY (`id`),
     KEY `idx_2` (`tenantry_id`,`code`),
     KEY `idx_3` (`code`,`tenantry_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8 COMMENT='商品信息表';
+) ENGINE=InnoDB DEFAULT COMMENT='商品信息表';

@@ -425,3 +425,17 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterColumnSqlGenerate(modifyColumn []s
 	}
 	return alterSql
 }
+
+// FixTableCharsetSqlGenerate 生成表级别字符集转换的SQL语句
+func (my *MysqlDataAbnormalFixStruct) FixTableCharsetSqlGenerate(charset, collation string, logThreadSeq int64) []string {
+	var (
+		alterSql     []string
+		targetSchema = my.Schema // 默认使用目标schema
+	)
+
+	// 生成表级别字符集转换的SQL语句
+	alterSql = append(alterSql, fmt.Sprintf("ALTER TABLE `%s`.`%s` CONVERT TO CHARACTER SET %s COLLATE %s;",
+		targetSchema, my.Table, charset, collation))
+
+	return alterSql
+}
