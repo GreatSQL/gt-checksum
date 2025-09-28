@@ -4,6 +4,10 @@
 - 删除ScheckMod参数，也即总是严格校验表结构，不只是校验列名
 - 删除ScheckOrder参数，也即总是按照源端数据表中列的正序进行校验
 - 删除ScheckFixRule参数，即总是针对目标端执行修复数据方案，如果需要反向修复，自行调整DSN配置即可
+- 修复生成fixSQL时无法正确使用索引问题
+- 修复生成fixSQL时无法正确处理映射规则问题
+- 修复生成fixSQL时指定 DEFAULT 'null' 导致语法错误问题
+- 参数checkObject的可选值进行调整合并，struct包含原来的struct|index|partitions|foreign等几个值
 
 ## 1.2.2(2025.09.22)
 - 合并`jointIndexChanRowCount`和`singleIndexChanRowCount`两个参数为新的参数`chunkSize`

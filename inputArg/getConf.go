@@ -156,7 +156,8 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 		// 获取用户设置的原始值
 		userSetCheckObject := rc.FirstL.Rules.Key("checkObject").String()
 		// 获取验证后的值（如果无效则使用默认值"data"）
-		rc.SecondaryL.RulesV.CheckObject = rc.FirstL.Rules.Key("checkObject").In("data", []string{"data", "struct", "index", "partitions", "foreign", "trigger", "func", "proc"})
+		// 注意：index, partitions, foreign 已被合并到 struct 中
+		rc.SecondaryL.RulesV.CheckObject = rc.FirstL.Rules.Key("checkObject").In("data", []string{"data", "struct", "trigger", "func", "proc"})
 
 		// 如果用户设置了值但与验证后的值不同，说明使用了默认值
 		if userSetCheckObject != "" && userSetCheckObject != rc.SecondaryL.RulesV.CheckObject {
