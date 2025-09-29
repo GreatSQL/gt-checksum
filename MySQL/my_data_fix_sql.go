@@ -79,19 +79,19 @@ func (my *MysqlDataAbnormalFixStruct) FixInsertSqlExec(db *sql.DB, sourceDrive s
 			if k < len(my.ColData) {
 				if dataType, ok := my.ColData[k]["dataType"]; ok {
 					if strings.ToUpper(dataType) == "DATETIME" {
-						tmpcolumnName = fmt.Sprintf("date_format('%s','%%Y-%%m-%%d %%H:%%i:%%s')", v)
+						tmpcolumnName = fmt.Sprintf("DATE_FORMAT('%s','%%Y-%%m-%%d %%H:%%i:%%s')", v)
 					} else if strings.Contains(strings.ToUpper(dataType), "TIMESTAMP") {
-						tmpcolumnName = fmt.Sprintf("date_format('%s','%%Y-%%m-%%d %%H:%%i:%%s')", v)
+						tmpcolumnName = fmt.Sprintf("DATE_FORMAT('%s','%%Y-%%m-%%d %%H:%%i:%%s')", v)
 					} else {
-						tmpcolumnName = fmt.Sprintf("'%v'", v)
+						tmpcolumnName = fmt.Sprintf("'%v'", strings.TrimSpace(v))
 					}
 				} else {
 					// 如果没有dataType字段，使用默认格式
-					tmpcolumnName = fmt.Sprintf("'%v'", v)
+					tmpcolumnName = fmt.Sprintf("'%v'", strings.TrimSpace(v))
 				}
 			} else {
 				// 如果索引越界，使用默认格式
-				tmpcolumnName = fmt.Sprintf("'%v'", v)
+				tmpcolumnName = fmt.Sprintf("'%v'", strings.TrimSpace(v))
 				vlog = fmt.Sprintf("(%d) Warning: Column index %d exceeds available column data for %s.%s",
 					logThreadSeq, k, targetSchema, my.Table)
 				global.Wlog.Warn(vlog)
@@ -510,6 +510,10 @@ func (my *MysqlDataAbnormalFixStruct) FixTableCharsetSqlGenerate(charset, collat
 	// 生成表级别字符集转换的SQL语句
 	alterSql = append(alterSql, fmt.Sprintf("ALTER TABLE `%s`.`%s` CONVERT TO CHARACTER SET %s COLLATE %s;",
 		targetSchema, my.Table, charset, collation))
+
+	// 添加日志，方便调试
+	vlog := fmt.Sprintf("(%d) Generated table charset conversion SQL: %s", logThreadSeq, alterSql[0])
+	global.Wlog.Debug(vlog)
 
 	return alterSql
 }

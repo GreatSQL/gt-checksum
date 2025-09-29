@@ -400,10 +400,10 @@ func (my *QueryTable) NoIndexGeneratingQueryCriteria(db *sql.DB, beginSeq uint64
 		var tmpcolumnName string
 		tmpcolumnName = fmt.Sprintf("`%s`", i["columnName"])
 		if strings.ToUpper(i["dataType"]) == "DATETIME" {
-			tmpcolumnName = fmt.Sprintf("date_format(%s,'%%Y-%%m-%%d %%H:%%i:%%s')", tmpcolumnName)
+			tmpcolumnName = fmt.Sprintf("DATE_FORMAT(%s,'%%Y-%%m-%%d %%H:%%i:%%s')", tmpcolumnName)
 		}
 		if strings.Contains(strings.ToUpper(i["dataType"]), "TIMESTAMP") {
-			tmpcolumnName = fmt.Sprintf("date_format(%s,'%%Y-%%m-%%d %%H:%%i:%%s')", tmpcolumnName)
+			tmpcolumnName = fmt.Sprintf("DATE_FORMAT(%s,'%%Y-%%m-%%d %%H:%%i:%%s')", tmpcolumnName)
 		}
 		if strings.HasPrefix(strings.ToUpper(i["dataType"]), "DOUBLE(") {
 			dianAfter := strings.ReplaceAll(strings.Split(i["dataType"], ",")[1], ")", "")
