@@ -218,7 +218,8 @@ func (dbpos *DBdataDispos) DataChanDispos() chan map[string]interface{} {
 				val := values[i]
 				b, ok := val.([]byte)
 				if ok {
-					v = string(b)
+					// 对于字符串类型，去除尾部空格
+					v = strings.TrimRight(string(b), " ")
 				} else {
 					v = val
 				}
@@ -265,7 +266,8 @@ func (dbpos *DBdataDispos) DataRowsAndColumnSliceDispos(tableData []map[string]i
 			val := values[i]
 			b, ok := val.([]byte)
 			if ok {
-				v = string(b)
+				// 对于字符串类型，去除尾部空格
+				v = strings.TrimRight(string(b), " ")
 			} else {
 				v = val
 			}
@@ -311,7 +313,8 @@ func (dbpos *DBdataDispos) DataRowsDispos(tableData []string) ([]string, error) 
 			val := values[i]
 			b, ok := val.([]byte)
 			if ok {
-				v = string(b)
+				// 对于字符串类型，去除尾部空格
+				v = strings.TrimRight(string(b), " ")
 			} else {
 				v = val
 			}

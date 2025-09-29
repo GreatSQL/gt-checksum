@@ -290,9 +290,11 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 			v2 := []string{}
 			for k, v22 := range v1 {
 				v1k = k
-				if stcls.caseSensitiveObjectName == "no" {
-					v1k = strings.ToUpper(k)
-				}
+				// yejr, 存疑
+				// 即便设置caseSensitiveObjectName=no，也不要强行把数据对象名统一修改为大写
+				/*if stcls.caseSensitiveObjectName == "no" {
+				v1k = strings.ToUpper(k)
+				}*/
 				v2 = v22
 			}
 			sourceColumnMap[v1k] = v2
@@ -304,9 +306,11 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 			v2 := []string{}
 			for k, v22 := range v1 {
 				v1k = k
-				if stcls.caseSensitiveObjectName == "no" {
-					v1k = strings.ToUpper(k)
-				}
+				// yejr, 存疑
+				// 即便设置caseSensitiveObjectName=no，也不要强行把数据对象名统一修改为大写
+				/*if stcls.caseSensitiveObjectName == "no" {
+				v1k = strings.ToUpper(k)
+				}*/
 				v2 = v22
 			}
 			destColumnMap[v1k] = v2
@@ -1494,17 +1498,21 @@ func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 in
 				sourceParts := strings.Split(parts[0], ".")
 				if len(sourceParts) >= 1 {
 					schema := sourceParts[0]
-					if stcls.caseSensitiveObjectName == "no" {
-						schema = strings.ToUpper(schema)
-					}
+					// yejr, 存疑
+					// 即便设置caseSensitiveObjectName=no，也不要强行把数据对象名统一修改为大写
+					/*if stcls.caseSensitiveObjectName == "no" {
+					schema = strings.ToUpper(schema)
+					}*/
 					schemaMap[schema] = 1
 
 					// 如果指定了具体的触发器名称
 					if len(sourceParts) >= 2 && sourceParts[1] != "*" {
 						triggerName := sourceParts[1]
-						if stcls.caseSensitiveObjectName == "no" {
-							triggerName = strings.ToUpper(triggerName)
-						}
+						// yejr, 存疑
+						// 即便设置caseSensitiveObjectName=no，也不要强行把数据对象名统一修改为大写
+						/*if stcls.caseSensitiveObjectName == "no" {
+						triggerName = strings.ToUpper(triggerName)
+						}*/
 						triggerMap[schema+"."+triggerName] = triggerName
 					}
 				}
@@ -1514,17 +1522,21 @@ func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 in
 			parts := strings.Split(i, ".")
 			if len(parts) >= 1 {
 				schema := parts[0]
-				if stcls.caseSensitiveObjectName == "no" {
-					schema = strings.ToUpper(schema)
-				}
+				// yejr, 存疑
+				// 即便设置caseSensitiveObjectName=no，也不要强行把数据对象名统一修改为大写
+				/*if stcls.caseSensitiveObjectName == "no" {
+				schema = strings.ToUpper(schema)
+				}*/
 				schemaMap[schema] = 1
 
 				// 如果指定了具体的触发器名称
 				if len(parts) >= 2 && parts[1] != "*" {
 					triggerName := parts[1]
-					if stcls.caseSensitiveObjectName == "no" {
-						triggerName = strings.ToUpper(triggerName)
-					}
+					// yejr, 存疑
+					// 即便设置caseSensitiveObjectName=no，也不要强行把数据对象名统一修改为大写
+					/*if stcls.caseSensitiveObjectName == "no" {
+					triggerName = strings.ToUpper(triggerName)
+					}*/
 					triggerMap[schema+"."+triggerName] = triggerName
 				}
 			}
@@ -1534,9 +1546,11 @@ func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 in
 	// 如果schemaMap为空，但stcls.schema不为空，则使用stcls.schema
 	if len(schemaMap) == 0 && stcls.schema != "" {
 		schema := stcls.schema
-		if stcls.caseSensitiveObjectName == "no" {
-			schema = strings.ToUpper(schema)
-		}
+		// yejr, 存疑
+		// 即便设置caseSensitiveObjectName=no，也不要强行把数据对象名统一修改为大写
+		/*if stcls.caseSensitiveObjectName == "no" {
+		schema = strings.ToUpper(schema)
+		}*/
 		schemaMap[schema] = 1
 		vlog = fmt.Sprintf("(%d) No schema found in dtabS, using default schema: %s", logThreadSeq, schema)
 		global.Wlog.Debug(vlog)
@@ -1564,9 +1578,11 @@ func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 in
 			filteredSourceTrigger := make(map[string]string)
 			for k, v := range sourceTrigger {
 				triggerKey := schema + "." + strings.ReplaceAll(strings.Split(k, ".")[1], "\"", "")
-				if stcls.caseSensitiveObjectName == "no" {
-					triggerKey = strings.ToUpper(triggerKey)
-				}
+				// yejr, 存疑
+				// 即便设置caseSensitiveObjectName=no，也不要强行把数据对象名统一修改为大写
+				/*if stcls.caseSensitiveObjectName == "no" {
+				triggerKey = strings.ToUpper(triggerKey)
+				}*/
 
 				if _, exists := triggerMap[triggerKey]; exists {
 					filteredSourceTrigger[k] = v
@@ -1594,9 +1610,11 @@ func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 in
 			filteredDestTrigger := make(map[string]string)
 			for k, v := range destTrigger {
 				triggerKey := schema + "." + strings.ReplaceAll(strings.Split(k, ".")[1], "\"", "")
-				if stcls.caseSensitiveObjectName == "no" {
-					triggerKey = strings.ToUpper(triggerKey)
-				}
+				// yejr, 存疑
+				// 即便设置caseSensitiveObjectName=no，也不要强行把数据对象名统一修改为大写
+				/*if stcls.caseSensitiveObjectName == "no" {
+				triggerKey = strings.ToUpper(triggerKey)
+				}*/
 
 				if _, exists := triggerMap[triggerKey]; exists {
 					filteredDestTrigger[k] = v
@@ -1674,17 +1692,21 @@ func (stcls *schemaTable) Proc(dtabS []string, logThreadSeq, logThreadSeq2 int64
 				sourceParts := strings.Split(parts[0], ".")
 				if len(sourceParts) >= 1 {
 					schema := sourceParts[0]
-					if stcls.caseSensitiveObjectName == "no" {
-						schema = strings.ToLower(schema)
-					}
+					// yejr, 存疑
+					// 即便设置caseSensitiveObjectName=no，也不要强行把数据对象名统一修改为大写
+					/*if stcls.caseSensitiveObjectName == "no" {
+					schema = strings.ToLower(schema)
+					}*/
 					schemaMap[schema] = 1
 
 					// 如果指定了具体的存储过程名称
 					if len(sourceParts) >= 2 && sourceParts[1] != "*" {
 						procName := sourceParts[1]
-						if stcls.caseSensitiveObjectName == "no" {
-							procName = strings.ToLower(procName)
-						}
+						// yejr, 存疑
+						// 即便设置caseSensitiveObjectName=no，也不要强行把数据对象名统一修改为大写
+						/*if stcls.caseSensitiveObjectName == "no" {
+						procName = strings.ToLower(procName)
+						}*/
 						procMap[schema+"."+procName] = procName
 					}
 				}
@@ -1694,17 +1716,21 @@ func (stcls *schemaTable) Proc(dtabS []string, logThreadSeq, logThreadSeq2 int64
 			parts := strings.Split(i, ".")
 			if len(parts) >= 1 {
 				schema := parts[0]
-				if stcls.caseSensitiveObjectName == "no" {
-					schema = strings.ToLower(schema)
-				}
+				// yejr, 存疑
+				// 即便设置caseSensitiveObjectName=no，也不要强行把数据对象名统一修改为大写
+				/*if stcls.caseSensitiveObjectName == "no" {
+				schema = strings.ToLower(schema)
+				}*/
 				schemaMap[schema] = 1
 
 				// 如果指定了具体的存储过程名称
 				if len(parts) >= 2 && parts[1] != "*" {
 					procName := parts[1]
-					if stcls.caseSensitiveObjectName == "no" {
-						procName = strings.ToLower(procName)
-					}
+					// yejr, 存疑
+					// 即便设置caseSensitiveObjectName=no，也不要强行把数据对象名统一修改为大写
+					/*if stcls.caseSensitiveObjectName == "no" {
+					procName = strings.ToLower(procName)
+					}*/
 					procMap[schema+"."+procName] = procName
 				}
 			}
@@ -1714,9 +1740,11 @@ func (stcls *schemaTable) Proc(dtabS []string, logThreadSeq, logThreadSeq2 int64
 	// 如果schemaMap为空，但stcls.schema不为空，则使用stcls.schema
 	if len(schemaMap) == 0 && stcls.schema != "" {
 		schema := stcls.schema
-		if stcls.caseSensitiveObjectName == "no" {
-			schema = strings.ToLower(schema)
-		}
+		// yejr, 存疑
+		// 即便设置caseSensitiveObjectName=no，也不要强行把数据对象名统一修改为大写
+		/*if stcls.caseSensitiveObjectName == "no" {
+		schema = strings.ToLower(schema)
+		}*/
 		schemaMap[schema] = 1
 		vlog = fmt.Sprintf("(%d) No schema found in dtabS, using default schema: %s", logThreadSeq, schema)
 		global.Wlog.Debug(vlog)
@@ -1748,9 +1776,11 @@ func (stcls *schemaTable) Proc(dtabS []string, logThreadSeq, logThreadSeq2 int64
 				}
 
 				procKey := schema + "." + k
-				if stcls.caseSensitiveObjectName == "no" {
-					procKey = strings.ToLower(procKey)
-				}
+				// yejr, 存疑
+				// 即便设置caseSensitiveObjectName=no，也不要强行把数据对象名统一修改为大写
+				/*if stcls.caseSensitiveObjectName == "no" {
+				procKey = strings.ToLower(procKey)
+				}*/
 
 				if _, exists := procMap[procKey]; exists {
 					filteredSourceProc[k] = v
@@ -1784,9 +1814,11 @@ func (stcls *schemaTable) Proc(dtabS []string, logThreadSeq, logThreadSeq2 int64
 				}
 
 				procKey := schema + "." + k
-				if stcls.caseSensitiveObjectName == "no" {
-					procKey = strings.ToLower(procKey)
-				}
+				// yejr, 存疑
+				// 即便设置caseSensitiveObjectName=no，也不要强行把数据对象名统一修改为大写
+				/*if stcls.caseSensitiveObjectName == "no" {
+				procKey = strings.ToLower(procKey)
+				}*/
 
 				if _, exists := procMap[procKey]; exists {
 					filteredDestProc[k] = v
@@ -1885,17 +1917,21 @@ func (stcls *schemaTable) Func(dtabS []string, logThreadSeq, logThreadSeq2 int64
 				sourceParts := strings.Split(parts[0], ".")
 				if len(sourceParts) >= 1 {
 					schema := sourceParts[0]
-					if stcls.caseSensitiveObjectName == "no" {
-						schema = strings.ToLower(schema)
-					}
+					// yejr, 存疑
+					// 即便设置caseSensitiveObjectName=no，也不要强行把数据对象名统一修改为大写
+					/*if stcls.caseSensitiveObjectName == "no" {
+					schema = strings.ToLower(schema)
+					}*/
 					schemaMap[schema] = 1
 
 					// 如果指定了具体的函数名称
 					if len(sourceParts) >= 2 && sourceParts[1] != "*" {
 						funcName := sourceParts[1]
-						if stcls.caseSensitiveObjectName == "no" {
-							funcName = strings.ToLower(funcName)
-						}
+						// yejr, 存疑
+						// 即便设置caseSensitiveObjectName=no，也不要强行把数据对象名统一修改为大写
+						/*if stcls.caseSensitiveObjectName == "no" {
+						funcName = strings.ToLower(funcName)
+						}*/
 						funcMap[schema+"."+funcName] = funcName
 					}
 				}
@@ -1905,17 +1941,21 @@ func (stcls *schemaTable) Func(dtabS []string, logThreadSeq, logThreadSeq2 int64
 			parts := strings.Split(i, ".")
 			if len(parts) >= 1 {
 				schema := parts[0]
-				if stcls.caseSensitiveObjectName == "no" {
-					schema = strings.ToLower(schema)
-				}
+				// yejr, 存疑
+				// 即便设置caseSensitiveObjectName=no，也不要强行把数据对象名统一修改为大写
+				/*if stcls.caseSensitiveObjectName == "no" {
+				schema = strings.ToLower(schema)
+				}*/
 				schemaMap[schema] = 1
 
 				// 如果指定了具体的函数名称
 				if len(parts) >= 2 && parts[1] != "*" {
 					funcName := parts[1]
-					if stcls.caseSensitiveObjectName == "no" {
-						funcName = strings.ToLower(funcName)
-					}
+					// yejr, 存疑
+					// 即便设置caseSensitiveObjectName=no，也不要强行把数据对象名统一修改为大写
+					/*if stcls.caseSensitiveObjectName == "no" {
+					funcName = strings.ToLower(funcName)
+					}*/
 					funcMap[schema+"."+funcName] = funcName
 				}
 			}
@@ -1925,9 +1965,11 @@ func (stcls *schemaTable) Func(dtabS []string, logThreadSeq, logThreadSeq2 int64
 	// 如果schemaMap为空，但stcls.schema不为空，则使用stcls.schema
 	if len(schemaMap) == 0 && stcls.schema != "" {
 		schema := stcls.schema
-		if stcls.caseSensitiveObjectName == "no" {
-			schema = strings.ToLower(schema)
-		}
+		// yejr, 存疑
+		// 即便设置caseSensitiveObjectName=no，也不要强行把数据对象名统一修改为大写
+		/*if stcls.caseSensitiveObjectName == "no" {
+		schema = strings.ToLower(schema)
+		}*/
 		schemaMap[schema] = 1
 		vlog = fmt.Sprintf("(%d) No schema found in dtabS, using default schema: %s", logThreadSeq, schema)
 		global.Wlog.Debug(vlog)
@@ -1954,9 +1996,11 @@ func (stcls *schemaTable) Func(dtabS []string, logThreadSeq, logThreadSeq2 int64
 			filteredSourceFunc := make(map[string]string)
 			for k, v := range sourceFunc {
 				funcKey := schema + "." + k
-				if stcls.caseSensitiveObjectName == "no" {
-					funcKey = strings.ToLower(funcKey)
-				}
+				// yejr, 存疑
+				// 即便设置caseSensitiveObjectName=no，也不要强行把数据对象名统一修改为大写
+				/*if stcls.caseSensitiveObjectName == "no" {
+				funcKey = strings.ToLower(funcKey)
+				}*/
 
 				if _, exists := funcMap[funcKey]; exists {
 					filteredSourceFunc[k] = v
@@ -1984,9 +2028,11 @@ func (stcls *schemaTable) Func(dtabS []string, logThreadSeq, logThreadSeq2 int64
 			filteredDestFunc := make(map[string]string)
 			for k, v := range destFunc {
 				funcKey := schema + "." + k
-				if stcls.caseSensitiveObjectName == "no" {
-					funcKey = strings.ToLower(funcKey)
-				}
+				// yejr, 存疑
+				// 即便设置caseSensitiveObjectName=no，也不要强行把数据对象名统一修改为大写
+				/*if stcls.caseSensitiveObjectName == "no" {
+				funcKey = strings.ToLower(funcKey)
+				}*/
 
 				if _, exists := funcMap[funcKey]; exists {
 					filteredDestFunc[k] = v
@@ -2261,10 +2307,12 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 			seqStr := strings.Split(parts[1], "/*type*/")[0]
 			seq, _ := strconv.Atoi(seqStr)
 
+			// yejr, 存疑
+			// 即便设置caseSensitiveObjectName=no，也不要强行把数据对象名统一修改为大写
 			// 如果设置了大小写不敏感，则将列名转换为大写
-			if stcls.caseSensitiveObjectName == "no" {
-				colName = strings.ToUpper(colName)
-			}
+			/*if stcls.caseSensitiveObjectName == "no" {
+			colName = strings.ToUpper(colName)
+			}*/
 
 			return colName, seq
 		}
