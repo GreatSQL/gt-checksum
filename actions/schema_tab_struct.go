@@ -12,8 +12,19 @@ import (
 	"strings"
 )
 
-// 全局变量，用于存储表映射关系
-var TableMappingRelations []string
+// 全局变量
+var (
+	// 用于存储表映射关系
+	TableMappingRelations []string
+	// 用于存储索引检查结果的全局变量
+	indexDiffsMap map[string]bool
+	// 用于存储分区检查结果的全局变量
+	partitionDiffsMap map[string]bool
+	// 用于存储外键检查结果的全局变量
+	foreignKeyDiffsMap map[string]bool
+)
+
+// measuredDataPods 在 terminal_result_output.go 中已定义
 
 type schemaTable struct {
 	schema                  string
@@ -2173,21 +2184,23 @@ func (stcls *schemaTable) Foreign(dtabS []string, logThreadSeq, logThreadSeq2 in
 		global.Wlog.Debug(vlog)
 		vlog = fmt.Sprintf("(%d) The source target segment table %s.%s Foreign data verification is completed", logThreadSeq, stcls.schema, stcls.table)
 		global.Wlog.Debug(vlog)
-		// 只有当不是从 Struct 函数调用时，才添加到 measuredDataPods
-		if len(isCalledFromStruct) == 0 || !isCalledFromStruct[0] {
-			measuredDataPods = append(measuredDataPods, pods)
-		} else {
-			// 如果是从Struct函数调用的，并且发现了不一致，更新对应的struct记录
-			if pods.DIFFS == "yes" {
-				// 查找对应的struct记录
-				for i, p := range measuredDataPods {
-					if p.CheckObject == "struct" && p.Schema == pods.Schema && p.Table == pods.Table {
-						// 更新DIFFS状态
-						measuredDataPods[i].DIFFS = "yes"
-						break
-					}
-				}
+		// 如果是从 Struct 函数调用的，则将结果存储在全局变量中
+		if len(isCalledFromStruct) > 0 && isCalledFromStruct[0] {
+			// 使用完整的schema.table作为键
+			tableKey := fmt.Sprintf("%s.%s", pods.Schema, pods.Table)
+
+			// 将结果存储在全局变量中，以便 Struct 函数可以使用
+			if foreignKeyDiffsMap == nil {
+				foreignKeyDiffsMap = make(map[string]bool)
 			}
+			foreignKeyDiffsMap[tableKey] = pods.DIFFS == "yes"
+
+			vlog = fmt.Sprintf("(%d) Storing foreign key check result for table %s: %v",
+				logThreadSeq, tableKey, foreignKeyDiffsMap[tableKey])
+			global.Wlog.Debug(vlog)
+		} else {
+			// 不是从 Struct 函数调用时，添加到 measuredDataPods
+			measuredDataPods = append(measuredDataPods, pods)
 		}
 	}
 	vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment table Foreign data. normal table message is {%s} num [%d] abnormal table message is {%s} num [%d]", logThreadSeq, c, len(c), d, len(d))
@@ -2272,21 +2285,23 @@ func (stcls *schemaTable) Partitions(dtabS []string, logThreadSeq, logThreadSeq2
 		vlog = fmt.Sprintf("(%d) The source target segment table %s.%s partitions data verification is completed", logThreadSeq, stcls.schema, stcls.table)
 		global.Wlog.Debug(vlog)
 
-		// 只有当不是从 Struct 函数调用时，才添加到 measuredDataPods
-		if len(isCalledFromStruct) == 0 || !isCalledFromStruct[0] {
-			measuredDataPods = append(measuredDataPods, pods)
-		} else {
-			// 如果是从Struct函数调用的，并且发现了不一致，更新对应的struct记录
-			if pods.DIFFS == "yes" {
-				// 查找对应的struct记录
-				for i, p := range measuredDataPods {
-					if p.CheckObject == "struct" && p.Schema == pods.Schema && p.Table == pods.Table {
-						// 更新DIFFS状态
-						measuredDataPods[i].DIFFS = "yes"
-						break
-					}
-				}
+		// 如果是从 Struct 函数调用的，则将结果存储在全局变量中
+		if len(isCalledFromStruct) > 0 && isCalledFromStruct[0] {
+			// 使用完整的schema.table作为键
+			tableKey := fmt.Sprintf("%s.%s", pods.Schema, pods.Table)
+
+			// 将结果存储在全局变量中，以便 Struct 函数可以使用
+			if partitionDiffsMap == nil {
+				partitionDiffsMap = make(map[string]bool)
 			}
+			partitionDiffsMap[tableKey] = pods.DIFFS == "yes"
+
+			vlog = fmt.Sprintf("(%d) Storing partition check result for table %s: %v",
+				logThreadSeq, tableKey, partitionDiffsMap[tableKey])
+			global.Wlog.Debug(vlog)
+		} else {
+			// 不是从 Struct 函数调用时，添加到 measuredDataPods
+			measuredDataPods = append(measuredDataPods, pods)
 		}
 	}
 	vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment table partitions data. normal table message is {%s} num [%d] abnormal table message is {%s} num [%d]", logThreadSeq, c, len(c), d, len(d))
@@ -2604,10 +2619,29 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 				return err
 			}
 			sqlS = []string{} // 清空 sqlS 以便下一个表使用
+
+			// 添加调试日志，记录索引不一致的表
+			vlog = fmt.Sprintf("(%d) %s Table %s.%s has index differences, setting DIFFS to yes",
+				logThreadSeq, event, stcls.schema, stcls.table)
+			global.Wlog.Debug(vlog)
 		}
 
-		// 只有当不是从 Struct 函数调用时，才添加到 measuredDataPods
-		if len(isCalledFromStruct) == 0 || !isCalledFromStruct[0] {
+		// 如果是从 Struct 函数调用的，则将结果存储在临时变量中，以便 Struct 函数可以使用
+		if len(isCalledFromStruct) > 0 && isCalledFromStruct[0] {
+			// 使用完整的schema.table作为键
+			tableKey := fmt.Sprintf("%s.%s", stcls.schema, stcls.table)
+
+			// 将结果存储在全局变量中，以便 Struct 函数可以使用
+			if indexDiffsMap == nil {
+				indexDiffsMap = make(map[string]bool)
+			}
+			indexDiffsMap[tableKey] = pods.DIFFS == "yes"
+
+			vlog = fmt.Sprintf("(%d) %s Storing index check result for table %s.%s: %v",
+				logThreadSeq, event, stcls.schema, stcls.table, indexDiffsMap[tableKey])
+			global.Wlog.Debug(vlog)
+		} else {
+			// 不是从 Struct 函数调用时，添加到 measuredDataPods
 			measuredDataPods = append(measuredDataPods, pods)
 		}
 		vlog = fmt.Sprintf("(%d) %s The source target segment table %s.%s index column data verification is completed", logThreadSeq, event, stcls.schema, stcls.table)
@@ -2795,38 +2829,30 @@ func (stcls *schemaTable) Struct(dtabS []string, logThreadSeq, logThreadSeq2 int
 		}
 	}
 
-	// 创建一个自定义的索引检查函数，用于捕获索引不一致的表
-	indexChecker := func(dtabS []string, logThreadSeq, logThreadSeq2 int64) error {
-		// 保存原始的measuredDataPods长度
-		originalLength := len(measuredDataPods)
+	// 初始化索引差异映射
+	indexDiffsMap = make(map[string]bool)
 
-		// 调用原始的Index函数
-		if err := stcls.Index(dtabS, logThreadSeq, logThreadSeq2, true); err != nil {
-			return err
-		}
+	// 调用Index函数进行索引校验
+	fmt.Println("gt-checksum: Checking table indexes")
+	vlog = fmt.Sprintf("(%d) %s checking table indexes of %v(num[%d]) from srcDSN and dstDSN", logThreadSeq, event, dtabS, len(dtabS))
+	global.Wlog.Info(vlog)
 
-		// 检查新添加的measuredDataPods，查找不一致的表
-		for i := originalLength; i < len(measuredDataPods); i++ {
-			pod := measuredDataPods[i]
-			if pod.DIFFS == "yes" {
-				// 使用完整的schema.table作为键
-				tableKey := fmt.Sprintf("%s.%s", pod.Schema, pod.Table)
-
-				// 只更新存在于映射中的表
-				if _, exists := collector.diffs[tableKey]; exists {
-					collector.diffs[tableKey] = true
-					vlog = fmt.Sprintf("(%d) Index check found differences for table %s.%s",
-						logThreadSeq, pod.Schema, pod.Table)
-					global.Wlog.Debug(vlog)
-				}
-			}
-		}
-
-		return nil
+	// 调用原始的Index函数
+	if err := stcls.Index(dtabS, logThreadSeq, logThreadSeq2, true); err != nil {
+		return err
 	}
 
-	if err := indexChecker(dtabS, logThreadSeq, logThreadSeq2); err != nil {
-		return err
+	// 使用indexDiffsMap更新collector.diffs
+	for tableKey, hasDiff := range indexDiffsMap {
+		if hasDiff {
+			// 只更新存在于映射中的表
+			if _, exists := collector.diffs[tableKey]; exists {
+				collector.diffs[tableKey] = true
+				vlog = fmt.Sprintf("(%d) Index check found differences for table %s",
+					logThreadSeq, tableKey)
+				global.Wlog.Debug(vlog)
+			}
+		}
 	}
 
 	// 3. 执行分区校验 (原来的 Partitions 函数)
@@ -2834,66 +2860,53 @@ func (stcls *schemaTable) Struct(dtabS []string, logThreadSeq, logThreadSeq2 int
 	vlog = fmt.Sprintf("(%d) %s checking table partitions of %v(num[%d]) from srcDSN and dstDSN", logThreadSeq, event, dtabS, len(dtabS))
 	global.Wlog.Info(vlog)
 
-	// 创建一个自定义的分区检查函数，用于捕获分区不一致的表
-	partitionsChecker := func(dtabS []string, logThreadSeq, logThreadSeq2 int64) {
-		// 保存原始的measuredDataPods长度
-		originalLength := len(measuredDataPods)
+	// 3. 执行分区校验 (原来的 Partitions 函数)
+	fmt.Println("gt-checksum: Checking table partitions")
+	vlog = fmt.Sprintf("(%d) %s checking table partitions of %v(num[%d]) from srcDSN and dstDSN", logThreadSeq, event, dtabS, len(dtabS))
+	global.Wlog.Info(vlog)
 
-		// 调用原始的Partitions函数
-		stcls.Partitions(dtabS, logThreadSeq, logThreadSeq2, true)
+	// 初始化分区差异映射
+	partitionDiffsMap := make(map[string]bool)
 
-		// 检查新添加的measuredDataPods，查找不一致的表
-		for i := originalLength; i < len(measuredDataPods); i++ {
-			pod := measuredDataPods[i]
-			if pod.DIFFS == "yes" {
-				// 使用完整的schema.table作为键
-				tableKey := fmt.Sprintf("%s.%s", pod.Schema, pod.Table)
+	// 修改Partitions函数，使其能够存储检查结果
+	stcls.Partitions(dtabS, logThreadSeq, logThreadSeq2, true)
 
-				// 只更新存在于映射中的表
-				if _, exists := collector.diffs[tableKey]; exists {
-					collector.diffs[tableKey] = true
-					vlog = fmt.Sprintf("(%d) Partitions check found differences for table %s.%s",
-						logThreadSeq, pod.Schema, pod.Table)
-					global.Wlog.Debug(vlog)
-				}
+	// 使用partitionDiffsMap更新collector.diffs
+	for tableKey, hasDiff := range partitionDiffsMap {
+		if hasDiff {
+			// 只更新存在于映射中的表
+			if _, exists := collector.diffs[tableKey]; exists {
+				collector.diffs[tableKey] = true
+				vlog = fmt.Sprintf("(%d) Partitions check found differences for table %s",
+					logThreadSeq, tableKey)
+				global.Wlog.Debug(vlog)
 			}
 		}
 	}
-
-	partitionsChecker(dtabS, logThreadSeq, logThreadSeq2)
 
 	// 4. 执行外键校验 (原来的 Foreign 函数)
 	fmt.Println("gt-checksum: Checking table foreign keys")
 	vlog = fmt.Sprintf("(%d) %s checking table foreign keys of %v(num[%d]) from srcDSN and dstDSN", logThreadSeq, event, dtabS, len(dtabS))
 	global.Wlog.Info(vlog)
 
-	// 创建一个自定义的外键检查函数，用于捕获外键不一致的表
-	foreignChecker := func(dtabS []string, logThreadSeq, logThreadSeq2 int64) {
-		// 保存原始的measuredDataPods长度
-		originalLength := len(measuredDataPods)
+	// 初始化外键差异映射
+	foreignKeyDiffsMap := make(map[string]bool)
 
-		// 调用原始的Foreign函数
-		stcls.Foreign(dtabS, logThreadSeq, logThreadSeq2, true)
+	// 修改Foreign函数，使其能够存储检查结果
+	stcls.Foreign(dtabS, logThreadSeq, logThreadSeq2, true)
 
-		// 检查新添加的measuredDataPods，查找不一致的表
-		for i := originalLength; i < len(measuredDataPods); i++ {
-			pod := measuredDataPods[i]
-			if pod.DIFFS == "yes" {
-				// 使用完整的schema.table作为键
-				tableKey := fmt.Sprintf("%s.%s", pod.Schema, pod.Table)
-
-				// 只更新存在于映射中的表
-				if _, exists := collector.diffs[tableKey]; exists {
-					collector.diffs[tableKey] = true
-					vlog = fmt.Sprintf("(%d) Foreign key check found differences for table %s.%s",
-						logThreadSeq, pod.Schema, pod.Table)
-					global.Wlog.Debug(vlog)
-				}
+	// 使用foreignKeyDiffsMap更新collector.diffs
+	for tableKey, hasDiff := range foreignKeyDiffsMap {
+		if hasDiff {
+			// 只更新存在于映射中的表
+			if _, exists := collector.diffs[tableKey]; exists {
+				collector.diffs[tableKey] = true
+				vlog = fmt.Sprintf("(%d) Foreign key check found differences for table %s",
+					logThreadSeq, tableKey)
+				global.Wlog.Debug(vlog)
 			}
 		}
 	}
-
-	foreignChecker(dtabS, logThreadSeq, logThreadSeq2)
 
 	// 添加调试日志，输出所有表的结构差异状态
 	vlog = fmt.Sprintf("(%d) Table structure differences map: %v", logThreadSeq, collector.diffs)
