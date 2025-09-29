@@ -102,7 +102,7 @@ func (my *MysqlDataAbnormalFixStruct) FixInsertSqlExec(db *sql.DB, sourceDrive s
 
 	if len(valuesNameSeq) > 0 {
 		queryColumn := strings.Join(valuesNameSeq, ",")
-		insertSql = fmt.Sprintf("INSERT INTO `%s`.`%s` VALUES(%s) ;", targetSchema, my.Table, queryColumn)
+		insertSql = fmt.Sprintf("INSERT INTO `%s`.`%s` VALUES(%s);", targetSchema, my.Table, queryColumn)
 	}
 
 	return insertSql, nil
@@ -179,6 +179,30 @@ func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive s
 		if hasUniqueKey && len(uniqueKeyColumns) > 0 {
 			my.IndexType = "uni"
 			my.IndexColumn = uniqueKeyColumns
+		} else {
+			// 如果既没有主键也没有唯一键，则设置为mul类型，并使用所有列作为条件
+			my.IndexType = "mul"
+
+			// 获取表的所有列名
+			allColumnsQuery := fmt.Sprintf("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = '%s' AND TABLE_NAME = '%s' ORDER BY ORDINAL_POSITION", targetSchema, my.Table)
+			allColumnsRows, allColumnsErr := db.Query(allColumnsQuery)
+			if allColumnsErr == nil {
+				defer allColumnsRows.Close()
+
+				allColumns := []string{}
+				for allColumnsRows.Next() {
+					var columnName string
+					if err := allColumnsRows.Scan(&columnName); err == nil {
+						allColumns = append(allColumns, columnName)
+					}
+				}
+
+				if len(allColumns) > 0 {
+					my.IndexColumn = allColumns
+					vlog = fmt.Sprintf("(%d) No primary or unique key found for table %s.%s, using all columns as conditions: %v", logThreadSeq, targetSchema, my.Table, allColumns)
+					global.Wlog.Debug(vlog)
+				}
+			}
 		}
 	}
 
@@ -241,11 +265,23 @@ func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive s
 
 	if my.IndexType == "mul" {
 		var FB, AS []string
-		for _, i := range colData {
-			if colName, ok := i["columnName"]; ok {
-				FB = append(FB, colName)
+
+		// 优先使用IndexColumn中的列（如果有的话）
+		if len(my.IndexColumn) > 0 {
+			FB = my.IndexColumn
+			vlog = fmt.Sprintf("(%d) Using columns from IndexColumn for table %s.%s: %v", logThreadSeq, targetSchema, my.Table, FB)
+			global.Wlog.Debug(vlog)
+		} else {
+			// 否则从colData中获取列名
+			for _, i := range colData {
+				if colName, ok := i["columnName"]; ok {
+					FB = append(FB, colName)
+				}
 			}
+			vlog = fmt.Sprintf("(%d) Using columns from colData for table %s.%s: %v", logThreadSeq, targetSchema, my.Table, FB)
+			global.Wlog.Debug(vlog)
 		}
+
 		if len(FB) == 0 {
 			// 确定正确的错误信息中应该使用的schema名称
 			errorSchema := targetSchema
@@ -257,24 +293,59 @@ func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive s
 				errorSchema, my.Table, my.SourceSchema, my.Schema)
 		}
 
+		// 创建一个映射，将列名映射到列序号和值
+		columnMap := make(map[string]string)
 		rowData := strings.ReplaceAll(my.RowData, "/*go actions columnData*/<nil>/*go actions columnData*/", "/*go actions columnData*/greatdbNull/*go actions columnData*/")
 		rowParts := strings.Split(rowData, "/*go actions columnData*/")
-		for k, v := range rowParts {
-			if k >= len(FB) {
+
+		// 首先尝试使用colData中的列序号信息来映射值
+		for _, col := range colData {
+			colName, ok1 := col["columnName"]
+			colSeqStr, ok2 := col["columnSeq"]
+			if !ok1 || !ok2 {
 				continue
 			}
-			if v == "<nil>" {
-				AS = append(AS, fmt.Sprintf(" %s IS NULL ", FB[k]))
-			} else if v == "<entry>" {
-				AS = append(AS, fmt.Sprintf(" %s = ''", FB[k]))
-			} else if v == acc["double"] {
-				AS = append(AS, fmt.Sprintf(" CONCAT(%s,'') = '%s'", FB[k], v))
-			} else {
-				AS = append(AS, fmt.Sprintf(" %s = '%s' ", FB[k], v))
+
+			colSeq, err := strconv.Atoi(colSeqStr)
+			if err != nil || colSeq <= 0 || colSeq > len(rowParts) {
+				continue
+			}
+
+			// 列序号是1-based，但数组索引是0-based
+			columnMap[colName] = rowParts[colSeq-1]
+		}
+
+		// 如果没有足够的映射，尝试直接按顺序映射
+		if len(columnMap) < len(FB) && len(rowParts) >= len(FB) {
+			for i, colName := range FB {
+				if _, exists := columnMap[colName]; !exists && i < len(rowParts) {
+					columnMap[colName] = rowParts[i]
+				}
 			}
 		}
+
+		// 生成WHERE条件
+		for _, colName := range FB {
+			if value, ok := columnMap[colName]; ok {
+				if value == "<nil>" {
+					AS = append(AS, fmt.Sprintf("`%s` IS NULL", colName))
+				} else if value == "<entry>" {
+					AS = append(AS, fmt.Sprintf("`%s` = ''", colName))
+				} else if value == acc["double"] {
+					AS = append(AS, fmt.Sprintf("CONCAT(`%s`,'') = '%s'", colName, value))
+				} else {
+					AS = append(AS, fmt.Sprintf("`%s` = '%s'", colName, strings.TrimSpace(value)))
+				}
+			}
+		}
+
 		if len(AS) > 0 {
 			deleteSqlWhere = strings.Join(AS, " AND ")
+			vlog = fmt.Sprintf("(%d) Generated WHERE condition for table %s.%s: %s", logThreadSeq, targetSchema, my.Table, deleteSqlWhere)
+			global.Wlog.Debug(vlog)
+		} else {
+			vlog = fmt.Sprintf("(%d) Failed to generate WHERE condition for table %s.%s: no valid column-value pairs", logThreadSeq, targetSchema, my.Table)
+			global.Wlog.Warn(vlog)
 		}
 	}
 
@@ -304,13 +375,13 @@ func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive s
 		for _, colName := range my.IndexColumn {
 			if value, ok := columnMap[colName]; ok {
 				if value == "<nil>" {
-					AS = append(AS, fmt.Sprintf(" %s IS NULL ", colName))
+					AS = append(AS, fmt.Sprintf("`%s` IS NULL", colName))
 				} else if value == "<entry>" {
-					AS = append(AS, fmt.Sprintf(" %s = '' ", colName))
+					AS = append(AS, fmt.Sprintf("`%s` = ''", colName))
 				} else if value == acc["double"] {
-					AS = append(AS, fmt.Sprintf(" CONCAT(%s,'') = '%s'", colName, value))
+					AS = append(AS, fmt.Sprintf("CONCAT(`%s`,'') = '%s'", colName, value))
 				} else {
-					AS = append(AS, fmt.Sprintf(" %s = '%s' ", colName, value))
+					AS = append(AS, fmt.Sprintf("`%s` = '%s'", colName, strings.TrimSpace(value)))
 				}
 			}
 		}
@@ -387,7 +458,10 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterColumnSqlDispos(alterType string, 
 	} else if columnDataType[4] == "NULL" {
 		collumnDefaultN = ""
 	} else if columnDataType[4] == "null" {
-		collumnDefaultN = fmt.Sprintf("DEFAULT NULL")
+		// 如果列不允许为NULL（IS_NULLABLE=NO），则不应该设置DEFAULT NULL
+		if strings.ToUpper(columnDataType[3]) != "NO" {
+			collumnDefaultN = fmt.Sprintf("DEFAULT NULL")
+		}
 	} else {
 		collumnDefaultN = fmt.Sprintf("DEFAULT '%s'", columnDataType[4])
 	}
