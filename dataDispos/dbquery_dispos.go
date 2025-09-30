@@ -267,14 +267,24 @@ func (dbpos *DBdataDispos) DataRowsAndColumnSliceDispos(tableData []map[string]i
 			b, ok := val.([]byte)
 			if ok {
 				// 对于字符串类型，去除尾部空格
-				v = strings.TrimRight(string(b), " ")
+				// 特殊处理ROUTINE_DEFINITION列，不去除尾部空格，保留原始格式
+				if col == "ROUTINE_DEFINITION" {
+					v = string(b)
+				} else {
+					v = strings.TrimRight(string(b), " ")
+				}
 			} else {
 				v = val
 			}
 			if v == nil {
-				v = "<nil>"
+				// 特殊处理ROUTINE_DEFINITION列，如果为nil，设置为空字符串而不是"<nil>"
+				if col == "ROUTINE_DEFINITION" {
+					v = ""
+				} else {
+					v = "<nil>"
+				}
 			}
-			if v == "" {
+			if v == "" && col != "ROUTINE_DEFINITION" {
 				v = "<entry>"
 			}
 			entry[col] = v
