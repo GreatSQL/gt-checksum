@@ -58,17 +58,43 @@ var (
 	}
 	procR = func(createProc []map[string]interface{}, tmpa map[string]string, event string) map[string]string {
 		var tmpb = make(map[string]string)
+
+		// 获取环境属性
+		var sqlMode, charsetClient, collationConn, dbCollation, definer string
+		if len(createProc) > 0 {
+			sqlMode = fmt.Sprintf("%s", createProc[0]["SQL_MODE"])
+			charsetClient = fmt.Sprintf("%s", createProc[0]["CHARACTER_SET_CLIENT"])
+			collationConn = fmt.Sprintf("%s", createProc[0]["COLLATION_CONNECTION"])
+			dbCollation = fmt.Sprintf("%s", createProc[0]["DATABASE_COLLATION"])
+			definer = fmt.Sprintf("%s", createProc[0]["DEFINER"])
+		}
+
 		for _, v := range createProc {
 			ROUTINE_DEFINITION := fmt.Sprintf("%s", v["ROUTINE_DEFINITION"])
 			ROUTINE_NAME := strings.ToUpper(fmt.Sprintf("%s", v["ROUTINE_NAME"]))
-			tmpb["DEFINER"] = fmt.Sprintf("%s", v["DEFINER"])
 			user := strings.Split(fmt.Sprintf("%s", v["DEFINER"]), "@")[0]
 			host := strings.Split(fmt.Sprintf("%s", v["DEFINER"]), "@")[1]
+
+			// 将存储过程的完整定义和属性存储在一个JSON格式的字符串中
 			if event == "Proc" {
-				tmpb[ROUTINE_NAME] = fmt.Sprintf("DELIMITER $\nCREATE DEFINER='%s'@'%s' PROCEDURE %s(%s) %s$ \nDELIMITER ;", user, host, ROUTINE_NAME, tmpa[ROUTINE_NAME], strings.ReplaceAll(ROUTINE_DEFINITION, "\n", ""))
+				// 创建一个包含所有属性的JSON格式字符串，并将其嵌入到存储过程定义中
+				// 使用特殊注释格式 /*GT_CHECKSUM_METADATA:...*/，这样不会影响存储过程的执行
+				metadataComment := fmt.Sprintf(`/*GT_CHECKSUM_METADATA:{"sql_mode":"%s","character_set_client":"%s","collation_connection":"%s","database_collation":"%s","definer":"%s"}*/`,
+					sqlMode, charsetClient, collationConn, dbCollation, definer)
+
+				// 存储完整的存储过程定义，包括环境属性作为注释
+				tmpb[ROUTINE_NAME] = fmt.Sprintf("DELIMITER $\n%s\nCREATE DEFINER='%s'@'%s' PROCEDURE %s(%s) %s$ \nDELIMITER ;",
+					metadataComment, user, host, ROUTINE_NAME, tmpa[ROUTINE_NAME], ROUTINE_DEFINITION)
 			}
+
 			if event == "Func" {
-				tmpb[ROUTINE_NAME] = fmt.Sprintf("DELIMITER $\nCREATE DEFINER='%s'@'%s' FUNCTION %s(%s) %s$ \nDELIMITER ;", user, host, ROUTINE_NAME, tmpa[ROUTINE_NAME], strings.ReplaceAll(ROUTINE_DEFINITION, "\n", ""))
+				// 创建一个包含所有属性的JSON格式字符串，并将其嵌入到函数定义中
+				metadataComment := fmt.Sprintf(`/*GT_CHECKSUM_METADATA:{"sql_mode":"%s","character_set_client":"%s","collation_connection":"%s","database_collation":"%s","definer":"%s"}*/`,
+					sqlMode, charsetClient, collationConn, dbCollation, definer)
+
+				// 存储完整的函数定义，包括环境属性作为注释
+				tmpb[ROUTINE_NAME] = fmt.Sprintf("DELIMITER $\n%s\nCREATE DEFINER='%s'@'%s' FUNCTION %s(%s) %s$ \nDELIMITER ;",
+					metadataComment, user, host, ROUTINE_NAME, tmpa[ROUTINE_NAME], strings.ReplaceAll(ROUTINE_DEFINITION, "\n", ""))
 			}
 		}
 		return tmpb
@@ -685,6 +711,8 @@ func (my *QueryTable) Proc(db *sql.DB, logThreadSeq int64) (map[string]string, e
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start to query the stored procedure information under the %s database.", logThreadSeq, Event, DBType)
 	global.Wlog.Debug(vlog)
+
+	// 获取存储过程的参数信息
 	strsql = fmt.Sprintf("SELECT SPECIFIC_SCHEMA, SPECIFIC_NAME, ORDINAL_POSITION, PARAMETER_MODE, PARAMETER_NAME, DTD_IDENTIFIER FROM INFORMATION_SCHEMA.PARAMETERS WHERE SPECIFIC_SCHEMA IN('%s') AND ROUTINE_TYPE='PROCEDURE' ORDER BY ORDINAL_POSITION;", my.Schema)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
@@ -694,7 +722,9 @@ func (my *QueryTable) Proc(db *sql.DB, logThreadSeq int64) (map[string]string, e
 	if err != nil {
 		return nil, err
 	}
-	strsql = fmt.Sprintf("SELECT ROUTINE_SCHEMA, ROUTINE_NAME, ROUTINE_DEFINITION, DEFINER FROM INFORMATION_SCHEMA.ROUTINES WHERE ROUTINE_SCHEMA IN('%s') AND ROUTINE_TYPE='PROCEDURE';", my.Schema)
+
+	// 从INFORMATION_SCHEMA.ROUTINES表获取存储过程定义和属性
+	strsql = fmt.Sprintf("SELECT ROUTINE_NAME, ROUTINE_DEFINITION, DEFINER, SQL_MODE, CHARACTER_SET_CLIENT, COLLATION_CONNECTION, DATABASE_COLLATION FROM INFORMATION_SCHEMA.ROUTINES WHERE ROUTINE_SCHEMA='%s' AND ROUTINE_TYPE='PROCEDURE';", my.Schema)
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return nil, err
 	}
@@ -702,9 +732,12 @@ func (my *QueryTable) Proc(db *sql.DB, logThreadSeq int64) (map[string]string, e
 	if err != nil {
 		return nil, err
 	}
+
 	vlog = fmt.Sprintf("(%d) [%s] Complete the stored procedure information query under the %s database.", logThreadSeq, Event, DBType)
 	global.Wlog.Debug(vlog)
 	defer dispos.SqlRows.Close()
+
+	// 处理存储过程信息，包括环境属性
 	return procR(createProc, procP(inout, "Proc"), "Proc"), nil
 }
 

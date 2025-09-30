@@ -2,11 +2,13 @@ package actions
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"gt-checksum/dbExec"
 	"gt-checksum/global"
 	"gt-checksum/inputArg"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -45,6 +47,82 @@ type schemaTable struct {
 	tableMappings map[string]string
 	// 需要跳过索引检查的表列表
 	skipIndexCheckTables []string
+}
+
+// normalizeStoredProcBody 规范化存储过程体，以便更准确地比较
+// 规范化处理包括：
+// 1. 移除多余的空格和换行符
+// 2. 将所有空白字符规范化为单个空格
+// 3. 移除注释
+// 4. 将所有关键字转换为大写（可选，取决于数据库的大小写敏感性）
+// 5. 规范化算术表达式，移除不必要的空格
+func normalizeStoredProcBody(body string) string {
+	if body == "" {
+		return ""
+	}
+
+	// 记录原始内容，用于调试
+	originalBody := body
+
+	// 保存GT_CHECKSUM_METADATA注释
+	metadataRegex := regexp.MustCompile(`/\*GT_CHECKSUM_METADATA:(.*?)\*/`)
+	// 暂时移除元数据注释，以便不影响其他处理
+	body = metadataRegex.ReplaceAllString(body, "")
+
+	// 移除注释
+	// 这里简化处理，实际可能需要更复杂的正则表达式
+	re := regexp.MustCompile(`--.*?\n|/\*[\s\S]*?\*/`)
+	body = re.ReplaceAllString(body, " ")
+
+	// 规范化空白字符
+	re = regexp.MustCompile(`\s+`)
+	body = re.ReplaceAllString(body, " ")
+
+	// 移除开头和结尾的空格
+	body = strings.TrimSpace(body)
+
+	// 注意：不再规范化算术表达式，因为这会导致功能性差异被忽略
+	// 例如，n1 + n2 和 n1 + n2*2 应该被视为不同的表达式
+
+	// 如果规范化后的内容与原始内容有显著差异，记录日志
+	if len(originalBody) > 0 && float64(len(body))/float64(len(originalBody)) < 0.5 {
+		global.Wlog.Warn(fmt.Sprintf("Significant difference after normalization. Original length: %d, Normalized length: %d", len(originalBody), len(body)))
+	}
+
+	return body
+}
+
+// extractMetadataFromProcedure 从存储过程定义中提取元数据
+func extractMetadataFromProcedure(procDef string) map[string]string {
+	metadata := make(map[string]string)
+
+	// 查找GT_CHECKSUM_METADATA注释
+	metadataRegex := regexp.MustCompile(`/\*GT_CHECKSUM_METADATA:(.*?)\*/`)
+	metadataMatches := metadataRegex.FindStringSubmatch(procDef)
+
+	if len(metadataMatches) > 1 {
+		// 解析JSON格式的元数据
+		jsonStr := metadataMatches[1]
+		var metadataMap map[string]interface{}
+
+		// 尝试解析JSON
+		err := json.Unmarshal([]byte(jsonStr), &metadataMap)
+		if err == nil {
+			// 将解析后的元数据添加到结果映射中
+			for key, value := range metadataMap {
+				metadata[strings.ToUpper(key)] = fmt.Sprintf("%v", value)
+			}
+		}
+	}
+
+	// 提取DEFINER信息
+	definerRegex := regexp.MustCompile(`CREATE\s+DEFINER\s*=\s*['"]([^'"]*)['"]@['"]([^'"]*)['"]`)
+	definerMatches := definerRegex.FindStringSubmatch(procDef)
+	if len(definerMatches) > 2 {
+		metadata["DEFINER"] = fmt.Sprintf("%s@%s", definerMatches[1], definerMatches[2])
+	}
+
+	return metadata
 }
 
 // getDisplayTableName 返回表的显示名称，包含映射关系信息
@@ -1538,6 +1616,10 @@ func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 in
 		}
 	}
 
+	// 添加调试日志，显示提取的schema和触发器信息
+	vlog = fmt.Sprintf("(%d) Extracted schema map: %v, trigger map: %v", logThreadSeq, schemaMap, triggerMap)
+	global.Wlog.Debug(vlog)
+
 	// 如果schemaMap为空，但stcls.schema不为空，则使用stcls.schema
 	if len(schemaMap) == 0 && stcls.schema != "" {
 		schema := stcls.schema
@@ -1570,13 +1652,60 @@ func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 in
 		if len(triggerMap) > 0 {
 			filteredSourceTrigger := make(map[string]string)
 			for k, v := range sourceTrigger {
-				triggerKey := strings.ToUpper(schema + "." + strings.ReplaceAll(strings.Split(k, ".")[1], "\"", ""))
+				// 提取触发器名称时需要更加小心
+				parts := strings.Split(k, ".")
+				var triggerName string
+				if len(parts) > 1 {
+					// 移除可能存在的引号
+					triggerName = strings.ReplaceAll(parts[1], "\"", "")
+				} else {
+					// 如果没有点号，使用整个键
+					triggerName = strings.ReplaceAll(k, "\"", "")
+				}
 
+				// 根据大小写敏感设置决定是否转换大小写
+				if stcls.caseSensitiveObjectName == "no" {
+					triggerName = strings.ToUpper(triggerName)
+				}
+
+				triggerKey := schema + "." + triggerName
+
+				// 添加调试日志
+				vlog = fmt.Sprintf("(%d) Checking trigger: %s, key: %s", logThreadSeq, k, triggerKey)
+				global.Wlog.Debug(vlog)
+
+				// 检查是否在过滤映射中
 				if _, exists := triggerMap[triggerKey]; exists {
 					filteredSourceTrigger[k] = v
+					vlog = fmt.Sprintf("(%d) Keeping trigger: %s", logThreadSeq, k)
+					global.Wlog.Debug(vlog)
 				}
 			}
 			sourceTrigger = filteredSourceTrigger
+		} else {
+			// 如果triggerMap为空（表示使用通配符），则不进行过滤，保留所有触发器
+			vlog = fmt.Sprintf("(%d) No specific triggers specified, keeping all %d source triggers", logThreadSeq, len(sourceTrigger))
+			global.Wlog.Debug(vlog)
+
+			// 当使用通配符时，将所有触发器名称添加到triggerMap中，以便后续比较
+			for k, _ := range sourceTrigger {
+				parts := strings.Split(k, ".")
+				var triggerName string
+				if len(parts) > 1 {
+					triggerName = strings.ReplaceAll(parts[1], "\"", "")
+				} else {
+					triggerName = strings.ReplaceAll(k, "\"", "")
+				}
+
+				if stcls.caseSensitiveObjectName == "no" {
+					triggerName = strings.ToUpper(triggerName)
+				}
+
+				triggerKey := schema + "." + triggerName
+				triggerMap[triggerKey] = triggerName
+				vlog = fmt.Sprintf("(%d) Added trigger to map: %s", logThreadSeq, triggerKey)
+				global.Wlog.Debug(vlog)
+			}
 		}
 
 		vlog = fmt.Sprintf("(%d) srcDSN {%s} databases %s message is {%s}", logThreadSeq, stcls.sourceDrive, schema, sourceTrigger)
@@ -1597,13 +1726,60 @@ func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 in
 		if len(triggerMap) > 0 {
 			filteredDestTrigger := make(map[string]string)
 			for k, v := range destTrigger {
-				triggerKey := strings.ToUpper(schema + "." + strings.ReplaceAll(strings.Split(k, ".")[1], "\"", ""))
+				// 提取触发器名称时需要更加小心
+				parts := strings.Split(k, ".")
+				var triggerName string
+				if len(parts) > 1 {
+					// 移除可能存在的引号
+					triggerName = strings.ReplaceAll(parts[1], "\"", "")
+				} else {
+					// 如果没有点号，使用整个键
+					triggerName = strings.ReplaceAll(k, "\"", "")
+				}
 
+				// 根据大小写敏感设置决定是否转换大小写
+				if stcls.caseSensitiveObjectName == "no" {
+					triggerName = strings.ToUpper(triggerName)
+				}
+
+				triggerKey := schema + "." + triggerName
+
+				// 添加调试日志
+				vlog = fmt.Sprintf("(%d) Checking dest trigger: %s, key: %s", logThreadSeq, k, triggerKey)
+				global.Wlog.Debug(vlog)
+
+				// 检查是否在过滤映射中
 				if _, exists := triggerMap[triggerKey]; exists {
 					filteredDestTrigger[k] = v
+					vlog = fmt.Sprintf("(%d) Keeping dest trigger: %s", logThreadSeq, k)
+					global.Wlog.Debug(vlog)
 				}
 			}
 			destTrigger = filteredDestTrigger
+		} else {
+			// 如果triggerMap为空（表示使用通配符），则不进行过滤，保留所有触发器
+			vlog = fmt.Sprintf("(%d) No specific triggers specified, keeping all %d destination triggers", logThreadSeq, len(destTrigger))
+			global.Wlog.Debug(vlog)
+
+			// 当使用通配符时，将所有目标端触发器名称也添加到triggerMap中
+			for k, _ := range destTrigger {
+				parts := strings.Split(k, ".")
+				var triggerName string
+				if len(parts) > 1 {
+					triggerName = strings.ReplaceAll(parts[1], "\"", "")
+				} else {
+					triggerName = strings.ReplaceAll(k, "\"", "")
+				}
+
+				if stcls.caseSensitiveObjectName == "no" {
+					triggerName = strings.ToUpper(triggerName)
+				}
+
+				triggerKey := schema + "." + triggerName
+				triggerMap[triggerKey] = triggerName
+				vlog = fmt.Sprintf("(%d) Added dest trigger to map: %s", logThreadSeq, triggerKey)
+				global.Wlog.Debug(vlog)
+			}
 		}
 
 		vlog = fmt.Sprintf("(%d) dstDSN {%s} databases %s message is {%s}", logThreadSeq, stcls.destDrive, schema, destTrigger)
@@ -1707,6 +1883,10 @@ func (stcls *schemaTable) Proc(dtabS []string, logThreadSeq, logThreadSeq2 int64
 		}
 	}
 
+	// 添加调试日志，显示提取的schema和存储过程信息
+	vlog = fmt.Sprintf("(%d) Extracted schema map: %v, proc map: %v", logThreadSeq, schemaMap, procMap)
+	global.Wlog.Debug(vlog)
+
 	// 如果schemaMap为空，但stcls.schema不为空，则使用stcls.schema
 	if len(schemaMap) == 0 && stcls.schema != "" {
 		schema := stcls.schema
@@ -1743,13 +1923,51 @@ func (stcls *schemaTable) Proc(dtabS []string, logThreadSeq, logThreadSeq2 int64
 					continue
 				}
 
-				procKey := strings.ToLower(schema + "." + k)
+				// 根据大小写敏感设置决定是否转换大小写
+				procName := k
+				if stcls.caseSensitiveObjectName == "no" {
+					procName = strings.ToLower(procName)
+				}
 
+				procKey := schema + "." + procName
+
+				// 添加调试日志
+				vlog = fmt.Sprintf("(%d) Checking procedure: %s, key: %s", logThreadSeq, k, procKey)
+				global.Wlog.Debug(vlog)
+
+				// 检查是否在过滤映射中
 				if _, exists := procMap[procKey]; exists {
 					filteredSourceProc[k] = v
+					// 确保也保留过程体
+					if bodyKey := k + "_BODY"; sourceProc[bodyKey] != "" {
+						filteredSourceProc[bodyKey] = sourceProc[bodyKey]
+					}
+					vlog = fmt.Sprintf("(%d) Keeping procedure: %s", logThreadSeq, k)
+					global.Wlog.Debug(vlog)
 				}
 			}
 			sourceProc = filteredSourceProc
+		} else {
+			// 如果procMap为空（表示使用通配符），则不进行过滤，保留所有存储过程
+			vlog = fmt.Sprintf("(%d) No specific procedures specified, keeping all %d source procedures", logThreadSeq, len(sourceProc))
+			global.Wlog.Debug(vlog)
+
+			// 当使用通配符时，将所有存储过程名称添加到procMap中，以便后续比较
+			for k, _ := range sourceProc {
+				if k == "DEFINER" || strings.HasSuffix(k, "_BODY") {
+					continue
+				}
+
+				procName := k
+				if stcls.caseSensitiveObjectName == "no" {
+					procName = strings.ToLower(procName)
+				}
+
+				procKey := schema + "." + procName
+				procMap[procKey] = procName
+				vlog = fmt.Sprintf("(%d) Added procedure to map: %s", logThreadSeq, procKey)
+				global.Wlog.Debug(vlog)
+			}
 		}
 
 		vlog = fmt.Sprintf("(%d) srcDSN {%s} databases %s message is {%s}", logThreadSeq, stcls.sourceDrive, schema, sourceProc)
@@ -1776,13 +1994,51 @@ func (stcls *schemaTable) Proc(dtabS []string, logThreadSeq, logThreadSeq2 int64
 					continue
 				}
 
-				procKey := strings.ToLower(schema + "." + k)
+				// 根据大小写敏感设置决定是否转换大小写
+				procName := k
+				if stcls.caseSensitiveObjectName == "no" {
+					procName = strings.ToLower(procName)
+				}
 
+				procKey := schema + "." + procName
+
+				// 添加调试日志
+				vlog = fmt.Sprintf("(%d) Checking dest procedure: %s, key: %s", logThreadSeq, k, procKey)
+				global.Wlog.Debug(vlog)
+
+				// 检查是否在过滤映射中
 				if _, exists := procMap[procKey]; exists {
 					filteredDestProc[k] = v
+					// 确保也保留过程体
+					if bodyKey := k + "_BODY"; destProc[bodyKey] != "" {
+						filteredDestProc[bodyKey] = destProc[bodyKey]
+					}
+					vlog = fmt.Sprintf("(%d) Keeping dest procedure: %s", logThreadSeq, k)
+					global.Wlog.Debug(vlog)
 				}
 			}
 			destProc = filteredDestProc
+		} else {
+			// 如果procMap为空（表示使用通配符），则不进行过滤，保留所有存储过程
+			vlog = fmt.Sprintf("(%d) No specific procedures specified, keeping all %d destination procedures", logThreadSeq, len(destProc))
+			global.Wlog.Debug(vlog)
+
+			// 当使用通配符时，将所有目标端存储过程名称也添加到procMap中
+			for k, _ := range destProc {
+				if k == "DEFINER" || strings.HasSuffix(k, "_BODY") {
+					continue
+				}
+
+				procName := k
+				if stcls.caseSensitiveObjectName == "no" {
+					procName = strings.ToLower(procName)
+				}
+
+				procKey := schema + "." + procName
+				procMap[procKey] = procName
+				vlog = fmt.Sprintf("(%d) Added dest procedure to map: %s", logThreadSeq, procKey)
+				global.Wlog.Debug(vlog)
+			}
 		}
 
 		vlog = fmt.Sprintf("(%d) dstDSN {%s} databases %s message is {%s}", logThreadSeq, stcls.destDrive, schema, destProc)
@@ -1813,26 +2069,110 @@ func (stcls *schemaTable) Proc(dtabS []string, logThreadSeq, logThreadSeq2 int64
 		global.Wlog.Debug(vlog)
 		pods.Schema = schema
 		for k, v := range tmpM {
-			if stcls.sourceDrive != stcls.destDrive {
-				if v == 2 {
-					pods.ProcName = k
-					pods.DIFFS = "no"
-					c = append(c, k)
+			// 无论数据库驱动是否相同，都应该比较存储过程的内容
+			// 首先检查存储过程是否同时存在于源端和目标端
+			if v == 2 {
+				// 存储过程同时存在于源端和目标端，比较其内容
+				// 初始化差异标志
+				isDifferent := false
+				pods.ProcName = k
+
+				// 比较存储过程体 - 规范化处理后比较
+				sourceBody := normalizeStoredProcBody(sourceProc[k])
+				destBody := normalizeStoredProcBody(destProc[k])
+
+				// 记录原始和规范化后的存储过程体，用于调试
+				vlog = fmt.Sprintf("(%d) Original source procedure body: %s", logThreadSeq, sourceProc[k])
+				global.Wlog.Debug(vlog)
+				vlog = fmt.Sprintf("(%d) Original target procedure body: %s", logThreadSeq, destProc[k])
+				global.Wlog.Debug(vlog)
+				vlog = fmt.Sprintf("(%d) Normalized source procedure body: %s", logThreadSeq, sourceBody)
+				global.Wlog.Debug(vlog)
+				vlog = fmt.Sprintf("(%d) Normalized target procedure body: %s", logThreadSeq, destBody)
+				global.Wlog.Debug(vlog)
+
+				// 进行深度比较，检查是否存在功能性差异
+				if sourceBody != destBody {
+					isDifferent = true
+					vlog = fmt.Sprintf("(%d) Stored procedure %s.%s content mismatch - DIFFERENT FUNCTIONALITY DETECTED", logThreadSeq, schema, k)
+					global.Wlog.Warn(vlog)
+
+					// 尝试识别具体的差异
+					if strings.Contains(destBody, "*2") && !strings.Contains(sourceBody, "*2") {
+						vlog = fmt.Sprintf("(%d) Target procedure multiplies by 2, source does not", logThreadSeq)
+						global.Wlog.Warn(vlog)
+					} else if strings.Contains(sourceBody, "*2") && !strings.Contains(destBody, "*2") {
+						vlog = fmt.Sprintf("(%d) Source procedure multiplies by 2, target does not", logThreadSeq)
+						global.Wlog.Warn(vlog)
+					}
 				} else {
-					pods.ProcName = k
+					vlog = fmt.Sprintf("(%d) Stored procedure %s.%s content match after normalization", logThreadSeq, schema, k)
+					global.Wlog.Debug(vlog)
+				}
+
+				// 从存储过程定义中提取元数据
+				sourceMetadata := extractMetadataFromProcedure(sourceProc[k])
+				destMetadata := extractMetadataFromProcedure(destProc[k])
+
+				// 比较SQL_MODE
+				if sourceMetadata["SQL_MODE"] != destMetadata["SQL_MODE"] {
+					isDifferent = true
+					vlog = fmt.Sprintf("(%d) Stored procedure %s.%s SQL_MODE mismatch: source=%s, target=%s",
+						logThreadSeq, schema, k, sourceMetadata["SQL_MODE"], destMetadata["SQL_MODE"])
+					global.Wlog.Warn(vlog)
+				}
+
+				// 比较DEFINER
+				if sourceMetadata["DEFINER"] != destMetadata["DEFINER"] {
+					isDifferent = true
+					vlog = fmt.Sprintf("(%d) Stored procedure %s.%s DEFINER mismatch: source=%s, target=%s",
+						logThreadSeq, schema, k, sourceMetadata["DEFINER"], destMetadata["DEFINER"])
+					global.Wlog.Warn(vlog)
+				}
+
+				// 比较CHARACTER_SET_CLIENT
+				if sourceMetadata["CHARACTER_SET_CLIENT"] != destMetadata["CHARACTER_SET_CLIENT"] {
+					isDifferent = true
+					vlog = fmt.Sprintf("(%d) Stored procedure %s.%s CHARACTER_SET_CLIENT mismatch: source=%s, target=%s",
+						logThreadSeq, schema, k, sourceMetadata["CHARACTER_SET_CLIENT"], destMetadata["CHARACTER_SET_CLIENT"])
+					global.Wlog.Warn(vlog)
+				}
+
+				// 比较COLLATION_CONNECTION
+				if sourceMetadata["COLLATION_CONNECTION"] != destMetadata["COLLATION_CONNECTION"] {
+					isDifferent = true
+					vlog = fmt.Sprintf("(%d) Stored procedure %s.%s COLLATION_CONNECTION mismatch: source=%s, target=%s",
+						logThreadSeq, schema, k, sourceMetadata["COLLATION_CONNECTION"], destMetadata["COLLATION_CONNECTION"])
+					global.Wlog.Warn(vlog)
+				}
+
+				// 比较DATABASE_COLLATION
+				if sourceMetadata["DATABASE_COLLATION"] != destMetadata["DATABASE_COLLATION"] {
+					isDifferent = true
+					vlog = fmt.Sprintf("(%d) Stored procedure %s.%s DATABASE_COLLATION mismatch: source=%s, target=%s",
+						logThreadSeq, schema, k, sourceMetadata["DATABASE_COLLATION"], destMetadata["DATABASE_COLLATION"])
+					global.Wlog.Warn(vlog)
+				}
+
+				// 根据比较结果设置DIFFS值
+				if isDifferent {
 					pods.DIFFS = "yes"
 					d = append(d, k)
+					vlog = fmt.Sprintf("(%d) Stored procedure %s.%s is different between source and target, setting DIFFS=yes", logThreadSeq, schema, k)
+					global.Wlog.Info(vlog)
+				} else {
+					pods.DIFFS = "no"
+					c = append(c, k)
+					vlog = fmt.Sprintf("(%d) Stored procedure %s.%s is identical between source and target, setting DIFFS=no", logThreadSeq, schema, k)
+					global.Wlog.Info(vlog)
 				}
 			} else {
-				if sourceProc[k] != destProc[k] {
-					pods.ProcName = k
-					pods.DIFFS = "yes"
-					d = append(d, k)
-				} else {
-					pods.ProcName = k
-					pods.DIFFS = "no"
-					c = append(c, k)
-				}
+				// 存储过程只存在于源端或目标端，标记为不一致
+				pods.ProcName = k
+				pods.DIFFS = "yes"
+				d = append(d, k)
+				vlog = fmt.Sprintf("(%d) Stored procedure %s.%s exists only in one database", logThreadSeq, schema, k)
+				global.Wlog.Debug(vlog)
 			}
 			vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment databases %s Stored Procedure. normal databases message is {%s} num [%d] abnormal databases message is {%s} num [%d]", logThreadSeq, schema, c, len(c), d, len(d))
 			global.Wlog.Debug(vlog)
@@ -1946,6 +2286,23 @@ func (stcls *schemaTable) Func(dtabS []string, logThreadSeq, logThreadSeq2 int64
 				}
 			}
 			sourceFunc = filteredSourceFunc
+		} else {
+			// 如果funcMap为空（表示使用通配符），则不进行过滤，保留所有函数
+			vlog = fmt.Sprintf("(%d) No specific functions specified, keeping all %d source functions", logThreadSeq, len(sourceFunc))
+			global.Wlog.Debug(vlog)
+
+			// 当使用通配符时，将所有函数名称添加到funcMap中，以便后续比较
+			for k, _ := range sourceFunc {
+				funcName := k
+				if stcls.caseSensitiveObjectName == "no" {
+					funcName = strings.ToLower(funcName)
+				}
+
+				funcKey := schema + "." + funcName
+				funcMap[funcKey] = funcName
+				vlog = fmt.Sprintf("(%d) Added function to map: %s", logThreadSeq, funcKey)
+				global.Wlog.Debug(vlog)
+			}
 		}
 
 		vlog = fmt.Sprintf("(%d) srcDSN {%s} databases %s message is {%s}", logThreadSeq, stcls.sourceDrive, schema, sourceFunc)
@@ -1973,6 +2330,23 @@ func (stcls *schemaTable) Func(dtabS []string, logThreadSeq, logThreadSeq2 int64
 				}
 			}
 			destFunc = filteredDestFunc
+		} else {
+			// 如果funcMap为空（表示使用通配符），则不进行过滤，保留所有函数
+			vlog = fmt.Sprintf("(%d) No specific functions specified, keeping all %d destination functions", logThreadSeq, len(destFunc))
+			global.Wlog.Debug(vlog)
+
+			// 当使用通配符时，将所有目标端函数名称也添加到funcMap中
+			for k, _ := range destFunc {
+				funcName := k
+				if stcls.caseSensitiveObjectName == "no" {
+					funcName = strings.ToLower(funcName)
+				}
+
+				funcKey := schema + "." + funcName
+				funcMap[funcKey] = funcName
+				vlog = fmt.Sprintf("(%d) Added dest function to map: %s", logThreadSeq, funcKey)
+				global.Wlog.Debug(vlog)
+			}
 		}
 
 		vlog = fmt.Sprintf("(%d) dstDSN {%s} databases %s message is {%s}", logThreadSeq, stcls.destDrive, schema, destFunc)

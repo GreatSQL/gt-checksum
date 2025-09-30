@@ -8,8 +8,45 @@ import (
 	"gt-checksum/inputArg"
 	"gt-checksum/utils"
 	"os"
+	"strings"
 	"time"
 )
+
+// extractSchemasFromTables 从tables参数中提取schema信息
+// 例如：从"db1.table1,db2.table2,db3.*"中提取出["db1", "db2", "db3"]
+func extractSchemasFromTables(tables string) []string {
+	schemas := make(map[string]bool)
+
+	// 按逗号分割表列表
+	tableList := strings.Split(tables, ",")
+
+	for _, table := range tableList {
+		// 处理映射格式 schema1.table1:schema2.table2
+		if strings.Contains(table, ":") {
+			parts := strings.Split(table, ":")
+			if len(parts) == 2 {
+				sourceParts := strings.Split(parts[0], ".")
+				if len(sourceParts) >= 1 {
+					schemas[sourceParts[0]] = true
+				}
+			}
+		} else {
+			// 处理普通格式 schema.table 或 schema.*
+			parts := strings.Split(table, ".")
+			if len(parts) >= 1 {
+				schemas[parts[0]] = true
+			}
+		}
+	}
+
+	// 将map转换为slice
+	result := make([]string, 0, len(schemas))
+	for schema := range schemas {
+		result = append(result, schema)
+	}
+
+	return result
+}
 
 var err error
 
@@ -32,10 +69,31 @@ func main() {
 	//获取待校验表信息
 	var tableList, tableListColCheck, tableListPriCheck []string
 	schemaTableInstance := actions.SchemaTableInit(m)
-	if tableList, err = schemaTableInstance.SchemaTableFilter(3, 4); err != nil || len(tableList) == 0 {
-		fmt.Println(fmt.Sprintf("gt-checksum: No tables to check. Check %s for details or set logLevel=debug", m.SecondaryL.LogV.LogFile))
-		os.Exit(1)
+
+	// 根据checkObject类型决定如何处理表列表
+	if m.SecondaryL.RulesV.CheckObject == "trigger" || m.SecondaryL.RulesV.CheckObject == "proc" || m.SecondaryL.RulesV.CheckObject == "func" {
+		// 对于触发器、存储过程和函数，我们只需要schema信息
+		// 从tables参数中提取schema信息
+		schemas := extractSchemasFromTables(m.SecondaryL.SchemaV.Tables)
+		if len(schemas) == 0 {
+			fmt.Println(fmt.Sprintf("gt-checksum: No valid schemas found in tables parameter. Check %s for details or set logLevel=debug", m.SecondaryL.LogV.LogFile))
+			os.Exit(1)
+		}
+
+		// 构建tableList，格式为"schema.*"
+		for _, schema := range schemas {
+			tableList = append(tableList, schema+".*")
+		}
+
+		global.Wlog.Info(fmt.Sprintf("Using schemas for %s check: %v", m.SecondaryL.RulesV.CheckObject, schemas))
+	} else {
+		// 对于其他类型的检查，使用正常的表过滤逻辑
+		if tableList, err = schemaTableInstance.SchemaTableFilter(3, 4); err != nil || len(tableList) == 0 {
+			fmt.Println(fmt.Sprintf("gt-checksum: No tables to check. Check %s for details or set logLevel=debug", m.SecondaryL.LogV.LogFile))
+			os.Exit(1)
+		}
 	}
+
 	tableInfoTime = time.Since(beginTime) - setupTime
 
 	switch m.SecondaryL.RulesV.CheckObject {
