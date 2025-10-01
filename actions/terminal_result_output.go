@@ -94,6 +94,81 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 	hasMappings := hasMappingRelations()
 
 	switch m.SecondaryL.RulesV.CheckObject {
+	case "routine":
+		if hasMappings {
+			table.AddRow("Schema", "RoutineName", "CheckObject", "DIFFS", "Datafix", "Mapping")
+		} else {
+			table.AddRow("Schema", "RoutineName", "CheckObject", "DIFFS", "Datafix")
+		}
+
+		for _, pod := range measuredDataPods {
+			// 仅输出存储过程/存储函数的记录
+			lc := strings.ToLower(pod.CheckObject)
+			if lc != "procedure" && lc != "function" {
+				continue
+			}
+
+			schemaName := pod.Schema
+			// 统一读取名称：Procedure 用 ProcName，Function 用 FuncName；若为空则互相回退
+			routineName := pod.ProcName
+			if lc == "function" {
+				routineName = pod.FuncName
+			}
+			if routineName == "" {
+				if lc == "function" {
+					routineName = pod.ProcName
+				} else {
+					routineName = pod.FuncName
+				}
+			}
+
+			// 特殊处理映射格式 "db1.*:db2.*"
+			if strings.Contains(routineName, ".*:") {
+				parts := strings.Split(routineName, ".*:")
+				if len(parts) == 2 {
+					// 这是映射规则，db2 作为 schema
+					schemaName = parts[1]
+				}
+			} else if strings.Contains(routineName, ":") {
+				// 普通冒号分隔处理
+				parts := strings.Split(routineName, ":")
+				if len(parts) == 2 {
+					if schemaName == "" {
+						schemaName = parts[0]
+						routineName = parts[1]
+					} else {
+						routineName = parts[0]
+					}
+				}
+			}
+
+			// 处理 "schema.name" 点号分隔
+			if schemaName == "" && strings.Contains(routineName, ".") {
+				parts := strings.Split(routineName, ".")
+				if len(parts) == 2 {
+					schemaName = parts[0]
+					routineName = parts[1]
+				}
+			}
+
+			// 获取映射信息
+			mappingInfo := "-"
+			if hasMappings {
+				schemaMap := getSchemaMappings()
+				if destSchema, exists := schemaMap[schemaName]; exists {
+					mappingInfo = fmt.Sprintf("Schema: %s:%s", schemaName, destSchema)
+				}
+			}
+
+			// CheckObject 列按对象类型显示：Procedure / Function
+			if hasMappings {
+				table.AddRow(color.RedString(schemaName), color.WhiteString(routineName), color.RedString(pod.CheckObject), color.GreenString(pod.DIFFS), color.YellowString(pod.Datafix), color.CyanString(mappingInfo))
+			} else {
+				table.AddRow(color.RedString(schemaName), color.WhiteString(routineName), color.RedString(pod.CheckObject), color.GreenString(pod.DIFFS), color.YellowString(pod.Datafix))
+			}
+		}
+		fmt.Println(table)
+
 	case "struct":
 		if hasMappings {
 			table.AddRow("Schema", "Table", "CheckObject", "Diffs", "Datafix", "Mapping")

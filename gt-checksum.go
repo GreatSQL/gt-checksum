@@ -71,7 +71,7 @@ func main() {
 	schemaTableInstance := actions.SchemaTableInit(m)
 
 	// 根据checkObject类型决定如何处理表列表
-	if m.SecondaryL.RulesV.CheckObject == "trigger" || m.SecondaryL.RulesV.CheckObject == "proc" || m.SecondaryL.RulesV.CheckObject == "func" {
+	if m.SecondaryL.RulesV.CheckObject == "trigger" || m.SecondaryL.RulesV.CheckObject == "routine" {
 		// 对于触发器、存储过程和函数，我们只需要schema信息
 		// 从tables参数中提取schema信息
 		schemas := extractSchemasFromTables(m.SecondaryL.SchemaV.Tables)
@@ -106,10 +106,11 @@ func main() {
 		// 注意：index、partitions和foreign的功能已经合并到struct中，不再需要单独的case
 	case "trigger":
 		schemaTableInstance.Trigger(tableList, 11, 12)
-	case "proc":
-		schemaTableInstance.Proc(tableList, 13, 14)
-	case "func":
-		schemaTableInstance.Func(tableList, 15, 16)
+	case "routine":
+		// 当checkObject=routine时，统一入口调用 Routine，同时检查存储过程和函数
+		fmt.Println("gt-checksum: Checking stored procedures and functions (routine mode)")
+		schemaTableInstance.Routine(tableList, 13, 14, "")
+	// 注意：proc和func选项已在参数处理阶段被强制改为data，所以这里不再需要单独的case
 	case "data":
 		//校验表结构
 		tableListColCheck, _, err = schemaTableInstance.TableColumnNameCheck(tableList, 9, 10)

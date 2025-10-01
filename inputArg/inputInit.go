@@ -34,11 +34,12 @@ type SchemaS struct {
 	CaseSensitiveObjectName string
 }
 type RulesS struct {
-	ParallelThds int
-	ChanRowCount int
-	QueueSize    int
-	CheckObject  string
-	MemoryLimit  int
+	ParallelThds   int
+	ChanRowCount   int
+	QueueSize      int
+	CheckObject    string
+	MemoryLimit    int
+	IsRoutineCheck bool // 标记是否同时检查存储过程和函数
 }
 
 type LogS struct {
