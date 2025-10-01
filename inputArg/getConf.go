@@ -155,19 +155,35 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 	if rc.FirstL.Rules != nil {
 		// 获取用户设置的原始值
 		userSetCheckObject := rc.FirstL.Rules.Key("checkObject").String()
-		// 获取验证后的值（如果无效则使用默认值"data"）
-		// 注意：index, partitions, foreign 已被合并到 struct 中
-		rc.SecondaryL.RulesV.CheckObject = rc.FirstL.Rules.Key("checkObject").In("data", []string{"data", "struct", "trigger", "func", "proc"})
 
-		// 如果用户设置了值但与验证后的值不同，说明使用了默认值
-		if userSetCheckObject != "" && userSetCheckObject != rc.SecondaryL.RulesV.CheckObject {
-			// 检查是否使用了已合并到struct的选项
-			if userSetCheckObject == "index" || userSetCheckObject == "partitions" || userSetCheckObject == "foreign" {
-				fmt.Printf("Note: checkObject value '%s' has been merged into 'struct'. Using 'struct' instead.\n", userSetCheckObject)
-				rc.SecondaryL.RulesV.CheckObject = "struct"
-			} else {
-				fmt.Printf("Warning: Invalid checkObject value '%s', using default value 'data' instead\n", userSetCheckObject)
+		// 检查是否使用了已废弃的func或proc选项
+		if userSetCheckObject == "func" || userSetCheckObject == "proc" {
+			// 将其强制改为默认的data，并发出info级别的提示
+			fmt.Printf("Warning: checkObject value '%s' is deprecated. Using default value 'data' instead. Consider using 'routine' for checking stored procedures and functions.\n", userSetCheckObject)
+			rc.SecondaryL.RulesV.CheckObject = "data"
+			// 在这里不记录日志，因为日志系统可能还没有完全初始化
+			// 我们会在checkPar函数中再次记录这个信息
+		} else {
+			// 获取验证后的值（如果无效则使用默认值"data"）
+			// 注意：index, partitions, foreign 已被合并到 struct 中，func和proc已被废弃
+			rc.SecondaryL.RulesV.CheckObject = rc.FirstL.Rules.Key("checkObject").In("data", []string{"data", "struct", "trigger", "routine"})
+
+			// 如果用户设置了值但与验证后的值不同，说明使用了默认值
+			if userSetCheckObject != "" && userSetCheckObject != rc.SecondaryL.RulesV.CheckObject {
+				// 检查是否使用了已合并到struct的选项
+				if userSetCheckObject == "index" || userSetCheckObject == "partitions" || userSetCheckObject == "foreign" {
+					fmt.Printf("Note: checkObject value '%s' has been merged into 'struct'. Using 'struct' instead.\n", userSetCheckObject)
+					rc.SecondaryL.RulesV.CheckObject = "struct"
+				} else {
+					fmt.Printf("Warning: Invalid checkObject value '%s', using default value 'data' instead\n", userSetCheckObject)
+				}
 			}
+		}
+
+		// 如果用户设置了routine，将其转换为内部处理逻辑
+		if rc.SecondaryL.RulesV.CheckObject == "routine" {
+			// 在内部记录这是一个组合检查（同时检查proc和func）
+			rc.SecondaryL.RulesV.IsRoutineCheck = true
 		}
 
 		// 删除对checkMode和ratio参数的解析，始终使用rows模式（全量校验）

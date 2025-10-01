@@ -703,85 +703,122 @@ func (my *QueryTable) Trigger(db *sql.DB, logThreadSeq int64) (map[string]string
 }
 
 /*
-MySQL 存储过程校验
+MySQL 存储过程和函数统一校验（新增）
+- 一次性从 INFORMATION_SCHEMA.PARAMETERS 与 INFORMATION_SCHEMA.ROUTINES 查询
+- 按 ROUTINE_TYPE 将结果分别组装为 PROCEDURE / FUNCTION 的定义文本
+- 返回 routines 与 types 两张表，供上层或兼容包装使用
 */
-func (my *QueryTable) Proc(db *sql.DB, logThreadSeq int64) (map[string]string, error) {
+func (my *QueryTable) Routine(db *sql.DB, logThreadSeq int64) (map[string]string, map[string]string, error) {
 	var (
-		Event = "Q_Proc"
+		routines = make(map[string]string) // name -> body
+		types    = make(map[string]string) // name -> "PROCEDURE"/"FUNCTION"
+		Event    = "Q_Routine"
 	)
-	vlog = fmt.Sprintf("(%d) [%s] Start to query the stored procedure information under the %s database.", logThreadSeq, Event, DBType)
+	vlog = fmt.Sprintf("(%d) [%s] Start to query PROCEDURE and FUNCTION information under the %s database.", logThreadSeq, Event, DBType)
 	global.Wlog.Debug(vlog)
 
-	// 获取存储过程的参数信息
-	strsql = fmt.Sprintf("SELECT SPECIFIC_SCHEMA, SPECIFIC_NAME, ORDINAL_POSITION, PARAMETER_MODE, PARAMETER_NAME, DTD_IDENTIFIER FROM INFORMATION_SCHEMA.PARAMETERS WHERE SPECIFIC_SCHEMA IN('%s') AND ROUTINE_TYPE='PROCEDURE' ORDER BY ORDINAL_POSITION;", my.Schema)
+	// 1) 查询参数：同时取 PROCEDURE 与 FUNCTION
+	strsql = fmt.Sprintf("SELECT SPECIFIC_SCHEMA, SPECIFIC_NAME, ROUTINE_TYPE, ORDINAL_POSITION, PARAMETER_MODE, PARAMETER_NAME, DTD_IDENTIFIER FROM INFORMATION_SCHEMA.PARAMETERS WHERE SPECIFIC_SCHEMA IN('%s') AND ROUTINE_TYPE IN('PROCEDURE','FUNCTION') ORDER BY SPECIFIC_NAME, ORDINAL_POSITION;", my.Schema)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	inout, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
+	inoutAll, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	// 从INFORMATION_SCHEMA.ROUTINES表获取存储过程定义和属性
-	strsql = fmt.Sprintf("SELECT ROUTINE_NAME, ROUTINE_DEFINITION, DEFINER, SQL_MODE, CHARACTER_SET_CLIENT, COLLATION_CONNECTION, DATABASE_COLLATION FROM INFORMATION_SCHEMA.ROUTINES WHERE ROUTINE_SCHEMA='%s' AND ROUTINE_TYPE='PROCEDURE';", my.Schema)
+	// 拆分参数到 Proc/Func 两组
+	var inoutProc, inoutFunc []map[string]interface{}
+	for _, r := range inoutAll {
+		if strings.EqualFold(fmt.Sprintf("%s", r["ROUTINE_TYPE"]), "PROCEDURE") {
+			inoutProc = append(inoutProc, r)
+		} else if strings.EqualFold(fmt.Sprintf("%s", r["ROUTINE_TYPE"]), "FUNCTION") {
+			inoutFunc = append(inoutFunc, r)
+		}
+	}
+	tmpaProc := procP(inoutProc, "Proc")
+	tmpaFunc := procP(inoutFunc, "Func")
+
+	// 2) 从 ROUTINES 取定义与属性，并带出 ROUTINE_TYPE
+	strsql = fmt.Sprintf("SELECT ROUTINE_NAME, ROUTINE_DEFINITION, DEFINER, SQL_MODE, CHARACTER_SET_CLIENT, COLLATION_CONNECTION, DATABASE_COLLATION, ROUTINE_TYPE FROM INFORMATION_SCHEMA.ROUTINES WHERE ROUTINE_SCHEMA='%s' AND ROUTINE_TYPE IN('PROCEDURE','FUNCTION');", my.Schema)
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	createProc, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
+	createAll, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-
-	vlog = fmt.Sprintf("(%d) [%s] Complete the stored procedure information query under the %s database.", logThreadSeq, Event, DBType)
-	global.Wlog.Debug(vlog)
 	defer dispos.SqlRows.Close()
 
-	// 处理存储过程信息，包括环境属性
-	return procR(createProc, procP(inout, "Proc"), "Proc"), nil
+	// 拆分 ROUTINES 到 Proc/Func 两组，并用现有 procR 生成定义
+	var createProc, createFunc []map[string]interface{}
+	for _, r := range createAll {
+		if strings.EqualFold(fmt.Sprintf("%s", r["ROUTINE_TYPE"]), "PROCEDURE") {
+			createProc = append(createProc, r)
+		} else if strings.EqualFold(fmt.Sprintf("%s", r["ROUTINE_TYPE"]), "FUNCTION") {
+			createFunc = append(createFunc, r)
+		}
+	}
+
+	procMap := procR(createProc, tmpaProc, "Proc")
+	funcMap := procR(createFunc, tmpaFunc, "Func")
+
+	// 合并并记录类型
+	for k, v := range procMap {
+		routines[k] = v
+		types[k] = "PROCEDURE"
+	}
+	for k, v := range funcMap {
+		routines[k] = v
+		types[k] = "FUNCTION"
+	}
+
+	vlog = fmt.Sprintf("(%d) [%s] Complete the PROCEDURE and FUNCTION information query under the %s database.", logThreadSeq, Event, DBType)
+	global.Wlog.Debug(vlog)
+	return routines, types, nil
+}
+
+/*
+MySQL 存储过程校验
+*/
+/*
+Deprecated: use Routine() instead.
+兼容包装：复用 Routine()，仅返回 PROCEDURE。
+*/
+func (my *QueryTable) Proc(db *sql.DB, logThreadSeq int64) (map[string]string, error) {
+	routines, types, err := my.Routine(db, logThreadSeq)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]string)
+	for name, body := range routines {
+		if strings.EqualFold(types[name], "PROCEDURE") {
+			out[name] = body
+		}
+	}
+	return out, nil
 }
 
 /*
 MySQL 存储函数或自定义函数校验
 */
+/*
+Deprecated: use Routine() instead.
+兼容包装：复用 Routine()，仅返回 FUNCTION。
+*/
 func (my *QueryTable) Func(db *sql.DB, logThreadSeq int64) (map[string]string, error) {
-	var (
-		tmpb  = make(map[string]string)
-		Event = "Q_Proc"
-	)
-	vlog = fmt.Sprintf("(%d) [%s] Start to query the stored Func information under the %s database.", logThreadSeq, Event, DBType)
-	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("SELECT DEFINER, ROUTINE_NAME FROM INFORMATION_SCHEMA.ROUTINES WHERE ROUTINE_SCHEMA IN('%s') AND ROUTINE_TYPE='FUNCTION';", my.Schema)
-	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
-	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
-		return nil, err
-	}
-	//dispos := dataDispos.DBdataDispos{DBtype: "MySQL", Logseq: logThreadSeq, SqlRows: sqlRows, Event: "Func"}
-	routineName, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
+	routines, types, err := my.Routine(db, logThreadSeq)
 	if err != nil {
 		return nil, err
 	}
-	for _, v := range routineName {
-		strsql = fmt.Sprintf("SHOW CREATE FUNCTION %s.%s;", my.Schema, v["ROUTINE_NAME"])
-		if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
-			return nil, err
-		}
-		createFunc, err1 := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
-		if err1 != nil {
-			return nil, err1
-		}
-		for _, b := range createFunc {
-			d := strings.Join(strings.Fields(strings.ReplaceAll(fmt.Sprintf("%s", b["CREATE_FUNCTION"]), "\n", " ")), " ")
-			if strings.Contains(strings.ToUpper(d), "BEGIN") && strings.Contains(strings.ToUpper(d), "END") {
-				strings.Index(d, "BEGIN")
-			}
-			tmpb[strings.ToUpper(fmt.Sprintf("%s", v["ROUTINE_NAME"]))] = fmt.Sprintf("%s/*proc*/delimiter $\n%s$\ndelimiter ;\n", v["DEFINER"], b["Create Function"])
+	out := make(map[string]string)
+	for name, body := range routines {
+		if strings.EqualFold(types[name], "FUNCTION") {
+			out[name] = body
 		}
 	}
-	defer dispos.SqlRows.Close()
-	vlog = fmt.Sprintf("(%d) [%s] Complete the stored Func information query under the %s database.", logThreadSeq, Event, DBType)
-	global.Wlog.Debug(vlog)
-	return tmpb, nil
+	return out, nil
 }
 
 /*

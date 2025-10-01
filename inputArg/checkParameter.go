@@ -197,6 +197,16 @@ func (rc *ConfigParameter) checkPar() {
 	vlog = fmt.Sprintf("(%d) [%s] start init check object values.", rc.LogThreadSeq, Event)
 	global.Wlog.Debug(vlog)
 	rc.SecondaryL.RulesV.CheckObject = strings.ToLower(rc.SecondaryL.RulesV.CheckObject)
+
+	// 检查是否使用了proc或func，如果是则强制改为data
+	if rc.SecondaryL.RulesV.CheckObject == "proc" || rc.SecondaryL.RulesV.CheckObject == "func" {
+		originalValue := rc.SecondaryL.RulesV.CheckObject
+		rc.SecondaryL.RulesV.CheckObject = "data"
+		vlog = fmt.Sprintf("(%d) [%s] checkObject value '%s' is deprecated. Using default value 'data' instead. Consider using 'routine' for checking stored procedures and functions.", rc.LogThreadSeq, Event, originalValue)
+		global.Wlog.Info(vlog)
+		fmt.Printf("Warning: checkObject value '%s' is deprecated. Using default value 'data' instead. Consider using 'routine' for checking stored procedures and functions.\n", originalValue)
+	}
+
 	vlog = fmt.Sprintf("(%d) [%s] check object parameter message is {%s}.", rc.LogThreadSeq, Event, rc.SecondaryL.RulesV.CheckObject)
 	global.Wlog.Debug(vlog)
 
