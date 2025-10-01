@@ -28,7 +28,7 @@ $ gt-checksum -c ./gc.conf
 
   2.全局权限
 
-    如果是MySQL 8.0及以上版本，需授予 `REPLICATION CLIENT` 和 `SESSION_VARIABLES_ADMIN` 权限。如果MySQL 5.7级以下版本，则无需授予 `SESSION_VARIABLES_ADMIN` 权限。
+    如果是MySQL 8.0及以上版本，需授予 `REPLICATION CLIENT`, `SESSION_VARIABLES_ADMIN`, `SHOW_ROUTINE`, `TRIGGER` 权限。如果MySQL 5.7级以下版本，则无需授予 `SESSION_VARIABLES_ADMIN` 权限。
 
   3.校验数据对象
 
@@ -102,6 +102,21 @@ db1     testbin                         NULL            data            1,1     
 
 输出结果中，除了 **sbtest.sbtest2** 这个表所在行中 **Mapping** 列的值为 **-** 外，其他表的 **Mapping** 列的值都为 **Schema: db1:db2**，表示该表在源端和目标端的映射关系为 **db1.test2** 和 **db2.test2**。
 
+如果参数 `checkObject` 设置为 **routine** 或 **trigger**，则只能判断是否不一致，但无法生成fixSQL或直接完成修复，例如：
+
+```bash
+...
+Checksum Results Overview
+Schema  RoutineName     CheckObject     DIFFS   Datafix
+sbtest  MYADD           Procedure       yes     no
+sbtest  P1              Procedure       no      no
+sbtest  GETAGESTR       Function        yes     no
+sbtest  F1              Function        no      no
+...
+```
+
+虽然在 DIFFS 列中提示部分存储函数存在差异，但却都无法生成修复SQL，需要DBA介入判断后进行修复。
+
 ## 配置参数详解
 
 **gt-checksum** 支持命令行传参及指定配置文件两种方式运行，但不支持两种方式同时指定。
@@ -174,7 +189,7 @@ $ mv gt-checksum /usr/local/bin
 
 - 不支持对非InnoDB引擎表的数据校验。
 
-- 切换到"partitions|foreign|trigger|func|proc"等几个校验模式时，当校验结果不一致时，无法生成相应的修复SQL，即便设置`datafiex=table`也无法直接修复，需要DBA介入判断后手动修复。
+- 切换到"partitions|foreign|trigger|routine"等几个校验模式时，当校验结果不一致时，无法生成相应的修复SQL，即便设置`datafiex=table`也无法直接修复，需要DBA介入判断后手动修复。
 
 - 当数据表没有显式主键，且表中有多行数据是重复的，可能会导致校验结果不准确。
 
