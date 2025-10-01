@@ -2083,8 +2083,10 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 					key := schema + "." + name
 					if _, ok := procMap[key]; ok {
 						filteredSource[k] = v
-						if bodyKey := k + "_BODY"; sourceProc[bodyKey] != "" {
-							filteredSource[bodyKey] = sourceProc[bodyKey]
+						if bodyKey := k + "_BODY"; true {
+							if _, ok := sourceProc[bodyKey]; ok {
+								filteredSource[bodyKey] = sourceProc[bodyKey]
+							}
 						}
 					}
 				}
@@ -2103,8 +2105,10 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 					key := schema + "." + name
 					if _, ok := procMap[key]; ok {
 						filteredDest[k] = v
-						if bodyKey := k + "_BODY"; destProc[bodyKey] != "" {
-							filteredDest[bodyKey] = destProc[bodyKey]
+						if bodyKey := k + "_BODY"; true {
+							if _, ok := destProc[bodyKey]; ok {
+								filteredDest[bodyKey] = destProc[bodyKey]
+							}
 						}
 					}
 				}
@@ -2153,7 +2157,25 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 						// 同时存在：比较过程体
 						srcBody := strings.Join(strings.Fields(sourceProc[k+"_BODY"]), "")
 						dstBody := strings.Join(strings.Fields(destProc[k+"_BODY"]), "")
-						if srcBody != dstBody {
+						// 当 BODY 都为空时，回退到主定义字段进行比较，避免误判为一致
+						if srcBody == "" && dstBody == "" {
+							srcDef := strings.Join(strings.Fields(sourceProc[k]), "")
+							dstDef := strings.Join(strings.Fields(destProc[k]), "")
+							if srcDef == "" && dstDef == "" {
+								// 两侧都缺失可比较内容，视为差异，避免漏报
+								pods.ProcName = k
+								pods.DIFFS = "yes"
+								d = append(d, k)
+							} else if srcDef != dstDef {
+								pods.ProcName = k
+								pods.DIFFS = "yes"
+								d = append(d, k)
+							} else {
+								pods.ProcName = k
+								pods.DIFFS = "no"
+								c = append(c, k)
+							}
+						} else if srcBody != dstBody {
 							pods.ProcName = k
 							pods.DIFFS = "yes"
 							d = append(d, k)
