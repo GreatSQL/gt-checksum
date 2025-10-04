@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	mysql "gt-checksum/MySQL"
 	"gt-checksum/dbExec"
 	"gt-checksum/global"
 	"gt-checksum/inputArg"
@@ -336,7 +337,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 			// 应用修复SQL
 			vlog = fmt.Sprintf("(%d) %s Applying CREATE TABLE statement to %s.%s", logThreadSeq, event, destSchema, destTableName)
 			global.Wlog.Debug(vlog)
-			if err = ApplyDataFix([]string{createTableSql}, stcls.datafix, stcls.sfile, stcls.destDrive, stcls.djdbc, logThreadSeq); err != nil {
+			if err = mysql.WriteFixIfNeededFile(stcls.datafix, stcls.sfile, []string{createTableSql}, logThreadSeq); err != nil {
 				return nil, nil, err
 			}
 
@@ -355,7 +356,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 			// 应用修复SQL
 			vlog = fmt.Sprintf("(%d) %s Applying DROP TABLE statement to %s.%s", logThreadSeq, event, destSchema, destTableName)
 			global.Wlog.Debug(vlog)
-			if err = ApplyDataFix([]string{dropTableSql}, stcls.datafix, stcls.sfile, stcls.destDrive, stcls.djdbc, logThreadSeq); err != nil {
+			if err = mysql.WriteFixIfNeededFile(stcls.datafix, stcls.sfile, []string{dropTableSql}, logThreadSeq); err != nil {
 				return nil, nil, err
 			}
 
@@ -695,7 +696,8 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 		if len(sqlS) > 0 {
 			vlog = fmt.Sprintf("(%d) %s Applying repair statements to %s.%s: %v", logThreadSeq, event, destSchema, stcls.table, sqlS)
 			global.Wlog.Debug(vlog)
-			if err = ApplyDataFix(sqlS, stcls.datafix, stcls.sfile, stcls.destDrive, stcls.djdbc, logThreadSeq); err != nil {
+			// 统一封装为按 datafix=file 追加写入
+			if err = mysql.WriteFixIfNeededFile(stcls.datafix, stcls.sfile, sqlS, logThreadSeq); err != nil {
 				return nil, nil, err
 			}
 			vlog = fmt.Sprintf("(%d) %s Repair statements applied to %s.%s", logThreadSeq, event, destSchema, stcls.table)
@@ -1594,7 +1596,7 @@ func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 in
 		triggerMap = make(map[string]string) // 存储具体的触发器名称
 		c, d       []string
 		pods       = Pod{
-			Datafix:     "no",
+			Datafix:     stcls.datafix,
 			CheckObject: "trigger",
 		}
 		sourceTrigger, destTrigger map[string]string
@@ -1839,6 +1841,44 @@ func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 in
 			if sourceTrigger[k] != destTrigger[k] {
 				pods.DIFFS = "yes"
 				d = append(d, k)
+
+				// Generate and write fix SQL for TRIGGER mismatch using SHOW CREATE and DELIMITER
+				trName := strings.ReplaceAll(strings.Split(k, ".")[1], "\"", "")
+				trSourceDef := sourceTrigger[k]
+				query := fmt.Sprintf("SHOW CREATE TRIGGER `%s`.`%s`", schema, trName)
+				if rows, err := stcls.sourceDB.Query(query); err == nil {
+					defer rows.Close()
+					if cols, err := rows.Columns(); err == nil && rows.Next() {
+						values := make([]sql.RawBytes, len(cols))
+						args := make([]interface{}, len(cols))
+						for i := range values {
+							args[i] = &values[i]
+						}
+						if err := rows.Scan(args...); err == nil {
+							for i, col := range cols {
+								if strings.EqualFold(col, "SQL Original Statement") || strings.EqualFold(col, "SQL Statement") {
+									if v := string(values[i]); len(strings.TrimSpace(v)) > 0 {
+										trSourceDef = v
+										break
+									}
+								}
+							}
+						}
+					}
+				}
+				tsqls := mysql.GenerateTriggerFixSQL(schema, trName, trSourceDef)
+				// wrap with DELIMITER to ensure body semicolons don't conflict
+				var out []string
+				out = append(out, "DELIMITER $$")
+				for _, s := range tsqls {
+					ts := strings.TrimSpace(s)
+					if strings.HasPrefix(strings.ToUpper(ts), "DROP ") && !strings.HasSuffix(ts, ";") {
+						ts = ts + ";"
+					}
+					out = append(out, ts+"\n$$")
+				}
+				out = append(out, "DELIMITER ;")
+				_ = mysql.WriteFixIfNeededFile(stcls.datafix, stcls.sfile, out, logThreadSeq)
 			} else {
 				pods.DIFFS = "no"
 				c = append(c, k)
@@ -1964,6 +2004,60 @@ Routine: unified comparison for PROCEDURE and FUNCTION.
 - Prefer tc.Query().Routine(); if it fails, fallback to old Proc/Func paths.
 - Use appendPod to emit pods to buffer or measuredDataPods per aggregate flag.
 */
+func showCreateRoutine(db *sql.DB, schema, name, routineType string) (string, error) {
+	var query string
+	if strings.EqualFold(routineType, "PROCEDURE") {
+		query = fmt.Sprintf("SHOW CREATE PROCEDURE `%s`.`%s`", schema, name)
+	} else {
+		query = fmt.Sprintf("SHOW CREATE FUNCTION `%s`.`%s`", schema, name)
+	}
+
+	rows, err := db.Query(query)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	if err != nil {
+		return "", err
+	}
+	if !rows.Next() {
+		return "", fmt.Errorf("no SHOW CREATE result for %s.%s %s", schema, name, routineType)
+	}
+
+	// 使用 RawBytes 动态接收所有列
+	values := make([]sql.RawBytes, len(cols))
+	scanArgs := make([]interface{}, len(cols))
+	for i := range values {
+		scanArgs[i] = &values[i]
+	}
+	if err := rows.Scan(scanArgs...); err != nil {
+		return "", err
+	}
+
+	// 找到正确的 Create 列名
+	targetCol := ""
+	if strings.EqualFold(routineType, "PROCEDURE") {
+		targetCol = "Create Procedure"
+	} else {
+		targetCol = "Create Function"
+	}
+
+	var createSQL string
+	for i, col := range cols {
+		if strings.EqualFold(col, targetCol) {
+			createSQL = string(values[i])
+			break
+		}
+	}
+
+	if strings.TrimSpace(createSQL) == "" {
+		return "", fmt.Errorf("SHOW CREATE did not return %q column; got: %v", targetCol, cols)
+	}
+	return createSQL, nil
+}
+
 func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 int64, routineType string) {
 	// 合并 Proc/Func 主体逻辑，统一解析与比对，统一输出字段 ProcName
 	// 解析 dtabS，构建 schemaMap 与过滤映射
@@ -2049,7 +2143,7 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 				tmpM                 = make(map[string]int)
 				c, d                 []string
 				vlog                 string
-				pods                 = Pod{Datafix: "no", CheckObject: "Procedure", Schema: schema}
+				pods                 = Pod{Datafix: stcls.datafix, CheckObject: "Procedure", Schema: schema}
 			)
 
 			tc := dbExec.TableColumnNameStruct{
@@ -2191,6 +2285,30 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 						d = append(d, k)
 					}
 					stcls.appendPod(pods)
+					// Generate and write fix SQL for PROCEDURE differences (use SHOW CREATE for full definition)
+					if pods.DIFFS == "yes" && pods.CheckObject == "Procedure" {
+						sourceDef, err := showCreateRoutine(stcls.sourceDB, schema, k, "PROCEDURE")
+						if err != nil || len(strings.TrimSpace(sourceDef)) == 0 {
+							// 回退：使用之前采集到的定义
+							if def, ok := sourceProc[k]; ok {
+								sourceDef = def
+							}
+						}
+						sqls := mysql.GenerateRoutineFixSQL(schema, k, "PROCEDURE", sourceDef)
+						// wrap with DELIMITER for routine definitions
+						var out []string
+						out = append(out, "DELIMITER $$")
+						for _, s := range sqls {
+							ts := strings.TrimSpace(s)
+							// ensure DROP has trailing ';' before delimiter
+							if strings.HasPrefix(strings.ToUpper(ts), "DROP ") && !strings.HasSuffix(ts, ";") {
+								ts = ts + ";"
+							}
+							out = append(out, ts+"\n$$")
+						}
+						out = append(out, "DELIMITER ;")
+						_ = mysql.WriteFixIfNeededFile(stcls.datafix, stcls.sfile, out, logThreadSeq)
+					}
 				}
 			}
 			// 汇总日志
@@ -2206,7 +2324,7 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 				tmpM                 = make(map[string]int)
 				c, d                 []string
 				vlog                 string
-				pods                 = Pod{Datafix: "no", CheckObject: "Function", Schema: schema}
+				pods                 = Pod{Datafix: stcls.datafix, CheckObject: "Function", Schema: schema}
 			)
 
 			tc := dbExec.TableColumnNameStruct{
@@ -2296,6 +2414,29 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 						d = append(d, k)
 					}
 					stcls.appendPod(pods)
+					// Generate and write fix SQL for FUNCTION differences (use SHOW CREATE for full definition)
+					if pods.DIFFS == "yes" && pods.CheckObject == "Function" {
+						funcSource, err := showCreateRoutine(stcls.sourceDB, schema, k, "FUNCTION")
+						if err != nil || len(strings.TrimSpace(funcSource)) == 0 {
+							// 回退：使用之前采集到的定义
+							if def, ok := sourceFunc[k]; ok {
+								funcSource = def
+							}
+						}
+						funcSqls := mysql.GenerateRoutineFixSQL(schema, k, "FUNCTION", funcSource)
+						// wrap with DELIMITER for routine definitions
+						var fout []string
+						fout = append(fout, "DELIMITER $$")
+						for _, s := range funcSqls {
+							ts := strings.TrimSpace(s)
+							if strings.HasPrefix(strings.ToUpper(ts), "DROP ") && !strings.HasSuffix(ts, ";") {
+								ts = ts + ";"
+							}
+							fout = append(fout, ts+"\n$$")
+						}
+						fout = append(fout, "DELIMITER ;")
+						_ = mysql.WriteFixIfNeededFile(stcls.datafix, stcls.sfile, fout, logThreadSeq)
+					}
 				}
 			}
 			// 汇总日志
@@ -2315,329 +2456,6 @@ func (stcls *schemaTable) Proc(dtabS []string, logThreadSeq, logThreadSeq2 int64
 }
 
 /*
-		vlog = fmt.Sprintf("(%d) Start init check source and target DB Stored Procedure. to check it...", logThreadSeq)
-	global.Wlog.Info(vlog)
-
-	// 从dtabS中提取schema信息和存储过程名称
-	for _, i := range dtabS {
-		// 处理映射格式 schema.proc:schema.proc
-		if strings.Contains(i, ":") {
-			parts := strings.Split(i, ":")
-			if len(parts) == 2 {
-				sourceParts := strings.Split(parts[0], ".")
-				if len(sourceParts) >= 1 {
-					schema := sourceParts[0]
-
-					if stcls.caseSensitiveObjectName == "no" {
-						schema = strings.ToLower(schema)
-					}
-					schemaMap[schema] = 1
-
-					// 如果指定了具体的存储过程名称
-					if len(sourceParts) >= 2 && sourceParts[1] != "*" {
-						procName := strings.ToLower(sourceParts[1])
-						procMap[schema+"."+procName] = procName
-					}
-				}
-			}
-		} else {
-			// 处理普通格式 schema.proc 或 schema.*
-			parts := strings.Split(i, ".")
-			if len(parts) >= 1 {
-				schema := parts[0]
-				if stcls.caseSensitiveObjectName == "no" {
-					schema = strings.ToLower(schema)
-				}
-				schemaMap[schema] = 1
-
-				// 如果指定了具体的存储过程名称
-				if len(parts) >= 2 && parts[1] != "*" {
-					procName := strings.ToLower(parts[1])
-					procMap[schema+"."+procName] = procName
-				}
-			}
-		}
-	}
-
-	// 添加调试日志，显示提取的schema和存储过程信息
-	vlog = fmt.Sprintf("(%d) Extracted schema map: %v, proc map: %v", logThreadSeq, schemaMap, procMap)
-	global.Wlog.Debug(vlog)
-
-	// 如果schemaMap为空，但stcls.schema不为空，则使用stcls.schema
-	if len(schemaMap) == 0 && stcls.schema != "" {
-		schema := stcls.schema
-		if stcls.caseSensitiveObjectName == "no" {
-			schema = strings.ToLower(schema)
-		}
-		schemaMap[schema] = 1
-		vlog = fmt.Sprintf("(%d) No schema found in dtabS, using default schema: %s", logThreadSeq, schema)
-		global.Wlog.Debug(vlog)
-	}
-
-	for schema, _ := range schemaMap {
-		vlog = fmt.Sprintf("(%d) Start processing srcDSN {%s} databases %s Stored Procedure. to dispos it...", logThreadSeq, stcls.sourceDrive, schema)
-		global.Wlog.Debug(vlog)
-		tc := dbExec.TableColumnNameStruct{
-			Schema:                  schema,
-			Drive:                   stcls.sourceDrive,
-			CaseSensitiveObjectName: stcls.caseSensitiveObjectName,
-		}
-
-		// 获取源数据库的存储过程
-		if sourceProc, err = tc.Query().Proc(stcls.sourceDB, logThreadSeq2); err != nil {
-			vlog = fmt.Sprintf("(%d) Error querying source procedures: %v", logThreadSeq, err)
-			global.Wlog.Error(vlog)
-			return
-		}
-
-		// 如果有指定具体的存储过程，则过滤结果
-		if len(procMap) > 0 {
-			filteredSourceProc := make(map[string]string)
-			for k, v := range sourceProc {
-				if k == "DEFINER" {
-					filteredSourceProc[k] = v
-					continue
-				}
-
-				// 根据大小写敏感设置决定是否转换大小写
-				procName := k
-				if stcls.caseSensitiveObjectName == "no" {
-					procName = strings.ToLower(procName)
-				}
-
-				procKey := schema + "." + procName
-
-				// 添加调试日志
-				vlog = fmt.Sprintf("(%d) Checking procedure: %s, key: %s", logThreadSeq, k, procKey)
-				global.Wlog.Debug(vlog)
-
-				// 检查是否在过滤映射中
-				if _, exists := procMap[procKey]; exists {
-					filteredSourceProc[k] = v
-					// 确保也保留过程体
-					if bodyKey := k + "_BODY"; sourceProc[bodyKey] != "" {
-						filteredSourceProc[bodyKey] = sourceProc[bodyKey]
-					}
-					vlog = fmt.Sprintf("(%d) Keeping procedure: %s", logThreadSeq, k)
-					global.Wlog.Debug(vlog)
-				}
-			}
-			sourceProc = filteredSourceProc
-		} else {
-			// 如果procMap为空（表示使用通配符），则不进行过滤，保留所有存储过程
-			vlog = fmt.Sprintf("(%d) No specific procedures specified, keeping all %d source procedures", logThreadSeq, len(sourceProc))
-			global.Wlog.Debug(vlog)
-
-			// 当使用通配符时，将所有存储过程名称添加到procMap中，以便后续比较
-			for k, _ := range sourceProc {
-				if k == "DEFINER" || strings.HasSuffix(k, "_BODY") {
-					continue
-				}
-
-				procName := k
-				if stcls.caseSensitiveObjectName == "no" {
-					procName = strings.ToLower(procName)
-				}
-
-				procKey := schema + "." + procName
-				procMap[procKey] = procName
-				vlog = fmt.Sprintf("(%d) Added procedure to map: %s", logThreadSeq, procKey)
-				global.Wlog.Debug(vlog)
-			}
-		}
-
-		vlog = fmt.Sprintf("(%d) srcDSN {%s} databases %s message is {%s}", logThreadSeq, stcls.sourceDrive, schema, sourceProc)
-		global.Wlog.Debug(vlog)
-
-		// 设置目标端查询参数
-		tc.Drive = stcls.destDrive
-		vlog = fmt.Sprintf("(%d) Start processing dstDSN {%s} databases %s Stored Procedure data. to dispos it...", logThreadSeq, stcls.destDrive, schema)
-		global.Wlog.Debug(vlog)
-
-		// 获取目标数据库的存储过程
-		if destProc, err = tc.Query().Proc(stcls.destDB, logThreadSeq2); err != nil {
-			vlog = fmt.Sprintf("(%d) Error querying destination procedures: %v", logThreadSeq, err)
-			global.Wlog.Error(vlog)
-			return
-		}
-
-		// 如果有指定具体的存储过程，则过滤结果
-		if len(procMap) > 0 {
-			filteredDestProc := make(map[string]string)
-			for k, v := range destProc {
-				if k == "DEFINER" {
-					filteredDestProc[k] = v
-					continue
-				}
-
-				// 根据大小写敏感设置决定是否转换大小写
-				procName := k
-				if stcls.caseSensitiveObjectName == "no" {
-					procName = strings.ToLower(procName)
-				}
-
-				procKey := schema + "." + procName
-
-				// 添加调试日志
-				vlog = fmt.Sprintf("(%d) Checking dest procedure: %s, key: %s", logThreadSeq, k, procKey)
-				global.Wlog.Debug(vlog)
-
-				// 检查是否在过滤映射中
-				if _, exists := procMap[procKey]; exists {
-					filteredDestProc[k] = v
-					// 确保也保留过程体
-					if bodyKey := k + "_BODY"; destProc[bodyKey] != "" {
-						filteredDestProc[bodyKey] = destProc[bodyKey]
-					}
-					vlog = fmt.Sprintf("(%d) Keeping dest procedure: %s", logThreadSeq, k)
-					global.Wlog.Debug(vlog)
-				}
-			}
-			destProc = filteredDestProc
-		} else {
-			// 如果procMap为空（表示使用通配符），则不进行过滤，保留所有存储过程
-			vlog = fmt.Sprintf("(%d) No specific procedures specified, keeping all %d destination procedures", logThreadSeq, len(destProc))
-			global.Wlog.Debug(vlog)
-
-			// 当使用通配符时，将所有目标端存储过程名称也添加到procMap中
-			for k, _ := range destProc {
-				if k == "DEFINER" || strings.HasSuffix(k, "_BODY") {
-					continue
-				}
-
-				procName := k
-				if stcls.caseSensitiveObjectName == "no" {
-					procName = strings.ToLower(procName)
-				}
-
-				procKey := schema + "." + procName
-				procMap[procKey] = procName
-				vlog = fmt.Sprintf("(%d) Added dest procedure to map: %s", logThreadSeq, procKey)
-				global.Wlog.Debug(vlog)
-			}
-		}
-
-		vlog = fmt.Sprintf("(%d) dstDSN {%s} databases %s message is {%s}", logThreadSeq, stcls.destDrive, schema, destProc)
-		global.Wlog.Debug(vlog)
-
-		if len(sourceProc) == 0 && len(destProc) == 0 {
-			vlog = fmt.Sprintf("(%d) The current original target data is empty, and the verification of this databases %s will be skipped", logThreadSeq, schema)
-			global.Wlog.Warn(vlog)
-			continue
-		}
-
-		tmpM = make(map[string]int)
-		vlog = fmt.Sprintf("(%d) Start seeking the union of the source and target databases %s Stored Procedure. to dispos it...", logThreadSeq, schema)
-		global.Wlog.Debug(vlog)
-		for k, _ := range sourceProc {
-			if k == "DEFINER" {
-				continue
-			}
-			tmpM[k]++
-		}
-		for k, _ := range destProc {
-			if k == "DEFINER" {
-				continue
-			}
-			tmpM[k]++
-		}
-		vlog = fmt.Sprintf("(%d) Start to compare whether the Stored Procedure is consistent.", logThreadSeq)
-		global.Wlog.Debug(vlog)
-		pods.Schema = schema
-		for k, v := range tmpM {
-			// 无论数据库驱动是否相同，都应该比较存储过程的内容
-			// 首先检查存储过程是否同时存在于源端和目标端
-			if v == 2 {
-				// 存储过程同时存在于源端和目标端，比较其内容
-				// 初始化差异标志
-				diffFlag := false
-				var diffReason []string
-				pods.RoutineName = k
-
-				// 比较存储过程体 - 规范化处理后比较
-				sourceBody := normalizeStoredProcBody(sourceProc[k])
-				destBody := normalizeStoredProcBody(destProc[k])
-
-				// 记录原始和规范化后的存储过程体，用于调试
-				vlog = fmt.Sprintf("(%d) Original source procedure body: %s", logThreadSeq, sourceProc[k])
-				global.Wlog.Debug(vlog)
-				vlog = fmt.Sprintf("(%d) Original target procedure body: %s", logThreadSeq, destProc[k])
-				global.Wlog.Debug(vlog)
-				vlog = fmt.Sprintf("(%d) Normalized source procedure body: %s", logThreadSeq, sourceBody)
-				global.Wlog.Debug(vlog)
-				vlog = fmt.Sprintf("(%d) Normalized target procedure body: %s", logThreadSeq, destBody)
-				global.Wlog.Debug(vlog)
-
-				// 比较存储过程体
-				if sourceBody != destBody {
-					diffFlag = true
-					diffReason = append(diffReason, "Stored procedure body mismatch")
-					vlog = fmt.Sprintf("(%d) Stored procedure %s.%s content mismatch - DIFFERENT FUNCTIONALITY DETECTED", logThreadSeq, schema, k)
-					global.Wlog.Warn(vlog)
-
-					// 尝试识别具体的差异
-					if strings.Contains(destBody, "*2") && !strings.Contains(sourceBody, "*2") {
-						vlog = fmt.Sprintf("(%d) Target procedure multiplies by 2, source does not", logThreadSeq)
-						global.Wlog.Warn(vlog)
-					} else if strings.Contains(sourceBody, "*2") && !strings.Contains(destBody, "*2") {
-						vlog = fmt.Sprintf("(%d) Source procedure multiplies by 2, target does not", logThreadSeq)
-						global.Wlog.Warn(vlog)
-					}
-				} else {
-					vlog = fmt.Sprintf("(%d) Stored procedure %s.%s content match after normalization", logThreadSeq, schema, k)
-					global.Wlog.Debug(vlog)
-				}
-
-				// 从存储过程定义中提取元数据
-				sourceMetadata := extractMetadataFromProcedure(sourceProc[k])
-				destMetadata := extractMetadataFromProcedure(destProc[k])
-
-				// 比较元数据
-				metadataFields := []string{"SQL_MODE", "CHARACTER_SET_CLIENT", "COLLATION_CONNECTION", "DATABASE_COLLATION", "DEFINER"}
-				for _, field := range metadataFields {
-					if sourceMetadata[field] != destMetadata[field] {
-						diffFlag = true
-						diffReason = append(diffReason, fmt.Sprintf("%s mismatch: source=%s, target=%s", field, sourceMetadata[field], destMetadata[field]))
-						vlog = fmt.Sprintf("(%d) Stored procedure %s.%s %s mismatch: source=%s, target=%s",
-							logThreadSeq, schema, k, field, sourceMetadata[field], destMetadata[field])
-						global.Wlog.Warn(vlog)
-					}
-				}
-
-				// 根据比较结果设置DIFFS值
-				if diffFlag {
-					pods.DIFFS = "yes"
-					d = append(d, k)
-					vlog = fmt.Sprintf("(%d) Stored procedure %s.%s is different between source and target: %s",
-						logThreadSeq, schema, k, strings.Join(diffReason, "; "))
-					global.Wlog.Warn(vlog)
-				} else {
-					pods.DIFFS = "no"
-					c = append(c, k)
-					vlog = fmt.Sprintf("(%d) Stored procedure %s.%s is identical between source and target",
-						logThreadSeq, schema, k)
-					global.Wlog.Info(vlog)
-				}
-			} else {
-				// 存储过程只存在于源端或目标端，标记为不一致
-				pods.RoutineName = k
-				pods.DIFFS = "yes"
-				d = append(d, k)
-				vlog = fmt.Sprintf("(%d) Stored procedure %s.%s exists only in one database", logThreadSeq, schema, k)
-				global.Wlog.Debug(vlog)
-			}
-			vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment databases %s Stored Procedure. normal databases message is {%s} num [%d] abnormal databases message is {%s} num [%d]", logThreadSeq, schema, c, len(c), d, len(d))
-			global.Wlog.Debug(vlog)
-			vlog = fmt.Sprintf("(%d) The source target segment databases %s Stored Procedure data verification is completed", logThreadSeq, schema)
-			global.Wlog.Debug(vlog)
-			stcls.appendPod(pods)
-		}
-	}
-	vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment table Stored Procedure data. normal databases message is {%s} num [%d] abnormal databases message is {%s} num [%d]", logThreadSeq, c, len(c), d, len(d))
-	global.Wlog.Info(vlog)
-*/
-
-/*
 校验函数
 */
 /*
@@ -2648,208 +2466,6 @@ func (stcls *schemaTable) Func(dtabS []string, logThreadSeq, logThreadSeq2 int64
 	return
 }
 
-/*
-vlog = fmt.Sprintf("(%d) Start init check source and target DB Stored Function. to check it...", logThreadSeq)
-global.Wlog.Info(vlog)
-
-// 从dtabS中提取schema信息和函数名称
-
-	for _, i := range dtabS {
-		// 处理映射格式 schema.func:schema.func
-		if strings.Contains(i, ":") {
-			parts := strings.Split(i, ":")
-			if len(parts) == 2 {
-				sourceParts := strings.Split(parts[0], ".")
-				if len(sourceParts) >= 1 {
-					schema := sourceParts[0]
-
-					if stcls.caseSensitiveObjectName == "no" {
-						schema = strings.ToLower(schema)
-					}
-					schemaMap[schema] = 1
-
-					// 如果指定了具体的函数名称
-					if len(sourceParts) >= 2 && sourceParts[1] != "*" {
-						funcName := strings.ToLower(sourceParts[1])
-						funcMap[schema+"."+funcName] = funcName
-					}
-				}
-			}
-		} else {
-			// 处理普通格式 schema.func 或 schema.*
-			parts := strings.Split(i, ".")
-			if len(parts) >= 1 {
-				schema := parts[0]
-
-				if stcls.caseSensitiveObjectName == "no" {
-					schema = strings.ToLower(schema)
-				}
-				schemaMap[schema] = 1
-
-				// 如果指定了具体的函数名称
-				if len(parts) >= 2 && parts[1] != "*" {
-					funcName := strings.ToLower(parts[1])
-					funcMap[schema+"."+funcName] = funcName
-				}
-			}
-		}
-	}
-
-// 如果schemaMap为空，但stcls.schema不为空，则使用stcls.schema
-
-	if len(schemaMap) == 0 && stcls.schema != "" {
-		schema := stcls.schema
-
-		if stcls.caseSensitiveObjectName == "no" {
-			schema = strings.ToLower(schema)
-		}
-		schemaMap[schema] = 1
-		vlog = fmt.Sprintf("(%d) No schema found in dtabS, using default schema: %s", logThreadSeq, schema)
-		global.Wlog.Debug(vlog)
-	}
-
-	for schema, _ := range schemaMap {
-		vlog = fmt.Sprintf("(%d) Start processing srcDSN {%s} databases %s Stored Function. to dispos it...", logThreadSeq, stcls.sourceDrive, schema)
-		global.Wlog.Debug(vlog)
-		tc := dbExec.TableColumnNameStruct{
-			Schema:                  schema,
-			Drive:                   stcls.sourceDrive,
-			CaseSensitiveObjectName: stcls.caseSensitiveObjectName,
-		}
-
-		// 获取源数据库的函数
-		if sourceFunc, err = tc.Query().Func(stcls.sourceDB, logThreadSeq2); err != nil {
-			vlog = fmt.Sprintf("(%d) Error querying source functions: %v", logThreadSeq, err)
-			global.Wlog.Error(vlog)
-			return
-		}
-
-		// 如果有指定具体的函数，则过滤结果
-		if len(funcMap) > 0 {
-			filteredSourceFunc := make(map[string]string)
-			for k, v := range sourceFunc {
-				funcKey := strings.ToLower(schema + "." + k)
-				if _, exists := funcMap[funcKey]; exists {
-					filteredSourceFunc[k] = v
-				}
-			}
-			sourceFunc = filteredSourceFunc
-		} else {
-			// 如果funcMap为空（表示使用通配符），则不进行过滤，保留所有函数
-			vlog = fmt.Sprintf("(%d) No specific functions specified, keeping all %d source functions", logThreadSeq, len(sourceFunc))
-			global.Wlog.Debug(vlog)
-
-			// 当使用通配符时，将所有函数名称添加到funcMap中，以便后续比较
-			for k, _ := range sourceFunc {
-				funcName := k
-				if stcls.caseSensitiveObjectName == "no" {
-					funcName = strings.ToLower(funcName)
-				}
-
-				funcKey := schema + "." + funcName
-				funcMap[funcKey] = funcName
-				vlog = fmt.Sprintf("(%d) Added function to map: %s", logThreadSeq, funcKey)
-				global.Wlog.Debug(vlog)
-			}
-		}
-
-		vlog = fmt.Sprintf("(%d) srcDSN {%s} databases %s message is {%s}", logThreadSeq, stcls.sourceDrive, schema, sourceFunc)
-		global.Wlog.Debug(vlog)
-
-		tc.Drive = stcls.destDrive
-		vlog = fmt.Sprintf("(%d) Start processing dstDSN {%s} databases %s Stored Function data. to dispos it...", logThreadSeq, stcls.destDrive, schema)
-		global.Wlog.Debug(vlog)
-
-		// 获取目标数据库的函数
-		if destFunc, err = tc.Query().Func(stcls.destDB, logThreadSeq2); err != nil {
-			vlog = fmt.Sprintf("(%d) Error querying destination functions: %v", logThreadSeq, err)
-			global.Wlog.Error(vlog)
-			return
-		}
-
-		// 如果有指定具体的函数，则过滤结果
-		if len(funcMap) > 0 {
-			filteredDestFunc := make(map[string]string)
-			for k, v := range destFunc {
-				funcKey := strings.ToLower(schema + "." + k)
-
-				if _, exists := funcMap[funcKey]; exists {
-					filteredDestFunc[k] = v
-				}
-			}
-			destFunc = filteredDestFunc
-		} else {
-			// 如果funcMap为空（表示使用通配符），则不进行过滤，保留所有函数
-			vlog = fmt.Sprintf("(%d) No specific functions specified, keeping all %d destination functions", logThreadSeq, len(destFunc))
-			global.Wlog.Debug(vlog)
-
-			// 当使用通配符时，将所有目标端函数名称也添加到funcMap中
-			for k, _ := range destFunc {
-				funcName := k
-				if stcls.caseSensitiveObjectName == "no" {
-					funcName = strings.ToLower(funcName)
-				}
-
-				funcKey := schema + "." + funcName
-				funcMap[funcKey] = funcName
-				vlog = fmt.Sprintf("(%d) Added dest function to map: %s", logThreadSeq, funcKey)
-				global.Wlog.Debug(vlog)
-			}
-		}
-
-		vlog = fmt.Sprintf("(%d) dstDSN {%s} databases %s message is {%s}", logThreadSeq, stcls.destDrive, schema, destFunc)
-		global.Wlog.Debug(vlog)
-
-		if len(sourceFunc) == 0 && len(destFunc) == 0 {
-			vlog = fmt.Sprintf("(%d) The current original target data is empty, and the verification of this databases %s will be skipped", logThreadSeq, schema)
-			global.Wlog.Debug(vlog)
-			continue
-		}
-
-		tmpM = make(map[string]int)
-		vlog = fmt.Sprintf("(%d) Start seeking the union of the source and target databases %s Stored Function. to dispos it...", logThreadSeq, schema)
-		global.Wlog.Debug(vlog)
-		for k, _ := range sourceFunc {
-			tmpM[k]++
-		}
-		for k, _ := range destFunc {
-			tmpM[k]++
-		}
-		vlog = fmt.Sprintf("(%d) Start to compare whether the Stored Function is consistent.", logThreadSeq)
-		global.Wlog.Debug(vlog)
-		pods.Schema = schema
-		for k, v := range tmpM {
-			var sv, dv string
-			if stcls.sourceDrive != stcls.destDrive { //异构,只校验函数名
-				if v == 2 {
-					pods.RoutineName = k
-					pods.DIFFS = "no"
-					c = append(c, k)
-				} else {
-					pods.RoutineName = k
-					pods.DIFFS = "yes"
-					d = append(d, k)
-				}
-			} else { //相同架构，校验函数结构体
-				sv, dv = sourceFunc[k], destFunc[k]
-				if sv != dv {
-					pods.RoutineName = k
-					pods.DIFFS = "yes"
-					d = append(d, k)
-				} else {
-					pods.RoutineName = k
-					pods.DIFFS = "no"
-					c = append(c, k)
-				}
-			}
-			vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment databases %s Stored Function. normal databases message is {%s} num [%d] abnormal databases message is {%s} num [%d]", logThreadSeq, schema, c, len(c), d, len(d))
-			global.Wlog.Debug(vlog)
-			vlog = fmt.Sprintf("(%d) The source target segment databases %s Stored Function data verification is completed", logThreadSeq, schema)
-			global.Wlog.Debug(vlog)
-			stcls.appendPod(pods)
-		}
-	}
-*/
 func (stcls *schemaTable) Foreign(dtabS []string, logThreadSeq, logThreadSeq2 int64, isCalledFromStruct ...bool) {
 	var (
 		vlog                       string
@@ -3349,7 +2965,7 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 		if len(sqlS) > 0 {
 			pods.DIFFS = "yes"
 
-			err := ApplyDataFix(sqlS, stcls.datafix, stcls.sfile, stcls.destDrive, stcls.djdbc, logThreadSeq)
+			err := mysql.WriteFixIfNeededFile(stcls.datafix, stcls.sfile, sqlS, logThreadSeq)
 			if err != nil {
 				return err
 			}

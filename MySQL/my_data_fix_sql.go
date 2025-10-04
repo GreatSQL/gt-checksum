@@ -1,9 +1,11 @@
 package mysql
 
 import (
+	"bufio"
 	"database/sql"
 	"fmt"
 	"gt-checksum/global"
+	"os"
 	"strconv"
 	"strings"
 )
@@ -516,4 +518,90 @@ func (my *MysqlDataAbnormalFixStruct) FixTableCharsetSqlGenerate(charset, collat
 	global.Wlog.Debug(vlog)
 
 	return alterSql
+}
+
+// WriteFixIfNeeded writes fix SQLs to file when datafix is "file"
+func WriteFixIfNeeded(datafix, fixFileName string, sqls []string, logThreadSeq int64) error {
+	if strings.EqualFold(datafix, "file") && len(sqls) > 0 && strings.TrimSpace(fixFileName) != "" {
+		return writeFixSQLToFile(fixFileName, sqls, logThreadSeq)
+	}
+	return nil
+}
+
+// WriteFixIfNeededFile writes fix SQLs to an opened *os.File when datafix is "file"
+func WriteFixIfNeededFile(datafix string, sfile *os.File, sqls []string, logThreadSeq int64) error {
+	if !strings.EqualFold(datafix, "file") || sfile == nil || len(sqls) == 0 {
+		return nil
+	}
+	w := bufio.NewWriter(sfile)
+	for _, s := range sqls {
+		ss := strings.TrimSpace(s)
+		if ss == "" {
+			continue
+		}
+		if !strings.HasSuffix(ss, ";") {
+			ss += ";"
+		}
+		if _, err := w.WriteString(ss + "\n"); err != nil {
+			return err
+		}
+	}
+	if err := w.Flush(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// writeFixSQLToFile appends SQL statements into the specified file
+func writeFixSQLToFile(path string, sqls []string, logThreadSeq int64) error {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		vlog := fmt.Sprintf("(%d) Failed to open fix SQL file %s: %v", logThreadSeq, path, err)
+		global.Wlog.Error(vlog)
+		return err
+	}
+	defer f.Close()
+
+	w := bufio.NewWriter(f)
+	wrote := 0
+	for _, s := range sqls {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		// ensure semicolon termination
+		if !strings.HasSuffix(s, ";") {
+			s = s + ";"
+		}
+		if _, err := w.WriteString(s + "\n"); err != nil {
+			vlog := fmt.Sprintf("(%d) Failed to write fix SQL to %s: %v", logThreadSeq, path, err)
+			global.Wlog.Error(vlog)
+			return err
+		}
+		wrote++
+	}
+	if err := w.Flush(); err != nil {
+		vlog := fmt.Sprintf("(%d) Failed to flush fix SQL to %s: %v", logThreadSeq, path, err)
+		global.Wlog.Error(vlog)
+		return err
+	}
+
+	vlog := fmt.Sprintf("(%d) Appended %d fix SQL statements to %s", logThreadSeq, wrote, path)
+	global.Wlog.Debug(vlog)
+	return nil
+}
+
+// GenerateRoutineFixSQL builds DROP + CREATE statements for procedure/function
+// routineType should be "PROCEDURE" or "FUNCTION"
+func GenerateRoutineFixSQL(schema, name, routineType, sourceDef string) []string {
+	drop := fmt.Sprintf("DROP %s IF EXISTS `%s`.`%s`;", strings.ToUpper(routineType), schema, name)
+	// sourceDef is expected to be a full CREATE PROCEDURE/FUNCTION definition from source
+	return []string{drop, strings.TrimSpace(sourceDef)}
+}
+
+// GenerateTriggerFixSQL builds DROP + CREATE statements for trigger
+func GenerateTriggerFixSQL(schema, name, sourceDef string) []string {
+	drop := fmt.Sprintf("DROP TRIGGER IF EXISTS `%s`.`%s`;", schema, name)
+	// sourceDef is expected to be a full CREATE TRIGGER definition from source
+	return []string{drop, strings.TrimSpace(sourceDef)}
 }

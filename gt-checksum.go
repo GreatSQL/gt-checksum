@@ -103,7 +103,6 @@ func main() {
 			fmt.Println(fmt.Sprintf("gt-checksum: Table structure verification failed. Check %s for details or set logLevel=debug", m.SecondaryL.LogV.LogFile))
 			os.Exit(1)
 		}
-		// 注意：index、partitions和foreign的功能已经合并到struct中，不再需要单独的case
 	case "trigger":
 		schemaTableInstance.Trigger(tableList, 11, 12)
 	case "routine":
