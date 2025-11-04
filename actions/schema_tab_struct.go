@@ -52,6 +52,8 @@ type schemaTable struct {
 	tableMappings map[string]string
 	// 需要跳过索引检查的表列表
 	skipIndexCheckTables []string
+	// 列修复操作映射表，用于合并列和索引操作
+	columnRepairMap map[string][]string
 }
 
 // normalizeStoredProcBody 规范化存储过程体，以便更准确地比较
@@ -2964,6 +2966,76 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 		// 应用并清空 sqlS
 		if len(sqlS) > 0 {
 			pods.DIFFS = "yes"
+
+			// 检查是否有列修复操作需要合并
+			tableKey := fmt.Sprintf("%s.%s", stcls.schema, stcls.table)
+			if stcls.columnRepairMap != nil {
+				if columnOperations, exists := stcls.columnRepairMap[tableKey]; exists && len(columnOperations) > 0 {
+					// 创建DataAbnormalFixStruct用于合并操作
+					destSchema := stcls.schema
+					if mappedSchema, exists := stcls.tableMappings[stcls.schema]; exists {
+						destSchema = mappedSchema
+					}
+					
+					dbf := dbExec.DataAbnormalFixStruct{
+						Schema:       destSchema,
+						Table:        stcls.table,
+						SourceDevice: stcls.sourceDrive,
+						DestDevice:   stcls.destDrive,
+						DatafixType:  stcls.datafix,
+						SourceSchema: stcls.schema,
+					}
+					
+					// 合并列修复和索引修复操作
+					combinedSql := dbf.DataAbnormalFix().FixAlterColumnAndIndexSqlGenerate(columnOperations, sqlS, logThreadSeq)
+					
+					// 使用合并后的SQL
+					sqlS = combinedSql
+					
+					// 从columnRepairMap中删除已处理的表
+					delete(stcls.columnRepairMap, tableKey)
+					
+					vlog = fmt.Sprintf("(%d) %s Merged column and index operations for table %s.%s", 
+						logThreadSeq, event, stcls.schema, stcls.table)
+					global.Wlog.Debug(vlog)
+				} else {
+					// 只有索引操作，合并索引操作
+					destSchema := stcls.schema
+					if mappedSchema, exists := stcls.tableMappings[stcls.schema]; exists {
+						destSchema = mappedSchema
+					}
+					
+					dbf := dbExec.DataAbnormalFixStruct{
+						Schema:       destSchema,
+						Table:        stcls.table,
+						SourceDevice: stcls.sourceDrive,
+						DestDevice:   stcls.destDrive,
+						DatafixType:  stcls.datafix,
+						SourceSchema: stcls.schema,
+					}
+					
+					combinedSql := dbf.DataAbnormalFix().FixAlterIndexSqlGenerate(sqlS, logThreadSeq)
+					sqlS = combinedSql
+				}
+			} else {
+				// 只有索引操作，合并索引操作
+				destSchema := stcls.schema
+				if mappedSchema, exists := stcls.tableMappings[stcls.schema]; exists {
+					destSchema = mappedSchema
+				}
+				
+				dbf := dbExec.DataAbnormalFixStruct{
+					Schema:       destSchema,
+					Table:        stcls.table,
+					SourceDevice: stcls.sourceDrive,
+					DestDevice:   stcls.destDrive,
+					DatafixType:  stcls.datafix,
+					SourceSchema: stcls.schema,
+				}
+				
+				combinedSql := dbf.DataAbnormalFix().FixAlterIndexSqlGenerate(sqlS, logThreadSeq)
+				sqlS = combinedSql
+			}
 
 			err := mysql.WriteFixIfNeededFile(stcls.datafix, stcls.sfile, sqlS, logThreadSeq)
 			if err != nil {
