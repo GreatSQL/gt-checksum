@@ -467,9 +467,9 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterColumnSqlDispos(alterType string, 
 	} else {
 		collumnDefaultN = fmt.Sprintf("DEFAULT '%s'", columnDataType[4])
 	}
-	commantS := ""
+	commentS := ""
 	if columnDataType[5] != "empty" {
-		commantS = fmt.Sprintf("COMMENT '%s'", columnDataType[5])
+		commentS = fmt.Sprintf("COMMENT '%s'", columnDataType[5])
 	}
 	columnLocation := ""
 	if columnSeq == 0 {
@@ -482,11 +482,11 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterColumnSqlDispos(alterType string, 
 	}
 	switch alterType {
 	case "add":
-		sqlS = fmt.Sprintf("ADD COLUMN `%s` %s %s %s %s %s %s %s", curryColumn, columnDataType[0], charsetN, collationN, nullS, collumnDefaultN, commantS, columnLocation)
+		sqlS = fmt.Sprintf(" ADD COLUMN `%s` %s %s %s %s %s %s %s", curryColumn, columnDataType[0], charsetN, collationN, nullS, collumnDefaultN, commentS, columnLocation)
 	case "modify":
-		sqlS = fmt.Sprintf("MODIFY COLUMN `%s` %s %s %s %s %s %s %s", curryColumn, columnDataType[0], charsetN, collationN, nullS, collumnDefaultN, commantS, columnLocation)
+		sqlS = fmt.Sprintf(" MODIFY COLUMN `%s` %s %s %s %s %s %s %s", curryColumn, columnDataType[0], charsetN, collationN, nullS, collumnDefaultN, commentS, columnLocation)
 	case "drop":
-		sqlS = fmt.Sprintf("DROP COLUMN `%s` ", curryColumn)
+		sqlS = fmt.Sprintf(" DROP COLUMN `%s` ", curryColumn)
 	}
 	return sqlS
 }
@@ -499,6 +499,99 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterColumnSqlGenerate(modifyColumn []s
 	if len(modifyColumn) > 0 {
 		alterSql = append(alterSql, fmt.Sprintf("ALTER TABLE `%s`.`%s` %s;", targetSchema, my.Table, strings.Join(modifyColumn, ",")))
 	}
+	return alterSql
+}
+
+// FixAlterColumnAndIndexSqlGenerate 合并列修复和索引修复操作，生成单个ALTER TABLE语句
+func (my *MysqlDataAbnormalFixStruct) FixAlterColumnAndIndexSqlGenerate(columnOperations, indexOperations []string, logThreadSeq int64) []string {
+	var (
+		alterSql     []string
+		targetSchema = my.Schema // 默认使用目标schema
+	)
+
+	// 合并所有操作
+	var allOperations []string
+	allOperations = append(allOperations, columnOperations...)
+	allOperations = append(allOperations, indexOperations...)
+
+	if len(allOperations) > 0 {
+		// 提取操作内容（去除ALTER TABLE前缀和分号）
+		var operationContents []string
+		for _, op := range allOperations {
+			// 去除ALTER TABLE前缀
+			op = strings.TrimSpace(op)
+			if strings.HasPrefix(strings.ToUpper(op), "ALTER TABLE") {
+				// 找到第一个空格后的内容
+				parts := strings.SplitN(op, " ", 4)
+				if len(parts) >= 4 {
+					// 获取操作内容部分
+					operationContent := strings.TrimSpace(parts[3])
+					// 去除末尾的分号
+					operationContent = strings.TrimSuffix(operationContent, ";")
+					operationContents = append(operationContents, operationContent)
+				}
+			} else {
+				// 如果不是ALTER TABLE语句，直接使用并去除分号
+				op = strings.TrimSuffix(op, ";")
+				operationContents = append(operationContents, op)
+			}
+		}
+
+		if len(operationContents) > 0 {
+			// 生成单个ALTER TABLE语句，包含所有操作
+			alterSql = append(alterSql, fmt.Sprintf("ALTER TABLE `%s`.`%s` %s;", targetSchema, my.Table, strings.Join(operationContents, ", ")))
+
+			// 添加调试日志
+			vlog := fmt.Sprintf("(%d) Generated combined ALTER TABLE SQL for %s.%s: %d column operations, %d index operations",
+				logThreadSeq, targetSchema, my.Table, len(columnOperations), len(indexOperations))
+			global.Wlog.Debug(vlog)
+		}
+	}
+
+	return alterSql
+}
+
+// FixAlterIndexSqlGenerate 合并索引操作，生成单个ALTER TABLE语句
+func (my *MysqlDataAbnormalFixStruct) FixAlterIndexSqlGenerate(indexOperations []string, logThreadSeq int64) []string {
+	var (
+		alterSql     []string
+		targetSchema = my.Schema // 默认使用目标schema
+	)
+
+	if len(indexOperations) > 0 {
+		// 提取操作内容（去除ALTER TABLE前缀和分号）
+		var operationContents []string
+		for _, op := range indexOperations {
+			// 去除ALTER TABLE前缀
+			op = strings.TrimSpace(op)
+			if strings.HasPrefix(strings.ToUpper(op), "ALTER TABLE") {
+				// 找到第一个空格后的内容
+				parts := strings.SplitN(op, " ", 4)
+				if len(parts) >= 4 {
+					// 获取操作内容部分
+					operationContent := strings.TrimSpace(parts[3])
+					// 去除末尾的分号
+					operationContent = strings.TrimSuffix(operationContent, ";")
+					operationContents = append(operationContents, operationContent)
+				}
+			} else {
+				// 如果不是ALTER TABLE语句，直接使用并去除分号
+				op = strings.TrimSuffix(op, ";")
+				operationContents = append(operationContents, op)
+			}
+		}
+
+		if len(operationContents) > 0 {
+			// 生成单个ALTER TABLE语句，包含所有索引操作
+			alterSql = append(alterSql, fmt.Sprintf("ALTER TABLE `%s`.`%s` %s;", targetSchema, my.Table, strings.Join(operationContents, ", ")))
+
+			// 添加调试日志
+			vlog := fmt.Sprintf("(%d) Generated combined ALTER TABLE SQL for %s.%s: %d index operations",
+				logThreadSeq, targetSchema, my.Table, len(indexOperations))
+			global.Wlog.Debug(vlog)
+		}
+	}
+
 	return alterSql
 }
 
