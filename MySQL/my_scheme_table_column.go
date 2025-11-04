@@ -128,10 +128,7 @@ func (my *QueryTable) DatabaseNameList(db *sql.DB, logThreadSeq int64) (map[stri
 	for i := range tableData {
 		var ga string
 		gd, gt := fmt.Sprintf("%v", tableData[i]["databaseName"]), fmt.Sprintf("%v", tableData[i]["tableName"])
-		if my.CaseSensitiveObjectName == "no" {
-			gd = strings.ToUpper(gd)
-			gt = strings.ToUpper(gt)
-		}
+		// 保持原始大小写，不进行转换，以便正确匹配数据库中的实际表名
 		ga = fmt.Sprintf("%v/*schema&table*/%v", gd, gt)
 		A[ga]++
 	}
@@ -435,10 +432,8 @@ func (my *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 		var dd []string
 		for _, C := range tablePri {
 			var E string
+			// 无论CaseSensitiveObjectName设置如何，都保持原始大小写
 			E = fmt.Sprintf("%s.%s", B, C["tableName"])
-			if my.CaseSensitiveObjectName == "no" {
-				E = strings.ToUpper(fmt.Sprintf("%s.%s", B, C["tableName"]))
-			}
 			if E != N {
 				N = E
 				dd = []string{}

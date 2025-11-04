@@ -26,6 +26,7 @@ type SchedulePlan struct {
 	checkObject              string
 	checkNoIndexTable        string //是否检查无索引表
 	tableAllCol              map[string]global.TableAllColumnInfoS
+	caseSensitiveObjectName  string //是否区分对象名大小写
 
 	file                      *os.File
 	TmpFileName               string
@@ -212,21 +213,22 @@ func CheckTableQuerySchedule(sdb, ddb *global.Pool, tableIndexColumnMap map[stri
 	}
 
 	return &SchedulePlan{
-		concurrency:         m.SecondaryL.RulesV.ParallelThds,
-		sdbPool:             sdb,
-		ddbPool:             ddb,
-		chunkSize:           m.SecondaryL.RulesV.ChanRowCount,
-		tableIndexColumnMap: tableIndexColumnMap,
-		tableAllCol:         tableAllCol,
-		datafixType:         m.SecondaryL.RepairV.Datafix,
-		datafixSql:          m.SecondaryL.RepairV.FixFileName,
-		sdrive:              m.SecondaryL.DsnsV.SrcDrive,
-		ddrive:              m.SecondaryL.DsnsV.DestDrive,
-		mqQueueDepth:        m.SecondaryL.RulesV.QueueSize,
-		checkNoIndexTable:   m.SecondaryL.SchemaV.CheckNoIndexTable,
-		sfile:               m.SecondaryL.RepairV.FixFileFINE,
-		checkObject:         m.SecondaryL.RulesV.CheckObject,
-		TmpFileName:         m.NoIndexTableTmpFile,
+		concurrency:             m.SecondaryL.RulesV.ParallelThds,
+		sdbPool:                 sdb,
+		ddbPool:                 ddb,
+		chunkSize:               m.SecondaryL.RulesV.ChanRowCount,
+		tableIndexColumnMap:     tableIndexColumnMap,
+		tableAllCol:             tableAllCol,
+		datafixType:             m.SecondaryL.RepairV.Datafix,
+		datafixSql:              m.SecondaryL.RepairV.FixFileName,
+		sdrive:                  m.SecondaryL.DsnsV.SrcDrive,
+		ddrive:                  m.SecondaryL.DsnsV.DestDrive,
+		mqQueueDepth:            m.SecondaryL.RulesV.QueueSize,
+		checkNoIndexTable:       m.SecondaryL.SchemaV.CheckNoIndexTable,
+		sfile:                   m.SecondaryL.RepairV.FixFileFINE,
+		checkObject:             m.SecondaryL.RulesV.CheckObject,
+		TmpFileName:             m.NoIndexTableTmpFile,
+		caseSensitiveObjectName: m.SecondaryL.SchemaV.CaseSensitiveObjectName,
 		fixTrxNum:           m.SecondaryL.RepairV.FixTrxNum,
 		djdbc:               m.SecondaryL.DsnsV.DestJdbc,
 		tableMappings:       tableMappings,

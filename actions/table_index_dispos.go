@@ -623,15 +623,16 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 
 							// 修复SQL生成时使用正确的schema映射
 							dbf := dbExec.DataAbnormalFixStruct{
-								Schema:       destSchema,   // 目标schema
-								SourceSchema: sourceSchema, // 源端schema，用于处理数据库映射关系
-								Table:        table,        // 使用映射后的表名
-								ColData:      colData.DColumnInfo,
-								Sqlwhere:     destSqlWhere, // 使用处理后的目标端SQL条件
-								DestDevice:   sp.ddrive,
-								IndexColumn:  indexColumns,
-								DatafixType:  sp.datafixType,
-							}
+			Schema:                 destSchema,   // 目标schema
+			SourceSchema:           sourceSchema, // 源端schema，用于处理数据库映射关系
+			Table:                  table,        // 使用映射后的表名
+			ColData:                colData.DColumnInfo,
+			Sqlwhere:               destSqlWhere, // 使用处理后的目标端SQL条件
+			DestDevice:             sp.ddrive,
+			IndexColumn:            indexColumns,
+			DatafixType:            sp.datafixType,
+			CaseSensitiveObjectName: sp.caseSensitiveObjectName,
+		}
 							if strings.HasPrefix(c1.indexColumnType, "pri") {
 								dbf.IndexType = "pri"
 							} else if strings.HasPrefix(c1.indexColumnType, "uni") {

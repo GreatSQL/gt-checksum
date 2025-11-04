@@ -377,11 +377,12 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 		var sColumn, dColumn []map[string][]string
 
 		dbf := dbExec.DataAbnormalFixStruct{
-			Schema:       destSchema, // 使用目标端schema
-			Table:        stcls.table,
-			DestDevice:   stcls.destDrive,
-			DatafixType:  stcls.datafix,
-			SourceSchema: sourceSchema, // 添加源端schema
+			Schema:                  destSchema, // 使用目标端schema
+			Table:                   stcls.table,
+			DestDevice:              stcls.destDrive,
+			DatafixType:             stcls.datafix,
+			SourceSchema:            sourceSchema, // 添加源端schema
+			CaseSensitiveObjectName: stcls.caseSensitiveObjectName,
 		}
 		tc := dbExec.TableColumnNameStruct{Schema: sourceSchema, Table: stcls.table, Drive: stcls.sourceDrive}
 		sColumn, err = stcls.tableColumnName(stcls.sourceDB, tc, logThreadSeq, logThreadSeq2)
@@ -409,30 +410,42 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 		var sourceColumnSlice, destColumnSlice []string
 		var sourceColumnMap, destColumnMap = make(map[string][]string), make(map[string][]string)
 		var sourceColumnSeq, destColumnSeq = make(map[string]int), make(map[string]int)
+		// 创建原始列名映射，用于保存原始大小写
+		var originalColumnNameMap = make(map[string]string)
+
 		for k1, v1 := range sColumn {
 			v1k := ""
-			v2 := []string{}
 			for k, v22 := range v1 {
-				// 无论caseSensitiveObjectName参数如何设置，列名都应该是大小写不敏感的
-				// 将列名统一转换为大写，以实现大小写不敏感的比较
+				// 保存原始列名
+				originalColumnNameMap[strings.ToUpper(k)] = k
+				// 统一使用大写键进行内部比较
 				v1k = strings.ToUpper(k)
-				v2 = v22
+				sourceColumnMap[v1k] = v22
+				sourceColumnSeq[v1k] = k1
 			}
-			sourceColumnMap[v1k] = v2
-			sourceColumnSeq[v1k] = k1
 			sourceColumnSlice = append(sourceColumnSlice, v1k)
 		}
 		for k1, v1 := range dColumn {
 			v1k := ""
-			v2 := []string{}
 			for k, v22 := range v1 {
-				// 将列名统一转换为大写，以实现大小写不敏感的比较
+				// 保存原始列名
+				originalColumnNameMap[strings.ToUpper(k)] = k
+				// 统一使用大写键进行内部比较
 				v1k = strings.ToUpper(k)
-				v2 = v22
+				destColumnMap[v1k] = v22
+				destColumnSeq[v1k] = k1
 			}
-			destColumnMap[v1k] = v2
-			destColumnSeq[v1k] = k1
 			destColumnSlice = append(destColumnSlice, v1k)
+		}
+
+		// 确保在生成SQL时使用原始大小写的列名
+		// 创建一个函数来获取正确大小写的列名
+		getOriginalColumnName := func(upperColName string) string {
+			// 无论caseSensitiveObjectName设置如何，都返回原始列名
+			if originalName, exists := originalColumnNameMap[upperColName]; exists {
+				return originalName
+			}
+			return upperColName
 		}
 
 		addColumn, delColumn := aa.Arrcmp(sourceColumnSlice, destColumnSlice)
@@ -457,7 +470,9 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 			// 收集所有需要删除的列名
 			var colsToDelete []string
 			for _, v1 := range delColumn {
-				dropSql := dbf.DataAbnormalFix().FixAlterColumnSqlDispos("drop", destColumnMap[v1], 1, "", v1, logThreadSeq)
+				// 使用原始大小写的列名生成SQL
+				originalColName := getOriginalColumnName(v1)
+				dropSql := dbf.DataAbnormalFix().FixAlterColumnSqlDispos("drop", destColumnMap[v1], 1, "", originalColName, logThreadSeq)
 				alterSlice = append(alterSlice, dropSql)
 				colsToDelete = append(colsToDelete, v1)
 			}
@@ -494,14 +509,17 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 					destType = destColumnMap[v1][0]
 				}
 
+				// 获取原始大小写的列名
+				originalColName := getOriginalColumnName(v1)
+
 				// 打印调试信息
-				vlog = fmt.Sprintf("(%d) %s Column %s type comparison: source=%s, dest=%s", logThreadSeq, event, v1, sourceType, destType)
+				vlog = fmt.Sprintf("(%d) %s Column %s type comparison: source=%s, dest=%s", logThreadSeq, event, originalColName, sourceType, destType)
 				global.Wlog.Debug(vlog)
 
 				// 比较列类型
 				if sourceType != destType {
 					tableAbnormalBool = true
-					vlog = fmt.Sprintf("(%d) %s Column %s type mismatch: source=%s, dest=%s", logThreadSeq, event, v1, sourceType, destType)
+					vlog = fmt.Sprintf("(%d) %s Column %s type mismatch: source=%s, dest=%s", logThreadSeq, event, originalColName, sourceType, destType)
 					global.Wlog.Warn(vlog)
 				}
 
@@ -521,7 +539,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 					if sourceCharset != destCharset {
 						tableAbnormalBool = true
 						vlog = fmt.Sprintf("(%d) %s Column %s charset mismatch: source=%s, dest=%s",
-							logThreadSeq, event, v1, sourceCharset, destCharset)
+							logThreadSeq, event, originalColName, sourceCharset, destCharset)
 						global.Wlog.Warn(vlog)
 					}
 				}
@@ -542,7 +560,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 					if sourceCollation != destCollation {
 						tableAbnormalBool = true
 						vlog = fmt.Sprintf("(%d) %s Column %s collation mismatch: source=%s, dest=%s",
-							logThreadSeq, event, v1, sourceCollation, destCollation)
+							logThreadSeq, event, originalColName, sourceCollation, destCollation)
 						global.Wlog.Warn(vlog)
 					}
 				}
@@ -560,7 +578,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 				if sourceIsNull != destIsNull {
 					tableAbnormalBool = true
 					vlog = fmt.Sprintf("(%d) %s Column %s NULL constraint mismatch: source=%s, dest=%s",
-						logThreadSeq, event, v1, sourceIsNull, destIsNull)
+						logThreadSeq, event, originalColName, sourceIsNull, destIsNull)
 					global.Wlog.Warn(vlog)
 				}
 
@@ -579,7 +597,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 					if sourceDefault != destDefault {
 						tableAbnormalBool = true
 						vlog = fmt.Sprintf("(%d) %s Column %s default value mismatch: source=%s, dest=%s",
-							logThreadSeq, event, v1, sourceDefault, destDefault)
+							logThreadSeq, event, originalColName, sourceDefault, destDefault)
 						global.Wlog.Warn(vlog)
 					}
 				}
@@ -588,12 +606,15 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 				if sourceColumnSeq[v1] != destColumnSeq[v1] {
 					tableAbnormalBool = true
 					vlog = fmt.Sprintf("(%d) %s Column %s sequence mismatch: source=%d, dest=%d",
-						logThreadSeq, event, v1, sourceColumnSeq[v1], destColumnSeq[v1])
+						logThreadSeq, event, originalColName, sourceColumnSeq[v1], destColumnSeq[v1])
 					global.Wlog.Warn(vlog)
 				}
 				if tableAbnormalBool {
-					modifySql := dbf.DataAbnormalFix().FixAlterColumnSqlDispos("modify", alterColumnData, k1, lastcolumn, v1, logThreadSeq)
-					vlog = fmt.Sprintf("(%d) %s The column name of column %s of the source and target table %s.%s:[%s.%s] is the same, but the definition of the column is inconsistent, and a modify statement is generated, and the modification statement is {%v}", logThreadSeq, v1, stcls.schema, stcls.table, destSchema, stcls.table, modifySql)
+					// 使用原始大小写的列名生成SQL
+					originalColName := getOriginalColumnName(v1)
+					originalLastColumn := getOriginalColumnName(lastcolumn)
+					modifySql := dbf.DataAbnormalFix().FixAlterColumnSqlDispos("modify", alterColumnData, k1, originalLastColumn, originalColName, logThreadSeq)
+					vlog = fmt.Sprintf("(%d) %s The column name of column %s of the source and target table %s.%s:[%s.%s] is the same, but the definition of the column is inconsistent, and a modify statement is generated, and the modification statement is {%v}", logThreadSeq, originalColName, stcls.schema, stcls.table, destSchema, stcls.table, modifySql)
 					global.Wlog.Warn(vlog)
 					alterSlice = append(alterSlice, modifySql)
 				}
@@ -604,8 +625,11 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 				var position int
 				// 使用固定值：ScheckOrder=yes，总是使用源列的实际位置
 				position = k1
-				addSql := dbf.DataAbnormalFix().FixAlterColumnSqlDispos("add", sourceColumnMap[v1], position, lastcolumn, v1, logThreadSeq)
-				vlog = fmt.Sprintf("(%d) %s Missing column %s in %s.%s - ADD: %v", logThreadSeq, event, v1, destSchema, stcls.table, addSql)
+				// 使用原始大小写的列名生成SQL
+				originalColName := getOriginalColumnName(v1)
+				originalLastColumn := getOriginalColumnName(lastcolumn)
+				addSql := dbf.DataAbnormalFix().FixAlterColumnSqlDispos("add", sourceColumnMap[v1], position, originalLastColumn, originalColName, logThreadSeq)
+				vlog = fmt.Sprintf("(%d) %s Missing column %s in %s.%s - ADD: %v", logThreadSeq, event, originalColName, destSchema, stcls.table, addSql)
 				global.Wlog.Warn(vlog)
 				alterSlice = append(alterSlice, addSql)
 				delete(destColumnMap, v1)
@@ -1619,15 +1643,17 @@ func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 in
 					schema := sourceParts[0]
 
 					// schema的名字要区分大小写
-					if stcls.caseSensitiveObjectName == "no" {
-						schema = strings.ToUpper(schema)
+					if stcls.caseSensitiveObjectName == "yes" {
+						// 当区分大小写时，保持原始大小写
+					} else {
+						// 当不区分大小写时，也保持原始大小写
 					}
 					schemaMap[schema] = 1
 
 					// 如果指定了具体的触发器名称
 					if len(sourceParts) >= 2 && sourceParts[1] != "*" {
-						// trigger名字统一转换为大写
-						triggerName := strings.ToUpper(sourceParts[1])
+						// 保持trigger名称的原始大小写
+						triggerName := sourceParts[1]
 						triggerMap[schema+"."+triggerName] = triggerName
 					}
 				}
@@ -1638,14 +1664,16 @@ func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 in
 			if len(parts) >= 1 {
 				schema := parts[0]
 
-				if stcls.caseSensitiveObjectName == "no" {
-					schema = strings.ToUpper(schema)
+				if stcls.caseSensitiveObjectName == "yes" {
+					// 当区分大小写时，保持原始大小写
+				} else {
+					// 当不区分大小写时，也保持原始大小写
 				}
 				schemaMap[schema] = 1
 
 				// 如果指定了具体的触发器名称
 				if len(parts) >= 2 && parts[1] != "*" {
-					triggerName := strings.ToUpper(parts[1])
+					triggerName := parts[1]
 					triggerMap[schema+"."+triggerName] = triggerName
 				}
 			}
@@ -1659,8 +1687,10 @@ func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 in
 	// 如果schemaMap为空，但stcls.schema不为空，则使用stcls.schema
 	if len(schemaMap) == 0 && stcls.schema != "" {
 		schema := stcls.schema
-		if stcls.caseSensitiveObjectName == "no" {
-			schema = strings.ToUpper(schema)
+		if stcls.caseSensitiveObjectName == "yes" {
+			// 当区分大小写时，保持原始大小写
+		} else {
+			// 当不区分大小写时，也保持原始大小写
 		}
 		schemaMap[schema] = 1
 		vlog = fmt.Sprintf("(%d) No schema found in dtabS, using default schema: %s", logThreadSeq, schema)
@@ -1699,10 +1729,7 @@ func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 in
 					triggerName = strings.ReplaceAll(k, "\"", "")
 				}
 
-				// 根据大小写敏感设置决定是否转换大小写
-				if stcls.caseSensitiveObjectName == "no" {
-					triggerName = strings.ToUpper(triggerName)
-				}
+				// 保持trigger名称的原始大小写，不做转换
 
 				triggerKey := schema + "." + triggerName
 
@@ -1733,9 +1760,7 @@ func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 in
 					triggerName = strings.ReplaceAll(k, "\"", "")
 				}
 
-				if stcls.caseSensitiveObjectName == "no" {
-					triggerName = strings.ToUpper(triggerName)
-				}
+				// 保持trigger名称的原始大小写，不做转换
 
 				triggerKey := schema + "." + triggerName
 				triggerMap[triggerKey] = triggerName
@@ -1773,10 +1798,7 @@ func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 in
 					triggerName = strings.ReplaceAll(k, "\"", "")
 				}
 
-				// 根据大小写敏感设置决定是否转换大小写
-				if stcls.caseSensitiveObjectName == "no" {
-					triggerName = strings.ToUpper(triggerName)
-				}
+				// 保持trigger名称的原始大小写，不做转换
 
 				triggerKey := schema + "." + triggerName
 
@@ -1807,9 +1829,7 @@ func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 in
 					triggerName = strings.ReplaceAll(k, "\"", "")
 				}
 
-				if stcls.caseSensitiveObjectName == "no" {
-					triggerName = strings.ToUpper(triggerName)
-				}
+				// 保持trigger名称的原始大小写，不做转换
 
 				triggerKey := schema + "." + triggerName
 				triggerMap[triggerKey] = triggerName
@@ -2678,7 +2698,8 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 		extractColumnInfo = func(columnStr string) (string, int) {
 			// 从格式 "columnName/*seq*/1/*type*/columnType" 中提取信息
 			parts := strings.Split(columnStr, "/*seq*/")
-			colName := strings.ToUpper(strings.TrimSpace(parts[0]))
+			// 保留原始列名大小写
+			colName := strings.TrimSpace(parts[0])
 			seqStr := strings.Split(parts[1], "/*type*/")[0]
 			seq, _ := strconv.Atoi(seqStr)
 
@@ -2722,13 +2743,14 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 			}
 
 			dbf := dbExec.DataAbnormalFixStruct{
-				Schema:       destSchema, // 使用目标端schema
-				Table:        stcls.table,
-				SourceDevice: stcls.sourceDrive,
-				DestDevice:   stcls.destDrive,
-				IndexType:    indexType,
-				DatafixType:  stcls.datafix,
-				SourceSchema: stcls.schema, // 添加源端schema
+				Schema:                  destSchema, // 使用目标端schema
+				Table:                   stcls.table,
+				SourceDevice:            stcls.sourceDrive,
+				DestDevice:              stcls.destDrive,
+				IndexType:               indexType,
+				DatafixType:             stcls.datafix,
+				SourceSchema:            stcls.schema,                  // 添加源端schema
+				CaseSensitiveObjectName: stcls.caseSensitiveObjectName, // 传递是否区分对象名大小写
 			}
 
 			// 首先比较索引名称
@@ -2976,26 +2998,27 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 					if mappedSchema, exists := stcls.tableMappings[stcls.schema]; exists {
 						destSchema = mappedSchema
 					}
-					
+
 					dbf := dbExec.DataAbnormalFixStruct{
-						Schema:       destSchema,
-						Table:        stcls.table,
-						SourceDevice: stcls.sourceDrive,
-						DestDevice:   stcls.destDrive,
-						DatafixType:  stcls.datafix,
-						SourceSchema: stcls.schema,
+						Schema:                  destSchema,
+						Table:                   stcls.table,
+						SourceDevice:            stcls.sourceDrive,
+						DestDevice:              stcls.destDrive,
+						DatafixType:             stcls.datafix,
+						CaseSensitiveObjectName: stcls.caseSensitiveObjectName,
+						SourceSchema:            stcls.schema,
 					}
-					
+
 					// 合并列修复和索引修复操作
 					combinedSql := dbf.DataAbnormalFix().FixAlterColumnAndIndexSqlGenerate(columnOperations, sqlS, logThreadSeq)
-					
+
 					// 使用合并后的SQL
 					sqlS = combinedSql
-					
+
 					// 从columnRepairMap中删除已处理的表
 					delete(stcls.columnRepairMap, tableKey)
-					
-					vlog = fmt.Sprintf("(%d) %s Merged column and index operations for table %s.%s", 
+
+					vlog = fmt.Sprintf("(%d) %s Merged column and index operations for table %s.%s",
 						logThreadSeq, event, stcls.schema, stcls.table)
 					global.Wlog.Debug(vlog)
 				} else {
@@ -3004,16 +3027,17 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 					if mappedSchema, exists := stcls.tableMappings[stcls.schema]; exists {
 						destSchema = mappedSchema
 					}
-					
+
 					dbf := dbExec.DataAbnormalFixStruct{
-						Schema:       destSchema,
-						Table:        stcls.table,
-						SourceDevice: stcls.sourceDrive,
-						DestDevice:   stcls.destDrive,
-						DatafixType:  stcls.datafix,
-						SourceSchema: stcls.schema,
+						Schema:                  destSchema,
+						Table:                   stcls.table,
+						SourceDevice:            stcls.sourceDrive,
+						DestDevice:              stcls.destDrive,
+						DatafixType:             stcls.datafix,
+						SourceSchema:            stcls.schema,
+						CaseSensitiveObjectName: stcls.caseSensitiveObjectName,
 					}
-					
+
 					combinedSql := dbf.DataAbnormalFix().FixAlterIndexSqlGenerate(sqlS, logThreadSeq)
 					sqlS = combinedSql
 				}
@@ -3023,16 +3047,17 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 				if mappedSchema, exists := stcls.tableMappings[stcls.schema]; exists {
 					destSchema = mappedSchema
 				}
-				
+
 				dbf := dbExec.DataAbnormalFixStruct{
-					Schema:       destSchema,
-					Table:        stcls.table,
-					SourceDevice: stcls.sourceDrive,
-					DestDevice:   stcls.destDrive,
-					DatafixType:  stcls.datafix,
-					SourceSchema: stcls.schema,
+					Schema:                  destSchema,
+					Table:                   stcls.table,
+					SourceDevice:            stcls.sourceDrive,
+					DestDevice:              stcls.destDrive,
+					DatafixType:             stcls.datafix,
+					SourceSchema:            stcls.schema,
+					CaseSensitiveObjectName: stcls.caseSensitiveObjectName,
 				}
-				
+
 				combinedSql := dbf.DataAbnormalFix().FixAlterIndexSqlGenerate(sqlS, logThreadSeq)
 				sqlS = combinedSql
 			}

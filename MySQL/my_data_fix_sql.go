@@ -11,18 +11,19 @@ import (
 )
 
 type MysqlDataAbnormalFixStruct struct {
-	Schema          string
-	Table           string
-	RowData         string
-	SourceDevice    string
-	DestDevice      string
-	Sqlwhere        string
-	IndexColumnType string
-	ColData         []map[string]string
-	IndexType       string
-	IndexColumn     []string
-	DatafixType     string
-	SourceSchema    string // 添加源端schema字段
+	Schema                  string
+	Table                   string
+	RowData                 string
+	SourceDevice            string
+	DestDevice              string
+	Sqlwhere                string
+	IndexColumnType         string
+	ColData                 []map[string]string
+	IndexType               string
+	IndexColumn             []string
+	DatafixType             string
+	SourceSchema            string // 添加源端schema字段
+	CaseSensitiveObjectName string // 是否区分对象名大小写
 }
 
 /*
@@ -406,16 +407,20 @@ func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive s
 func (my *MysqlDataAbnormalFixStruct) FixAlterIndexSqlExec(e, f []string, si map[string][]string, sourceDrive string, logThreadSeq int64) []string {
 	var (
 		sqlS         []string
-		targetSchema = my.Schema // 默认使用目标schema
+		targetSchema = my.Schema // 使用目标schema（保持原始大小写）
 	)
 
 	for _, v := range e {
 		var c []string
 		for _, vi := range si[v] {
-			if len(strings.Split(vi, "/*actions Column Type*/")) > 0 {
-				c = append(c, strings.TrimSpace(strings.Split(vi, "/*actions Column Type*/")[0]))
+			// 从vi字符串中提取原始列名（格式：columnName/*seq*/indexSeq/*type*/columnType）
+			parts := strings.Split(vi, "/*seq*/")
+			if len(parts) > 0 {
+				// 保留原始列名的大小写
+				c = append(c, strings.TrimSpace(parts[0]))
 			}
 		}
+		// 构建SQL语句，保持数据库名、表名和字段名的原始大小写
 		switch my.IndexType {
 		case "pri":
 			strsql = fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD PRIMARY KEY(`%s`);", targetSchema, my.Table, strings.Join(c, "`,`"))
@@ -493,7 +498,7 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterColumnSqlDispos(alterType string, 
 func (my *MysqlDataAbnormalFixStruct) FixAlterColumnSqlGenerate(modifyColumn []string, logThreadSeq int64) []string {
 	var (
 		alterSql     []string
-		targetSchema = my.Schema // 默认使用目标schema
+		targetSchema = my.Schema // 使用目标schema（保持原始大小写）
 	)
 
 	if len(modifyColumn) > 0 {
@@ -506,7 +511,7 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterColumnSqlGenerate(modifyColumn []s
 func (my *MysqlDataAbnormalFixStruct) FixAlterColumnAndIndexSqlGenerate(columnOperations, indexOperations []string, logThreadSeq int64) []string {
 	var (
 		alterSql     []string
-		targetSchema = my.Schema // 默认使用目标schema
+		targetSchema = my.Schema // 使用目标schema（保持原始大小写）
 	)
 
 	// 合并所有操作
@@ -555,7 +560,7 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterColumnAndIndexSqlGenerate(columnOp
 func (my *MysqlDataAbnormalFixStruct) FixAlterIndexSqlGenerate(indexOperations []string, logThreadSeq int64) []string {
 	var (
 		alterSql     []string
-		targetSchema = my.Schema // 默认使用目标schema
+		targetSchema = my.Schema // 使用目标schema（保持原始大小写）
 	)
 
 	if len(indexOperations) > 0 {
