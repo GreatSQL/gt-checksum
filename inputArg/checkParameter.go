@@ -183,10 +183,9 @@ func (rc *ConfigParameter) checkPar() {
 	if strings.HasSuffix(rc.SecondaryL.SchemaV.Tables, ",") {
 		rc.SecondaryL.SchemaV.Tables = rc.SecondaryL.SchemaV.Tables[:len(rc.SecondaryL.SchemaV.Tables)-1]
 	}
-	if rc.SecondaryL.SchemaV.CaseSensitiveObjectName == "no" {
-		rc.SecondaryL.SchemaV.Tables = strings.ToUpper(strings.TrimSpace(rc.SecondaryL.SchemaV.Tables))
-		rc.SecondaryL.SchemaV.IgnoreTables = strings.ToUpper(strings.TrimSpace(rc.SecondaryL.SchemaV.IgnoreTables))
-	}
+	// 无论CaseSensitiveObjectName设置如何，都保持表名的原始大小写
+	rc.SecondaryL.SchemaV.Tables = strings.TrimSpace(rc.SecondaryL.SchemaV.Tables)
+	rc.SecondaryL.SchemaV.IgnoreTables = strings.TrimSpace(rc.SecondaryL.SchemaV.IgnoreTables)
 	if rc.SecondaryL.SchemaV.Tables == "" {
 		fmt.Println(fmt.Sprintf("gt-checksum report: The option \"tables\" is set incorrectly. Please check %s or set option \"logLevel=debug\" to get more information.", rc.SecondaryL.LogV.LogFile))
 		os.Exit(1)

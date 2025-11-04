@@ -138,11 +138,12 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 		}
 
 		dbf := dbExec.DataAbnormalFixStruct{
-			Schema:       sp.destSchema,   // 使用目标schema而不是原始schema
-			SourceSchema: sp.sourceSchema, // 添加源schema用于处理映射关系
-			Table:        sp.table,
-			ColData:      colData.DColumnInfo,
-			DestDevice:   sp.ddrive,
+			Schema:                 sp.destSchema,   // 使用目标schema而不是原始schema
+			SourceSchema:           sp.sourceSchema, // 添加源schema用于处理映射关系
+			Table:                  sp.table,
+			ColData:                colData.DColumnInfo,
+			DestDevice:             sp.ddrive,
+			CaseSensitiveObjectName: sp.caseSensitiveObjectName,
 			DatafixType:  sp.datafixType,
 			IndexColumn:  indexColumns, // 添加索引列信息
 		}
@@ -285,7 +286,7 @@ func (sp *SchedulePlan) FixSqlExec(sqlStrExec <-chan string, logThreadSeq int64)
 	vlog = fmt.Sprintf("(%d) Start to generate delete and insert sql statements for table %s.", logThreadSeq, displayTableName)
 	global.Wlog.Debug(vlog)
 	colData := sp.tableAllCol[fmt.Sprintf("%s_gtchecksum_%s", sp.schema, sp.table)]
-	dbf := dbExec.DataAbnormalFixStruct{Schema: sp.schema, Table: sp.table, ColData: colData.DColumnInfo, SourceDevice: sp.ddrive}
+	dbf := dbExec.DataAbnormalFixStruct{Schema: sp.schema, Table: sp.table, ColData: colData.DColumnInfo, SourceDevice: sp.ddrive, CaseSensitiveObjectName: sp.caseSensitiveObjectName}
 	dbf.IndexColumnType = "mul"
 	for {
 		select {

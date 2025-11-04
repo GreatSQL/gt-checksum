@@ -7,18 +7,19 @@ import (
 )
 
 type DataAbnormalFixStruct struct {
-	Schema          string
-	Table           string
-	RowData         string
-	SourceDevice    string
-	DestDevice      string
-	Sqlwhere        string
-	IndexColumnType string
-	ColData         []map[string]string
-	IndexType       string
-	IndexColumn     []string
-	DatafixType     string
-	SourceSchema    string // 源端schema，用于处理数据库映射关系
+	Schema                string
+	Table                 string
+	RowData               string
+	SourceDevice          string
+	DestDevice            string
+	Sqlwhere              string
+	IndexColumnType       string
+	ColData               []map[string]string
+	IndexType             string
+	IndexColumn           []string
+	DatafixType           string
+	SourceSchema          string // 源端schema，用于处理数据库映射关系
+	CaseSensitiveObjectName string // 是否区分对象名大小写
 }
 type DataAbnormalFixInterface interface {
 	FixInsertSqlExec(db *sql.DB, sourceDrive string, logThreadSeq int64) (string, error)
@@ -35,18 +36,19 @@ func (dafs DataAbnormalFixStruct) DataAbnormalFix() DataAbnormalFixInterface {
 	var tqaci DataAbnormalFixInterface
 	if dafs.DestDevice == "mysql" {
 		tqaci = &mysql.MysqlDataAbnormalFixStruct{
-			Schema:          dafs.Schema,
-			Table:           dafs.Table,
-			Sqlwhere:        dafs.Sqlwhere,
-			RowData:         dafs.RowData,
-			SourceDevice:    dafs.SourceDevice,
-			IndexColumnType: dafs.IndexColumnType,
-			ColData:         dafs.ColData,
-			IndexType:       dafs.IndexType,
-			IndexColumn:     dafs.IndexColumn,
-			DatafixType:     dafs.DatafixType,
-			SourceSchema:    dafs.SourceSchema, // 传递源端schema信息
-		}
+				Schema:                dafs.Schema,
+				Table:                 dafs.Table,
+				Sqlwhere:              dafs.Sqlwhere,
+				RowData:               dafs.RowData,
+				SourceDevice:          dafs.SourceDevice,
+				IndexColumnType:       dafs.IndexColumnType,
+				ColData:               dafs.ColData,
+				IndexType:             dafs.IndexType,
+				IndexColumn:           dafs.IndexColumn,
+				DatafixType:           dafs.DatafixType,
+				SourceSchema:          dafs.SourceSchema, // 传递源端schema信息
+				CaseSensitiveObjectName: dafs.CaseSensitiveObjectName, // 传递是否区分对象名大小写
+			}
 	}
 	if dafs.DestDevice == "godror" {
 		// 创建Oracle数据修复结构体
