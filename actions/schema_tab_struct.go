@@ -218,7 +218,15 @@ func (stcls *schemaTable) tableColumnName(db *sql.DB, tc dbExec.TableColumnNameS
 	global.Wlog.Debug(vlog)
 	for _, v := range queryData {
 		if fmt.Sprintf("%v", v["columnName"]) != "" {
-			A[fmt.Sprintf("%v", v["columnName"])] = []string{C(fmt.Sprintf("%v", v["columnType"])), C(fmt.Sprintf("%v", v["charset"])), C(fmt.Sprintf("%v", v["collationName"])), C(fmt.Sprintf("%v", v["isNull"])), C(fmt.Sprintf("%v", v["columnDefault"])), C(fmt.Sprintf("%v", v["columnComment"]))}
+			// 获取extra属性，包含AUTO_INCREMENT和INVISIBLE等特殊属性
+			extra := C(fmt.Sprintf("%v", v["extra"]))
+			// 将extra添加到列定义数组中，放在columnType之后，这样可以在生成SQL时包含特殊属性
+			columnType := fmt.Sprintf("%v", v["columnType"])
+			// 如果有extra属性，添加到columnType后面
+			if extra != "null" && extra != "" {
+				columnType = fmt.Sprintf("%s %s", columnType, extra)
+			}
+			A[fmt.Sprintf("%v", v["columnName"])] = []string{C(columnType), C(fmt.Sprintf("%v", v["charset"])), C(fmt.Sprintf("%v", v["collationName"])), C(fmt.Sprintf("%v", v["isNull"])), C(fmt.Sprintf("%v", v["columnDefault"])), C(fmt.Sprintf("%v", v["columnComment"]))}
 			CS = append(CS, fmt.Sprintf("%v", v["columnName"]))
 		}
 	}
@@ -418,8 +426,16 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 			for k, v22 := range v1 {
 				// 保存原始列名
 				originalColumnNameMap[strings.ToUpper(k)] = k
-				// 统一使用大写键进行内部比较
-				v1k = strings.ToUpper(k)
+
+				// 根据caseSensitiveObjectName决定是使用原始列名还是大写列名进行比较
+				if stcls.caseSensitiveObjectName == "yes" {
+					// 严格区分大小写，使用原始列名
+					v1k = k
+				} else {
+					// 不区分大小写，统一使用大写键进行内部比较
+					v1k = strings.ToUpper(k)
+				}
+
 				sourceColumnMap[v1k] = v22
 				sourceColumnSeq[v1k] = k1
 			}
@@ -430,8 +446,16 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 			for k, v22 := range v1 {
 				// 保存原始列名
 				originalColumnNameMap[strings.ToUpper(k)] = k
-				// 统一使用大写键进行内部比较
-				v1k = strings.ToUpper(k)
+
+				// 根据caseSensitiveObjectName决定是使用原始列名还是大写列名进行比较
+				if stcls.caseSensitiveObjectName == "yes" {
+					// 严格区分大小写，使用原始列名
+					v1k = k
+				} else {
+					// 不区分大小写，统一使用大写键进行内部比较
+					v1k = strings.ToUpper(k)
+				}
+
 				destColumnMap[v1k] = v22
 				destColumnSeq[v1k] = k1
 			}
@@ -440,15 +464,130 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 
 		// 确保在生成SQL时使用原始大小写的列名
 		// 创建一个函数来获取正确大小写的列名
-		getOriginalColumnName := func(upperColName string) string {
-			// 无论caseSensitiveObjectName设置如何，都返回原始列名
-			if originalName, exists := originalColumnNameMap[upperColName]; exists {
-				return originalName
+		getOriginalColumnName := func(colName string) string {
+			// 根据caseSensitiveObjectName决定如何查找原始列名
+			if stcls.caseSensitiveObjectName == "yes" {
+				// 严格区分大小写时，colName已经是原始列名，直接返回
+				return colName
+			} else {
+				// 不区分大小写时，使用大写列名作为键查找原始列名
+				upperColName := strings.ToUpper(colName)
+				if originalName, exists := originalColumnNameMap[upperColName]; exists {
+					return originalName
+				}
+				return colName
 			}
-			return upperColName
 		}
 
 		addColumn, delColumn := aa.Arrcmp(sourceColumnSlice, destColumnSlice)
+
+		// 检查是否只是列名大小写不同的情况
+		// 当caseSensitiveObjectName=yes时，我们需要特殊处理大小写不同但实际上是同一列的情况
+		if stcls.caseSensitiveObjectName == "yes" {
+			// 创建临时映射，用于存储大小写不敏感的列名比较
+			var lowerSourceMap = make(map[string]string)
+			var lowerDestMap = make(map[string]string)
+
+			// 存储小写列名到原始列名的映射
+			for _, col := range sourceColumnSlice {
+				lowerSourceMap[strings.ToLower(col)] = col
+			}
+			for _, col := range destColumnSlice {
+				lowerDestMap[strings.ToLower(col)] = col
+			}
+
+			// 查找只是大小写不同的列
+			var caseOnlyDiffColumns []struct {
+				sourceCol string
+				destCol   string
+			}
+
+			// 检查addColumn和delColumn中是否有大小写对应的列
+			for _, addCol := range addColumn {
+				lowerAddCol := strings.ToLower(addCol)
+				if destCol, exists := lowerDestMap[lowerAddCol]; exists {
+					// 找到一个只是大小写不同的列
+					caseOnlyDiffColumns = append(caseOnlyDiffColumns, struct {
+						sourceCol string
+						destCol   string
+					}{sourceCol: addCol, destCol: destCol})
+				}
+			}
+
+			// 从addColumn和delColumn中移除这些大小写不同的列
+			var newAddColumn []string
+			var newDelColumn []string
+
+			// 创建一个集合来快速查找大小写不同的列
+			caseDiffDestCols := make(map[string]bool)
+			for _, colPair := range caseOnlyDiffColumns {
+				caseDiffDestCols[colPair.destCol] = true
+			}
+
+			// 过滤addColumn，移除大小写不同的列
+			for _, addCol := range addColumn {
+				isCaseDiff := false
+				for _, colPair := range caseOnlyDiffColumns {
+					if addCol == colPair.sourceCol {
+						isCaseDiff = true
+						break
+					}
+				}
+				if !isCaseDiff {
+					newAddColumn = append(newAddColumn, addCol)
+				}
+			}
+
+			// 过滤delColumn，移除大小写不同的列
+			for _, delCol := range delColumn {
+				if !caseDiffDestCols[delCol] {
+					newDelColumn = append(newDelColumn, delCol)
+				}
+			}
+
+			// 更新addColumn和delColumn
+			addColumn = newAddColumn
+			delColumn = newDelColumn
+
+			// 为大小写不同的列生成CHANGE操作，并从destColumnMap中移除目标列
+			// 同时将源列添加到destColumnMap中，避免后续代码重复处理
+			for _, colPair := range caseOnlyDiffColumns {
+				// 获取源列的定义
+				if sourceDef, exists := sourceColumnMap[colPair.sourceCol]; exists {
+					// 查找列的位置信息
+					var position int
+					var lastColumn string
+					for i, col := range sourceColumnSlice {
+						if col == colPair.sourceCol {
+							position = i
+							if i > 0 {
+								lastColumn = sourceColumnSlice[i-1]
+							} else {
+								lastColumn = "alterNoAfter"
+							}
+							break
+						}
+					}
+
+					// 生成CHANGE操作的SQL
+					// 使用格式"原始列名:新列名"
+					changeColName := fmt.Sprintf("%s:%s", colPair.destCol, colPair.sourceCol)
+					changeSql := dbf.DataAbnormalFix().FixAlterColumnSqlDispos("change", sourceDef, position, lastColumn, changeColName, logThreadSeq)
+					alterSlice = append(alterSlice, changeSql)
+
+					vlog = fmt.Sprintf("(%d) %s Column %s only differs in case from %s, using CHANGE instead of DROP+ADD", logThreadSeq, event, colPair.destCol, colPair.sourceCol)
+					global.Wlog.Info(vlog)
+
+					// 从destColumnMap中移除目标列（旧列名）
+					delete(destColumnMap, colPair.destCol)
+					// 将源列（新列名）添加到destColumnMap中，避免后续代码重复处理
+					destColumnMap[colPair.sourceCol] = sourceDef
+					// 更新列的顺序信息
+					destColumnSeq[colPair.sourceCol] = sourceColumnSeq[colPair.sourceCol]
+				}
+			}
+		}
+
 		if stcls.checkRules.CheckObject == "data" {
 			if len(addColumn) == 0 && len(delColumn) == 0 {
 				// 使用目标端schema
@@ -2806,6 +2945,27 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 
 						// 比较同名索引的列及其顺序（包含序号信息的比较）
 						if a.CheckMd5(strings.Join(sColumnsForCompare, ",")) != a.CheckMd5(strings.Join(dColumnsForCompare, ",")) {
+							// 检查是否仅仅是列名大小写不同（当caseSensitiveObjectName=yes时）
+							columnsOnlyCaseDifferent := false
+							if stcls.caseSensitiveObjectName == "yes" && len(sColumns) == len(dColumns) {
+								columnsOnlyCaseDifferent = true
+								lowerSourceColumns := make(map[string]bool)
+								for _, col := range sColumns {
+									lowerSourceColumns[strings.ToLower(col)] = true
+								}
+								for _, col := range dColumns {
+									if !lowerSourceColumns[strings.ToLower(col)] {
+										columnsOnlyCaseDifferent = false
+										break
+									}
+								}
+							}
+
+							// 如果只是列名大小写不同且是主键，跳过重建主键
+							if columnsOnlyCaseDifferent && indexType == "pri" {
+								continue
+							}
+
 							// 1. 先生成删除旧索引的SQL
 							// 根据映射规则确定目标端schema
 							destSchema := stcls.schema
@@ -2829,15 +2989,21 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 								destSchema = mappedSchema
 							}
 
+							// 为每个列名添加反引号，确保大小写敏感性
+							quotedColumns := make([]string, len(sortedColumns))
+							for i, col := range sortedColumns {
+								quotedColumns[i] = fmt.Sprintf("`%s`", col)
+							}
+
 							if indexType == "pri" {
 								cc = append(cc, fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD PRIMARY KEY(%s);",
-									destSchema, stcls.table, strings.Join(sortedColumns, ",")))
+									destSchema, stcls.table, strings.Join(quotedColumns, ", ")))
 							} else if indexType == "uni" {
 								cc = append(cc, fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD UNIQUE INDEX `%s`(%s);",
-									destSchema, stcls.table, k, strings.Join(sortedColumns, ",")))
+									destSchema, stcls.table, k, strings.Join(quotedColumns, ", ")))
 							} else {
 								cc = append(cc, fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD INDEX `%s`(%s);",
-									destSchema, stcls.table, k, strings.Join(sortedColumns, ",")))
+									destSchema, stcls.table, k, strings.Join(quotedColumns, ", ")))
 							}
 						}
 					}

@@ -492,6 +492,18 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterColumnSqlDispos(alterType string, 
 		sqlS = fmt.Sprintf(" MODIFY COLUMN `%s` %s %s %s %s %s %s %s", curryColumn, columnDataType[0], charsetN, collationN, nullS, collumnDefaultN, commentS, columnLocation)
 	case "drop":
 		sqlS = fmt.Sprintf(" DROP COLUMN `%s` ", curryColumn)
+	case "change":
+		// 对于CHANGE操作，需要原始列名和新列名
+		// 假设curryColumn格式为"原始列名:新列名"
+		parts := strings.Split(curryColumn, ":")
+		if len(parts) == 2 {
+			originalCol := parts[0]
+			newCol := parts[1]
+			sqlS = fmt.Sprintf(" CHANGE COLUMN `%s` `%s` %s %s %s %s %s %s %s", originalCol, newCol, columnDataType[0], charsetN, collationN, nullS, collumnDefaultN, commentS, columnLocation)
+		} else {
+			// 如果格式不正确，降级为MODIFY
+			sqlS = fmt.Sprintf(" MODIFY COLUMN `%s` %s %s %s %s %s %s %s", curryColumn, columnDataType[0], charsetN, collationN, nullS, collumnDefaultN, commentS, columnLocation)
+		}
 	}
 	return sqlS
 }
