@@ -460,43 +460,44 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterIndexSqlExec(e, f []string, si map
 
 func (my *MysqlDataAbnormalFixStruct) FixAlterColumnSqlDispos(alterType string, columnDataType []string, columnSeq int, lastColumn, curryColumn string, logThreadSeq int64) string {
 	var sqlS string
-	charsetN := ""
-	if columnDataType[1] != "null" {
-		charsetN = fmt.Sprintf("CHARACTER SET %s", columnDataType[1])
-	}
-	collationN := ""
-	if columnDataType[2] != "null" {
-		collationN = fmt.Sprintf("COLLATE %s", columnDataType[2])
-	}
-	nullS := ""
-	if strings.ToUpper(columnDataType[3]) == "NO" {
-		nullS = "NOT NULL"
-	}
-	collumnDefaultN := ""
-	if columnDataType[4] == "empty" {
-		collumnDefaultN = ""
-	} else if columnDataType[4] == "NULL" {
-		collumnDefaultN = ""
-	} else if columnDataType[4] == "null" {
-		// 如果列不允许为NULL（IS_NULLABLE=NO），则不应该设置DEFAULT NULL
-		if strings.ToUpper(columnDataType[3]) != "NO" {
-			collumnDefaultN = fmt.Sprintf("DEFAULT NULL")
-		}
-	} else {
-		collumnDefaultN = fmt.Sprintf("DEFAULT '%s'", columnDataType[4])
-	}
-	commentS := ""
-	if columnDataType[5] != "empty" {
-		commentS = fmt.Sprintf("COMMENT '%s'", columnDataType[5])
-	}
-	columnLocation := ""
-	if columnSeq == 0 {
-		columnLocation = "FIRST"
-	} else {
-		if lastColumn != "alterNoAfter" {
-			columnLocation = fmt.Sprintf("AFTER `%s`", lastColumn)
-		}
 
+	// 构建属性列表，只添加非空的值
+	var attributes []string
+
+	// 添加数据类型
+	attributes = append(attributes, columnDataType[0])
+
+	// 添加字符集
+	if columnDataType[1] != "null" {
+		attributes = append(attributes, fmt.Sprintf("CHARACTER SET %s", columnDataType[1]))
+	}
+
+	// 添加排序规则
+	if columnDataType[2] != "null" {
+		attributes = append(attributes, fmt.Sprintf("COLLATE %s", columnDataType[2]))
+	}
+
+	// 添加NOT NULL约束
+	if strings.ToUpper(columnDataType[3]) == "NO" {
+		attributes = append(attributes, "NOT NULL")
+	}
+
+	// 添加默认值
+	if columnDataType[4] != "empty" && columnDataType[4] != "NULL" {
+		if columnDataType[4] == "null" {
+			// 如果列允许为NULL，则设置DEFAULT NULL
+			if strings.ToUpper(columnDataType[3]) != "NO" {
+				attributes = append(attributes, "DEFAULT NULL")
+			}
+		} else {
+			// 设置具体的默认值
+			attributes = append(attributes, fmt.Sprintf("DEFAULT '%s'", columnDataType[4]))
+		}
+	}
+
+	// 添加注释
+	if columnDataType[5] != "empty" {
+		attributes = append(attributes, fmt.Sprintf("COMMENT '%s'", columnDataType[5]))
 	}
 
 	// 初始化AutoIncrementColumnsWithPrimaryKey映射
@@ -505,36 +506,46 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterColumnSqlDispos(alterType string, 
 	}
 
 	// 检查是否需要在添加列时同时设置为主键（对于自增列）
-	addPrimaryKey := ""
 	if alterType == "add" && strings.Contains(strings.ToLower(columnDataType[0]), "auto_increment") {
 		// 对于自增列，需要同时设置为主键
-		addPrimaryKey = " PRIMARY KEY"
+		attributes = append(attributes, "PRIMARY KEY")
 		// 标记该列已经设置了主键，避免在索引修复时重复设置
 		key := fmt.Sprintf("%s.%s.%s", my.Schema, my.Table, curryColumn)
 		AutoIncrementColumnsWithPrimaryKey[key] = true
 	}
 
 	// 处理INVISIBLE属性（如果数据类型中包含）
-	invisibleClause := ""
 	if strings.Contains(strings.ToUpper(columnDataType[0]), "INVISIBLE") {
-		// 从数据类型中提取INVISIBLE关键字
-		invisibleClause = " INVISIBLE"
+		// 添加INVISIBLE关键字
+		attributes = append(attributes, "INVISIBLE")
 		// 从数据类型中移除INVISIBLE关键字，避免重复
 		columnDataType[0] = strings.ReplaceAll(strings.ToUpper(columnDataType[0]), " INVISIBLE", "")
 	}
 
+	// 添加列位置
+	columnLocation := ""
+	if columnSeq == 0 {
+		columnLocation = "FIRST"
+	} else if lastColumn != "alterNoAfter" {
+		columnLocation = fmt.Sprintf("AFTER `%s`", lastColumn)
+	}
+
+	// 构建最终SQL
 	switch alterType {
 	case "add":
-		// 调整关键字顺序：INVISIBLE应在PRIMARY KEY之前，FIRST应在最后
-		sqlS = fmt.Sprintf(" ADD COLUMN `%s` %s %s %s %s %s %s%s%s %s",
-			curryColumn, columnDataType[0], charsetN, collationN, nullS, collumnDefaultN,
-			commentS, invisibleClause, addPrimaryKey, columnLocation)
+		if columnLocation != "" {
+			sqlS = fmt.Sprintf(" ADD COLUMN `%s` %s %s", curryColumn, strings.Join(attributes, " "), columnLocation)
+		} else {
+			sqlS = fmt.Sprintf(" ADD COLUMN `%s` %s", curryColumn, strings.Join(attributes, " "))
+		}
 	case "modify":
-		sqlS = fmt.Sprintf(" MODIFY COLUMN `%s` %s %s %s %s %s %s %s%s",
-			curryColumn, columnDataType[0], charsetN, collationN, nullS, collumnDefaultN,
-			commentS, columnLocation, invisibleClause)
+		if columnLocation != "" {
+			sqlS = fmt.Sprintf(" MODIFY COLUMN `%s` %s %s", curryColumn, strings.Join(attributes, " "), columnLocation)
+		} else {
+			sqlS = fmt.Sprintf(" MODIFY COLUMN `%s` %s", curryColumn, strings.Join(attributes, " "))
+		}
 	case "drop":
-		sqlS = fmt.Sprintf(" DROP COLUMN `%s` ", curryColumn)
+		sqlS = fmt.Sprintf(" DROP COLUMN `%s`", curryColumn)
 	case "change":
 		// 对于CHANGE操作，需要原始列名和新列名
 		// 假设curryColumn格式为"原始列名:新列名"
@@ -542,14 +553,18 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterColumnSqlDispos(alterType string, 
 		if len(parts) == 2 {
 			originalCol := parts[0]
 			newCol := parts[1]
-			sqlS = fmt.Sprintf(" CHANGE COLUMN `%s` `%s` %s %s %s %s %s %s %s%s",
-				originalCol, newCol, columnDataType[0], charsetN, collationN, nullS,
-				collumnDefaultN, commentS, columnLocation, invisibleClause)
+			if columnLocation != "" {
+				sqlS = fmt.Sprintf(" CHANGE COLUMN `%s` `%s` %s %s", originalCol, newCol, strings.Join(attributes, " "), columnLocation)
+			} else {
+				sqlS = fmt.Sprintf(" CHANGE COLUMN `%s` `%s` %s", originalCol, newCol, strings.Join(attributes, " "))
+			}
 		} else {
 			// 如果格式不正确，降级为MODIFY
-			sqlS = fmt.Sprintf(" MODIFY COLUMN `%s` %s %s %s %s %s %s %s%s",
-				curryColumn, columnDataType[0], charsetN, collationN, nullS, collumnDefaultN,
-				commentS, columnLocation, invisibleClause)
+			if columnLocation != "" {
+				sqlS = fmt.Sprintf(" MODIFY COLUMN `%s` %s %s", curryColumn, strings.Join(attributes, " "), columnLocation)
+			} else {
+				sqlS = fmt.Sprintf(" MODIFY COLUMN `%s` %s", curryColumn, strings.Join(attributes, " "))
+			}
 		}
 	}
 	return sqlS
