@@ -742,7 +742,20 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 				}
 
 				// 比较列顺序
-				if sourceColumnSeq[v1] != destColumnSeq[v1] {
+				// 注意：当添加一个自增列作为主键并使用FIRST关键字时，其他列的顺序自然会被调整
+				// 因此需要检查是否有添加自增列的操作，如果有，跳过因为这个原因导致的列顺序不匹配
+				hasAutoIncrementPrimaryKeyAdd := false
+				for _, alterOp := range alterSlice {
+					if strings.Contains(strings.ToUpper(alterOp), "ADD COLUMN") &&
+						strings.Contains(strings.ToUpper(alterOp), "AUTO_INCREMENT") &&
+						strings.Contains(strings.ToUpper(alterOp), "PRIMARY KEY") &&
+						strings.Contains(strings.ToUpper(alterOp), "FIRST") {
+						hasAutoIncrementPrimaryKeyAdd = true
+						break
+					}
+				}
+
+				if !hasAutoIncrementPrimaryKeyAdd && sourceColumnSeq[v1] != destColumnSeq[v1] {
 					tableAbnormalBool = true
 					vlog = fmt.Sprintf("(%d) %s Column %s sequence mismatch: source=%d, dest=%d",
 						logThreadSeq, event, originalColName, sourceColumnSeq[v1], destColumnSeq[v1])
@@ -2995,14 +3008,22 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 								destSchema = mappedSchema
 							}
 
-							if indexType == "pri" {
-								cc = append(cc, fmt.Sprintf("ALTER TABLE `%s`.`%s` DROP PRIMARY KEY;", destSchema, stcls.table))
-							} else {
-								cc = append(cc, fmt.Sprintf("ALTER TABLE `%s`.`%s` DROP INDEX `%s`;", destSchema, stcls.table, k))
-							}
-
 							// 2. 获取排序后的纯列名
 							sortedColumns := sortColumns(sColumns)
+
+							// 检查是否是主键且该列是自增列
+							isAutoIncrementPrimaryKey := false
+							if indexType == "pri" && len(sortedColumns) == 1 {
+								// 构建键名：schema.table.column
+								key := fmt.Sprintf("%s.%s.%s", destSchema, stcls.table, sortedColumns[0])
+								// 检查该列是否已经在添加列时设置了主键
+								if mysql.AutoIncrementColumnsWithPrimaryKey != nil && mysql.AutoIncrementColumnsWithPrimaryKey[key] {
+									isAutoIncrementPrimaryKey = true
+									vlog = fmt.Sprintf("(%d) %s Column %s is already set as PRIMARY KEY in ALTER TABLE ADD COLUMN statement, skipping index repair",
+										logThreadSeq, event, sortedColumns[0])
+									global.Wlog.Debug(vlog)
+								}
+							}
 
 							// 3. 生成创建索引的SQL
 							// 根据映射规则确定目标端schema
@@ -3025,15 +3046,18 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 								}
 							}
 
-							if indexType == "pri" {
-								cc = append(cc, fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD PRIMARY KEY(%s);",
-									destSchema, stcls.table, strings.Join(quotedColumns, ", ")))
-							} else if indexType == "uni" {
-								cc = append(cc, fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD UNIQUE INDEX `%s`(%s);",
-									destSchema, stcls.table, k, strings.Join(quotedColumns, ", ")))
-							} else {
-								cc = append(cc, fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD INDEX `%s`(%s)%s;",
-									destSchema, stcls.table, k, strings.Join(quotedColumns, ", "), visibility))
+							// 只有当不是自增列主键时才生成创建索引的SQL
+							if !isAutoIncrementPrimaryKey {
+								if indexType == "pri" {
+									cc = append(cc, fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD PRIMARY KEY(%s);",
+										destSchema, stcls.table, strings.Join(quotedColumns, ", ")))
+								} else if indexType == "uni" {
+									cc = append(cc, fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD UNIQUE INDEX `%s`(%s);",
+										destSchema, stcls.table, k, strings.Join(quotedColumns, ", ")))
+								} else {
+									cc = append(cc, fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD INDEX `%s`(%s)%s;",
+										destSchema, stcls.table, k, strings.Join(quotedColumns, ", "), visibility))
+								}
 							}
 						}
 					}
@@ -3591,6 +3615,11 @@ func SchemaTableInit(m *inputArg.ConfigParameter) *schemaTable {
 			}
 		}
 	}
+
+	// 初始化全局映射变量
+	indexDiffsMap = make(map[string]bool)
+	partitionDiffsMap = make(map[string]bool)
+	foreignKeyDiffsMap = make(map[string]bool)
 
 	// 添加调试日志
 	vlog := fmt.Sprintf("Initialized table mappings: %v", tableMappings)
