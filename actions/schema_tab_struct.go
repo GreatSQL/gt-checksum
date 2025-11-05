@@ -205,7 +205,7 @@ func (stcls *schemaTable) tableColumnName(db *sql.DB, tc dbExec.TableColumnNameS
 			case "<nil>":
 				return "null"
 			case "<entry>":
-				return "empty"
+				return "" // 返回空字符串而不是"empty"
 			default:
 				return c
 			}
