@@ -10,6 +10,11 @@ import (
 	"strings"
 )
 
+// 跟踪已经在添加列时设置了主键的列
+var (
+	AutoIncrementColumnsWithPrimaryKey map[string]bool
+)
+
 type MysqlDataAbnormalFixStruct struct {
 	Schema                  string
 	Table                   string
@@ -36,6 +41,7 @@ func (my *MysqlDataAbnormalFixStruct) FixInsertSqlExec(db *sql.DB, sourceDrive s
 		insertSql     string
 		valuesNameSeq []string
 		targetSchema  = my.Schema // 默认使用目标schema
+		vlog          string
 	)
 
 	vlog = fmt.Sprintf("(%d) Generating INSERT repair statement for %s.%s (target: %s)", logThreadSeq, my.Schema, my.Table, targetSchema)
@@ -468,7 +474,7 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterColumnSqlDispos(alterType string, 
 	}
 	collumnDefaultN := ""
 	if columnDataType[4] == "empty" {
-		collumnDefaultN = fmt.Sprintf("DEFAULT ''")
+		collumnDefaultN = ""
 	} else if columnDataType[4] == "NULL" {
 		collumnDefaultN = ""
 	} else if columnDataType[4] == "null" {
@@ -492,11 +498,41 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterColumnSqlDispos(alterType string, 
 		}
 
 	}
+
+	// 初始化AutoIncrementColumnsWithPrimaryKey映射
+	if AutoIncrementColumnsWithPrimaryKey == nil {
+		AutoIncrementColumnsWithPrimaryKey = make(map[string]bool)
+	}
+
+	// 检查是否需要在添加列时同时设置为主键（对于自增列）
+	addPrimaryKey := ""
+	if alterType == "add" && strings.Contains(strings.ToLower(columnDataType[0]), "auto_increment") {
+		// 对于自增列，需要同时设置为主键
+		addPrimaryKey = " PRIMARY KEY"
+		// 标记该列已经设置了主键，避免在索引修复时重复设置
+		key := fmt.Sprintf("%s.%s.%s", my.Schema, my.Table, curryColumn)
+		AutoIncrementColumnsWithPrimaryKey[key] = true
+	}
+
+	// 处理INVISIBLE属性（如果数据类型中包含）
+	invisibleClause := ""
+	if strings.Contains(strings.ToUpper(columnDataType[0]), "INVISIBLE") {
+		// 从数据类型中提取INVISIBLE关键字
+		invisibleClause = " INVISIBLE"
+		// 从数据类型中移除INVISIBLE关键字，避免重复
+		columnDataType[0] = strings.ReplaceAll(strings.ToUpper(columnDataType[0]), " INVISIBLE", "")
+	}
+
 	switch alterType {
 	case "add":
-		sqlS = fmt.Sprintf(" ADD COLUMN `%s` %s %s %s %s %s %s %s", curryColumn, columnDataType[0], charsetN, collationN, nullS, collumnDefaultN, commentS, columnLocation)
+		// 调整关键字顺序：INVISIBLE应在PRIMARY KEY之前，FIRST应在最后
+		sqlS = fmt.Sprintf(" ADD COLUMN `%s` %s %s %s %s %s %s%s%s %s",
+			curryColumn, columnDataType[0], charsetN, collationN, nullS, collumnDefaultN,
+			commentS, invisibleClause, addPrimaryKey, columnLocation)
 	case "modify":
-		sqlS = fmt.Sprintf(" MODIFY COLUMN `%s` %s %s %s %s %s %s %s", curryColumn, columnDataType[0], charsetN, collationN, nullS, collumnDefaultN, commentS, columnLocation)
+		sqlS = fmt.Sprintf(" MODIFY COLUMN `%s` %s %s %s %s %s %s %s%s",
+			curryColumn, columnDataType[0], charsetN, collationN, nullS, collumnDefaultN,
+			commentS, columnLocation, invisibleClause)
 	case "drop":
 		sqlS = fmt.Sprintf(" DROP COLUMN `%s` ", curryColumn)
 	case "change":
@@ -506,10 +542,14 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterColumnSqlDispos(alterType string, 
 		if len(parts) == 2 {
 			originalCol := parts[0]
 			newCol := parts[1]
-			sqlS = fmt.Sprintf(" CHANGE COLUMN `%s` `%s` %s %s %s %s %s %s %s", originalCol, newCol, columnDataType[0], charsetN, collationN, nullS, collumnDefaultN, commentS, columnLocation)
+			sqlS = fmt.Sprintf(" CHANGE COLUMN `%s` `%s` %s %s %s %s %s %s %s%s",
+				originalCol, newCol, columnDataType[0], charsetN, collationN, nullS,
+				collumnDefaultN, commentS, columnLocation, invisibleClause)
 		} else {
 			// 如果格式不正确，降级为MODIFY
-			sqlS = fmt.Sprintf(" MODIFY COLUMN `%s` %s %s %s %s %s %s %s", curryColumn, columnDataType[0], charsetN, collationN, nullS, collumnDefaultN, commentS, columnLocation)
+			sqlS = fmt.Sprintf(" MODIFY COLUMN `%s` %s %s %s %s %s %s %s%s",
+				curryColumn, columnDataType[0], charsetN, collationN, nullS, collumnDefaultN,
+				commentS, columnLocation, invisibleClause)
 		}
 	}
 	return sqlS
@@ -533,10 +573,49 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterColumnAndIndexSqlGenerate(columnOp
 		targetSchema = my.Schema // 使用目标schema（保持原始大小写）
 	)
 
+	// 初始化AutoIncrementColumnsWithPrimaryKey映射
+	if AutoIncrementColumnsWithPrimaryKey == nil {
+		AutoIncrementColumnsWithPrimaryKey = make(map[string]bool)
+	}
+
+	// 过滤掉已经在列操作中设置为主键的列的索引操作
+	filteredIndexOperations := make([]string, 0)
+	for _, op := range indexOperations {
+		// 检查是否是添加主键的操作
+		if strings.Contains(strings.ToUpper(op), "ADD PRIMARY KEY") {
+			// 尝试提取列名
+			// 格式可能是：ALTER TABLE `schema`.`table` ADD PRIMARY KEY(`column`);
+			startIdx := strings.Index(strings.ToUpper(op), "ADD PRIMARY KEY(")
+			if startIdx != -1 {
+				startIdx += len("ADD PRIMARY KEY(")
+				endIdx := strings.Index(op[startIdx:], ")")
+				if endIdx != -1 {
+					colName := strings.TrimSpace(op[startIdx : startIdx+endIdx])
+					// 去除反引号
+					colName = strings.Trim(colName, "`")
+					key := fmt.Sprintf("%s.%s.%s", my.Schema, my.Table, colName)
+					// 如果该列已经在添加时设置为主键，则跳过此索引操作
+					if _, exists := AutoIncrementColumnsWithPrimaryKey[key]; !exists {
+						filteredIndexOperations = append(filteredIndexOperations, op)
+					}
+				} else {
+					// 无法解析列名，保留原始操作
+					filteredIndexOperations = append(filteredIndexOperations, op)
+				}
+			} else {
+				// 不是标准格式，保留原始操作
+				filteredIndexOperations = append(filteredIndexOperations, op)
+			}
+		} else {
+			// 不是添加主键的操作，保留
+			filteredIndexOperations = append(filteredIndexOperations, op)
+		}
+	}
+
 	// 合并所有操作
 	var allOperations []string
 	allOperations = append(allOperations, columnOperations...)
-	allOperations = append(allOperations, indexOperations...)
+	allOperations = append(allOperations, filteredIndexOperations...)
 
 	if len(allOperations) > 0 {
 		// 提取操作内容（去除ALTER TABLE前缀和分号）
@@ -650,8 +729,12 @@ func WriteFixIfNeededFile(datafix string, sfile *os.File, sqls []string, logThre
 	if !strings.EqualFold(datafix, "file") || sfile == nil || len(sqls) == 0 {
 		return nil
 	}
+
+	// 过滤多余的ADD PRIMARY KEY语句
+	filteredSqls := filterRedundantPrimaryKeyStatements(sqls)
+
 	w := bufio.NewWriter(sfile)
-	for _, s := range sqls {
+	for _, s := range filteredSqls {
 		ss := strings.TrimSpace(s)
 		if ss == "" {
 			continue
@@ -667,6 +750,196 @@ func WriteFixIfNeededFile(datafix string, sfile *os.File, sqls []string, logThre
 		return err
 	}
 	return nil
+}
+
+// filterRedundantPrimaryKeyStatements 过滤多余的ADD PRIMARY KEY语句
+// 当发现有ADD COLUMN语句已经设置了PRIMARY KEY时，移除后续的单独ADD PRIMARY KEY语句
+func filterRedundantPrimaryKeyStatements(sqls []string) []string {
+	// 存储表和列的映射关系，用于检测重复的主键定义
+	// key: tableIdentifier (schema.table)
+	// value: map of column names that are already set as primary keys
+	primaryKeyTables := make(map[string]map[string]bool)
+	// 存储需要保留的SQL语句
+	var result []string
+
+	// 第一遍扫描：识别并记录在ADD COLUMN语句中设置为PRIMARY KEY的列
+	for _, sql := range sqls {
+		sqlUpper := strings.ToUpper(sql)
+
+		// 检查是否是ADD COLUMN语句且包含PRIMARY KEY
+		if strings.Contains(sqlUpper, "ADD COLUMN") && strings.Contains(sqlUpper, "PRIMARY KEY") {
+			// 提取表标识符 (schema.table)
+			tableID := extractTableIdentifier(sql)
+			if tableID == "" {
+				continue
+			}
+
+			// 提取列名
+			column := extractColumnNameFromAddColumn(sql)
+			if column == "" {
+				continue
+			}
+
+			// 初始化表的映射
+			if _, exists := primaryKeyTables[tableID]; !exists {
+				primaryKeyTables[tableID] = make(map[string]bool)
+			}
+			// 记录该列已经是主键
+			primaryKeyTables[tableID][strings.ToUpper(column)] = true
+		}
+	}
+
+	// 第二遍扫描：过滤多余的ADD PRIMARY KEY语句
+	for _, sql := range sqls {
+		sqlUpper := strings.ToUpper(sql)
+
+		// 检查是否是单独的ADD PRIMARY KEY语句（不包含ADD COLUMN）
+		if strings.Contains(sqlUpper, "ADD PRIMARY KEY") && !strings.Contains(sqlUpper, "ADD COLUMN") {
+			// 提取表标识符
+			tableID := extractTableIdentifier(sql)
+			if tableID == "" {
+				// 如果无法提取表信息，保留这条SQL
+				result = append(result, sql)
+				continue
+			}
+
+			// 提取列名
+			column := extractColumnNameFromAddPrimaryKey(sql)
+			if column == "" {
+				// 如果无法提取列信息，保留这条SQL
+				result = append(result, sql)
+				continue
+			}
+
+			// 检查该列是否已经在ADD COLUMN语句中设置为主键
+			if tableMap, exists := primaryKeyTables[tableID]; exists {
+				if tableMap[strings.ToUpper(column)] {
+					// 跳过这个多余的ADD PRIMARY KEY语句
+					continue
+				}
+			}
+		}
+
+		// 保留这条SQL语句
+		result = append(result, sql)
+	}
+
+	return result
+}
+
+// extractTableIdentifier 从SQL语句中提取表标识符 (schema.table)
+func extractTableIdentifier(sql string) string {
+	// 查找ALTER TABLE部分
+	alterTablePos := strings.ToUpper(sql)
+	startPos := strings.Index(alterTablePos, "ALTER TABLE")
+	if startPos == -1 {
+		return ""
+	}
+
+	// 跳过ALTER TABLE
+	startPos += len("ALTER TABLE")
+	rest := strings.TrimSpace(sql[startPos:])
+
+	// 提取表标识符，考虑可能的反引号
+	if strings.HasPrefix(rest, "`") {
+		// 查找第一个反引号
+		firstQuote := 0
+		// 查找第一个结束反引号
+		endQuote := strings.Index(rest[firstQuote+1:], "`")
+		if endQuote == -1 {
+			return ""
+		}
+		endQuote++ // 调整索引，因为我们从firstQuote+1开始查找
+
+		// 检查是否有schema.table格式
+		if endQuote+1 < len(rest) && rest[endQuote+1] == '.' {
+			// 提取schema
+			schema := rest[firstQuote+1 : endQuote]
+
+			// 查找table的开始位置
+			tableStart := endQuote + 2 // 跳过.和可能的空格
+			if tableStart < len(rest) && rest[tableStart] == '`' {
+				tableStart++ // 跳过开始反引号
+				tableEnd := strings.Index(rest[tableStart:], "`")
+				if tableEnd != -1 {
+					table := rest[tableStart : tableStart+tableEnd]
+					return fmt.Sprintf("%s.%s", schema, table)
+				}
+			}
+		} else {
+			// 只有表名没有schema
+			table := rest[firstQuote+1 : endQuote]
+			return table
+		}
+	}
+
+	// 如果没有反引号，尝试查找空格分割的表名
+	parts := strings.Fields(rest)
+	if len(parts) > 0 {
+		return parts[0]
+	}
+
+	return ""
+}
+
+// extractColumnNameFromAddColumn 从ADD COLUMN语句中提取列名
+func extractColumnNameFromAddColumn(sql string) string {
+	// 查找ADD COLUMN部分
+	addColumnPos := strings.ToUpper(sql)
+	startPos := strings.Index(addColumnPos, "ADD COLUMN")
+	if startPos == -1 {
+		return ""
+	}
+
+	// 跳过ADD COLUMN
+	startPos += len("ADD COLUMN")
+	rest := strings.TrimSpace(sql[startPos:])
+
+	// 提取列名，考虑可能的反引号
+	if strings.HasPrefix(rest, "`") {
+		// 查找第一个反引号
+		firstQuote := 0
+		// 查找第一个结束反引号
+		endQuote := strings.Index(rest[firstQuote+1:], "`")
+		if endQuote != -1 {
+			return rest[firstQuote+1 : firstQuote+1+endQuote]
+		}
+	}
+
+	// 如果没有反引号，尝试查找空格分割的列名
+	parts := strings.Fields(rest)
+	if len(parts) > 0 {
+		// 可能包含类型信息，提取第一个部分
+		return parts[0]
+	}
+
+	return ""
+}
+
+// extractColumnNameFromAddPrimaryKey 从ADD PRIMARY KEY语句中提取列名
+func extractColumnNameFromAddPrimaryKey(sql string) string {
+	// 查找ADD PRIMARY KEY部分
+	addPKPos := strings.ToUpper(sql)
+	startPos := strings.Index(addPKPos, "ADD PRIMARY KEY(")
+	if startPos == -1 {
+		return ""
+	}
+
+	// 跳过ADD PRIMARY KEY(
+	startPos += len("ADD PRIMARY KEY(")
+	rest := sql[startPos:]
+
+	// 查找结束括号
+	endPos := strings.Index(rest, ")")
+	if endPos == -1 {
+		return ""
+	}
+
+	// 提取括号内的内容（列名）
+	columnPart := strings.TrimSpace(rest[:endPos])
+
+	// 去除可能的反引号
+	return strings.Trim(columnPart, "`")
 }
 
 // writeFixSQLToFile appends SQL statements into the specified file
