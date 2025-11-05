@@ -7,19 +7,20 @@ import (
 )
 
 type DataAbnormalFixStruct struct {
-	Schema                string
-	Table                 string
-	RowData               string
-	SourceDevice          string
-	DestDevice            string
-	Sqlwhere              string
-	IndexColumnType       string
-	ColData               []map[string]string
-	IndexType             string
-	IndexColumn           []string
-	DatafixType           string
-	SourceSchema          string // 源端schema，用于处理数据库映射关系
+	Schema                  string
+	Table                   string
+	RowData                 string
+	SourceDevice            string
+	DestDevice              string
+	Sqlwhere                string
+	IndexColumnType         string
+	ColData                 []map[string]string
+	IndexType               string
+	IndexColumn             []string
+	DatafixType             string
+	SourceSchema            string // 源端schema，用于处理数据库映射关系
 	CaseSensitiveObjectName string // 是否区分对象名大小写
+	IndexVisibilityMap      map[string]string // 索引可见性信息
 }
 type DataAbnormalFixInterface interface {
 	FixInsertSqlExec(db *sql.DB, sourceDrive string, logThreadSeq int64) (string, error)
@@ -48,6 +49,7 @@ func (dafs DataAbnormalFixStruct) DataAbnormalFix() DataAbnormalFixInterface {
 				DatafixType:           dafs.DatafixType,
 				SourceSchema:          dafs.SourceSchema, // 传递源端schema信息
 				CaseSensitiveObjectName: dafs.CaseSensitiveObjectName, // 传递是否区分对象名大小写
+				IndexVisibilityMap:    dafs.IndexVisibilityMap, // 传递索引可见性信息
 			}
 	}
 	if dafs.DestDevice == "godror" {

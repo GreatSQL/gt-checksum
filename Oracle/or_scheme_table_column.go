@@ -98,6 +98,14 @@ func (or *QueryTable) TableColumnName(db *sql.DB, logThreadSeq int64) ([]map[str
 }
 
 /*
+Oracle 获取表的注释信息
+*/
+func (or *QueryTable) TableComment(db *sql.DB, logThreadSeq int64) (string, error) {
+	// Oracle暂不实现表注释功能，返回空字符串
+	return "", nil
+}
+
+/*
 Oracle 查看当前用户是否有全局变量
 */
 func (or *QueryTable) GlobalAccessPri(db *sql.DB, logThreadSeq int64) (bool, error) {

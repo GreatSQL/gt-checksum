@@ -165,6 +165,36 @@ func (my *QueryTable) TableColumnName(db *sql.DB, logThreadSeq int64) ([]map[str
 }
 
 /*
+MySQL 获取表的注释信息
+*/
+func (my *QueryTable) TableComment(db *sql.DB, logThreadSeq int64) (string, error) {
+	var (
+		Event = "Q_Table_Comment"
+	)
+	vlog = fmt.Sprintf("(%d) [%s] Start to query the comment of table %s.%s in the %s database", logThreadSeq, Event, my.Schema, my.Table, DBType)
+	global.Wlog.Debug(vlog)
+	strsql = fmt.Sprintf("SELECT TABLE_COMMENT AS tableComment FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s';", my.Schema, my.Table)
+	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
+	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
+		return "", err
+	}
+	tableData, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
+	if err != nil {
+		return "", err
+	}
+
+	comment := ""
+	if len(tableData) > 0 {
+		comment = fmt.Sprintf("%s", tableData[0]["tableComment"])
+	}
+
+	vlog = fmt.Sprintf("(%d) [%s] Complete the comment query of table %s.%s in the %s database: %s", logThreadSeq, Event, my.Schema, my.Table, DBType, comment)
+	global.Wlog.Debug(vlog)
+	defer dispos.SqlRows.Close()
+	return comment, nil
+}
+
+/*
 MySQL 查询数据库版本信息
 */
 func (my *QueryTable) DatabaseVersion(db *sql.DB, logThreadSeq int64) (string, error) {
@@ -473,7 +503,7 @@ func (my *QueryTable) TableAllColumn(db *sql.DB, logThreadSeq int64) ([]map[stri
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start to query the metadata of all the columns of table %s.%s in the %s database", logThreadSeq, Event, my.Schema, my.Table, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("SELECT COLUMN_NAME AS columnName, COLUMN_TYPE AS dataType, ORDINAL_POSITION AS columnSeq, IS_NULLABLE AS isNull FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s' ORDER BY ORDINAL_POSITION;", my.Schema, my.Table)
+	strsql = fmt.Sprintf("SELECT COLUMN_NAME AS columnName, COLUMN_TYPE AS dataType, ORDINAL_POSITION AS columnSeq, IS_NULLABLE AS isNull, COLUMN_COMMENT AS columnComment FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s' ORDER BY ORDINAL_POSITION;", my.Schema, my.Table)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return nil, err

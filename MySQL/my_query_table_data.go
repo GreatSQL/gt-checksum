@@ -19,7 +19,7 @@ func (my *QueryTable) QueryTableIndexColumnInfo(db *sql.DB, logThreadSeq int64) 
 		tableData []map[string]interface{}
 		err       error
 	)
-	strsql = fmt.Sprintf("SELECT isc.COLUMN_NAME AS columnName, isc.COLUMN_TYPE AS columnType, isc.COLUMN_KEY AS columnKey,isc.EXTRA AS autoIncrement, iss.NON_UNIQUE AS nonUnique, iss.INDEX_NAME AS indexName, iss.SEQ_IN_INDEX AS IndexSeq, isc.ORDINAL_POSITION AS columnSeq FROM INFORMATION_SCHEMA.COLUMNS isc INNER JOIN (SELECT NON_UNIQUE, INDEX_NAME, SEQ_IN_INDEX, COLUMN_NAME FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s') AS iss ON isc.COLUMN_NAME=iss.COLUMN_NAME WHERE isc.TABLE_SCHEMA='%s' AND isc.TABLE_NAME='%s';", my.Schema, my.Table, my.Schema, my.Table)
+	strsql = fmt.Sprintf("SELECT isc.COLUMN_NAME AS columnName, isc.COLUMN_TYPE AS columnType, isc.COLUMN_KEY AS columnKey,isc.EXTRA AS autoIncrement, iss.NON_UNIQUE AS nonUnique, iss.INDEX_NAME AS indexName, iss.SEQ_IN_INDEX AS IndexSeq, isc.ORDINAL_POSITION AS columnSeq, iss.IS_VISIBLE AS indexVisibility FROM INFORMATION_SCHEMA.COLUMNS isc INNER JOIN (SELECT NON_UNIQUE, INDEX_NAME, SEQ_IN_INDEX, COLUMN_NAME, IS_VISIBLE FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s') AS iss ON isc.COLUMN_NAME=iss.COLUMN_NAME WHERE isc.TABLE_SCHEMA='%s' AND isc.TABLE_NAME='%s';", my.Schema, my.Table, my.Schema, my.Table)
 	vlog = fmt.Sprintf("(%d) [%s] Generate a sql statement to query the index statistics of table %s.%s under the %s database.sql messige is {%s}", logThreadSeq, Event, my.Schema, my.Table, DBType, strsql)
 	global.Wlog.Debug(vlog)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
@@ -39,14 +39,16 @@ func (my *QueryTable) QueryTableIndexColumnInfo(db *sql.DB, logThreadSeq int64) 
 /*
 根据MySQL库下指定表的索引信息，筛选主键索引、唯一索引、普通索引
 */
-func (my *QueryTable) IndexDisposF(queryData []map[string]interface{}, logThreadSeq int64) (map[string][]string, map[string][]string, map[string][]string) {
+func (my *QueryTable) IndexDisposF(queryData []map[string]interface{}, logThreadSeq int64) (map[string][]string, map[string][]string, map[string][]string, map[string]string) {
 	var (
 		nultiseriateIndexColumnMap = make(map[string][]string)
 		multiseriateIndexColumnMap = make(map[string][]string)
 		priIndexColumnMap          = make(map[string][]string)
-		indexName                  string
-		currIndexName              string
-		Event                      = "E_Index_Filter"
+		// 添加一个新的map来存储索引的可见性信息
+		indexVisibilityMap = make(map[string]string)
+		indexName          string
+		currIndexName      string
+		Event              = "E_Index_Filter"
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start to filter the primary key index, unique index, and common index based on the index information of the specified table %s.%s under the %s library", logThreadSeq, Event, my.Schema, my.Table, DBType)
 	global.Wlog.Debug(vlog)
@@ -63,10 +65,14 @@ func (my *QueryTable) IndexDisposF(queryData []map[string]interface{}, logThread
 		columnName := fmt.Sprintf("%s", v["columnName"])
 		indexSeq := fmt.Sprintf("%s", v["IndexSeq"])
 		columnType := fmt.Sprintf("%s", v["columnType"])
+		// 获取索引可见性信息
+		indexVisibility := fmt.Sprintf("%s", v["indexVisibility"])
 
 		// 初始化map
 		if _, exists := indexColumns[currIndexName]; !exists {
 			indexColumns[currIndexName] = make(map[string]string)
+			// 存储索引可见性信息
+			indexVisibilityMap[currIndexName] = indexVisibility
 		}
 
 		// 存储列的顺序信息
@@ -119,7 +125,8 @@ func (my *QueryTable) IndexDisposF(queryData []map[string]interface{}, logThread
 	vlog = fmt.Sprintf("(%d) [%s] The index information screening of the specified table %s.%s under the %s library is completed", logThreadSeq, Event, my.Schema, my.Table, DBType)
 	global.Wlog.Debug(vlog)
 
-	return priIndexColumnMap, nultiseriateIndexColumnMap, multiseriateIndexColumnMap
+	// 返回四个map：主键索引、唯一索引、普通索引和索引可见性信息
+	return priIndexColumnMap, nultiseriateIndexColumnMap, multiseriateIndexColumnMap, indexVisibilityMap
 }
 
 /*
