@@ -40,7 +40,7 @@ func (or *QueryTable) QueryTableIndexColumnInfo(db *sql.DB, logThreadSeq int64) 
 /*
 根据Oracle库下指定表的索引信息，筛选主键索引、唯一索引、普通索引
 */
-func (or *QueryTable) IndexDisposF(queryData []map[string]interface{}, logThreadSeq int64) (map[string][]string, map[string][]string, map[string][]string) {
+func (or *QueryTable) IndexDisposF(queryData []map[string]interface{}, logThreadSeq int64) (map[string][]string, map[string][]string, map[string][]string, map[string]string) {
 	var (
 		nultiseriateIndexColumnMap = make(map[string][]string)
 		multiseriateIndexColumnMap = make(map[string][]string)
@@ -120,7 +120,8 @@ func (or *QueryTable) IndexDisposF(queryData []map[string]interface{}, logThread
 	vlog = fmt.Sprintf("(%d) [%s] The index information screening of the specified table %s.%s under the %s library is completed", logThreadSeq, Event, or.Schema, or.Table, DBType)
 	global.Wlog.Debug(vlog)
 
-	return priIndexColumnMap, nultiseriateIndexColumnMap, multiseriateIndexColumnMap
+	// Oracle暂不使用索引可见性信息，返回空map
+	return priIndexColumnMap, nultiseriateIndexColumnMap, multiseriateIndexColumnMap, make(map[string]string)
 }
 
 /*

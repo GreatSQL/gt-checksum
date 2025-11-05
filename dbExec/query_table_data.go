@@ -26,8 +26,9 @@ type TableIndexColumner interface {
 	TmpTableIndexColumnRowsCount(db *sql.DB, logThreadSeq int64) (uint64, error)
 	TmpTableColumnGroupDataDispos(db *sql.DB, where string, columnName string, logThreadSeq int64) (chan map[string]interface{}, error)
 	TableRows(db *sql.DB, logThreadSeq int64) (uint64, error)
+	TableComment(db *sql.DB, logThreadSeq int64) (string, error)
 	QueryTableIndexColumnInfo(db *sql.DB, logThreadSeq int64) ([]map[string]interface{}, error)
-	IndexDisposF(queryData []map[string]interface{}, logThreadSeq int64) (map[string][]string, map[string][]string, map[string][]string)
+	IndexDisposF(queryData []map[string]interface{}, logThreadSeq int64) (map[string][]string, map[string][]string, map[string][]string, map[string]string)
 	NoIndexOrderBySingerColumn(orderCol []map[string]string) []string
 	NoIndexGeneratingQueryCriteria(db *sql.DB, beginSeq uint64, chanrowCount int, logThreadSeq int64) (string, error)
 	GeneratingQuerySql(db *sql.DB, logThreadSeq int64) (string, error)

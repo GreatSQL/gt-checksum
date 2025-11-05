@@ -848,6 +848,27 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 			sqlS = append(sqlS, convertSqlS...)
 		}
 
+		// 检查表注释是否一致并生成修复SQL
+		var sourceTableComment, destTableComment string
+		var errTableComment error
+
+		// 根据数据库类型创建相应的查询实例
+		if stcls.sourceDrive == "mysql" {
+			mysqlQuery := &mysql.QueryTable{Schema: stcls.schema, Table: stcls.table}
+			sourceTableComment, errTableComment = mysqlQuery.TableComment(stcls.sourceDB, logThreadSeq)
+			if errTableComment == nil && sourceTableComment != "" {
+				mysqlQuery.Schema = destSchema
+				destTableComment, errTableComment = mysqlQuery.TableComment(stcls.destDB, logThreadSeq)
+				if errTableComment == nil && sourceTableComment != destTableComment {
+					// 生成修改表注释的SQL语句
+					tableCommentSql := fmt.Sprintf("ALTER TABLE `%s`.`%s` COMMENT = '%s';", destSchema, stcls.table, strings.ReplaceAll(sourceTableComment, "'", "\\'"))
+					vlog = fmt.Sprintf("(%d) %s Table comment mismatch: source='%s', dest='%s', generating fix SQL", logThreadSeq, event, sourceTableComment, destTableComment)
+					global.Wlog.Warn(vlog)
+					sqlS = append(sqlS, tableCommentSql)
+				}
+			}
+		}
+
 		if len(alterSlice) > 0 {
 			abnormalTableList = append(abnormalTableList, fmt.Sprintf("%s.%s", destSchema, stcls.table))
 		} else {
@@ -2872,7 +2893,7 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 			return result
 		}
 
-		indexGenerate = func(smu, dmu map[string][]string, a *CheckSumTypeStruct, indexType string) []string {
+		indexGenerate = func(smu, dmu map[string][]string, a *CheckSumTypeStruct, indexType string, indexVisibilityMap map[string]string) []string {
 			var cc, c, d []string
 
 			// 根据映射规则确定目标端schema
@@ -2890,6 +2911,7 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 				DatafixType:             stcls.datafix,
 				SourceSchema:            stcls.schema,                  // 添加源端schema
 				CaseSensitiveObjectName: stcls.caseSensitiveObjectName, // 传递是否区分对象名大小写
+				IndexVisibilityMap:      indexVisibilityMap,            // 传递索引可见性信息
 			}
 
 			// 首先比较索引名称
@@ -2995,6 +3017,14 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 								quotedColumns[i] = fmt.Sprintf("`%s`", col)
 							}
 
+							// 获取索引可见性信息
+							visibility := ""
+							if indexType == "mul" && indexVisibilityMap != nil {
+								if vis, ok := indexVisibilityMap[k]; ok && strings.ToUpper(vis) == "INVISIBLE" {
+									visibility = " INVISIBLE"
+								}
+							}
+
 							if indexType == "pri" {
 								cc = append(cc, fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD PRIMARY KEY(%s);",
 									destSchema, stcls.table, strings.Join(quotedColumns, ", ")))
@@ -3002,8 +3032,8 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 								cc = append(cc, fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD UNIQUE INDEX `%s`(%s);",
 									destSchema, stcls.table, k, strings.Join(quotedColumns, ", ")))
 							} else {
-								cc = append(cc, fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD INDEX `%s`(%s);",
-									destSchema, stcls.table, k, strings.Join(quotedColumns, ", ")))
+								cc = append(cc, fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD INDEX `%s`(%s)%s;",
+									destSchema, stcls.table, k, strings.Join(quotedColumns, ", "), visibility))
 							}
 						}
 					}
@@ -3022,6 +3052,9 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 		// 从表列表中提取源端schema和表名
 		sourceSchema := ""
 		tableName := ""
+		// 在正确的作用域内声明索引相关变量
+		var spri, suni, smul, dpri, duni, dmul map[string][]string
+		var sourceIndexVisibilityMap map[string]string
 
 		// 检查是否是映射格式 (db1.t1:db2.t1)
 		if strings.Contains(i, ":") {
@@ -3087,7 +3120,7 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 			global.Wlog.Error(vlog)
 			return err
 		}
-		spri, suni, smul := idxc.TableIndexColumn().IndexDisposF(squeryData, logThreadSeq2)
+		spri, suni, smul, sourceIndexVisibilityMap = idxc.TableIndexColumn().IndexDisposF(squeryData, logThreadSeq2)
 		vlog = fmt.Sprintf("(%d) %s The index column data of the source %s database table %s.%s is {primary:%v,unique key:%v,index key:%v}",
 			logThreadSeq,
 			event,
@@ -3109,7 +3142,7 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 			global.Wlog.Error(vlog)
 			return err
 		}
-		dpri, duni, dmul := idxc.TableIndexColumn().IndexDisposF(dqueryData, logThreadSeq2)
+		dpri, duni, dmul, _ = idxc.TableIndexColumn().IndexDisposF(dqueryData, logThreadSeq2)
 		vlog = fmt.Sprintf("(%d) %s The index column data of the dest %s database table %s.%s is {primary:%v,unique key:%v,index key:%v}",
 			logThreadSeq,
 			event,
@@ -3136,19 +3169,19 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 		//先比较主键索引
 		vlog = fmt.Sprintf("(%d) %s Start to compare whether the primary key index is consistent.", logThreadSeq, event)
 		global.Wlog.Debug(vlog)
-		sqlS = append(sqlS, indexGenerate(spri, dpri, aa, "pri")...)
+		sqlS = append(sqlS, indexGenerate(spri, dpri, aa, "pri", sourceIndexVisibilityMap)...)
 		vlog = fmt.Sprintf("(%d) %s Compare whether the primary key index is consistent and verified.", logThreadSeq, event)
 		global.Wlog.Debug(vlog)
 		//再比较唯一索引
 		vlog = fmt.Sprintf("(%d) %s Start to compare whether the unique key index is consistent.", logThreadSeq, event)
 		global.Wlog.Debug(vlog)
-		sqlS = append(sqlS, indexGenerate(suni, duni, aa, "uni")...)
+		sqlS = append(sqlS, indexGenerate(suni, duni, aa, "uni", sourceIndexVisibilityMap)...)
 		vlog = fmt.Sprintf("(%d) %s Compare whether the unique key index is consistent and verified.", logThreadSeq, event)
 		global.Wlog.Info(vlog)
 		//后比较普通索引
 		vlog = fmt.Sprintf("(%d) %s Start to compare whether the no-unique key index is consistent.", logThreadSeq, event)
 		global.Wlog.Debug(vlog)
-		sqlS = append(sqlS, indexGenerate(smul, dmul, aa, "mul")...)
+		sqlS = append(sqlS, indexGenerate(smul, dmul, aa, "mul", sourceIndexVisibilityMap)...)
 		vlog = fmt.Sprintf("(%d) %s Compare whether the no-unique key index is consistent and verified.", logThreadSeq, event)
 		global.Wlog.Debug(vlog)
 		// 应用并清空 sqlS
@@ -3392,56 +3425,6 @@ func (stcls *schemaTable) Struct(dtabS []string, logThreadSeq, logThreadSeq2 int
 	fmt.Println("gt-checksum: Checking table indexes")
 	vlog = fmt.Sprintf("(%d) %s checking table indexes of %v(num[%d]) from srcDSN and dstDSN", logThreadSeq, event, dtabS, len(dtabS))
 	global.Wlog.Info(vlog)
-
-	// 添加详细的调试日志，记录每个表的索引信息
-	for _, i := range dtabS {
-		var sourceSchema, tableName string
-
-		// 处理映射格式 schema.table:schema.table
-		if strings.Contains(i, ":") {
-			parts := strings.Split(i, ":")
-			if len(parts) == 2 {
-				sourceParts := strings.Split(parts[0], ".")
-				if len(sourceParts) == 2 {
-					sourceSchema = sourceParts[0]
-					tableName = sourceParts[1]
-				}
-			}
-		} else {
-			// 处理普通格式 schema.table
-			parts := strings.Split(i, ".")
-			if len(parts) == 2 {
-				sourceSchema = parts[0]
-				tableName = parts[1]
-			}
-		}
-
-		// 查询源端索引信息
-		idxc := dbExec.IndexColumnStruct{Schema: sourceSchema, Table: tableName, Drivce: stcls.sourceDrive}
-		squeryData, err := idxc.TableIndexColumn().QueryTableIndexColumnInfo(stcls.sourceDB, logThreadSeq2)
-		if err == nil {
-			spri, suni, smul := idxc.TableIndexColumn().IndexDisposF(squeryData, logThreadSeq2)
-			vlog = fmt.Sprintf("(%d) Source table %s.%s indexes: primary=%v, unique=%v, index=%v",
-				logThreadSeq, sourceSchema, tableName, spri, suni, smul)
-			global.Wlog.Debug(vlog)
-		}
-
-		// 查询目标端索引信息
-		destSchema := sourceSchema
-		if mappedSchema, exists := stcls.tableMappings[sourceSchema]; exists {
-			destSchema = mappedSchema
-		}
-
-		idxc.Schema = destSchema
-		idxc.Drivce = stcls.destDrive
-		dqueryData, err := idxc.TableIndexColumn().QueryTableIndexColumnInfo(stcls.destDB, logThreadSeq2)
-		if err == nil {
-			dpri, duni, dmul := idxc.TableIndexColumn().IndexDisposF(dqueryData, logThreadSeq2)
-			vlog = fmt.Sprintf("(%d) Destination table %s.%s indexes: primary=%v, unique=%v, index=%v",
-				logThreadSeq, destSchema, tableName, dpri, duni, dmul)
-			global.Wlog.Debug(vlog)
-		}
-	}
 
 	// 初始化索引差异映射
 	indexDiffsMap = make(map[string]bool)

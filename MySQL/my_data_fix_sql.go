@@ -22,8 +22,9 @@ type MysqlDataAbnormalFixStruct struct {
 	IndexType               string
 	IndexColumn             []string
 	DatafixType             string
-	SourceSchema            string // 添加源端schema字段
-	CaseSensitiveObjectName string // 是否区分对象名大小写
+	SourceSchema            string            // 添加源端schema字段
+	CaseSensitiveObjectName string            // 是否区分对象名大小写
+	IndexVisibilityMap      map[string]string // 索引可见性信息
 }
 
 /*
@@ -421,13 +422,19 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterIndexSqlExec(e, f []string, si map
 			}
 		}
 		// 构建SQL语句，保持数据库名、表名和字段名的原始大小写
+		var invisibleClause string
+		if my.IndexVisibilityMap != nil {
+			if visibility, exists := my.IndexVisibilityMap[v]; exists && visibility == "NO" {
+				invisibleClause = " INVISIBLE"
+			}
+		}
 		switch my.IndexType {
 		case "pri":
 			strsql = fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD PRIMARY KEY(`%s`);", targetSchema, my.Table, strings.Join(c, "`,`"))
 		case "uni":
-			strsql = fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD UNIQUE INDEX %s(`%s`);", targetSchema, my.Table, v, strings.Join(c, "`,`"))
+			strsql = fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD UNIQUE INDEX %s(`%s`)%s;", targetSchema, my.Table, v, strings.Join(c, "`,`"), invisibleClause)
 		case "mul":
-			strsql = fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD INDEX %s(`%s`);", targetSchema, my.Table, v, strings.Join(c, "`,`"))
+			strsql = fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD INDEX %s(`%s`)%s;", targetSchema, my.Table, v, strings.Join(c, "`,`"), invisibleClause)
 		}
 		sqlS = append(sqlS, strsql)
 	}
