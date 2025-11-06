@@ -196,7 +196,11 @@ $ mv gt-checksum /usr/local/bin
 
 - 不支持对非InnoDB引擎表的数据校验。
 
-- 切换到"partitions|foreign|trigger|routine"等几个校验模式时，当校验结果不一致时，无法生成相应的修复SQL，即便设置`datafiex=table`也无法直接修复，需要DBA介入判断后手动修复。
+- 不支持数据库名、表名等数据对象名为**gtchecksum**。
+
+- 当添加的字段是主键时，会多一个额外的`ADD PRIMARY KEY`操作，需要手动删掉。
+
+- 切换到"partitions"校验模式时，当校验结果不一致时，无法生成相应的修复SQL，即便设置`datafiex=table`也无法直接修复，需要DBA介入判断后手动修复。
 
 - 当数据表没有显式主键，且表中有多行数据是重复的，可能会导致校验结果不准确。
 
