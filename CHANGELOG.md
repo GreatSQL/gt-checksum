@@ -5,12 +5,21 @@
 - 删除ScheckOrder参数，也即总是按照源端数据表中列的正序进行校验
 - 删除ScheckFixRule参数，即总是针对目标端执行修复数据方案，如果需要反向修复，自行调整DSN配置即可
 - 参数checkObject的可选值进行调整合并，struct包含原来的struct|index|partitions|foreign等几个值
+- 对同一个表既有删索引又有加索引等操作时，两个DDL合并一起，提升效率
+- 支持在fix sql中同时设置索引的不可见属性
+- 支持在只修改主键字段名大小写时，无需重建整个主键索引，避免数据丢失
+- 支持在只修改字段名大小写时，将删除重建字段改为CHANGE COLUMNN，避免数据丢失
+- 支持添加自增且不可见主键字段的修复语法（遗留问题：当添加的字段是主键时，会多一个额外的ADD PRIMARY KEY操作，需要手动删掉，未来版本再修复）
 - Bugs fixed
   - 修复生成fixSQL时无法正确使用索引问题
   - 修复生成fixSQL时无法正确处理映射规则问题
   - 修复生成fixSQL时指定 DEFAULT 'null' 导致语法错误问题
   - 修复了当目标端缺少某个表时，生成的fixSQL是ALTER TABLE ... ADD COLUMN而不是CREATE TABLE问题
   - 修复了当目标端多了某个表时，生成的fixSQL是ALTER TABLE ... DROP COLUMN而不是DROP TABLE问题
+  - 修复了当索引不一致时，Diffs结果仍显示为no的问题
+  - 修复了fixSQL中存在`ADD COLUMN`时，字段名自动变大写的问题，保留源端字段名大小写
+  - 修复了fix SQL中包含empty语法错误问题
+  - 修复了checkObject=data时，当待检查表为空，疑似会进入死循环问题
 
 ## 1.2.2(2025.09.22)
 - 合并`jointIndexChanRowCount`和`singleIndexChanRowCount`两个参数为新的参数`chunkSize`
