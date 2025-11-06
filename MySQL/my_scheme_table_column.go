@@ -953,116 +953,107 @@ func (my *QueryTable) Foreign(db *sql.DB, logThreadSeq int64) (map[string]string
 */
 func (my *QueryTable) Partitions(db *sql.DB, logThreadSeq int64) (map[string]string, error) {
 	var (
-		routineNameM = make(map[string]int)
-		tmpb         = make(map[string]string)
-		Event        = "Q_Partitions"
+		tmpb  = make(map[string]string)
+		Event = "Q_Partitions"
 	)
-	vlog = fmt.Sprintf("(%d) [%s] Start to query the Partitions information under the %s database.", logThreadSeq, Event, DBType)
+	
+	// 正确提取表名，避免表名中包含schema信息
+	actualTableName := my.Table
+	if strings.Contains(actualTableName, ":") {
+		parts := strings.Split(actualTableName, ":")
+		if len(parts) > 0 {
+			actualTableName = parts[0]
+		}
+	}
+	
+	vlog = fmt.Sprintf("(%d) [%s] Start to query the Partitions information for table %s.%s under the %s database.", logThreadSeq, Event, my.Schema, actualTableName, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("SELECT TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.PARTITIONS WHERE TABLE_SCHEMA IN('%s') AND TABLE_NAME IN('%s') AND PARTITION_NAME<>'';", my.Schema, my.Table)
-	//vlog = fmt.Sprintf("(%d) MySQL DB query table query partitions info exec sql is {%s}", logThreadSeq, sqlStr)
-	//global.Wlog.Debug(vlog)
-	//sqlRows, err := db.Query(sqlStr)
-	//if err != nil {
-	//	vlog = fmt.Sprintf("(%d) MySQL DB exec sql fail. sql message is {%s} Error info is {%s}.", logThreadSeq, sqlStr, err)
-	//	global.Wlog.Error(vlog)
-	//	return nil, err
-	//}
-	//if sqlRows == nil {
-	//	return nil, nil
-	//}
-	//vlog = fmt.Sprintf("(%d) start dispos MySQL DB query table %s.%s query Partitions info.", logThreadSeq, my.Schema, my.Table)
-	//global.Wlog.Debug(vlog)
-	//partitionsName, err := rowDataDisposMap(sqlRows, "Partitions", logThreadSeq)
-	//dispos := dataDispos.DBdataDispos{DBtype: "MySQL", Logseq: logThreadSeq, SqlRows: sqlRows, Event: "Partitions"}
+	
+	// 直接查询表的分区信息，包括分区名称和详细定义
+	strsql = fmt.Sprintf("SELECT PARTITION_NAME, PARTITION_ORDINAL_POSITION, PARTITION_METHOD, PARTITION_EXPRESSION, PARTITION_DESCRIPTION, TABLE_ROWS FROM INFORMATION_SCHEMA.PARTITIONS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s' AND PARTITION_NAME<>'' ORDER BY PARTITION_ORDINAL_POSITION;", my.Schema, actualTableName)
+	vlog = fmt.Sprintf("(%d) [%s] Executing query on INFORMATION_SCHEMA.PARTITIONS: %s", logThreadSeq, Event, strsql)
+	global.Wlog.Debug(vlog)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return nil, err
 	}
-	partitionsName, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
+	partitionsInfo, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
 	if err != nil {
 		return nil, err
 	}
-	//vlog = fmt.Sprintf("(%d) MySQL DB query table %s.%s query Partitions completion.", logThreadSeq, my.Schema, my.Table)
-	//global.Wlog.Debug(vlog)
-
-	for _, v := range partitionsName {
-		routineNameM[fmt.Sprintf("%s.%s", v["TABLE_SCHEMA"], v["TABLE_NAME"])]++
-	}
-
-	for k, _ := range routineNameM {
-		strsql = fmt.Sprintf("SHOW CREATE TABLE %s;", k)
-		//vlog = fmt.Sprintf("(%d) MySQL DB query create partitions table %s.%s info, exec sql is {%s}", logThreadSeq, my.Schema, my.Table, sqlStr)
-		//global.Wlog.Debug(vlog)
-		//sqlRows, err = db.Query(sqlStr)
-		//if err != nil {
-		//	vlog = fmt.Sprintf("(%d) MySQL DB exec sql fail. sql message is {%s} Error info is {%s}.", logThreadSeq, sqlStr, err)
-		//	global.Wlog.Error(vlog)
-		//	tmpb[k] = ""
-		//	return tmpb, err
-		//}
-		//if sqlRows == nil {
-		//	return nil, nil
-		//}
-		//vlog = fmt.Sprintf("(%d) start dispos MySQL DB create table %s.%s create Partitions info.", logThreadSeq, my.Schema, my.Table)
-		//global.Wlog.Debug(vlog)
-		////createPartitions, err1 := rowDataDisposMap(sqlRows, "Partitions", logThreadSeq)
-		//dispos = dataDispos.DBdataDispos{DBtype: "MySQL", Logseq: logThreadSeq, SqlRows: sqlRows, Event: "Partitions"}
+	
+	// 如果有分区，获取表的创建语句以提取完整的分区定义
+	if len(partitionsInfo) > 0 {
+		strsql = fmt.Sprintf("SHOW CREATE TABLE %s.%s;", my.Schema, actualTableName)
 		if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 			return nil, err
 		}
-		createPartitions, err1 := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
+		createTableInfo, err1 := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
 		if err1 != nil {
 			return nil, err1
 		}
-		//vlog = fmt.Sprintf("(%d) MySQL db query table %s.%s create Partitions completion.", logThreadSeq, my.Schema, my.Table)
-		//global.Wlog.Debug(vlog)
-		//vlog = fmt.Sprintf("(%d) MySQL db query table %s.%s dispos Partitions data info. to dispos it ...", logThreadSeq, my.Schema, my.Table)
-		//global.Wlog.Debug(vlog)
-		for _, b := range createPartitions {
-			var partitionMode, partitionColumn string
-			var zi string
-			if strings.EqualFold(k, fmt.Sprintf("%s.%s", my.Schema, my.Table)) {
-				zi = fmt.Sprintf("%s.%s", my.Schema, my.Table)
-			} else {
-				zi = k
-			}
-			z := strings.Split(fmt.Sprintf("%s", b["Create Table"]), "\n")
-			var a, c []string
+		
+		if len(createTableInfo) > 0 {
+			createTableSQL := fmt.Sprintf("%s", createTableInfo[0]["Create Table"])
+			z := strings.Split(createTableSQL, "\n")
+			
+			// 提取分区定义信息
+			var partitionDefs []string
+			inPartitionSection := false
+			
 			for _, bi := range z {
-				if strings.Contains(bi, " PARTITION BY ") {
-					il := strings.Index(bi, "PARTITION")
-					ii := strings.Join(strings.Fields(strings.TrimSpace(strings.ReplaceAll(bi[il:], "PARTITION BY ", ""))), " ")
-					partitionMode, partitionColumn = strings.Split(ii, " ")[0], strings.ReplaceAll(strings.ReplaceAll(strings.Split(ii, " ")[1], "COLUMNS(", "("), "`", "")
-					c = append(c, fmt.Sprintf(" PARTITION BY %s %s", partitionMode, strings.ToUpper(partitionColumn)))
-				}
-				if strings.Contains(bi, "SUBPARTITION BY ") || strings.Contains(bi, "SUBPARTITIONS ") {
-					c = append(c, strings.ToUpper(bi))
-				}
-				if strings.Contains(bi, "PARTITION ") && strings.Contains(bi, "VALUES ") {
-					ii := strings.Index(bi, "ENGINE")
-					il := strings.ReplaceAll(strings.TrimSpace(bi[:ii]), "IN", "")
-					c = append(c, fmt.Sprintf(" %s,", il))
-				}
-				//处理hash分区
-				if strings.Contains(bi, "PARTITIONS ") {
-					var ll string
-					ll = bi
-					if strings.Contains(bi, "*/") {
-						ll = bi[:strings.Index(bi, "*/")]
+				trimmedLine := strings.TrimSpace(bi)
+				
+				// 检测分区定义开始
+				if strings.Contains(strings.ToUpper(trimmedLine), "PARTITION BY") {
+					inPartitionSection = true
+					partitionDefs = append(partitionDefs, strings.ToUpper(trimmedLine))
+				} else if inPartitionSection {
+					// 收集分区定义部分的所有行，直到遇到结束括号或引擎定义
+					if trimmedLine != "" && !strings.HasPrefix(trimmedLine, "ENGINE=") {
+						partitionDefs = append(partitionDefs, strings.ToUpper(trimmedLine))
 					}
-					c = append(c, fmt.Sprintf(" %s", ll))
+					// 分区定义结束
+					if strings.Contains(trimmedLine, ")") {
+						inPartitionSection = false
+						break
+					}
 				}
 			}
-			x := fmt.Sprintf("%s %s);", strings.Join(a, ""), strings.Join(c, "")[:len(strings.Join(c, ""))-1])
-			xs := strings.Join(strings.Fields(x), " ")
-			tmpb[zi] = strings.ReplaceAll(xs, "`", "!")
+			
+			// 将所有分区定义合并为一个字符串作为表的分区定义
+			fullPartitionDef := strings.Join(partitionDefs, " ")
+			fullPartitionDef = strings.Join(strings.Fields(fullPartitionDef), " ")
+			fullPartitionDef = strings.ReplaceAll(fullPartitionDef, "`", "!")
+			
+			vlog = fmt.Sprintf("(%d) [%s] Extracted full partition definition for %s.%s: %s", logThreadSeq, Event, my.Schema, actualTableName, fullPartitionDef)
+			global.Wlog.Debug(vlog)
+			
+			// 使用表名作为键，存储完整的分区定义
+			tableKey := fmt.Sprintf("%s.%s", my.Schema, my.Table)
+			tmpb[tableKey] = fullPartitionDef
+			
+			// 同时为每个分区单独创建条目，便于比较
+			for _, p := range partitionsInfo {
+				partitionName := fmt.Sprintf("%s", p["PARTITION_NAME"])
+				partitionKey := fmt.Sprintf("%s.%s.%s", my.Schema, my.Table, partitionName)
+				// 存储分区的详细信息，包括所有分区属性
+				partitionDetails := fmt.Sprintf("NAME=%s,ORDINAL=%s,METHOD=%s,EXPRESSION=%s,DESCRIPTION=%s,ROWS=%s",
+					partitionName,
+					p["PARTITION_ORDINAL_POSITION"],
+					p["PARTITION_METHOD"],
+					p["PARTITION_EXPRESSION"],
+					p["PARTITION_DESCRIPTION"],
+					p["TABLE_ROWS"])
+				tmpb[partitionKey] = partitionDetails
+				vlog = fmt.Sprintf("(%d) [%s] Stored partition %s details: %s", logThreadSeq, Event, partitionKey, partitionDetails)
+				global.Wlog.Debug(vlog)
+			}
 		}
-		//vlog = fmt.Sprintf("(%d) MySQL db query table %s.%s partitions data completion...", logThreadSeq, my.Schema, my.Table)
-		//global.Wlog.Debug(vlog)
 	}
+	
 	defer dispos.SqlRows.Close()
-	vlog = fmt.Sprintf("(%d) [%s] Complete the Partitions information query under the %s database.", logThreadSeq, Event, DBType)
+	vlog = fmt.Sprintf("(%d) [%s] Complete the Partitions information query for table %s.%s under the %s database. Found %d partitions.", logThreadSeq, Event, my.Schema, actualTableName, DBType, len(partitionsInfo))
 	global.Wlog.Debug(vlog)
 	return tmpb, nil
 }

@@ -2771,7 +2771,6 @@ func (stcls *schemaTable) Partitions(dtabS []string, logThreadSeq, logThreadSeq2
 			Datafix:     "no",
 			CheckObject: "partitions",
 		}
-		tmpM = make(map[string]int)
 	)
 
 	// 如果是从 Struct 函数调用的，则将 CheckObject 设置为 "struct"
@@ -2787,19 +2786,21 @@ func (stcls *schemaTable) Partitions(dtabS []string, logThreadSeq, logThreadSeq2
 		global.Wlog.Debug(vlog)
 		tc := dbExec.TableColumnNameStruct{Schema: stcls.schema, Table: stcls.table, Drive: stcls.sourceDrive}
 		if sourcePartitions, err = tc.Query().Partitions(stcls.sourceDB, logThreadSeq2); err != nil {
+			global.Wlog.Error("(%d) Failed to get source partitions for table %s.%s: %v", logThreadSeq, stcls.schema, stcls.table, err)
 			return
 		}
 
-		vlog = fmt.Sprintf("(%d) srcDSN {%s} table %s.%s message is {%s}", logThreadSeq, stcls.sourceDrive, stcls.schema, stcls.table, sourcePartitions)
+		vlog = fmt.Sprintf("(%d) srcDSN {%s} table %s.%s partitions count: %d", logThreadSeq, stcls.sourceDrive, stcls.schema, stcls.table, len(sourcePartitions))
 		global.Wlog.Debug(vlog)
 
 		tc.Drive = stcls.destDrive
 		vlog = fmt.Sprintf("(%d) Start processing dstDSN {%s} table %s.%s partitions data. to dispos it...", logThreadSeq, stcls.destDrive, stcls.schema, stcls.table)
 		global.Wlog.Debug(vlog)
 		if destPartitions, err = tc.Query().Partitions(stcls.destDB, logThreadSeq2); err != nil {
+			global.Wlog.Error("(%d) Failed to get dest partitions for table %s.%s: %v", logThreadSeq, stcls.schema, stcls.table, err)
 			return
 		}
-		vlog = fmt.Sprintf("(%d) Dest DB %s data table %s.%s message is {%s}", logThreadSeq, stcls.destDrive, stcls.schema, stcls.table, destPartitions)
+		vlog = fmt.Sprintf("(%d) Dest DB %s table %s.%s partitions count: %d", logThreadSeq, stcls.destDrive, stcls.schema, stcls.table, len(destPartitions))
 		global.Wlog.Debug(vlog)
 
 		pods.Schema = stcls.schema
@@ -2810,54 +2811,194 @@ func (stcls *schemaTable) Partitions(dtabS []string, logThreadSeq, logThreadSeq2
 			continue
 		}
 
-		tmpM = make(map[string]int)
-		vlog = fmt.Sprintf("(%d) Start seeking the union of the source and target table %s.%s Partitions Column. to dispos it...", logThreadSeq, stcls.schema, stcls.table)
-		global.Wlog.Debug(vlog)
-		for k, _ := range sourcePartitions {
-			tmpM[k]++
-		}
-		for k, _ := range destPartitions {
-			tmpM[k]++
-		}
-		vlog = fmt.Sprintf("(%d) Start to compare whether the partitions table is consistent.", logThreadSeq)
-		global.Wlog.Debug(vlog)
-		// 初始化为"no"，如果发现任何不一致，则设置为"yes"
+		// 获取表的完整分区定义键
+		tableKey := fmt.Sprintf("%s.%s", stcls.schema, stcls.table)
+
+		// 1. 检查表级别的分区定义是否一致
 		pods.DIFFS = "no"
 
-		for k, _ := range tmpM {
-			if strings.Join(strings.Fields(sourcePartitions[k]), "") != strings.Join(strings.Fields(destPartitions[k]), "") {
-				pods.DIFFS = "yes" // 如果有任何不一致，设置为"yes"
-				d = append(d, k)
-			} else {
-				c = append(c, k)
-				// 不要在这里重置DIFFS
+		// 先比较完整的分区定义（包含分区类型、列和所有分区）
+		sourceFullDef, sourceHasDef := sourcePartitions[tableKey]
+		destFullDef, destHasDef := destPartitions[tableKey]
+
+		// 记录具体的分区名称用于详细比较
+		sourcePartitionNames := make([]string, 0)
+		destPartitionNames := make([]string, 0)
+
+		// 提取源端和目标端的分区名称
+		for k := range sourcePartitions {
+			if strings.HasPrefix(k, tableKey+".") {
+				// 提取分区名称部分 (schema.table.partition -> partition)
+				parts := strings.Split(k, ".")
+				if len(parts) == 3 {
+					sourcePartitionNames = append(sourcePartitionNames, parts[2])
+				}
 			}
 		}
-		vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment table %s.%s partitions. normal table message is {%s} num [%d] abnormal table message is {%s} num [%d]", logThreadSeq, stcls.schema, stcls.table, c, len(c), d, len(d))
+
+		for k := range destPartitions {
+			if strings.HasPrefix(k, tableKey+".") {
+				parts := strings.Split(k, ".")
+				if len(parts) == 3 {
+					destPartitionNames = append(destPartitionNames, parts[2])
+				}
+			}
+		}
+
+		vlog = fmt.Sprintf("(%d) Table %s.%s source partitions: %v, dest partitions: %v", logThreadSeq, stcls.schema, stcls.table, sourcePartitionNames, destPartitionNames)
 		global.Wlog.Debug(vlog)
-		vlog = fmt.Sprintf("(%d) The source target segment table %s.%s partitions data verification is completed", logThreadSeq, stcls.schema, stcls.table)
+
+		// 检查分区数量是否一致
+		if len(sourcePartitionNames) != len(destPartitionNames) {
+			pods.DIFFS = "yes"
+			vlog = fmt.Sprintf("(%d) Table %s.%s partition count mismatch: source=%d, dest=%d", logThreadSeq, stcls.schema, stcls.table, len(sourcePartitionNames), len(destPartitionNames))
+			global.Wlog.Warn(vlog)
+			d = append(d, fmt.Sprintf("Partition count mismatch: source=%d, dest=%d", len(sourcePartitionNames), len(destPartitionNames)))
+
+			// 生成修复SQL提示
+			if sourceFullDef != "" {
+				// 清理表名，移除可能存在的映射后缀
+				cleanTable := stcls.table
+				if strings.Contains(cleanTable, ":") {
+					parts := strings.Split(cleanTable, ":")
+					cleanTable = parts[0]
+				}
+				fixSQLHint := fmt.Sprintf("-- [Note] The partitions for table %s.%s is inconsistent, please fix it yourself", stcls.schema, cleanTable)
+				// 将修复SQL写入文件
+				if stcls.datafix == "file" && stcls.sfile != nil {
+					mysql.WriteFixIfNeededFile("file", stcls.sfile, []string{fixSQLHint}, logThreadSeq)
+				} else {
+					fmt.Println(fixSQLHint)
+				}
+			}
+		} else {
+			// 检查每个分区是否存在且定义一致
+			for _, partitionName := range sourcePartitionNames {
+				partitionKey := fmt.Sprintf("%s.%s.%s", stcls.schema, stcls.table, partitionName)
+				sourcePartDef := sourcePartitions[partitionKey]
+				destPartDef, destHasPart := destPartitions[partitionKey]
+
+				if !destHasPart {
+					// 源端有但目标端没有的分区
+					pods.DIFFS = "yes"
+					vlog = fmt.Sprintf("(%d) Table %s.%s partition %s exists in source but not in destination", logThreadSeq, stcls.schema, stcls.table, partitionName)
+					global.Wlog.Warn(vlog)
+					d = append(d, fmt.Sprintf("Missing partition: %s", partitionName))
+
+					// 生成修复SQL提示
+					if sourceFullDef != "" {
+						// 清理表名，移除可能存在的映射后缀
+						cleanTable := stcls.table
+						if strings.Contains(cleanTable, ":") {
+							parts := strings.Split(cleanTable, ":")
+							cleanTable = parts[0]
+						}
+						fixSQLHint := fmt.Sprintf("-- [Note] The partitions for table %s.%s is inconsistent, run the following SQL to fix please:\n-- ALTER TABLE %s.%s %s;",
+							stcls.schema, cleanTable, stcls.schema, cleanTable, sourceFullDef)
+						// 将修复SQL写入文件
+						if stcls.datafix == "file" && stcls.sfile != nil {
+							mysql.WriteFixIfNeededFile("file", stcls.sfile, []string{fixSQLHint}, logThreadSeq)
+						} else {
+							fmt.Println(fixSQLHint)
+						}
+					}
+				} else if sourcePartDef != destPartDef {
+					// 分区存在但定义不一致
+					pods.DIFFS = "yes"
+					vlog = fmt.Sprintf("(%d) Table %s.%s partition %s definition mismatch: source='%s', dest='%s'", logThreadSeq, stcls.schema, stcls.table, partitionName, sourcePartDef, destPartDef)
+					global.Wlog.Warn(vlog)
+					d = append(d, fmt.Sprintf("Partition %s definition mismatch", partitionName))
+
+					// 生成修复SQL提示
+					if sourceFullDef != "" {
+						// 清理表名，移除可能存在的映射后缀
+						cleanTable := stcls.table
+						if strings.Contains(cleanTable, ":") {
+							parts := strings.Split(cleanTable, ":")
+							cleanTable = parts[0]
+						}
+						fixSQLHint := fmt.Sprintf("-- [Note] The partitions for table %s.%s is inconsistent, run the following SQL to fix please:\n-- ALTER TABLE %s.%s %s;",
+							stcls.schema, cleanTable, stcls.schema, cleanTable, sourceFullDef)
+						// 将修复SQL写入文件
+						if stcls.datafix == "file" && stcls.sfile != nil {
+							mysql.WriteFixIfNeededFile("file", stcls.sfile, []string{fixSQLHint}, logThreadSeq)
+						} else {
+							fmt.Println(fixSQLHint)
+						}
+					}
+				} else {
+					// 分区一致
+					c = append(c, partitionName)
+				}
+			}
+
+			// 检查目标端是否有额外的分区
+			for _, partitionName := range destPartitionNames {
+				partitionKey := fmt.Sprintf("%s.%s.%s", stcls.schema, stcls.table, partitionName)
+				if _, exists := sourcePartitions[partitionKey]; !exists {
+					// 目标端有但源端没有的分区
+					pods.DIFFS = "yes"
+					vlog = fmt.Sprintf("(%d) Table %s.%s partition %s exists in destination but not in source", logThreadSeq, stcls.schema, stcls.table, partitionName)
+					global.Wlog.Warn(vlog)
+					d = append(d, fmt.Sprintf("Extra partition in destination: %s", partitionName))
+
+					// 生成修复SQL提示
+					if sourceFullDef != "" {
+						// 清理表名，移除可能存在的映射后缀
+						cleanTable := stcls.table
+						if strings.Contains(cleanTable, ":") {
+							parts := strings.Split(cleanTable, ":")
+							cleanTable = parts[0]
+						}
+						fixSQLHint := fmt.Sprintf("-- [Note] The partitions for table %s.%s is inconsistent, run the following SQL to fix please:\n-- ALTER TABLE %s.%s %s;",
+							stcls.schema, cleanTable, stcls.schema, cleanTable, sourceFullDef)
+						// 将修复SQL写入文件
+						if stcls.datafix == "file" && stcls.sfile != nil {
+							mysql.WriteFixIfNeededFile("file", stcls.sfile, []string{fixSQLHint}, logThreadSeq)
+						} else {
+							fmt.Println(fixSQLHint)
+						}
+					}
+				}
+			}
+		}
+
+		// 记录分区定义的比较结果
+		if sourceHasDef && destHasDef {
+			vlog = fmt.Sprintf("(%d) Table %s.%s full partition definitions compared: source='%s', dest='%s'", logThreadSeq, stcls.schema, stcls.table, sourceFullDef, destFullDef)
+			global.Wlog.Debug(vlog)
+		}
+
+		vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment table %s.%s partitions. normal partitions: %v, abnormal partitions: %v", logThreadSeq, stcls.schema, stcls.table, c, d)
 		global.Wlog.Debug(vlog)
 
 		// 如果是从 Struct 函数调用的，则将结果存储在全局变量中
 		if len(isCalledFromStruct) > 0 && isCalledFromStruct[0] {
 			// 使用完整的schema.table作为键
-			tableKey := fmt.Sprintf("%s.%s", pods.Schema, pods.Table)
 
 			// 将结果存储在全局变量中，以便 Struct 函数可以使用
 			if partitionDiffsMap == nil {
 				partitionDiffsMap = make(map[string]bool)
 			}
-			partitionDiffsMap[tableKey] = pods.DIFFS == "yes"
 
-			vlog = fmt.Sprintf("(%d) Storing partition check result for table %s: %v",
-				logThreadSeq, tableKey, partitionDiffsMap[tableKey])
+			// 确保使用干净的表名格式（不含映射后缀）
+			cleanTableKey := tableKey
+			if strings.Contains(tableKey, ":") {
+				parts := strings.Split(tableKey, ":")
+				cleanTableKey = parts[0]
+			}
+
+			partitionDiffsMap[cleanTableKey] = pods.DIFFS == "yes"
+
+			vlog = fmt.Sprintf("(%d) Storing partition check result for table %s (cleaned to %s): %v",
+				logThreadSeq, tableKey, cleanTableKey, partitionDiffsMap[cleanTableKey])
 			global.Wlog.Debug(vlog)
 		} else {
 			// 不是从 Struct 函数调用时，添加到 measuredDataPods
 			measuredDataPods = append(measuredDataPods, pods)
 		}
 	}
-	vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment table partitions data. normal table message is {%s} num [%d] abnormal table message is {%s} num [%d]", logThreadSeq, c, len(c), d, len(d))
+	vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment table partitions data. normal table count: [%d] abnormal table count: [%d]", logThreadSeq, len(c), len(d))
 	global.Wlog.Info(vlog)
 }
 
@@ -3486,21 +3627,46 @@ func (stcls *schemaTable) Struct(dtabS []string, logThreadSeq, logThreadSeq2 int
 	vlog = fmt.Sprintf("(%d) %s checking table partitions of %v(num[%d]) from srcDSN and dstDSN", logThreadSeq, event, dtabS, len(dtabS))
 	global.Wlog.Info(vlog)
 
-	// 初始化分区差异映射
-	partitionDiffsMap := make(map[string]bool)
+	// 初始化全局分区差异映射
+	partitionDiffsMap = make(map[string]bool)
+	vlog = fmt.Sprintf("(%d) %s Starting partitions check for %d tables, will query INFORMATION_SCHEMA.PARTITIONS for each table", logThreadSeq, event, len(dtabS))
+	global.Wlog.Debug(vlog)
 
-	// 修改Partitions函数，使其能够存储检查结果
+	// 调用Partitions函数进行分区检查，会查询INFORMATION_SCHEMA.PARTITIONS表
 	stcls.Partitions(dtabS, logThreadSeq, logThreadSeq2, true)
+	vlog = fmt.Sprintf("(%d) %s Completed partitions check, results: %v", logThreadSeq, event, partitionDiffsMap)
+	global.Wlog.Debug(vlog)
 
-	// 使用partitionDiffsMap更新collector.diffs
+	// 使用全局partitionDiffsMap更新collector.diffs
+	vlog = fmt.Sprintf("(%d) Processing partition diffs map with %d entries: %v", logThreadSeq, len(partitionDiffsMap), partitionDiffsMap)
+	global.Wlog.Debug(vlog)
 	for tableKey, hasDiff := range partitionDiffsMap {
+		vlog = fmt.Sprintf("(%d) Checking partition diff for table %s: %v", logThreadSeq, tableKey, hasDiff)
+		global.Wlog.Debug(vlog)
 		if hasDiff {
-			// 只更新存在于映射中的表
+			// 尝试直接使用tableKey更新
 			if _, exists := collector.diffs[tableKey]; exists {
 				collector.diffs[tableKey] = true
-				vlog = fmt.Sprintf("(%d) Partitions check found differences for table %s",
+				vlog = fmt.Sprintf("(%d) Partitions check found differences for table %s, updated diffs map",
 					logThreadSeq, tableKey)
 				global.Wlog.Debug(vlog)
+			} else {
+				// 如果直接匹配失败，尝试清理表名格式后匹配（移除可能的后缀）
+				cleanTableKey := tableKey
+				if strings.Contains(tableKey, ":") {
+					parts := strings.Split(tableKey, ":")
+					cleanTableKey = parts[0]
+				}
+				if _, exists := collector.diffs[cleanTableKey]; exists {
+					collector.diffs[cleanTableKey] = true
+					vlog = fmt.Sprintf("(%d) Partitions check found differences for table %s (cleaned to %s), updated diffs map",
+						logThreadSeq, tableKey, cleanTableKey)
+					global.Wlog.Debug(vlog)
+				} else {
+					vlog = fmt.Sprintf("(%d) Partitions diff found for table %s, but no matching entry in diffs map",
+						logThreadSeq, tableKey)
+					global.Wlog.Debug(vlog)
+				}
 			}
 		}
 	}
@@ -3510,13 +3676,13 @@ func (stcls *schemaTable) Struct(dtabS []string, logThreadSeq, logThreadSeq2 int
 	vlog = fmt.Sprintf("(%d) %s checking table foreign keys of %v(num[%d]) from srcDSN and dstDSN", logThreadSeq, event, dtabS, len(dtabS))
 	global.Wlog.Info(vlog)
 
-	// 初始化外键差异映射
-	foreignKeyDiffsMap := make(map[string]bool)
+	// 初始化全局外键差异映射
+	foreignKeyDiffsMap = make(map[string]bool)
 
 	// 修改Foreign函数，使其能够存储检查结果
 	stcls.Foreign(dtabS, logThreadSeq, logThreadSeq2, true)
 
-	// 使用foreignKeyDiffsMap更新collector.diffs
+	// 使用全局foreignKeyDiffsMap更新collector.diffs
 	for tableKey, hasDiff := range foreignKeyDiffsMap {
 		if hasDiff {
 			// 只更新存在于映射中的表
