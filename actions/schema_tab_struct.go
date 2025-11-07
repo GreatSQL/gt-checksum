@@ -338,6 +338,14 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 			if err != nil {
 				vlog = fmt.Sprintf("(%d) %s Error generating CREATE TABLE statement for %s.%s: %v", logThreadSeq, event, destSchema, stcls.table, err)
 				global.Wlog.Error(vlog)
+				// 创建跳过的数据校验记录
+				pod := Pod{
+					Schema:      destSchema,
+					Table:       stcls.table,
+					CheckObject: "data",
+					DIFFS:       "skipped",
+				}
+				stcls.appendPod(pod)
 				return nil, nil, err
 			}
 
@@ -593,9 +601,45 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 				// 使用目标端schema
 				newCheckTableList = append(newCheckTableList, fmt.Sprintf("%s.%s", destSchema, stcls.table))
 			} else {
+				// 检查是否包含INVISIBLE列的差异
+				hasInvisibleColumns := false
+				
+				// 检查addColumn中是否有INVISIBLE列
+				for _, col := range addColumn {
+					if colDef, exists := sourceColumnMap[col]; exists && len(colDef) > 0 {
+						for _, def := range colDef {
+							if strings.Contains(strings.ToUpper(def), "INVISIBLE") || strings.Contains(strings.ToUpper(def), "/*80023 INVISIBLE */") {
+								hasInvisibleColumns = true
+								break
+							}
+						}
+						if hasInvisibleColumns {
+							break
+						}
+					}
+				}
+				
 				// 使用正确的源和目标数据库名
-				vlog = fmt.Sprintf("(%d) %s Structure mismatch %s.%s -> %s.%s - Extra: %v, Missing: %v", logThreadSeq, event, sourceSchema, stcls.table, destSchema, stcls.table, addColumn, delColumn)
-				global.Wlog.Error(vlog)
+				if hasInvisibleColumns {
+					// 设置全局变量标记存在INVISIBLE列差异
+					global.HasInvisibleColumnMismatch = true
+					// 对于包含INVISIBLE列差异的情况，使用更明确的警告信息
+					vlog = fmt.Sprintf("(%d) %s Structure mismatch with INVISIBLE columns %s.%s -> %s.%s - Extra: %v, Missing: %v. Data validation skipped.", 
+						logThreadSeq, event, sourceSchema, stcls.table, destSchema, stcls.table, addColumn, delColumn)
+					global.Wlog.Warn(vlog)
+					// 创建跳过的数据校验记录
+					pod := Pod{
+						Schema:      destSchema,
+						Table:       stcls.table,
+						CheckObject: "data",
+						DIFFS:       "skipped",
+					}
+					stcls.appendPod(pod)
+				} else {
+					vlog = fmt.Sprintf("(%d) %s Structure mismatch %s.%s -> %s.%s - Extra: %v, Missing: %v", 
+						logThreadSeq, event, sourceSchema, stcls.table, destSchema, stcls.table, addColumn, delColumn)
+					global.Wlog.Error(vlog)
+				}
 				abnormalTableList = append(abnormalTableList, fmt.Sprintf("%s.%s", destSchema, stcls.table))
 			}
 			// 当checkObject=data时，只进行数据校验，不进行表结构校验或生成修改表结构的SQL语句
