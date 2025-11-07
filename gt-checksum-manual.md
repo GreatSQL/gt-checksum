@@ -198,7 +198,7 @@ $ mv gt-checksum /usr/local/bin
 
 - 不支持数据库名、表名等数据对象名为**gtchecksum**。
 
-- 当添加的字段是主键时，会多一个额外的`ADD PRIMARY KEY`操作，需要手动删掉。
+- 当添加的字段是主键/外键约束字段时，会多一个额外的`ADD PRIMARY KEY/ADD CONSTRAINT`操作，需要手动删掉。
 
 - 当表的partition定义生成报告（Diffs=no）但不生成fixSQL（生成提示信息，没有具体SQL，需要DBA手动调整修复）。
 
