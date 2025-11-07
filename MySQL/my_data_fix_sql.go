@@ -30,6 +30,7 @@ type MysqlDataAbnormalFixStruct struct {
 	SourceSchema            string            // 添加源端schema字段
 	CaseSensitiveObjectName string            // 是否区分对象名大小写
 	IndexVisibilityMap      map[string]string // 索引可见性信息
+	ForeignKeyDefinitions   map[string]string // 外键DDL定义信息
 }
 
 /*
@@ -411,11 +412,179 @@ func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive s
 	}
 	return deleteSql, nil
 }
+
+// 从外键DDL定义中提取引用表和字段信息
+func extractForeignKeyInfo(ddlDefinition, fkName string) (string, string) {
+	// 如果没有提供DDL定义，则返回空
+	if ddlDefinition == "" {
+		return "", ""
+	}
+
+	// 查找REFERENCES关键字
+	lowerDDL := strings.ToLower(ddlDefinition)
+	refIndex := strings.Index(lowerDDL, "references")
+	if refIndex == -1 {
+		return "", ""
+	}
+
+	// 提取REFERENCES之后的内容
+	afterRef := strings.TrimSpace(ddlDefinition[refIndex+len("references"):])
+
+	// 提取引用表名（可能包含schema前缀）
+	var refTable, refColumn string
+	parts := strings.Split(afterRef, "(")
+	if len(parts) >= 2 {
+		// 提取引用表名，去掉可能的反引号和schema前缀
+		refTablePart := strings.TrimSpace(parts[0])
+		refTablePart = strings.Trim(refTablePart, "`")
+
+		// 处理包含schema的情况，如 `sbtest`.`tb_dept1`
+		if strings.Contains(refTablePart, ".") {
+			tableParts := strings.Split(refTablePart, ".")
+			refTable = strings.Trim(tableParts[len(tableParts)-1], "`")
+		} else {
+			refTable = refTablePart
+		}
+
+		// 提取引用字段名
+		fieldPart := strings.TrimSpace(parts[1])
+		fieldEndIndex := strings.Index(fieldPart, ")")
+		if fieldEndIndex != -1 {
+			refColumn = strings.TrimSpace(fieldPart[:fieldEndIndex])
+			refColumn = strings.Trim(refColumn, "`")
+		}
+	}
+
+	return refTable, refColumn
+}
+
+// 从源端数据库获取表的外键定义信息
+func (my *MysqlDataAbnormalFixStruct) LoadForeignKeyDefinitions(db *sql.DB, logThreadSeq int64) error {
+	var vlog string
+
+	// 初始化外键定义映射
+	if my.ForeignKeyDefinitions == nil {
+		my.ForeignKeyDefinitions = make(map[string]string)
+	}
+
+	// 使用源端schema进行查询
+	sourceSchema := my.SourceSchema
+	if sourceSchema == "" {
+		sourceSchema = my.Schema
+	}
+
+	vlog = fmt.Sprintf("(%d) Loading foreign key definitions for table %s.%s from source schema %s",
+		logThreadSeq, sourceSchema, my.Table, sourceSchema)
+	global.Wlog.Debug(vlog)
+
+	// 查询外键约束信息 - 重新设计查询以正确获取引用表和字段信息
+	query := `
+		SELECT 
+			rc.CONSTRAINT_NAME,
+			kcu.COLUMN_NAME AS SOURCE_COLUMN_NAME,
+			rc.REFERENCED_TABLE_NAME,
+			rcu.COLUMN_NAME AS REFERENCED_COLUMN_NAME
+		FROM 
+			INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS rc
+		JOIN 
+			INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu 
+				ON rc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME 
+				AND rc.CONSTRAINT_SCHEMA = kcu.TABLE_SCHEMA 
+				AND rc.TABLE_NAME = kcu.TABLE_NAME
+		JOIN 
+			INFORMATION_SCHEMA.KEY_COLUMN_USAGE rcu 
+				ON rc.UNIQUE_CONSTRAINT_NAME = rcu.CONSTRAINT_NAME 
+				AND rc.CONSTRAINT_SCHEMA = rcu.TABLE_SCHEMA 
+				AND rc.REFERENCED_TABLE_NAME = rcu.TABLE_NAME
+		WHERE 
+			rc.CONSTRAINT_SCHEMA = ? 
+			AND rc.TABLE_NAME = ?
+		ORDER BY 
+			rc.CONSTRAINT_NAME, kcu.ORDINAL_POSITION
+	`
+
+	rows, err := db.Query(query, sourceSchema, my.Table)
+	if err != nil {
+		vlog = fmt.Sprintf("(%d) Error querying foreign key definitions: %v", logThreadSeq, err)
+		global.Wlog.Warn(vlog)
+		return err
+	}
+	defer rows.Close()
+
+	// 按约束名称分组外键信息
+	fkInfoMap := make(map[string]struct {
+		columnName       string
+		referencedTable  string
+		referencedColumn string
+	})
+
+	for rows.Next() {
+		// 使用sql.NullString处理可能为NULL的值
+		var constraintName, sourceColumn string
+		var referencedTable, referencedColumn sql.NullString
+
+		if err := rows.Scan(&constraintName, &sourceColumn, &referencedTable, &referencedColumn); err != nil {
+			vlog = fmt.Sprintf("(%d) Error scanning foreign key row: %v", logThreadSeq, err)
+			global.Wlog.Warn(vlog)
+			continue
+		}
+
+		// 将sql.NullString转换为普通string，NULL值转为空字符串
+		referencedTableStr := ""
+		referencedColumnStr := ""
+		if referencedTable.Valid {
+			referencedTableStr = referencedTable.String
+		}
+		if referencedColumn.Valid {
+			referencedColumnStr = referencedColumn.String
+		}
+
+		// 存储外键信息
+		fkInfoMap[constraintName] = struct {
+			columnName       string
+			referencedTable  string
+			referencedColumn string
+		}{
+			columnName:       sourceColumn,
+			referencedTable:  referencedTableStr,
+			referencedColumn: referencedColumnStr,
+		}
+	}
+
+	// 构建完整的外键DDL定义
+	for fkName, info := range fkInfoMap {
+		// 检查引用表和列信息是否有效
+		if info.referencedTable == "" || info.referencedColumn == "" {
+			vlog = fmt.Sprintf("(%d) Invalid foreign key info for %s: missing referenced table or column",
+				logThreadSeq, fkName)
+			global.Wlog.Warn(vlog)
+			continue
+		}
+
+		// 构建外键DDL，包含schema名称
+		fkDDL := fmt.Sprintf("CONSTRAINT `%s` FOREIGN KEY (`%s`) REFERENCES `%s`.`%s` (`%s`)",
+			fkName, info.columnName, sourceSchema, info.referencedTable, info.referencedColumn)
+		my.ForeignKeyDefinitions[fkName] = fkDDL
+		vlog = fmt.Sprintf("(%d) Found foreign key: %s", logThreadSeq, fkDDL)
+		global.Wlog.Debug(vlog)
+	}
+
+	return nil
+}
+
 func (my *MysqlDataAbnormalFixStruct) FixAlterIndexSqlExec(e, f []string, si map[string][]string, sourceDrive string, logThreadSeq int64) []string {
 	var (
 		sqlS         []string
 		targetSchema = my.Schema // 使用目标schema（保持原始大小写）
+		strsql       string
 	)
+
+	// 检查是否需要加载外键定义
+	if my.ForeignKeyDefinitions == nil || len(my.ForeignKeyDefinitions) == 0 {
+		// 输出警告日志，但继续执行，因为这里没有数据库连接
+		vlog := fmt.Sprintf("(%d) Warning: Foreign key definitions not loaded for table %s.%s", logThreadSeq, my.Schema, my.Table)
+		global.Wlog.Warn(vlog)
+	}
 
 	for _, v := range e {
 		var c []string
@@ -427,34 +596,67 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterIndexSqlExec(e, f []string, si map
 				c = append(c, strings.TrimSpace(parts[0]))
 			}
 		}
-		// 构建SQL语句，保持数据库名、表名和字段名的原始大小写
-		var invisibleClause string
-		if my.IndexVisibilityMap != nil {
-			if visibility, exists := my.IndexVisibilityMap[v]; exists && visibility == "NO" {
-				invisibleClause = " INVISIBLE"
+
+		// 检查是否是外键约束
+		isForeignKey := false
+		fkDDL := ""
+		if my.ForeignKeyDefinitions != nil {
+			if ddl, exists := my.ForeignKeyDefinitions[v]; exists {
+				isForeignKey = true
+				fkDDL = ddl
 			}
 		}
-		switch my.IndexType {
-		case "pri":
-			strsql = fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD PRIMARY KEY(`%s`);", targetSchema, my.Table, strings.Join(c, "`,`"))
-		case "uni":
-			strsql = fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD UNIQUE INDEX %s(`%s`)%s;", targetSchema, my.Table, v, strings.Join(c, "`,`"), invisibleClause)
-		case "mul":
-			strsql = fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD INDEX %s(`%s`)%s;", targetSchema, my.Table, v, strings.Join(c, "`,`"), invisibleClause)
+
+		// 构建SQL语句
+		if isForeignKey {
+			// 生成外键约束的SQL
+			strsql = fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD %s;", targetSchema, my.Table, fkDDL)
+			vlog := fmt.Sprintf("(%d) Generating foreign key SQL: %s", logThreadSeq, strsql)
+			global.Wlog.Debug(vlog)
+		} else {
+			// 生成普通索引的SQL
+			var invisibleClause string
+			if my.IndexVisibilityMap != nil {
+				if visibility, exists := my.IndexVisibilityMap[v]; exists && visibility == "NO" {
+					invisibleClause = " INVISIBLE"
+				}
+			}
+			switch my.IndexType {
+			case "pri":
+				strsql = fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD PRIMARY KEY(`%s`);", targetSchema, my.Table, strings.Join(c, "`,`"))
+			case "uni":
+				strsql = fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD UNIQUE INDEX %s(`%s`)%s;", targetSchema, my.Table, v, strings.Join(c, "`,`"), invisibleClause)
+			case "mul":
+				strsql = fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD INDEX %s(`%s`)%s;", targetSchema, my.Table, v, strings.Join(c, "`,`"), invisibleClause)
+			}
 		}
 		sqlS = append(sqlS, strsql)
 	}
+
 	for _, v := range f {
-		switch my.IndexType {
-		case "pri":
-			strsql = fmt.Sprintf("ALTER TABLE `%s`.`%s` DROP PRIMARY KEY;", targetSchema, my.Table)
-		case "uni":
-			strsql = fmt.Sprintf("ALTER TABLE `%s`.`%s` DROP INDEX %s;", targetSchema, my.Table, v)
-		case "mul":
-			strsql = fmt.Sprintf("ALTER TABLE `%s`.`%s` DROP INDEX %s;", targetSchema, my.Table, v)
+		// 检查是否是外键约束
+		isForeignKey := false
+		if my.ForeignKeyDefinitions != nil {
+			_, isForeignKey = my.ForeignKeyDefinitions[v]
+		}
+
+		if isForeignKey {
+			// 删除外键约束
+			strsql = fmt.Sprintf("ALTER TABLE `%s`.`%s` DROP FOREIGN KEY `%s`;", targetSchema, my.Table, v)
+		} else {
+			// 处理普通索引、唯一索引和主键索引
+			switch my.IndexType {
+			case "pri":
+				strsql = fmt.Sprintf("ALTER TABLE `%s`.`%s` DROP PRIMARY KEY;", targetSchema, my.Table)
+			case "uni":
+				strsql = fmt.Sprintf("ALTER TABLE `%s`.`%s` DROP INDEX %s;", targetSchema, my.Table, v)
+			case "mul":
+				strsql = fmt.Sprintf("ALTER TABLE `%s`.`%s` DROP INDEX %s;", targetSchema, my.Table, v)
+			}
 		}
 		sqlS = append(sqlS, strsql)
 	}
+
 	return sqlS
 }
 

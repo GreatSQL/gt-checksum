@@ -851,98 +851,110 @@ MySQL 外键校验
 */
 func (my *QueryTable) Foreign(db *sql.DB, logThreadSeq int64) (map[string]string, error) {
 	var (
-		//sqlStr       string
-		//vlog         string
-		routineNameM = make(map[string]int)
-		tmpb         = make(map[string]string)
-		Event        = "Q_Foreign"
+		tmpb = make(map[string]string)
+		Event = "Q_Foreign"
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start to query the Foreign information under the %s database.", logThreadSeq, Event, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("SELECT CONSTRAINT_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS WHERE CONSTRAINT_SCHEMA IN('%s') AND TABLE_NAME IN('%s');", my.Schema, my.Table)
-	//vlog = fmt.Sprintf("(%d) MySQL DB query table query Foreign info exec sql is {%s}", logThreadSeq, sqlStr)
-	//global.Wlog.Debug(vlog)
 
-	//sqlRows, err := db.Query(sqlStr)
-	//if err != nil {
-	//	vlog = fmt.Sprintf("(%d) MySQL DB exec sql fail. sql message is {%s} Error info is {%s}.", logThreadSeq, sqlStr, err)
-	//	global.Wlog.Error(vlog)
-	//	return nil, err
-	//}
-	//if sqlRows == nil {
-	//	return nil, nil
-	//}
-	//foreignName, err := rowDataDisposMap(sqlRows, "Foreign", logThreadSeq)
-	//dispos := dataDispos.DBdataDispos{DBtype: "MySQL", Logseq: logThreadSeq, SqlRows: sqlRows, Event: "Foreign"}
+	// 使用INFORMATION_SCHEMA获取完整的外键约束信息
+	// 这个查询会获取外键名称、列名、引用的表和列信息
+	strsql = fmt.Sprintf(`
+		SELECT 
+			rc.CONSTRAINT_NAME,
+			kcu.COLUMN_NAME,
+			rc.CONSTRAINT_SCHEMA AS REFERENCED_TABLE_SCHEMA,
+			rc.REFERENCED_TABLE_NAME,
+			rcu.COLUMN_NAME AS REFERENCED_COLUMN_NAME,
+			rc.DELETE_RULE,
+			rc.UPDATE_RULE
+		FROM 
+			INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS rc
+		JOIN 
+			INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu 
+				ON rc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME 
+				AND rc.CONSTRAINT_SCHEMA = kcu.TABLE_SCHEMA 
+				AND rc.TABLE_NAME = kcu.TABLE_NAME
+		JOIN 
+			INFORMATION_SCHEMA.KEY_COLUMN_USAGE rcu 
+				ON rc.UNIQUE_CONSTRAINT_NAME = rcu.CONSTRAINT_NAME 
+				AND rc.CONSTRAINT_SCHEMA = rcu.TABLE_SCHEMA 
+				AND rc.REFERENCED_TABLE_NAME = rcu.TABLE_NAME
+		WHERE 
+			rc.CONSTRAINT_SCHEMA = '%s' 
+			AND rc.TABLE_NAME = '%s'
+		ORDER BY 
+			rc.CONSTRAINT_NAME, kcu.ORDINAL_POSITION
+	`, my.Schema, my.Table)
+
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
+		vlog = fmt.Sprintf("(%d) [%s] Error executing foreign key query: %v", logThreadSeq, Event, err)
+		global.Wlog.Error(vlog)
 		return nil, err
 	}
-	foreignName, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
-	if err != nil {
-		return nil, err
-	}
-	for _, v := range foreignName {
-		routineNameM[fmt.Sprintf("%s.%s", v["CONSTRAINT_SCHEMA"], v["TABLE_NAME"])]++
-	}
-	for k, _ := range routineNameM {
-		var z string
-		if strings.EqualFold(k, fmt.Sprintf("%s.%s", my.Schema, my.Table)) {
-			z = fmt.Sprintf("%s.%s", my.Schema, my.Table)
-		} else {
-			z = k
-		}
-		strsql = fmt.Sprintf("SHOW CREATE TABLE %s;", k)
-		//vlog = fmt.Sprintf("(%d) MySQL DB query create Foreign table %s.%s info, exec sql is {%s}", logThreadSeq, my.Schema, my.Table, sqlStr)
-		//global.Wlog.Debug(vlog)
-		//sqlRows, err = db.Query(sqlStr)
-		//if err != nil {
-		//	vlog = fmt.Sprintf("(%d) MySQL DB exec sql fail. sql message is {%s} Error info is {%s}.", logThreadSeq, sqlStr, err)
-		//	global.Wlog.Error(vlog)
-		//	tmpb[k] = ""
-		//	return tmpb, err
-		//}
-		//vlog = fmt.Sprintf("(%d) start dispos MySQL DB create table %s.%s create Foreign info.", logThreadSeq, my.Schema, my.Table)
-		//global.Wlog.Debug(vlog)
-		//createForeign, err1 := rowDataDisposMap(sqlRows, "Foreign", logThreadSeq)
-		//dispos = dataDispos.DBdataDispos{DBtype: "MySQL", Logseq: logThreadSeq, SqlRows: sqlRows, Event: "Foreign"}
-		if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
-			return nil, err
-		}
-		createForeign, err1 := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
-		if err1 != nil {
-			return nil, err1
-		}
-		//vlog = fmt.Sprintf("(%d) MySQL db query table %s.%s create Foreign completion.", logThreadSeq, my.Schema, my.Table)
-		//global.Wlog.Debug(vlog)
-		//vlog = fmt.Sprintf("(%d) MySQL db query table %s.%s dispos Foreign data info. to dispos it ...", logThreadSeq, my.Schema, my.Table)
-		//global.Wlog.Debug(vlog)
 
-		for _, b := range createForeign {
-			var p, q, o string
-			d := fmt.Sprintf("%s", b["Create Table"])
-			f := strings.Split(d, "\n")
-			for _, g := range f {
-				if strings.Contains(g, "CONSTRAINT") {
-					p = strings.TrimSpace(g)
-				}
-				if strings.Contains(g, "REFERENCES") {
-					q = strings.TrimSpace(g)
-				}
-			}
-			if strings.Contains(p, "CONSTRAINT") && strings.Contains(p, "REFERENCES") {
-				l := strings.Split(strings.TrimSpace(strings.Split(p, "REFERENCES")[1]), " ")[0]
-				o = strings.ReplaceAll(p, l, fmt.Sprintf("`%s`.%s", strings.Split(k, ".")[0], l))
-			}
-			if strings.HasPrefix(q, "REFERENCES") {
-				o = fmt.Sprintf("%s %s", p, q)
-			}
-			tmpb[z] = strings.ToUpper(strings.ReplaceAll(o, "`", "!"))
-		}
-		//vlog = fmt.Sprintf("(%d) MySQL db query table %s.%s Foreign data completion...", logThreadSeq, my.Schema, my.Table)
-		//global.Wlog.Debug(vlog)
+	foreignKeys, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
+	if err != nil {
+		vlog = fmt.Sprintf("(%d) [%s] Error processing foreign key results: %v", logThreadSeq, Event, err)
+		global.Wlog.Error(vlog)
+		return nil, err
 	}
 	defer dispos.SqlRows.Close()
+
+	// 按约束名称分组外键信息
+	fkMap := make(map[string][]map[string]interface{})
+	for _, fk := range foreignKeys {
+		constraintName := fmt.Sprintf("%s", fk["CONSTRAINT_NAME"])
+		if _, exists := fkMap[constraintName]; !exists {
+			fkMap[constraintName] = []map[string]interface{}{}
+		}
+		fkMap[constraintName] = append(fkMap[constraintName], fk)
+	}
+
+	// 构建完整的外键DDL定义
+	for constraintName, fkInfos := range fkMap {
+		if len(fkInfos) == 0 {
+			continue
+		}
+
+		// 获取第一个外键信息作为基础
+		firstFk := fkInfos[0]
+		referencedSchema := fmt.Sprintf("%s", firstFk["REFERENCED_TABLE_SCHEMA"])
+		referencedTable := fmt.Sprintf("%s", firstFk["REFERENCED_TABLE_NAME"])
+		deleteRule := fmt.Sprintf("%s", firstFk["DELETE_RULE"])
+		updateRule := fmt.Sprintf("%s", firstFk["UPDATE_RULE"])
+
+		// 收集列信息
+		var sourceColumns []string
+		var referencedColumns []string
+		for _, fkInfo := range fkInfos {
+			sourceColumns = append(sourceColumns, fmt.Sprintf("!%s!", fkInfo["COLUMN_NAME"]))
+			referencedColumns = append(referencedColumns, fmt.Sprintf("!%s!", fkInfo["REFERENCED_COLUMN_NAME"]))
+		}
+
+		// 构建外键DDL
+		sourceColumnsStr := strings.Join(sourceColumns, ", ")
+		referencedColumnsStr := strings.Join(referencedColumns, ", ")
+		ddl := fmt.Sprintf("CONSTRAINT !%s! FOREIGN KEY (!%s!) REFERENCES !%s!.!%s! (!%s!)",
+			constraintName, sourceColumnsStr, referencedSchema, referencedTable, referencedColumnsStr)
+
+		// 添加删除和更新规则
+		if deleteRule != "NO ACTION" && deleteRule != "RESTRICT" {
+			ddl += " ON DELETE " + deleteRule
+		}
+		if updateRule != "NO ACTION" && updateRule != "RESTRICT" {
+			ddl += " ON UPDATE " + updateRule
+		}
+
+		// 存储到结果map中，使用大写并将反引号替换为感叹号
+		tableKey := fmt.Sprintf("%s.%s", my.Schema, my.Table)
+		tmpb[tableKey] = strings.ToUpper(ddl)
+
+		vlog = fmt.Sprintf("(%d) [%s] Found foreign key: %s", logThreadSeq, Event, ddl)
+		global.Wlog.Debug(vlog)
+	}
+
 	vlog = fmt.Sprintf("(%d) [%s] Complete the Foreign information query under the %s database.", logThreadSeq, Event, DBType)
 	global.Wlog.Debug(vlog)
 	return tmpb, nil
