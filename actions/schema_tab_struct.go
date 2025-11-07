@@ -3087,7 +3087,29 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 						newIndexMap[idx] = sortColumns(cols)
 					}
 				}
-				cc = dbf.DataAbnormalFix().FixAlterIndexSqlExec(e, f, newIndexMap, stcls.sourceDrive, logThreadSeq)
+				// 获取数据修复实例
+						fixInstance := dbf.DataAbnormalFix()
+						
+						// 对于MySQL数据库，尝试加载外键定义
+						if stcls.sourceDrive == "mysql" {
+							// 将接口转换为MySQL具体类型
+							if mysqlFix, ok := fixInstance.(*mysql.MysqlDataAbnormalFixStruct); ok {
+								// 使用源端数据库连接加载外键定义
+								err := mysqlFix.LoadForeignKeyDefinitions(stcls.sourceDB, logThreadSeq)
+								if err != nil {
+									vlog := fmt.Sprintf("(%d) Failed to load foreign key definitions for table %s.%s: %v", 
+										logThreadSeq, stcls.schema, stcls.table, err)
+									global.Wlog.Warn(vlog)
+								} else {
+									vlog := fmt.Sprintf("(%d) Successfully loaded %d foreign key definitions for table %s.%s", 
+										logThreadSeq, len(mysqlFix.ForeignKeyDefinitions), stcls.schema, stcls.table)
+									global.Wlog.Debug(vlog)
+								}
+							}
+						}
+						
+						// 执行索引修复SQL生成
+						cc = fixInstance.FixAlterIndexSqlExec(e, f, newIndexMap, stcls.sourceDrive, logThreadSeq)
 			} else {
 				// 即使索引名称相同，也要比较索引的具体内容
 				for k, sColumns := range smu {
