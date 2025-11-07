@@ -36,6 +36,28 @@ type MysqlDataAbnormalFixStruct struct {
 /*
 MySQL 生成insert修复语句
 */
+// escapeSQLString 对SQL字符串进行转义，处理特殊字符
+func escapeSQLString(str string) string {
+	// 需要转义的特殊字符映射
+	replacements := map[string]string{
+		"\\":   "\\\\", // 反斜杠
+		"'":    "\\'",  // 单引号
+		"\"":   "\\\"", // 双引号
+		"\000": "\\0",  // NULL字符
+		"\n":   "\\n",  // 换行符
+		"\r":   "\\r",  // 回车符
+		"\x1a": "\\Z",  // ASCII 26 (CTRL+Z)
+	}
+
+	// 应用转义替换
+	result := str
+	for old, new := range replacements {
+		result = strings.ReplaceAll(result, old, new)
+	}
+
+	return result
+}
+
 func (my *MysqlDataAbnormalFixStruct) FixInsertSqlExec(db *sql.DB, sourceDrive string, logThreadSeq int64) (string, error) {
 	//查询该表的列名和列信息
 	var (
@@ -94,15 +116,15 @@ func (my *MysqlDataAbnormalFixStruct) FixInsertSqlExec(db *sql.DB, sourceDrive s
 					} else if strings.Contains(strings.ToUpper(dataType), "TIMESTAMP") {
 						tmpcolumnName = fmt.Sprintf("DATE_FORMAT('%s','%%Y-%%m-%%d %%H:%%i:%%s')", v)
 					} else {
-						tmpcolumnName = fmt.Sprintf("'%v'", strings.TrimSpace(v))
+						tmpcolumnName = fmt.Sprintf("'%s'", escapeSQLString(strings.TrimSpace(v)))
 					}
 				} else {
-					// 如果没有dataType字段，使用默认格式
-					tmpcolumnName = fmt.Sprintf("'%v'", strings.TrimSpace(v))
+					// 如果没有dataType字段，使用默认格式并转义特殊字符
+					tmpcolumnName = fmt.Sprintf("'%s'", escapeSQLString(strings.TrimSpace(v)))
 				}
 			} else {
-				// 如果索引越界，使用默认格式
-				tmpcolumnName = fmt.Sprintf("'%v'", strings.TrimSpace(v))
+				// 如果索引越界，使用默认格式并转义特殊字符
+				tmpcolumnName = fmt.Sprintf("'%s'", escapeSQLString(strings.TrimSpace(v)))
 				vlog = fmt.Sprintf("(%d) Warning: Column index %d exceeds available column data for %s.%s",
 					logThreadSeq, k, targetSchema, my.Table)
 				global.Wlog.Warn(vlog)

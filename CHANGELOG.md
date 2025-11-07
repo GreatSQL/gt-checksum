@@ -22,6 +22,7 @@
   - 修复了fixSQL中存在`ADD COLUMN`时，字段名自动变大写的问题，保留源端字段名大小写
   - 修复了fix SQL中包含empty语法错误问题
   - 修复了checkObject=data时，当待检查表为空，疑似会进入死循环问题
+  - 修复特殊字符"\"问题：https://greatsql.cn/thread-908-1-1.html
 
 ## 1.2.2(2025.09.22)
 - 合并`jointIndexChanRowCount`和`singleIndexChanRowCount`两个参数为新的参数`chunkSize`
