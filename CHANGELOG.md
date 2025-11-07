@@ -12,6 +12,7 @@
 - 支持添加自增且不可见主键和外键约束字段的修复语法（遗留问题：除了添加新字段，会多一个额外的ADD PRIMARY KEY/ADD CONSTRAINT操作，需要手动删掉，未来版本再修复）
 - 支持当partition不一致时，仅生成报告（Diffs=no）但不生成fixSQL（生成提示信息，没有具体SQL）
 - 支持生成外键约束（FOREIGN KEY）修复SQL
+- 在checkObject=data时，当发现待检查表结构不一致时，略过该表，并加上skipped提示，同时避免被hang住
 - Bugs fixed
   - 修复生成fixSQL时无法正确使用索引问题
   - 修复生成fixSQL时无法正确处理映射规则问题
@@ -22,7 +23,8 @@
   - 修复了fixSQL中存在`ADD COLUMN`时，字段名自动变大写的问题，保留源端字段名大小写
   - 修复了fix SQL中包含empty语法错误问题
   - 修复了checkObject=data时，当待检查表为空，疑似会进入死循环问题
-  - 修复特殊字符"\"问题：https://greatsql.cn/thread-908-1-1.html
+  - 修复了特殊字符（如`\\, \', \", \n, \r`等字符）导致校验结果不正确问题：https://greatsql.cn/thread-908-1-1.html
+  - 修复了当执行数据校验时发现表结构不一致导致校验过程可能被hang住的问题
 
 ## 1.2.2(2025.09.22)
 - 合并`jointIndexChanRowCount`和`singleIndexChanRowCount`两个参数为新的参数`chunkSize`

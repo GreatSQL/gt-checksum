@@ -3,6 +3,7 @@ package actions
 import (
 	"fmt"
 	"gt-checksum/inputArg"
+	"gt-checksum/global"
 	"strings"
 	"time"
 
@@ -86,6 +87,32 @@ var measuredDataPods []Pod
 var differencesSchemaTable = make(map[string]string)
 
 func CheckResultOut(m *inputArg.ConfigParameter) {
+	// 在函数开始时，将跳过的表添加到measuredDataPods中
+	skippedTables := global.GetSkippedTables()
+	// 创建一个映射来跟踪已处理的表，避免重复
+	processedTables := make(map[string]bool)
+	
+	// 先处理已有的measuredDataPods，记录已存在的表
+	for _, pod := range measuredDataPods {
+		if pod.CheckObject == "data" {
+			processedTables[pod.Schema+"."+pod.Table] = true
+		}
+	}
+	
+	// 只添加那些真正被跳过且尚未处理的表
+	for _, skipped := range skippedTables {
+		if (skipped.CheckObject == "data" || skipped.CheckObject == "struct") && !processedTables[skipped.Schema+"."+skipped.Table] {
+			pod := Pod{
+				Schema:      skipped.Schema,
+				Table:       skipped.Table,
+				CheckObject: skipped.CheckObject,
+				DIFFS:       "skipped",
+			}
+			measuredDataPods = append(measuredDataPods, pod)
+			processedTables[skipped.Schema+"."+skipped.Table] = true
+		}
+	}
+
 	table := uitable.New()
 	table.MaxColWidth = 200
 	table.RightAlign(20)

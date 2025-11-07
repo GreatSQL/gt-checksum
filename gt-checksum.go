@@ -117,7 +117,14 @@ func main() {
 			fmt.Println("gt-checksum: Table structure verification failed. Check log file or set logLevel=debug for details")
 			os.Exit(1)
 		} else if len(tableListColCheck) == 0 {
-			fmt.Println("gt-checksum: No tables in checklist. Check log file or set logLevel=debug for details")
+			// 检查表结构不匹配的情况
+			if global.HasInvisibleColumnMismatch {
+				fmt.Println("gt-checksum: Source and target table structure mismatch (invisible columns detected), skipping data validation for these tables")
+			} else {
+				fmt.Println("gt-checksum: No valid tables in checklist. Check log file or set logLevel=debug for details")
+			}
+			// 添加分隔行，使输出更清晰
+			fmt.Println("-----------------------------------------------------")
 			os.Exit(1)
 		}
 		//19、20
