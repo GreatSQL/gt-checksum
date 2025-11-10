@@ -279,4 +279,4 @@ CREATE TABLE IndexT(
     PRIMARY KEY (`id`),
     KEY `idx_2` (`tenantry_id`,`code`),
     KEY `idx_3` (`code`,`tenantry_id`)
-) ENGINE=InnoDB DEFAULT COMMENT='商品信息表';
+) ENGINE=InnoDB COMMENT='商品信息表';
