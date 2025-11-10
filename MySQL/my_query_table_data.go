@@ -238,17 +238,17 @@ func (my QueryTable) checkColumnExists(db *sql.DB, columnName string, logThreadS
 	)
 	// 直接使用一条SQL查询列是否存在，避免使用用户变量
 	strsql := fmt.Sprintf("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = '%s' AND table_name = '%s' AND column_name = '%s'", my.Schema, my.Table, columnName)
-	
+
 	vlog := fmt.Sprintf("(%d) [%s] Checking if column %s exists in table %s.%s", logThreadSeq, Event, columnName, my.Schema, my.Table)
 	global.Wlog.Debug(vlog)
-	
+
 	// 直接使用db.QueryRow避免使用DBSQLforExec的重试机制，因为这个查询很简单
 	err := db.QueryRow(strsql).Scan(&count)
 	if err != nil {
 		// 如果查询失败，使用DESCRIBE语句作为备选方案
 		vlog = fmt.Sprintf("(%d) [%s] Failed to query information_schema, using DESCRIBE as fallback. Error: %s", logThreadSeq, Event, err)
 		global.Wlog.Debug(vlog)
-		
+
 		// 使用DESCRIBE语句检查列是否存在
 		describeSQL := fmt.Sprintf("DESCRIBE `%s`.`%s` %s", my.Schema, my.Table, columnName)
 		rows, err := db.Query(describeSQL)
@@ -263,7 +263,7 @@ func (my QueryTable) checkColumnExists(db *sql.DB, columnName string, logThreadS
 		global.Wlog.Debug(vlog)
 		return exists, nil
 	}
-	
+
 	exists := count > 0
 	vlog = fmt.Sprintf("(%d) [%s] Column %s existence check result: %v", logThreadSeq, Event, columnName, exists)
 	global.Wlog.Debug(vlog)
@@ -308,7 +308,7 @@ func (my QueryTable) TmpTableColumnGroupDataDispos(db *sql.DB, where string, col
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start to query the index column data of the following table %s.%s in the %s database and de-reorder the data.", logThreadSeq, Event, my.Schema, my.Table, DBType)
 	global.Wlog.Debug(vlog)
-	
+
 	// 先检查表中是否存在该列
 	columnExists, err := my.checkColumnExists(db, columnName, logThreadSeq)
 	if err != nil {
@@ -322,7 +322,7 @@ func (my QueryTable) TmpTableColumnGroupDataDispos(db *sql.DB, where string, col
 		close(emptyChan)
 		return emptyChan, nil
 	}
-	
+
 	version, err := my.DatabaseVersion(db, logThreadSeq)
 	if err != nil {
 		return nil, err
@@ -452,11 +452,11 @@ func (my *QueryTable) NoIndexGeneratingQueryCriteria(db *sql.DB, beginSeq uint64
 		strsql := fmt.Sprintf("SELECT * FROM `%s`.`%s` LIMIT %d,%d", my.Schema, my.Table, beginSeq, chanrowCount)
 		dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 		if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
-	vlog = fmt.Sprintf("(%d) [%s] Failed to execute query: %s, Error: %v", logThreadSeq, Event, strsql, err)
-	global.Wlog.Error(vlog)
-	// 记录跳过的表信息到全局变量中
-	global.AddSkippedTable(my.Schema, my.Table, "data", fmt.Sprintf("query failed: %v", err))
-	return "", err
+			vlog = fmt.Sprintf("(%d) [%s] Failed to execute query: %s, Error: %v", logThreadSeq, Event, strsql, err)
+			global.Wlog.Error(vlog)
+			// 记录跳过的表信息到全局变量中
+			global.AddSkippedTable(my.Schema, my.Table, "data", fmt.Sprintf("query failed: %v", err))
+			return "", err
 		}
 		tableData, err := dispos.DataRowsDispos([]string{})
 		if err != nil {
@@ -509,35 +509,55 @@ MySQL 通过where条件查询表的分段数据（查询数据生成带有gtchec
 */
 func (my QueryTable) GeneratingQueryCriteria(db *sql.DB, logThreadSeq int64) (string, error) {
 	var (
-		Event = "Q_Table_Data"
+		Event         = "Q_Table_Data"
 		columnNameSeq []string
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start to query the segmented data of the following table %s.%s in the %s database through the where condition.", logThreadSeq, Event, my.Schema, my.Table, DBType)
 	global.Wlog.Debug(vlog)
-	
+
 	// 检查WHERE子句中引用的列是否存在
 	if my.Sqlwhere != "" {
 		// 简单解析WHERE子句中的列名（支持更多格式）
 		whereClause := my.Sqlwhere
 		// 移除可能的前后空格
 		whereClause = strings.TrimSpace(whereClause)
-		
+
 		// 提取可能的列名（改进的列名识别算法）
 		// 1. 首先尝试提取带反引号的列名
 		var columns []string
-		
+
+		// 定义SQL关键字列表
+		sqlKeywords := []string{
+			"select", "from", "where", "and", "or", "not", "is", "null",
+			">=", "<=", "!=", "=", ">", "<", "like", "in", "between",
+			"as", "group", "by", "order", "having", "limit", "offset",
+			"join", "inner", "left", "right", "outer", "on", "using",
+			"distinct", "all", "union", "intersect", "except", "exists",
+			"true", "false", "case", "when", "then", "else", "end",
+		}
+
 		// 匹配带反引号的列名
 		backtickRegex := regexp.MustCompile("`([^`]+)`")
 		backtickMatches := backtickRegex.FindAllStringSubmatch(whereClause, -1)
 		for _, match := range backtickMatches {
 			if len(match) > 1 {
-				columns = append(columns, match[1])
+				columnName := match[1]
+				// 处理可能的 schema.table 格式，只提取列名部分
+				if dotIndex := strings.LastIndex(columnName, "."); dotIndex != -1 {
+					columnName = columnName[dotIndex+1:]
+				}
+				// 过滤掉数据库名和表名
+				if strings.ToLower(columnName) != strings.ToLower(my.Schema) &&
+					strings.ToLower(columnName) != strings.ToLower(my.Table) &&
+					!containsString(columns, columnName) {
+					columns = append(columns, columnName)
+				}
 			}
 		}
-		
+
 		// 匹配不带反引号的列名（通过操作符识别）
 		operatorPatterns := []string{"[=<>!]=", "[=<>!]", " LIKE ", " IN ", " IS ", " BETWEEN ", " NOT LIKE ", " NOT IN ", " IS NOT "}
-		
+
 		for _, pattern := range operatorPatterns {
 			parts := strings.Split(whereClause, pattern)
 			for _, part := range parts {
@@ -548,15 +568,59 @@ func (my QueryTable) GeneratingQueryCriteria(db *sql.DB, logThreadSeq int64) (st
 						words := strings.FieldsFunc(strings.TrimSpace(subsubPart), func(r rune) bool {
 							return !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_')
 						})
-						
+
 						for _, word := range words {
-							if word != "" && !strings.ContainsAny(word, "0123456789") && 
-							   word != "and" && word != "or" && word != "not" && word != "is" && word != "null" && 
-							   word != ">=" && word != "<=" && word != "!=" && word != "=" && word != ">" && word != "<" && 
-							   word != "like" && word != "in" && word != "between" {
-								// 避免重复添加已识别的列名
-								if !containsString(columns, word) {
-									columns = append(columns, word)
+							if word != "" {
+								// 转换为小写用于比较
+								wordLower := strings.ToLower(word)
+
+								// 1. 检查是否为SQL关键字
+								isKeyword := false
+								for _, keyword := range sqlKeywords {
+									if wordLower == keyword {
+										isKeyword = true
+										break
+									}
+								}
+								if isKeyword {
+									continue
+								}
+
+								// 2. 检查是否为数据库名或表名（使用更严格的检查）
+								if strings.ToLower(word) == strings.ToLower(my.Schema) ||
+									strings.ToLower(word) == strings.ToLower(my.Table) {
+									// 跳过数据库名和表名
+									continue
+								}
+
+								// 额外检查：如果字符串与数据库名或表名完全匹配（不区分大小写），也跳过
+								if strings.EqualFold(word, my.Schema) || strings.EqualFold(word, my.Table) {
+									continue
+								}
+
+								// 3. 检查是否可能是字符串常量（单字符或简单字符串，这里做基本判断）
+								// 注意：这只是一个启发式判断，不是100%准确
+								isLikelyString := false
+								if len(word) <= 3 && !strings.ContainsAny(word, "0123456789_") {
+									// 单字符或短字符串可能是条件值而不是列名
+									isLikelyString = true
+								}
+
+								// 4. 检查是否为纯数字值
+								isNumeric := true
+								for _, r := range word {
+									if !(r >= '0' && r <= '9') {
+										isNumeric = false
+										break
+									}
+								}
+
+								// 如果不是关键字、不是数据库名/表名、不是纯数字值、且不太可能是字符串常量，则认为可能是列名
+								if !isLikelyString && !isNumeric {
+									// 避免重复添加已识别的列名
+									if !containsString(columns, word) {
+										columns = append(columns, word)
+									}
 								}
 							}
 						}
@@ -564,11 +628,11 @@ func (my QueryTable) GeneratingQueryCriteria(db *sql.DB, logThreadSeq int64) (st
 				}
 			}
 		}
-		
+
 		// 收集所有无效列
 		hasInvalidColumn := false
 		invalidColumns := make([]string, 0)
-		
+
 		// 检查每个列是否存在
 		for _, column := range columns {
 			if exists, err := my.checkColumnExists(db, column, logThreadSeq); err != nil {
@@ -578,7 +642,7 @@ func (my QueryTable) GeneratingQueryCriteria(db *sql.DB, logThreadSeq int64) (st
 				invalidColumns = append(invalidColumns, column)
 			}
 		}
-		
+
 		// 如果存在无效列，记录并返回错误
 		if hasInvalidColumn {
 			vlog = fmt.Sprintf("(%d) [%s] Columns '%v' in WHERE clause do not exist in table %s.%s", logThreadSeq, Event, invalidColumns, my.Schema, my.Table)
@@ -588,7 +652,7 @@ func (my QueryTable) GeneratingQueryCriteria(db *sql.DB, logThreadSeq int64) (st
 			return "", fmt.Errorf("invalid columns in WHERE clause: %v", invalidColumns)
 		}
 	}
-	
+
 	// 获取表的所有列名
 	if len(my.TableColumn) == 0 {
 		// 从INFORMATION_SCHEMA.COLUMNS获取列信息
@@ -617,14 +681,37 @@ func (my QueryTable) GeneratingQueryCriteria(db *sql.DB, logThreadSeq int64) (st
 			columnNameSeq = append(columnNameSeq, fmt.Sprintf("`%s`", column))
 		}
 	}
-	
+
 	// 确保至少有一个列名
 	if len(columnNameSeq) == 0 {
 		columnNameSeq = append(columnNameSeq, "*")
 	}
-	
+
 	// 构造完整的SELECT语句
-	strsql := fmt.Sprintf("SELECT %s FROM `%s`.`%s` WHERE %s", strings.Join(columnNameSeq, ","), my.Schema, my.Table, my.Sqlwhere)
+	// 清理Sqlwhere，确保它只包含WHERE条件部分，不包含SELECT语句
+	whereClause := my.Sqlwhere
+	whereClause = strings.TrimSpace(whereClause)
+
+	// 如果whereClause包含SELECT关键字，尝试提取真正的WHERE条件
+	if strings.Contains(strings.ToLower(whereClause), "select") {
+		// 寻找最后一个WHERE关键字的位置
+		whereLower := strings.ToLower(whereClause)
+		whereIndex := strings.LastIndex(whereLower, " where ")
+		if whereIndex != -1 {
+			// 提取WHERE后面的内容作为真正的条件
+			whereClause = whereClause[whereIndex+7:] // +7 to skip " WHERE "
+			whereClause = strings.TrimSpace(whereClause)
+		}
+	}
+
+	// 确保WHERE子句不以WHERE开头（如果用户已经添加了WHERE关键字）
+	whereLower := strings.ToLower(whereClause)
+	if strings.HasPrefix(whereLower, "where ") {
+		whereClause = whereClause[6:] // 移除WHERE前缀
+		whereClause = strings.TrimSpace(whereClause)
+	}
+
+	strsql := fmt.Sprintf("SELECT %s FROM `%s`.`%s` WHERE %s", strings.Join(columnNameSeq, ","), my.Schema, my.Table, whereClause)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return "", err
