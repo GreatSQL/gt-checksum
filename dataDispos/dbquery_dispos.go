@@ -359,9 +359,33 @@ func (dbpos *DBdataDispos) DBSQLforExec(strsql string) (*sql.Rows, error) {
 		rows *sql.Rows
 		vlog string
 	)
+	
+	// 检查是否是查询表行数的SQL，如果是且表不存在，记录跳过的表
+	if strings.Contains(strsql, "SELECT COUNT(*) AS tableRows FROM") && dbpos.Schema != "" && dbpos.Table != "" {
+		// 检查表是否存在
+		tableExistsQuery := fmt.Sprintf("SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA = '%s' AND TABLE_NAME = '%s'", dbpos.Schema, dbpos.Table)
+		var exists int
+		tableExistsErr := dbpos.DB.QueryRow(tableExistsQuery).Scan(&exists)
+		if tableExistsErr == sql.ErrNoRows {
+			// 表不存在，记录跳过的表
+			global.AddSkippedTable(dbpos.Schema, dbpos.Table, "data", "table does not exist")
+			vlog = fmt.Sprintf("(%d) [%s] Table %s.%s does not exist, skipping", dbpos.LogThreadSeq, dbpos.Event, dbpos.Schema, dbpos.Table)
+			global.Wlog.Warn(vlog)
+			return nil, fmt.Errorf("table %s.%s does not exist", dbpos.Schema, dbpos.Table)
+		}
+	}
+	
 	for i := 1; i < 4; i++ {
 		rows, err = dbpos.DB.Query(strsql)
 		if err != nil {
+			// 特殊处理表不存在的错误，不进行重试
+			errMsg := err.Error()
+			if strings.Contains(errMsg, "Table") && strings.Contains(errMsg, "doesn't exist") && dbpos.Schema != "" && dbpos.Table != "" {
+				global.AddSkippedTable(dbpos.Schema, dbpos.Table, "data", "table does not exist")
+				vlog = fmt.Sprintf("(%d) [%s] Table %s.%s does not exist, skipping", dbpos.LogThreadSeq, dbpos.Event, dbpos.Schema, dbpos.Table)
+				global.Wlog.Warn(vlog)
+				return nil, fmt.Errorf("table %s.%s does not exist", dbpos.Schema, dbpos.Table)
+			}
 			switch i {
 			case 1:
 				vlog = fmt.Sprintf("(%d) [%s] The first connection to the %s database failed to execute the sql statement.sql message is {%s} Error info is {%s}", dbpos.LogThreadSeq, dbpos.Event, dbpos.DBType, strsql, err)
