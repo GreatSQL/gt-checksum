@@ -311,6 +311,17 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 			sourceTableExists = false
 			vlog = fmt.Sprintf("(%d) %s Source table %s.%s does not exist", logThreadSeq, event, sourceSchema, stcls.table)
 			global.Wlog.Warn(vlog)
+			// 记录跳过的表
+			global.AddSkippedTable(sourceSchema, stcls.table, "data", "table does not exist")
+			// 创建跳过的数据校验记录
+			pod := Pod{
+				Schema:      sourceSchema,
+				Table:       stcls.table,
+				CheckObject: "data",
+				DIFFS:       "skipped",
+			}
+			stcls.appendPod(pod)
+			continue // 跳过当前表，处理下一个表
 		} else if err != nil {
 			vlog = fmt.Sprintf("(%d) %s Error checking source table existence %s.%s: %v", logThreadSeq, event, sourceSchema, stcls.table, err)
 			global.Wlog.Error(vlog)
@@ -325,6 +336,17 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 			destTableExists = false
 			vlog = fmt.Sprintf("(%d) %s Target table %s.%s does not exist", logThreadSeq, event, destSchema, stcls.table)
 			global.Wlog.Warn(vlog)
+			// 记录跳过的表
+			global.AddSkippedTable(destSchema, stcls.table, "data", "target table does not exist")
+			// 创建跳过的数据校验记录
+			pod := Pod{
+				Schema:      destSchema,
+				Table:       stcls.table,
+				CheckObject: "data",
+				DIFFS:       "skipped",
+			}
+			stcls.appendPod(pod)
+			continue // 跳过当前表，处理下一个表
 		} else if err != nil {
 			vlog = fmt.Sprintf("(%d) %s Error checking target table existence %s.%s: %v", logThreadSeq, event, destSchema, stcls.table, err)
 			global.Wlog.Error(vlog)
