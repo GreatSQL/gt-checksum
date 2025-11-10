@@ -25,6 +25,10 @@
   - 修复了checkObject=data时，当待检查表为空，疑似会进入死循环问题
   - 修复了特殊字符（如`\\, \', \", \n, \r`等字符）导致校验结果不正确问题：https://greatsql.cn/thread-908-1-1.html
   - 修复了当执行数据校验时发现表结构不一致导致校验过程可能被hang住的问题
+  - 修复了将date_format函数误识别为字段名问题
+  - 修复了testcase脚本错误
+  - 修复了因为表结构CHARSET&COLLATE或COMMENT不一致导致执行时可能报告字段不存在的问题
+  - 修复了checkObject=data时,如果指定的tables不存在时可能被hang住的问题
 
 ## 1.2.2(2025.09.22)
 - 合并`jointIndexChanRowCount`和`singleIndexChanRowCount`两个参数为新的参数`chunkSize`
