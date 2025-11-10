@@ -526,7 +526,7 @@ func (my QueryTable) GeneratingQueryCriteria(db *sql.DB, logThreadSeq int64) (st
 		// 1. 首先尝试提取带反引号的列名
 		var columns []string
 
-		// 定义SQL关键字列表
+		// 定义SQL关键字列表，包含MySQL函数名
 		sqlKeywords := []string{
 			"select", "from", "where", "and", "or", "not", "is", "null",
 			">=", "<=", "!=", "=", ">", "<", "like", "in", "between",
@@ -534,6 +534,12 @@ func (my QueryTable) GeneratingQueryCriteria(db *sql.DB, logThreadSeq int64) (st
 			"join", "inner", "left", "right", "outer", "on", "using",
 			"distinct", "all", "union", "intersect", "except", "exists",
 			"true", "false", "case", "when", "then", "else", "end",
+			// MySQL函数名
+			"date_format", "cast", "convert", "concat", "substring", "length",
+			"trim", "lower", "upper", "date", "time", "year", "month", "day",
+			"hour", "minute", "second", "now", "current_date", "current_time", "current_timestamp",
+			"if", "ifnull", "coalesce", "round", "floor", "ceil", "abs", "sum",
+			"count", "avg", "max", "min", "stddev", "variance",
 		}
 
 		// 匹配带反引号的列名
