@@ -135,7 +135,22 @@ func (my *MysqlDataAbnormalFixStruct) FixInsertSqlExec(db *sql.DB, sourceDrive s
 
 	if len(valuesNameSeq) > 0 {
 		queryColumn := strings.Join(valuesNameSeq, ",")
-		insertSql = fmt.Sprintf("INSERT INTO `%s`.`%s` VALUES(%s);", targetSchema, my.Table, queryColumn)
+		
+		// 从ColData中提取所有列名，包括不可见列
+		columnNames := make([]string, 0, len(my.ColData))
+		for _, col := range my.ColData {
+			if colName, ok := col["columnName"]; ok && colName != "" {
+				columnNames = append(columnNames, fmt.Sprintf("`%s`", colName))
+			}
+		}
+		
+		// 如果有列名信息，则生成包含列名的INSERT语句
+		if len(columnNames) > 0 {
+			insertSql = fmt.Sprintf("INSERT INTO `%s`.`%s`(%s) VALUES(%s);", targetSchema, my.Table, strings.Join(columnNames, ","), queryColumn)
+		} else {
+			// 如果没有列名信息，回退到原始的VALUES语法
+			insertSql = fmt.Sprintf("INSERT INTO `%s`.`%s` VALUES(%s);", targetSchema, my.Table, queryColumn)
+		}
 	}
 
 	return insertSql, nil
