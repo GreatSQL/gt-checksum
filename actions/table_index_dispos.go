@@ -95,9 +95,9 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 						g = key
 					}
 					if e == g {
-						sqlwhere = fmt.Sprintf(" %v >= '%v' and %v <= '%v' ", sp.columnName[level], e, sp.columnName[level], g)
+						sqlwhere = fmt.Sprintf(" `%v` >= '%v' and `%v` <= '%v' ", sp.columnName[level], e, sp.columnName[level], g)
 					} else {
-						sqlwhere = fmt.Sprintf(" %v > '%v' and %v <= '%v' ", sp.columnName[level], e, sp.columnName[level], g)
+						sqlwhere = fmt.Sprintf(" `%v` > '%v' and `%v` <= '%v' ", sp.columnName[level], e, sp.columnName[level], g)
 					}
 					if where != "" {
 						sqlwhere = fmt.Sprintf("%s %s", where, sqlwhere)
@@ -110,10 +110,10 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 					whereExist = fmt.Sprintf("%s and ", where)
 				}
 				if key == "<entry>" {
-					sqlwhere = fmt.Sprintf("%s %s = '' ", whereExist, sp.columnName[level])
+					sqlwhere = fmt.Sprintf("%s `%s` = '' ", whereExist, sp.columnName[level])
 				}
 				if key == "<nil>" {
-					sqlwhere = fmt.Sprintf("%s %s is null ", whereExist, sp.columnName[level])
+					sqlwhere = fmt.Sprintf("%s `%s` is null ", whereExist, sp.columnName[level])
 				}
 				partFirstValue = true
 				vlog = fmt.Sprintf("(%d) NULL values processed for index column %s level %d - WHERE: %s", logThreadSeq, sp.columnName[level], level, sqlwhere)
@@ -146,10 +146,10 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 						whereExist = fmt.Sprintf("%v and ", where)
 					}
 					if partFirstValue {
-						sqlwhere = fmt.Sprintf("%v %v >= '%v' and %v <= '%v' ", whereExist, sp.columnName[level], e, sp.columnName[level], g)
+						sqlwhere = fmt.Sprintf("%v `%v` >= '%v' and `%v` <= '%v' ", whereExist, sp.columnName[level], e, sp.columnName[level], g)
 						partFirstValue = false
 					} else {
-						sqlwhere = fmt.Sprintf("%v %v > '%v' and %v <= '%v' ", whereExist, sp.columnName[level], e, sp.columnName[level], g)
+						sqlwhere = fmt.Sprintf("%v `%v` > '%v' and `%v` <= '%v' ", whereExist, sp.columnName[level], e, sp.columnName[level], g)
 					}
 
 					sqlWhere <- sqlwhere
@@ -168,13 +168,13 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 						whereExist = fmt.Sprintf("%s and ", where)
 					}
 					if d == c && c >= queryNum { //单行索引列数据的group值大于并发数
-						sqlwhere = fmt.Sprintf("%s %v = '%v' ", whereExist, sp.columnName[level], g)
+						sqlwhere = fmt.Sprintf("%s `%v` = '%v' ", whereExist, sp.columnName[level], g)
 					} else {
 						if partFirstValue { //每段的首行数据
-							sqlwhere = fmt.Sprintf("%s %v >= '%v' and %v <= '%v' ", whereExist, sp.columnName[level], e, sp.columnName[level], g)
+							sqlwhere = fmt.Sprintf("%s `%v` >= '%v' and `%v` <= '%v' ", whereExist, sp.columnName[level], e, sp.columnName[level], g)
 							partFirstValue = false
 						} else {
-							sqlwhere = fmt.Sprintf("%s %v > '%v' and %v <= '%v' ", whereExist, sp.columnName[level], e, sp.columnName[level], g)
+							sqlwhere = fmt.Sprintf("%s `%v` > '%v' and `%v` <= '%v' ", whereExist, sp.columnName[level], e, sp.columnName[level], g)
 						}
 					}
 					sqlWhere <- sqlwhere
@@ -184,9 +184,9 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 					sqlwhere = ""
 				} else {
 					if where != "" {
-						where = fmt.Sprintf(" %v and %v = '%v' ", where, sp.columnName[level], g)
+						where = fmt.Sprintf(" %v and `%v` = '%v' ", where, sp.columnName[level], g)
 					} else {
-						where = fmt.Sprintf(" %v = '%v' ", sp.columnName[level], g)
+						where = fmt.Sprintf(" `%v` = '%v' ", sp.columnName[level], g)
 					}
 					level++ //索引列层数递增
 					//进入下一层的索引计算
@@ -623,16 +623,16 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 
 							// 修复SQL生成时使用正确的schema映射
 							dbf := dbExec.DataAbnormalFixStruct{
-			Schema:                 destSchema,   // 目标schema
-			SourceSchema:           sourceSchema, // 源端schema，用于处理数据库映射关系
-			Table:                  table,        // 使用映射后的表名
-			ColData:                colData.DColumnInfo,
-			Sqlwhere:               destSqlWhere, // 使用处理后的目标端SQL条件
-			DestDevice:             sp.ddrive,
-			IndexColumn:            indexColumns,
-			DatafixType:            sp.datafixType,
-			CaseSensitiveObjectName: sp.caseSensitiveObjectName,
-		}
+								Schema:                  destSchema,   // 目标schema
+								SourceSchema:            sourceSchema, // 源端schema，用于处理数据库映射关系
+								Table:                   table,        // 使用映射后的表名
+								ColData:                 colData.DColumnInfo,
+								Sqlwhere:                destSqlWhere, // 使用处理后的目标端SQL条件
+								DestDevice:              sp.ddrive,
+								IndexColumn:             indexColumns,
+								DatafixType:             sp.datafixType,
+								CaseSensitiveObjectName: sp.caseSensitiveObjectName,
+							}
 							if strings.HasPrefix(c1.indexColumnType, "pri") {
 								dbf.IndexType = "pri"
 							} else if strings.HasPrefix(c1.indexColumnType, "uni") {

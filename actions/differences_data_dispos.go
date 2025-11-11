@@ -19,7 +19,13 @@ var rollbackSQL = func(sl []string) []string {
 			e := strings.Split(strings.Split(i, "WHERE")[1], "/*columnModify*/")
 			oldrow := strings.Replace(e[0], "(", "", 1)
 			newrow := strings.Replace(e[1], ");", "", 1)
-			delSql := fmt.Sprintf("DELETE FROM %s WHERE %s;", schemaTable, newrow)
+			// 确保schema和table都有反引号
+	schemaTableWithQuotes := strings.ReplaceAll(strings.ReplaceAll(schemaTable, ".", ".`"), "`,", ".`")
+	if !strings.HasPrefix(schemaTableWithQuotes, "`") && strings.Contains(schemaTableWithQuotes, ".") {
+		parts := strings.Split(schemaTableWithQuotes, ".")
+		schemaTableWithQuotes = fmt.Sprintf("`%s`.%s", parts[0], parts[1])
+	}
+	delSql := fmt.Sprintf("DELETE FROM %s WHERE %s;", schemaTableWithQuotes, newrow)
 			addSql := fmt.Sprintf("INSERT INTO %s VALUES (%s);", schemaTable, oldrow)
 			newDelS = append(newDelS, delSql, addSql)
 		}
