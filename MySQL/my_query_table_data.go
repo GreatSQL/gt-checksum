@@ -684,7 +684,7 @@ func (my QueryTable) GeneratingQueryCriteria(db *sql.DB, logThreadSeq int64) (st
 	} else {
 		// 使用已有的列名
 		for _, column := range my.TableColumn {
-			columnNameSeq = append(columnNameSeq, fmt.Sprintf("`%s`", column))
+			columnNameSeq = append(columnNameSeq, fmt.Sprintf("`%s`", column["columnName"]))
 		}
 	}
 
