@@ -734,10 +734,10 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterColumnSqlDispos(alterType string, 
 		}
 	}
 
-	// 添加注释
-	if columnDataType[5] != "empty" {
-		attributes = append(attributes, fmt.Sprintf("COMMENT '%s'", columnDataType[5]))
-	}
+	// 根据要求，不再添加COMMENT属性
+	// if columnDataType[5] != "empty" {
+	// 	attributes = append(attributes, fmt.Sprintf("COMMENT '%s'", columnDataType[5]))
+	// }
 
 	// 初始化AutoIncrementColumnsWithPrimaryKey映射
 	if AutoIncrementColumnsWithPrimaryKey == nil {
@@ -757,8 +757,14 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterColumnSqlDispos(alterType string, 
 	if strings.Contains(strings.ToUpper(columnDataType[0]), "INVISIBLE") {
 		// 添加INVISIBLE关键字
 		attributes = append(attributes, "INVISIBLE")
-		// 从数据类型中移除INVISIBLE关键字，避免重复
-		columnDataType[0] = strings.ReplaceAll(strings.ToUpper(columnDataType[0]), " INVISIBLE", "")
+		// 从数据类型中完全移除INVISIBLE关键字，避免重复
+		columnDataType[0] = strings.ReplaceAll(strings.ToUpper(columnDataType[0]), "INVISIBLE", "")
+		// 去除多余的空格
+		columnDataType[0] = strings.TrimSpace(columnDataType[0])
+		// 处理可能的多个空格情况
+		for strings.Contains(columnDataType[0], "  ") {
+			columnDataType[0] = strings.ReplaceAll(columnDataType[0], "  ", " ")
+		}
 	}
 
 	// 添加列位置
@@ -772,10 +778,28 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterColumnSqlDispos(alterType string, 
 	// 构建最终SQL
 	switch alterType {
 	case "add":
+		// 检查是否需要添加主键，并且表中可能已存在其他主键
+		needDropPrimaryKey := false
+		for _, attr := range attributes {
+			if strings.ToUpper(attr) == "PRIMARY KEY" {
+				needDropPrimaryKey = true
+				break
+			}
+		}
+		
 		if columnLocation != "" {
-			sqlS = fmt.Sprintf(" ADD COLUMN `%s` %s %s", curryColumn, strings.Join(attributes, " "), columnLocation)
+			if needDropPrimaryKey {
+				// 先删除旧主键，再添加新列作为主键
+				sqlS = fmt.Sprintf(" DROP PRIMARY KEY, ADD COLUMN `%s` %s %s", curryColumn, strings.Join(attributes, " "), columnLocation)
+			} else {
+				sqlS = fmt.Sprintf(" ADD COLUMN `%s` %s %s", curryColumn, strings.Join(attributes, " "), columnLocation)
+			}
 		} else {
-			sqlS = fmt.Sprintf(" ADD COLUMN `%s` %s", curryColumn, strings.Join(attributes, " "))
+			if needDropPrimaryKey {
+				sqlS = fmt.Sprintf(" DROP PRIMARY KEY, ADD COLUMN `%s` %s", curryColumn, strings.Join(attributes, " "))
+			} else {
+				sqlS = fmt.Sprintf(" ADD COLUMN `%s` %s", curryColumn, strings.Join(attributes, " "))
+			}
 		}
 	case "modify":
 		if columnLocation != "" {
