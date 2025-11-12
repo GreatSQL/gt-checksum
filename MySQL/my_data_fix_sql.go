@@ -13,6 +13,8 @@ import (
 // 跟踪已经在添加列时设置了主键的列
 var (
 	AutoIncrementColumnsWithPrimaryKey map[string]bool
+	// 跟踪目标端表是否存在主键，key格式：schema.table
+	DestTableHasPrimaryKey map[string]bool
 )
 
 type MysqlDataAbnormalFixStruct struct {
@@ -135,7 +137,7 @@ func (my *MysqlDataAbnormalFixStruct) FixInsertSqlExec(db *sql.DB, sourceDrive s
 
 	if len(valuesNameSeq) > 0 {
 		queryColumn := strings.Join(valuesNameSeq, ",")
-		
+
 		// 从ColData中提取所有列名，包括不可见列
 		columnNames := make([]string, 0, len(my.ColData))
 		for _, col := range my.ColData {
@@ -143,7 +145,7 @@ func (my *MysqlDataAbnormalFixStruct) FixInsertSqlExec(db *sql.DB, sourceDrive s
 				columnNames = append(columnNames, fmt.Sprintf("`%s`", colName))
 			}
 		}
-		
+
 		// 如果有列名信息，则生成包含列名的INSERT语句
 		if len(columnNames) > 0 {
 			insertSql = fmt.Sprintf("INSERT INTO `%s`.`%s`(%s) VALUES(%s);", targetSchema, my.Table, strings.Join(columnNames, ","), queryColumn)
@@ -697,11 +699,53 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterIndexSqlExec(e, f []string, si map
 	return sqlS
 }
 
+// 初始化全局变量
+func init() {
+	AutoIncrementColumnsWithPrimaryKey = make(map[string]bool)
+	DestTableHasPrimaryKey = make(map[string]bool)
+}
+
+// 检查目标表是否存在主键并更新DestTableHasPrimaryKey映射
+func (my *MysqlDataAbnormalFixStruct) CheckDestTableHasPrimaryKey(db *sql.DB, logThreadSeq int64) bool {
+	key := fmt.Sprintf("%s.%s", my.Schema, my.Table)
+
+	// 如果已经检查过，直接返回结果
+	if hasPK, exists := DestTableHasPrimaryKey[key]; exists {
+		return hasPK
+	}
+
+	// 查询表的主键信息
+	query := fmt.Sprintf("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA = '%s' AND TABLE_NAME = '%s' AND CONSTRAINT_NAME = 'PRIMARY' LIMIT 1", my.Schema, my.Table)
+	var columnName string
+	err := db.QueryRow(query).Scan(&columnName)
+	hasPK := err == nil && columnName != ""
+
+	// 更新映射
+	DestTableHasPrimaryKey[key] = hasPK
+
+	return hasPK
+}
+
 func (my *MysqlDataAbnormalFixStruct) FixAlterColumnSqlDispos(alterType string, columnDataType []string, columnSeq int, lastColumn, curryColumn string, logThreadSeq int64) string {
 	var sqlS string
 
 	// 构建属性列表，只添加非空的值
 	var attributes []string
+
+	// 预处理数据类型，移除INVISIBLE关键字（如果存在）
+	hasInvisible := false
+	if strings.Contains(strings.ToUpper(columnDataType[0]), "INVISIBLE") {
+		hasInvisible = true
+		// 从数据类型中完全移除INVISIBLE关键字，使用大小写不敏感的替换
+		columnDataType[0] = strings.ReplaceAll(columnDataType[0], "INVISIBLE", "")
+		columnDataType[0] = strings.ReplaceAll(columnDataType[0], "invisible", "")
+		// 去除多余的空格
+		columnDataType[0] = strings.TrimSpace(columnDataType[0])
+		// 处理可能的多个空格情况
+		for strings.Contains(columnDataType[0], "  ") {
+			columnDataType[0] = strings.ReplaceAll(columnDataType[0], "  ", " ")
+		}
+	}
 
 	// 添加数据类型
 	attributes = append(attributes, columnDataType[0])
@@ -744,27 +788,19 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterColumnSqlDispos(alterType string, 
 		AutoIncrementColumnsWithPrimaryKey = make(map[string]bool)
 	}
 
-	// 检查是否需要在添加列时同时设置为主键（对于自增列）
-	if alterType == "add" && strings.Contains(strings.ToLower(columnDataType[0]), "auto_increment") {
-		// 对于自增列，需要同时设置为主键
+	// 检查是否需要设置主键（对于自增列，无论是add还是modify操作）
+	hasAutoIncrement := strings.Contains(strings.ToUpper(columnDataType[0]), "AUTO_INCREMENT")
+	if hasAutoIncrement {
+		// 对于自增列，需要设置为主键
 		attributes = append(attributes, "PRIMARY KEY")
 		// 标记该列已经设置了主键，避免在索引修复时重复设置
 		key := fmt.Sprintf("%s.%s.%s", my.Schema, my.Table, curryColumn)
 		AutoIncrementColumnsWithPrimaryKey[key] = true
 	}
 
-	// 处理INVISIBLE属性（如果数据类型中包含）
-	if strings.Contains(strings.ToUpper(columnDataType[0]), "INVISIBLE") {
-		// 添加INVISIBLE关键字
+	// 添加INVISIBLE关键字（如果存在）
+	if hasInvisible {
 		attributes = append(attributes, "INVISIBLE")
-		// 从数据类型中完全移除INVISIBLE关键字，避免重复
-		columnDataType[0] = strings.ReplaceAll(strings.ToUpper(columnDataType[0]), "INVISIBLE", "")
-		// 去除多余的空格
-		columnDataType[0] = strings.TrimSpace(columnDataType[0])
-		// 处理可能的多个空格情况
-		for strings.Contains(columnDataType[0], "  ") {
-			columnDataType[0] = strings.ReplaceAll(columnDataType[0], "  ", " ")
-		}
 	}
 
 	// 添加列位置
@@ -777,35 +813,39 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterColumnSqlDispos(alterType string, 
 
 	// 构建最终SQL
 	switch alterType {
-	case "add":
-		// 检查是否需要添加主键，并且表中可能已存在其他主键
-		needDropPrimaryKey := false
+	case "add", "modify":
+		// 检查是否需要设置主键
+		hasPrimaryKeyAttr := false
 		for _, attr := range attributes {
 			if strings.ToUpper(attr) == "PRIMARY KEY" {
-				needDropPrimaryKey = true
+				hasPrimaryKeyAttr = true
 				break
 			}
 		}
-		
-		if columnLocation != "" {
-			if needDropPrimaryKey {
-				// 先删除旧主键，再添加新列作为主键
-				sqlS = fmt.Sprintf(" DROP PRIMARY KEY, ADD COLUMN `%s` %s %s", curryColumn, strings.Join(attributes, " "), columnLocation)
-			} else {
-				sqlS = fmt.Sprintf(" ADD COLUMN `%s` %s %s", curryColumn, strings.Join(attributes, " "), columnLocation)
-			}
-		} else {
-			if needDropPrimaryKey {
-				sqlS = fmt.Sprintf(" DROP PRIMARY KEY, ADD COLUMN `%s` %s", curryColumn, strings.Join(attributes, " "))
-			} else {
-				sqlS = fmt.Sprintf(" ADD COLUMN `%s` %s", curryColumn, strings.Join(attributes, " "))
-			}
+
+		// 只有当目标表存在主键且需要设置新主键时，才需要删除旧主键
+		key := fmt.Sprintf("%s.%s", my.Schema, my.Table)
+		needDropPrimaryKey := hasPrimaryKeyAttr && DestTableHasPrimaryKey[key]
+
+		// 统一处理ADD和MODIFY操作，确保主键处理逻辑一致
+		operation := "ADD COLUMN"
+		if alterType == "modify" {
+			operation = "MODIFY COLUMN"
 		}
-	case "modify":
+
 		if columnLocation != "" {
-			sqlS = fmt.Sprintf(" MODIFY COLUMN `%s` %s %s", curryColumn, strings.Join(attributes, " "), columnLocation)
+			if needDropPrimaryKey {
+				// 先删除旧主键，再进行列操作
+				sqlS = fmt.Sprintf(" DROP PRIMARY KEY, %s `%s` %s %s", operation, curryColumn, strings.Join(attributes, " "), columnLocation)
+			} else {
+				sqlS = fmt.Sprintf(" %s `%s` %s %s", operation, curryColumn, strings.Join(attributes, " "), columnLocation)
+			}
 		} else {
-			sqlS = fmt.Sprintf(" MODIFY COLUMN `%s` %s", curryColumn, strings.Join(attributes, " "))
+			if needDropPrimaryKey {
+				sqlS = fmt.Sprintf(" DROP PRIMARY KEY, %s `%s` %s", operation, curryColumn, strings.Join(attributes, " "))
+			} else {
+				sqlS = fmt.Sprintf(" %s `%s` %s", operation, curryColumn, strings.Join(attributes, " "))
+			}
 		}
 	case "drop":
 		sqlS = fmt.Sprintf(" DROP COLUMN `%s`", curryColumn)

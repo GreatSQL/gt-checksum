@@ -831,7 +831,11 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 					// 使用原始大小写的列名生成SQL
 					originalColName := getOriginalColumnName(v1)
 					originalLastColumn := getOriginalColumnName(lastcolumn)
-					modifySql := dbf.DataAbnormalFix().FixAlterColumnSqlDispos("modify", alterColumnData, k1, originalLastColumn, originalColName, logThreadSeq)
+					// 检查目标表是否存在主键
+if mysqlDataFix, ok := dbf.DataAbnormalFix().(*mysql.MysqlDataAbnormalFixStruct); ok {
+	mysqlDataFix.CheckDestTableHasPrimaryKey(stcls.destDB, logThreadSeq)
+}
+modifySql := dbf.DataAbnormalFix().FixAlterColumnSqlDispos("modify", alterColumnData, k1, originalLastColumn, originalColName, logThreadSeq)
 					vlog = fmt.Sprintf("(%d) %s The column name of column %s of the source and target table %s.%s:[%s.%s] is the same, but the definition of the column is inconsistent, and a modify statement is generated, and the modification statement is {%v}", logThreadSeq, originalColName, stcls.schema, stcls.table, destSchema, stcls.table, modifySql)
 					global.Wlog.Warn(vlog)
 					alterSlice = append(alterSlice, modifySql)
@@ -846,7 +850,11 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 				// 使用原始大小写的列名生成SQL
 				originalColName := getOriginalColumnName(v1)
 				originalLastColumn := getOriginalColumnName(lastcolumn)
-				addSql := dbf.DataAbnormalFix().FixAlterColumnSqlDispos("add", sourceColumnMap[v1], position, originalLastColumn, originalColName, logThreadSeq)
+				// 检查目标表是否存在主键
+if mysqlDataFix, ok := dbf.DataAbnormalFix().(*mysql.MysqlDataAbnormalFixStruct); ok {
+	mysqlDataFix.CheckDestTableHasPrimaryKey(stcls.destDB, logThreadSeq)
+}
+addSql := dbf.DataAbnormalFix().FixAlterColumnSqlDispos("add", sourceColumnMap[v1], position, originalLastColumn, originalColName, logThreadSeq)
 				vlog = fmt.Sprintf("(%d) %s Missing column %s in %s.%s - ADD: %v", logThreadSeq, event, originalColName, destSchema, stcls.table, addSql)
 				global.Wlog.Warn(vlog)
 				alterSlice = append(alterSlice, addSql)
