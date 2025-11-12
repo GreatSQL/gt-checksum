@@ -659,14 +659,142 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 							if len(del) > 0 {
 								vlog = fmt.Sprintf("(%d) Generating DELETE statements for %s.%s", logThreadSeq, c1.Schema, c1.Table)
 								global.Wlog.Debug(vlog)
-								for _, i := range del {
-									dbf.RowData = i
-									sqlstr, err := dbf.DataAbnormalFix().FixDeleteSqlExec(ddb, sp.ddrive, logThreadSeq)
-									if err != nil {
-										sp.getErr(fmt.Sprintf("\ndest: checksum table %s.%s generate DELETE sql error.", c1.Schema, c1.Table), err)
+									
+								// 定义SQL长度限制 (1MB)
+								const maxSqlSize = 1024 * 1024
+									
+								// 分组处理DELETE语句，每fixTrxNum条合并一次
+								for batchStart := 0; batchStart < len(del); batchStart += sp.fixTrxNum {
+									batchEnd := batchStart + sp.fixTrxNum
+									if batchEnd > len(del) {
+										batchEnd = len(del)
 									}
-									if sqlstr != "" {
-										cc <- sqlstr
+									batchDel := del[batchStart:batchEnd]
+										
+									// 对于MySQL，合并DELETE语句
+									if sp.ddrive == "mysql" {
+										// 尝试提取主键或唯一键列名
+										var primaryCol string
+										if len(dbf.IndexColumn) > 0 {
+											primaryCol = dbf.IndexColumn[0] // 使用第一个索引列
+										}
+											
+										// 如果有明确的主键列，使用IN条件合并
+										if primaryCol != "" {
+											var values []string
+											for _, i := range batchDel {
+												dbf.RowData = i
+												sqlstr, err := dbf.DataAbnormalFix().FixDeleteSqlExec(ddb, sp.ddrive, logThreadSeq)
+												if err != nil {
+													sp.getErr(fmt.Sprintf("\ndest: checksum table %s.%s generate DELETE sql error.", c1.Schema, c1.Table), err)
+													continue
+												}
+												
+												// 提取WHERE条件中的值
+												if strings.Contains(sqlstr, "WHERE") {
+													wherePart := strings.Split(sqlstr, "WHERE")[1]
+													wherePart = strings.TrimSpace(strings.TrimSuffix(wherePart, ";"))
+													// 使用字符串分割来提取值，避免正则表达式转义问题
+														key := fmt.Sprintf("`%s` = '", primaryCol)
+														if strings.Contains(wherePart, key) {
+															part := strings.Split(wherePart, key)[1]
+															if strings.Contains(part, "'") {
+																value := strings.Split(part, "'")[0]
+																values = append(values, "'"+value+"'")
+															}
+														}
+												}
+											}
+												
+											// 如果成功提取了多个值，根据长度限制生成合并的DELETE语句
+											if len(values) > 1 {
+												// 生成基础SQL部分
+												baseSql := fmt.Sprintf("DELETE FROM `%s`.`%s` WHERE `%s` IN (", c1.Schema, c1.Table, primaryCol)
+												baseSqlLen := len(baseSql)
+												closeBracketLen := len(");")
+												
+												// 根据长度限制合并值
+												var currentValues []string
+												currentLength := baseSqlLen
+												
+												for i, value := range values {
+													valueLen := len(value)
+													separatorLen := 0
+													if i > 0 {
+														separatorLen = 1 // 逗号的长度
+													}
+													
+													// 检查添加当前值是否会超过长度限制
+													if currentLength+separatorLen+valueLen+closeBracketLen > maxSqlSize {
+														// 如果当前已经有值，先生成并发送当前的合并SQL
+														if len(currentValues) > 0 {
+															mergedSql := fmt.Sprintf("%s%s);", baseSql, strings.Join(currentValues, ","))
+															cc <- mergedSql
+															// 重置当前值列表和长度
+															currentValues = []string{value}
+															currentLength = baseSqlLen + valueLen
+														} else {
+															// 如果单个值就超过限制，单独处理这条记录
+															// 查找对应的原始记录并单独执行
+															dbf.RowData = batchDel[i]
+															sqlstr, err := dbf.DataAbnormalFix().FixDeleteSqlExec(ddb, sp.ddrive, logThreadSeq)
+															if err != nil {
+																sp.getErr(fmt.Sprintf("\ndest: checksum table %s.%s generate DELETE sql error.", c1.Schema, c1.Table), err)
+															}
+															if sqlstr != "" {
+																cc <- sqlstr
+															}
+														}
+													} else {
+														// 添加当前值到合并列表
+														currentValues = append(currentValues, value)
+														currentLength += separatorLen + valueLen
+													}
+												}
+												
+												// 处理剩余的值
+												if len(currentValues) > 0 {
+													mergedSql := fmt.Sprintf("%s%s);", baseSql, strings.Join(currentValues, ","))
+													cc <- mergedSql
+												}
+											} else {
+												// 如果无法合并，回退到单独执行
+												for _, i := range batchDel {
+													dbf.RowData = i
+													sqlstr, err := dbf.DataAbnormalFix().FixDeleteSqlExec(ddb, sp.ddrive, logThreadSeq)
+													if err != nil {
+														sp.getErr(fmt.Sprintf("\ndest: checksum table %s.%s generate DELETE sql error.", c1.Schema, c1.Table), err)
+													}
+													if sqlstr != "" {
+														cc <- sqlstr
+													}
+												}
+											}
+										} else {
+											// 如果没有明确的主键列，回退到单独执行
+											for _, i := range batchDel {
+												dbf.RowData = i
+												sqlstr, err := dbf.DataAbnormalFix().FixDeleteSqlExec(ddb, sp.ddrive, logThreadSeq)
+												if err != nil {
+													sp.getErr(fmt.Sprintf("\ndest: checksum table %s.%s generate DELETE sql error.", c1.Schema, c1.Table), err)
+												}
+												if sqlstr != "" {
+													cc <- sqlstr
+												}
+											}
+										}
+									} else {
+										// 对于非MySQL数据库，暂时保持单独执行
+										for _, i := range batchDel {
+											dbf.RowData = i
+											sqlstr, err := dbf.DataAbnormalFix().FixDeleteSqlExec(ddb, sp.ddrive, logThreadSeq)
+											if err != nil {
+												sp.getErr(fmt.Sprintf("\ndest: checksum table %s.%s generate DELETE sql error.", c1.Schema, c1.Table), err)
+											}
+											if sqlstr != "" {
+												cc <- sqlstr
+											}
+										}
 									}
 								}
 								vlog = fmt.Sprintf("(%d) DELETE statements generated for %s.%s", logThreadSeq, c1.Schema, c1.Table)
@@ -675,14 +803,155 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 							if len(add) > 0 {
 								vlog = fmt.Sprintf("(%d) Generating INSERT statements for %s.%s", logThreadSeq, c1.Schema, c1.Table)
 								global.Wlog.Debug(vlog)
-								for _, i := range add {
-									dbf.RowData = i
-									sqlstr, err := dbf.DataAbnormalFix().FixInsertSqlExec(ddb, sp.ddrive, logThreadSeq)
-									if err != nil {
-										sp.getErr(fmt.Sprintf("dest: checksum table %s.%s generate INSERT sql error.", c1.Schema, c1.Table), err)
+								
+								// 定义SQL长度限制 (1MB)
+								const maxSqlSize = 1024 * 1024
+								
+								// 分组处理INSERT语句，每fixTrxNum条合并一次
+								for batchStart := 0; batchStart < len(add); batchStart += sp.fixTrxNum {
+									batchEnd := batchStart + sp.fixTrxNum
+									if batchEnd > len(add) {
+										batchEnd = len(add)
 									}
-									if sqlstr != "" {
-										cc <- sqlstr
+									batchAdd := add[batchStart:batchEnd]
+										
+									// 对于MySQL，合并INSERT语句
+									if sp.ddrive == "mysql" && len(batchAdd) > 1 {
+										var columnPart string
+										var valuesParts []string
+										var canMerge bool = true
+										
+										// 处理第一条记录，提取列名部分
+										dbf.RowData = batchAdd[0]
+										sqlstr, err := dbf.DataAbnormalFix().FixInsertSqlExec(ddb, sp.ddrive, logThreadSeq)
+										if err != nil {
+											sp.getErr(fmt.Sprintf("dest: checksum table %s.%s generate INSERT sql error.", c1.Schema, c1.Table), err)
+											canMerge = false
+										} else {
+											// 提取INSERT语句中的列名部分和VALUES部分
+											insertParts := strings.Split(sqlstr, " VALUES")
+											if len(insertParts) == 2 {
+												columnPart = insertParts[0] // INSERT INTO `schema`.`table`(col1,col2)
+												valuesPart := strings.TrimSpace(strings.TrimSuffix(insertParts[1], ";"))
+												// 提取括号内的值部分
+												if strings.HasPrefix(valuesPart, "(") && strings.HasSuffix(valuesPart, ")") {
+													valuesParts = append(valuesParts, valuesPart)
+												}
+											} else {
+												canMerge = false
+											}
+										}
+										
+										// 处理剩余记录，提取VALUES部分
+										for _, i := range batchAdd[1:] {
+											dbf.RowData = i
+											sqlstr, err := dbf.DataAbnormalFix().FixInsertSqlExec(ddb, sp.ddrive, logThreadSeq)
+											if err != nil {
+												sp.getErr(fmt.Sprintf("dest: checksum table %s.%s generate INSERT sql error.", c1.Schema, c1.Table), err)
+												canMerge = false
+												break
+											}
+											
+											// 提取VALUES部分
+											insertParts := strings.Split(sqlstr, " VALUES")
+											if len(insertParts) != 2 {
+												canMerge = false
+												break
+											}
+											
+											valuesPart := strings.TrimSpace(strings.TrimSuffix(insertParts[1], ";"))
+											if strings.HasPrefix(valuesPart, "(") && strings.HasSuffix(valuesPart, ")") {
+												valuesParts = append(valuesParts, valuesPart)
+											} else {
+												canMerge = false
+												break
+											}
+										}
+										
+										// 如果可以合并，根据长度限制生成合并的INSERT语句
+										if canMerge && columnPart != "" && len(valuesParts) > 1 {
+											// 根据长度限制合并VALUES部分
+											var currentValuesParts []string
+											var currentLength int
+											
+											// 计算基础部分长度
+											baseSql := fmt.Sprintf("%s VALUES ", columnPart)
+											currentLength = len(baseSql)
+											endSql := len(";\n")
+											
+											for i, valuesPart := range valuesParts {
+												valuesPartLen := len(valuesPart)
+												separatorLen := 0
+												if i > 0 {
+													separatorLen = 1 // 逗号的长度
+												}
+												
+												// 检查单个VALUES部分是否已经超过长度限制
+												if valuesPartLen > maxSqlSize {
+													// 如果单个VALUES部分就超过限制，单独处理这条记录
+													// 查找对应的原始记录并单独执行
+													dbf.RowData = batchAdd[i]
+													sqlstr, err := dbf.DataAbnormalFix().FixInsertSqlExec(ddb, sp.ddrive, logThreadSeq)
+													if err != nil {
+														sp.getErr(fmt.Sprintf("dest: checksum table %s.%s generate INSERT sql error.", c1.Schema, c1.Table), err)
+													}
+													if sqlstr != "" {
+														cc <- sqlstr
+													}
+													continue
+												}
+												
+												// 检查添加当前VALUES部分是否会超过长度限制
+												if currentLength+separatorLen+valuesPartLen+endSql > maxSqlSize {
+													// 如果当前已经有值，先生成并发送当前的合并SQL
+													if len(currentValuesParts) > 0 {
+														mergedSql := fmt.Sprintf("%s%s;", baseSql, strings.Join(currentValuesParts, ","))
+														cc <- mergedSql
+														// 重置当前VALUES部分列表和长度
+														currentValuesParts = []string{valuesPart}
+														currentLength = len(baseSql) + valuesPartLen
+													}
+												} else {
+													// 添加当前VALUES部分到合并列表
+													currentValuesParts = append(currentValuesParts, valuesPart)
+													if i == 0 {
+														currentLength += valuesPartLen
+													} else {
+														currentLength += separatorLen + valuesPartLen
+													}
+												}
+											}
+											
+											// 处理剩余的VALUES部分
+											if len(currentValuesParts) > 0 {
+												mergedSql := fmt.Sprintf("%s%s;", baseSql, strings.Join(currentValuesParts, ","))
+												cc <- mergedSql
+											}
+										} else {
+											// 如果无法合并，回退到单独执行
+											for _, i := range batchAdd {
+												dbf.RowData = i
+												sqlstr, err := dbf.DataAbnormalFix().FixInsertSqlExec(ddb, sp.ddrive, logThreadSeq)
+												if err != nil {
+													sp.getErr(fmt.Sprintf("dest: checksum table %s.%s generate INSERT sql error.", c1.Schema, c1.Table), err)
+												}
+												if sqlstr != "" {
+													cc <- sqlstr
+												}
+											}
+										}
+									} else {
+										// 对于单条记录或非MySQL数据库，单独执行
+										for _, i := range batchAdd {
+											dbf.RowData = i
+											sqlstr, err := dbf.DataAbnormalFix().FixInsertSqlExec(ddb, sp.ddrive, logThreadSeq)
+											if err != nil {
+												sp.getErr(fmt.Sprintf("dest: checksum table %s.%s generate INSERT sql error.", c1.Schema, c1.Table), err)
+											}
+											if sqlstr != "" {
+												cc <- sqlstr
+											}
+										}
 									}
 								}
 								vlog = fmt.Sprintf("(%d) INSERT statements generated for %s.%s", logThreadSeq, c1.Schema, c1.Table)
