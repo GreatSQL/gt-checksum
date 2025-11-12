@@ -500,18 +500,34 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 					// 获取列数据时使用原始schema.table组合
 					colData := sp.tableAllCol[fmt.Sprintf("%s_gtchecksum_%s", sourceSchema, table)]
 
-					// 处理源端SQL条件，确保使用源端schema
-					sourceSqlWhere := c1.SqlWhere[sp.sdrive]
-					// 如果源端SQL条件中包含目标端schema，替换为源端schema
-					if strings.Contains(sourceSqlWhere, fmt.Sprintf("`%s`", destSchema)) {
-						sourceSqlWhere = strings.Replace(sourceSqlWhere,
-							fmt.Sprintf("`%s`", destSchema),
-							fmt.Sprintf("`%s`", sourceSchema), -1)
-					}
-					if strings.Contains(sourceSqlWhere, fmt.Sprintf("%s.", destSchema)) {
-						sourceSqlWhere = strings.Replace(sourceSqlWhere,
-							fmt.Sprintf("%s.", destSchema),
-							fmt.Sprintf("%s.", sourceSchema), -1)
+					// 处理源端SQL条件，确保使用正确的源端数据范围
+					var sourceSqlWhere string
+
+					// 直接查询源端索引列的实际数据范围，而不依赖于合并后的数据
+					// 获取源端索引列的最小和最大值
+					var minValue, maxValue string
+					var err error
+					sourceQuery := fmt.Sprintf("SELECT MIN(`%s`) as min_val, MAX(`%s`) as max_val FROM `%s`.`%s`",
+						sp.columnName[0], sp.columnName[0], sourceSchema, table)
+					err = sdb.QueryRow(sourceQuery).Scan(&minValue, &maxValue)
+					if err != nil || minValue == "" || maxValue == "" {
+						// 如果直接查询失败，则回退到原始方法
+						sourceSqlWhere = c1.SqlWhere[sp.sdrive]
+						// 确保使用正确的schema
+						if strings.Contains(sourceSqlWhere, fmt.Sprintf("`%s`", destSchema)) {
+							sourceSqlWhere = strings.Replace(sourceSqlWhere,
+								fmt.Sprintf("`%s`", destSchema),
+								fmt.Sprintf("`%s`", sourceSchema), -1)
+						}
+						if strings.Contains(sourceSqlWhere, fmt.Sprintf("%s.", destSchema)) {
+							sourceSqlWhere = strings.Replace(sourceSqlWhere,
+								fmt.Sprintf("%s.", destSchema),
+								fmt.Sprintf("%s.", sourceSchema), -1)
+						}
+					} else {
+						// 使用源端实际的数据范围构造条件
+						sourceSqlWhere = fmt.Sprintf("`%s` >= '%s' and `%s` <= '%s'",
+							sp.columnName[0], minValue, sp.columnName[0], maxValue)
 					}
 
 					// 处理目标端SQL条件，确保使用目标端schema
