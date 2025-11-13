@@ -2922,119 +2922,34 @@ func (stcls *schemaTable) Partitions(dtabS []string, logThreadSeq, logThreadSeq2
 		vlog = fmt.Sprintf("(%d) Table %s.%s source partitions: %v, dest partitions: %v", logThreadSeq, stcls.schema, stcls.table, sourcePartitionNames, destPartitionNames)
 		global.Wlog.Debug(vlog)
 
-		// 检查分区数量是否一致
-		if len(sourcePartitionNames) != len(destPartitionNames) {
+		// 直接比较完整的分区定义
+		if sourceFullDef != destFullDef {
 			pods.DIFFS = "yes"
-			vlog = fmt.Sprintf("(%d) Table %s.%s partition count mismatch: source=%d, dest=%d", logThreadSeq, stcls.schema, stcls.table, len(sourcePartitionNames), len(destPartitionNames))
+			vlog = fmt.Sprintf("(%d) Table %s.%s partition definitions mismatch", logThreadSeq, stcls.schema, stcls.table)
 			global.Wlog.Warn(vlog)
-			d = append(d, fmt.Sprintf("Partition count mismatch: source=%d, dest=%d", len(sourcePartitionNames), len(destPartitionNames)))
+			d = append(d, "Partition definitions mismatch")
 
-			// 生成修复SQL提示
-			if sourceFullDef != "" {
-				// 清理表名，移除可能存在的映射后缀
-				cleanTable := stcls.table
-				if strings.Contains(cleanTable, ":") {
-					parts := strings.Split(cleanTable, ":")
-					cleanTable = parts[0]
-				}
-				fixSQLHint := fmt.Sprintf("-- [Note] The partitions for table %s.%s is inconsistent, please fix it yourself", stcls.schema, cleanTable)
-				// 将修复SQL写入文件
-				if stcls.datafix == "file" && stcls.sfile != nil {
-					mysql.WriteFixIfNeededFile("file", stcls.sfile, []string{fixSQLHint}, logThreadSeq, stcls.djdbc)
-				} else {
-					fmt.Println(fixSQLHint)
-				}
+			// 只生成人工检查提示，不生成具体SQL
+			// 清理表名，移除可能存在的映射后缀
+			cleanTable := stcls.table
+			if strings.Contains(cleanTable, ":") {
+				parts := strings.Split(cleanTable, ":")
+				cleanTable = parts[0]
+			}
+			fixSQLHint := fmt.Sprintf("-- [Note] The partitions for table %s.%s is inconsistent, please check manually", stcls.schema, cleanTable)
+			// 将提示写入文件
+			if stcls.datafix == "file" && stcls.sfile != nil {
+				mysql.WriteFixIfNeededFile("file", stcls.sfile, []string{fixSQLHint}, logThreadSeq, stcls.djdbc)
+			} else {
+				fmt.Println(fixSQLHint)
 			}
 		} else {
-			// 检查每个分区是否存在且定义一致
-			for _, partitionName := range sourcePartitionNames {
-				partitionKey := fmt.Sprintf("%s.%s.%s", stcls.schema, stcls.table, partitionName)
-				sourcePartDef := sourcePartitions[partitionKey]
-				destPartDef, destHasPart := destPartitions[partitionKey]
-
-				if !destHasPart {
-					// 源端有但目标端没有的分区
-					pods.DIFFS = "yes"
-					vlog = fmt.Sprintf("(%d) Table %s.%s partition %s exists in source but not in destination", logThreadSeq, stcls.schema, stcls.table, partitionName)
-					global.Wlog.Warn(vlog)
-					d = append(d, fmt.Sprintf("Missing partition: %s", partitionName))
-
-					// 生成修复SQL提示
-					if sourceFullDef != "" {
-						// 清理表名，移除可能存在的映射后缀
-						cleanTable := stcls.table
-						if strings.Contains(cleanTable, ":") {
-							parts := strings.Split(cleanTable, ":")
-							cleanTable = parts[0]
-						}
-						fixSQLHint := fmt.Sprintf("-- [Note] The partitions for table %s.%s is inconsistent, run the following SQL to fix please:\n-- ALTER TABLE %s.%s %s;",
-							stcls.schema, cleanTable, stcls.schema, cleanTable, sourceFullDef)
-						// 将修复SQL写入文件
-						if stcls.datafix == "file" && stcls.sfile != nil {
-							mysql.WriteFixIfNeededFile("file", stcls.sfile, []string{fixSQLHint}, logThreadSeq, stcls.djdbc)
-						} else {
-							fmt.Println(fixSQLHint)
-						}
-					}
-				} else if sourcePartDef != destPartDef {
-					// 分区存在但定义不一致
-					pods.DIFFS = "yes"
-					vlog = fmt.Sprintf("(%d) Table %s.%s partition %s definition mismatch: source='%s', dest='%s'", logThreadSeq, stcls.schema, stcls.table, partitionName, sourcePartDef, destPartDef)
-					global.Wlog.Warn(vlog)
-					d = append(d, fmt.Sprintf("Partition %s definition mismatch", partitionName))
-
-					// 生成修复SQL提示
-					if sourceFullDef != "" {
-						// 清理表名，移除可能存在的映射后缀
-						cleanTable := stcls.table
-						if strings.Contains(cleanTable, ":") {
-							parts := strings.Split(cleanTable, ":")
-							cleanTable = parts[0]
-						}
-						fixSQLHint := fmt.Sprintf("-- [Note] The partitions for table %s.%s is inconsistent, run the following SQL to fix please:\n-- ALTER TABLE %s.%s %s;",
-							stcls.schema, cleanTable, stcls.schema, cleanTable, sourceFullDef)
-						// 将修复SQL写入文件
-						if stcls.datafix == "file" && stcls.sfile != nil {
-							mysql.WriteFixIfNeededFile("file", stcls.sfile, []string{fixSQLHint}, logThreadSeq, stcls.djdbc)
-						} else {
-							fmt.Println(fixSQLHint)
-						}
-					}
-				} else {
-					// 分区一致
-					c = append(c, partitionName)
-				}
-			}
-
-			// 检查目标端是否有额外的分区
-			for _, partitionName := range destPartitionNames {
-				partitionKey := fmt.Sprintf("%s.%s.%s", stcls.schema, stcls.table, partitionName)
-				if _, exists := sourcePartitions[partitionKey]; !exists {
-					// 目标端有但源端没有的分区
-					pods.DIFFS = "yes"
-					vlog = fmt.Sprintf("(%d) Table %s.%s partition %s exists in destination but not in source", logThreadSeq, stcls.schema, stcls.table, partitionName)
-					global.Wlog.Warn(vlog)
-					d = append(d, fmt.Sprintf("Extra partition in destination: %s", partitionName))
-
-					// 生成修复SQL提示
-					if sourceFullDef != "" {
-						// 清理表名，移除可能存在的映射后缀
-						cleanTable := stcls.table
-						if strings.Contains(cleanTable, ":") {
-							parts := strings.Split(cleanTable, ":")
-							cleanTable = parts[0]
-						}
-						fixSQLHint := fmt.Sprintf("-- [Note] The partitions for table %s.%s is inconsistent, run the following SQL to fix please:\n-- ALTER TABLE %s.%s %s;",
-							stcls.schema, cleanTable, stcls.schema, cleanTable, sourceFullDef)
-						// 将修复SQL写入文件
-						if stcls.datafix == "file" && stcls.sfile != nil {
-							mysql.WriteFixIfNeededFile("file", stcls.sfile, []string{fixSQLHint}, logThreadSeq, stcls.djdbc)
-						} else {
-							fmt.Println(fixSQLHint)
-						}
-					}
-				}
-			}
+			// 分区定义完全一致，不做任何操作
+			vlog = fmt.Sprintf("(%d) Table %s.%s partition definitions are consistent", logThreadSeq, stcls.schema, stcls.table)
+			global.Wlog.Debug(vlog)
+			c = append(c, "All partitions consistent")
+			continue // 跳过后续的分区比较，因为定义已经完全一致
+			// 这里不再单独比较每个分区，因为已经通过完整分区定义进行了比较
 		}
 
 		// 记录分区定义的比较结果

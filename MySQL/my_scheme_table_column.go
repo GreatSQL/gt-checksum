@@ -851,7 +851,7 @@ MySQL 外键校验
 */
 func (my *QueryTable) Foreign(db *sql.DB, logThreadSeq int64) (map[string]string, error) {
 	var (
-		tmpb = make(map[string]string)
+		tmpb  = make(map[string]string)
 		Event = "Q_Foreign"
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start to query the Foreign information under the %s database.", logThreadSeq, Event, DBType)
@@ -968,7 +968,7 @@ func (my *QueryTable) Partitions(db *sql.DB, logThreadSeq int64) (map[string]str
 		tmpb  = make(map[string]string)
 		Event = "Q_Partitions"
 	)
-	
+
 	// 正确提取表名，避免表名中包含schema信息
 	actualTableName := my.Table
 	if strings.Contains(actualTableName, ":") {
@@ -977,10 +977,10 @@ func (my *QueryTable) Partitions(db *sql.DB, logThreadSeq int64) (map[string]str
 			actualTableName = parts[0]
 		}
 	}
-	
+
 	vlog = fmt.Sprintf("(%d) [%s] Start to query the Partitions information for table %s.%s under the %s database.", logThreadSeq, Event, my.Schema, actualTableName, DBType)
 	global.Wlog.Debug(vlog)
-	
+
 	// 直接查询表的分区信息，包括分区名称和详细定义
 	strsql = fmt.Sprintf("SELECT PARTITION_NAME, PARTITION_ORDINAL_POSITION, PARTITION_METHOD, PARTITION_EXPRESSION, PARTITION_DESCRIPTION, TABLE_ROWS FROM INFORMATION_SCHEMA.PARTITIONS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s' AND PARTITION_NAME<>'' ORDER BY PARTITION_ORDINAL_POSITION;", my.Schema, actualTableName)
 	vlog = fmt.Sprintf("(%d) [%s] Executing query on INFORMATION_SCHEMA.PARTITIONS: %s", logThreadSeq, Event, strsql)
@@ -993,7 +993,7 @@ func (my *QueryTable) Partitions(db *sql.DB, logThreadSeq int64) (map[string]str
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// 如果有分区，获取表的创建语句以提取完整的分区定义
 	if len(partitionsInfo) > 0 {
 		strsql = fmt.Sprintf("SHOW CREATE TABLE %s.%s;", my.Schema, actualTableName)
@@ -1004,47 +1004,50 @@ func (my *QueryTable) Partitions(db *sql.DB, logThreadSeq int64) (map[string]str
 		if err1 != nil {
 			return nil, err1
 		}
-		
+
 		if len(createTableInfo) > 0 {
 			createTableSQL := fmt.Sprintf("%s", createTableInfo[0]["Create Table"])
 			z := strings.Split(createTableSQL, "\n")
-			
-			// 提取分区定义信息
+
+			// 提取分区定义信息 - 改进版本，确保捕获完整的分区定义
 			var partitionDefs []string
 			inPartitionSection := false
-			
+
 			for _, bi := range z {
 				trimmedLine := strings.TrimSpace(bi)
-				
-				// 检测分区定义开始
-				if strings.Contains(strings.ToUpper(trimmedLine), "PARTITION BY") {
+				upperLine := strings.ToUpper(trimmedLine)
+
+				// 检测分区定义开始 - 支持PARTITION BY和SUBPARTITION BY
+				if strings.Contains(upperLine, "PARTITION BY") || strings.Contains(upperLine, "SUBPARTITION BY") {
 					inPartitionSection = true
-					partitionDefs = append(partitionDefs, strings.ToUpper(trimmedLine))
+					partitionDefs = append(partitionDefs, upperLine)
 				} else if inPartitionSection {
 					// 收集分区定义部分的所有行，直到遇到结束括号或引擎定义
-					if trimmedLine != "" && !strings.HasPrefix(trimmedLine, "ENGINE=") {
-						partitionDefs = append(partitionDefs, strings.ToUpper(trimmedLine))
+					if trimmedLine != "" && !strings.HasPrefix(upperLine, "ENGINE=") && !strings.HasPrefix(upperLine, "DEFAULT CHARSET") {
+						partitionDefs = append(partitionDefs, upperLine)
 					}
-					// 分区定义结束
-					if strings.Contains(trimmedLine, ")") {
+					// 分区定义结束 - 确保我们不会提前退出
+					if strings.Contains(upperLine, ");") {
 						inPartitionSection = false
 						break
 					}
 				}
 			}
-			
+
 			// 将所有分区定义合并为一个字符串作为表的分区定义
+			// 移除所有空格，使比较更加严格和准确
 			fullPartitionDef := strings.Join(partitionDefs, " ")
 			fullPartitionDef = strings.Join(strings.Fields(fullPartitionDef), " ")
 			fullPartitionDef = strings.ReplaceAll(fullPartitionDef, "`", "!")
-			
+
+			// 增加日志，记录完整的分区定义用于调试
 			vlog = fmt.Sprintf("(%d) [%s] Extracted full partition definition for %s.%s: %s", logThreadSeq, Event, my.Schema, actualTableName, fullPartitionDef)
 			global.Wlog.Debug(vlog)
-			
+
 			// 使用表名作为键，存储完整的分区定义
 			tableKey := fmt.Sprintf("%s.%s", my.Schema, my.Table)
 			tmpb[tableKey] = fullPartitionDef
-			
+
 			// 同时为每个分区单独创建条目，便于比较
 			for _, p := range partitionsInfo {
 				partitionName := fmt.Sprintf("%s", p["PARTITION_NAME"])
@@ -1063,7 +1066,7 @@ func (my *QueryTable) Partitions(db *sql.DB, logThreadSeq int64) (map[string]str
 			}
 		}
 	}
-	
+
 	defer dispos.SqlRows.Close()
 	vlog = fmt.Sprintf("(%d) [%s] Complete the Partitions information query for table %s.%s under the %s database. Found %d partitions.", logThreadSeq, Event, my.Schema, actualTableName, DBType, len(partitionsInfo))
 	global.Wlog.Debug(vlog)
