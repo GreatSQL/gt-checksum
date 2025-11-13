@@ -49,19 +49,42 @@ func (rs repairSqlStruct) execRepairSql(sqlstr []string, dbType string, logThrea
 	}
 	defer conn.Close()
 	if dbType == "mysql" {
+		// 首先设置不记录binlog
 		sql1 := "SET SESSION sql_log_bin=OFF"
 		if _, err1 := conn.ExecContext(ctx, sql1); err1 != nil {
 			vlog = fmt.Sprintf("(%d) Failed to prepare dataFix SQL: %s. Error: %s", logThreadSeq, "set session sql_log_bin=off", err1)
 			global.Wlog.Error(vlog)
 			return err1
 		}
+		
+		// 关闭自动提交
 		sql2 := "SET autocommit=0;"
 		if _, err1 := conn.ExecContext(ctx, sql2); err1 != nil {
 			vlog = fmt.Sprintf("(%d) actions prepare dataFix SQL fail. sql is:{%s}, error info is : {%s}", logThreadSeq, "set session sql_log_bin=off", err1)
 			global.Wlog.Error(vlog)
 			return err1
 		}
-
+		
+		// 添加必要的前置语句
+		// 从rs.JDBC（即dstDSN）中获取charset值
+		charset := global.ExtractCharsetFromDSN(rs.JDBC)
+		
+		preSqls := []string{
+			fmt.Sprintf("SET NAMES %s;", charset),
+			"SET FOREIGN_KEY_CHECKS=0;",
+			"SET UNIQUE_CHECKS=0;",
+		}
+		
+		for _, preSql := range preSqls {
+			if _, err1 := conn.ExecContext(ctx, preSql); err1 != nil {
+				vlog = fmt.Sprintf("(%d) Failed to execute prep statement: %s. Error: %s", logThreadSeq, preSql, err1)
+				global.Wlog.Error(vlog)
+				return err1
+			}
+		}
+		
+		vlog = fmt.Sprintf("(%d) Executed necessary SET statements before datafix", logThreadSeq)
+		global.Wlog.Debug(vlog)
 	}
 	for _, i := range sqlstr {
 		if strings.HasPrefix(strings.ToUpper(i), "ALTER TABLE") {
@@ -98,9 +121,34 @@ func (rs repairSqlStruct) SqlFile(sfile *os.File, sql []string, logThreadSeq int
 	var (
 		vlog      string
 		sqlCommit []string
+		err       error
 	)
 	vlog = fmt.Sprintf("(%d) Writing repair statements to file", logThreadSeq)
 	global.Wlog.Debug(vlog)
+	
+	// 检查文件是否为空，为空则添加必要的前置语句
+	fileInfo, err := sfile.Stat()
+	if err == nil && fileInfo.Size() == 0 {
+		// 从rs.JDBC（即dstDSN）中获取charset值
+		charset := global.ExtractCharsetFromDSN(rs.JDBC)
+		
+		// 添加必要的前置语句
+		preSqls := []string{
+			fmt.Sprintf("SET NAMES %s;", charset),
+			"SET FOREIGN_KEY_CHECKS=0;",
+			"SET UNIQUE_CHECKS=0;",
+		}
+		
+		for _, preSql := range preSqls {
+			if _, err := sfile.WriteString(preSql + "\n"); err != nil {
+				return err
+			}
+		}
+		
+		vlog = fmt.Sprintf("(%d) Added necessary SET statements to fix SQL file", logThreadSeq)
+		global.Wlog.Debug(vlog)
+	}
+	
 	if strings.HasPrefix(strings.ToUpper(strings.Join(sql, ";")), "ALTER TABLE") {
 		sqlCommit = sql
 	} else {
@@ -108,7 +156,7 @@ func (rs repairSqlStruct) SqlFile(sfile *os.File, sql []string, logThreadSeq int
 		sqlCommit = append(sqlCommit, sql...)
 		sqlCommit = append(sqlCommit, "COMMIT;")
 	}
-	_, err := FileOperate{File: sfile, BufSize: 1024 * 4 * 1024, SqlType: "sql"}.ConcurrencyWriteFile(sqlCommit)
+	_, err = FileOperate{File: sfile, BufSize: 1024 * 4 * 1024, SqlType: "sql"}.ConcurrencyWriteFile(sqlCommit)
 	if err != nil {
 		return err
 	}

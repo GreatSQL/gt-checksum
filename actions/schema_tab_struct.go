@@ -377,7 +377,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 			// 应用修复SQL
 			vlog = fmt.Sprintf("(%d) %s Applying CREATE TABLE statement to %s.%s", logThreadSeq, event, destSchema, destTableName)
 			global.Wlog.Debug(vlog)
-			if err = mysql.WriteFixIfNeededFile(stcls.datafix, stcls.sfile, []string{createTableSql}, logThreadSeq); err != nil {
+			if err = mysql.WriteFixIfNeededFile(stcls.datafix, stcls.sfile, []string{createTableSql}, logThreadSeq, stcls.djdbc); err != nil {
 				return nil, nil, err
 			}
 
@@ -396,7 +396,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 			// 应用修复SQL
 			vlog = fmt.Sprintf("(%d) %s Applying DROP TABLE statement to %s.%s", logThreadSeq, event, destSchema, destTableName)
 			global.Wlog.Debug(vlog)
-			if err = mysql.WriteFixIfNeededFile(stcls.datafix, stcls.sfile, []string{dropTableSql}, logThreadSeq); err != nil {
+			if err = mysql.WriteFixIfNeededFile(stcls.datafix, stcls.sfile, []string{dropTableSql}, logThreadSeq, stcls.djdbc); err != nil {
 				return nil, nil, err
 			}
 
@@ -970,7 +970,7 @@ addSql := dbf.DataAbnormalFix().FixAlterColumnSqlDispos("add", sourceColumnMap[v
 			vlog = fmt.Sprintf("(%d) %s Applying repair statements to %s.%s: %v", logThreadSeq, event, destSchema, stcls.table, sqlS)
 			global.Wlog.Debug(vlog)
 			// 统一封装为按 datafix=file 追加写入
-			if err = mysql.WriteFixIfNeededFile(stcls.datafix, stcls.sfile, sqlS, logThreadSeq); err != nil {
+			if err = mysql.WriteFixIfNeededFile(stcls.datafix, stcls.sfile, sqlS, logThreadSeq, stcls.djdbc); err != nil {
 				return nil, nil, err
 			}
 			vlog = fmt.Sprintf("(%d) %s Repair statements applied to %s.%s", logThreadSeq, event, destSchema, stcls.table)
@@ -2147,7 +2147,7 @@ func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 in
 					out = append(out, ts+"\n$$")
 				}
 				out = append(out, "DELIMITER ;")
-				_ = mysql.WriteFixIfNeededFile(stcls.datafix, stcls.sfile, out, logThreadSeq)
+				_ = mysql.WriteFixIfNeededFile(stcls.datafix, stcls.sfile, out, logThreadSeq, stcls.djdbc)
 			} else {
 				pods.DIFFS = "no"
 				c = append(c, k)
@@ -2576,7 +2576,7 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 							out = append(out, ts+"\n$$")
 						}
 						out = append(out, "DELIMITER ;")
-						_ = mysql.WriteFixIfNeededFile(stcls.datafix, stcls.sfile, out, logThreadSeq)
+						_ = mysql.WriteFixIfNeededFile(stcls.datafix, stcls.sfile, out, logThreadSeq, stcls.djdbc)
 					}
 				}
 			}
@@ -2704,7 +2704,7 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 							fout = append(fout, ts+"\n$$")
 						}
 						fout = append(fout, "DELIMITER ;")
-						_ = mysql.WriteFixIfNeededFile(stcls.datafix, stcls.sfile, fout, logThreadSeq)
+						_ = mysql.WriteFixIfNeededFile(stcls.datafix, stcls.sfile, fout, logThreadSeq, stcls.djdbc)
 					}
 				}
 			}
@@ -2940,7 +2940,7 @@ func (stcls *schemaTable) Partitions(dtabS []string, logThreadSeq, logThreadSeq2
 				fixSQLHint := fmt.Sprintf("-- [Note] The partitions for table %s.%s is inconsistent, please fix it yourself", stcls.schema, cleanTable)
 				// 将修复SQL写入文件
 				if stcls.datafix == "file" && stcls.sfile != nil {
-					mysql.WriteFixIfNeededFile("file", stcls.sfile, []string{fixSQLHint}, logThreadSeq)
+					mysql.WriteFixIfNeededFile("file", stcls.sfile, []string{fixSQLHint}, logThreadSeq, stcls.djdbc)
 				} else {
 					fmt.Println(fixSQLHint)
 				}
@@ -2971,7 +2971,7 @@ func (stcls *schemaTable) Partitions(dtabS []string, logThreadSeq, logThreadSeq2
 							stcls.schema, cleanTable, stcls.schema, cleanTable, sourceFullDef)
 						// 将修复SQL写入文件
 						if stcls.datafix == "file" && stcls.sfile != nil {
-							mysql.WriteFixIfNeededFile("file", stcls.sfile, []string{fixSQLHint}, logThreadSeq)
+							mysql.WriteFixIfNeededFile("file", stcls.sfile, []string{fixSQLHint}, logThreadSeq, stcls.djdbc)
 						} else {
 							fmt.Println(fixSQLHint)
 						}
@@ -2995,7 +2995,7 @@ func (stcls *schemaTable) Partitions(dtabS []string, logThreadSeq, logThreadSeq2
 							stcls.schema, cleanTable, stcls.schema, cleanTable, sourceFullDef)
 						// 将修复SQL写入文件
 						if stcls.datafix == "file" && stcls.sfile != nil {
-							mysql.WriteFixIfNeededFile("file", stcls.sfile, []string{fixSQLHint}, logThreadSeq)
+							mysql.WriteFixIfNeededFile("file", stcls.sfile, []string{fixSQLHint}, logThreadSeq, stcls.djdbc)
 						} else {
 							fmt.Println(fixSQLHint)
 						}
@@ -3028,7 +3028,7 @@ func (stcls *schemaTable) Partitions(dtabS []string, logThreadSeq, logThreadSeq2
 							stcls.schema, cleanTable, stcls.schema, cleanTable, sourceFullDef)
 						// 将修复SQL写入文件
 						if stcls.datafix == "file" && stcls.sfile != nil {
-							mysql.WriteFixIfNeededFile("file", stcls.sfile, []string{fixSQLHint}, logThreadSeq)
+							mysql.WriteFixIfNeededFile("file", stcls.sfile, []string{fixSQLHint}, logThreadSeq, stcls.djdbc)
 						} else {
 							fmt.Println(fixSQLHint)
 						}
@@ -3522,7 +3522,7 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 				sqlS = combinedSql
 			}
 
-			err := mysql.WriteFixIfNeededFile(stcls.datafix, stcls.sfile, sqlS, logThreadSeq)
+			err := mysql.WriteFixIfNeededFile(stcls.datafix, stcls.sfile, sqlS, logThreadSeq, stcls.djdbc)
 			if err != nil {
 				return err
 			}

@@ -4,7 +4,7 @@ DROP DATABASE IF EXISTS gt_checksum;
 CREATE DATABASE IF NOT EXISTS gt_checksum;
 USE gt_checksum;
 
--- 测试数值类型
+-- 测试几个基本数据类型
 DROP TABLE IF EXISTS testInt;
 CREATE TABLE testInt(
     f1 TINYINT,
@@ -18,17 +18,16 @@ CREATE TABLE testInt(
 ALTER TABLE testInt ADD INDEX idx_1(f1);
 INSERT INTO testInt(f1,f2,f3,f4,f5,f6,f7) VALUES(1,2,3,4,5,6,7);
 
-DROP TABLE IF EXISTS testFlod;
-CREATE TABLE testFlod(
+DROP TABLE IF EXISTS testFloat;
+CREATE TABLE testFloat(
   f1 FLOAT,
   f2 FLOAT(5,2),
   f3 DOUBLE,
   f4 DOUBLE(5,3)
 );
-ALTER TABLE testFlod ADD INDEX idx_1(f1);
-INSERT INTO testFlod(f1,f2,f3,f4) VALUES(123.45,123.45,123.45,12.456);
+ALTER TABLE testFloat ADD INDEX idx_1(f1);
+INSERT INTO testFloat(f1,f2,f3,f4) VALUES(123.45,123.45,123.45,12.456);
 
--- 测试二进制类型
 DROP TABLE IF EXISTS testBit;
 CREATE TABLE testBit(
     f1 BIT,
@@ -41,7 +40,6 @@ INSERT INTO testBit VALUES(1,31,65);
 -- from bin,oct,hex bin转换为二进制，oct8进制，hex16进制
 SELECT * FROM testBit;
 
--- 测试时间类型
 DROP TABLE IF EXISTS testTime;
 CREATE TABLE testTime(
      f1 YEAR,
@@ -54,7 +52,6 @@ CREATE TABLE testTime(
 ALTER TABLE testTime ADD INDEX idx_1(f1);
 INSERT INTO testTime(f1,f2,f3,f4,f5,f6) VALUES('2022',2022,'2022-07-12','2 12:30:29','2022-07-12 14:53:00','2022-07-12 14:54:00');
 
--- 测试字符串类型
 DROP TABLE IF EXISTS testString;
 CREATE TABLE testString(
    f1 CHAR,
@@ -70,7 +67,6 @@ CREATE TABLE testString(
 ALTER TABLE testString ADD INDEX idx_1(f1);
 INSERT INTO testString(f1,f2,f3,f4,f5,f6,f7,f8,f9) VALUES('1','abcde','ab123','1adf','hello gt-checksum','aa','hello gt-checksum','d','aa,bb');
 
--- 测试二进制字符串类型
 DROP TABLE IF EXISTS testBin;
 CREATE TABLE testBin(
     f1 BINARY,
@@ -84,12 +80,7 @@ CREATE TABLE testBin(
 ALTER TABLE testBin ADD INDEX idx_1(f1);
 INSERT INTO testBin(f1,f2,f3,f4,f5,f6,f7) VALUES('a','abc','ab','01010101','0x9023123123','hello gt-checksum','hello gt-checksum');
 
--- 索引列为null或为''的处理
-
-
--- 触发器的处理
-
--- 测试表及测试数据
+-- 测试触发器的处理
 DROP TABLE IF EXISTS account;
 CREATE TABLE account (acct_num INT, amount DECIMAL(10,2));
 INSERT INTO account VALUES(137,14.98),(141,1937.50),(97,-100.00);
@@ -125,25 +116,20 @@ BEGIN
     INSERT INTO tmp_account VALUES(OLD.acct_num,OLD.amount,"UPDATE_DELETE");
     INSERT INTO tmp_account VALUES(NEW.acct_num,NEW.amount,"UPDATE_INSERT");
 END ||
-
 DELIMITER ;
 
--- 测试步骤
--- insert 测试
 INSERT INTO account VALUES (150,33.32);
 SELECT * FROM tmp_account WHERE acct_num=150;
 
--- update 测试
 INSERT INTO account VALUES(200,13.23);
 UPDATE account SET acct_num = 201 WHERE amount = 13.23;
 SELECT * FROM tmp_account;
 
--- delete 测试
 INSERT INTO account VALUES(300,14.23);
 DELETE FROM account WHERE acct_num = 300;
 SELECT * FROM tmp_account;
 
--- 分区
+-- 测试分区
 DROP TABLE IF EXISTS range_Partition_Table;
 CREATE TABLE range_Partition_Table(
     range_key_column DATETIME,
@@ -207,6 +193,7 @@ CREATE TABLE range_hash_Partition_Table (id INT, purchased DATE)
         PARTITION p2 VALUES LESS THAN MAXVALUE
 );
 
+-- 测试外键约束
 DROP TABLE IF EXISTS tb_dept1;
 CREATE TABLE tb_dept1 (
   id INT(11) PRIMARY KEY,
@@ -224,7 +211,7 @@ CREATE TABLE tb_emp6(
     FOREIGN KEY(deptId) REFERENCES tb_dept1(id)
 );
 
--- 存储函数
+-- 测试存储程序
 DELIMITER ||
 DROP FUNCTION IF EXISTS getAgeStr;
 CREATE FUNCTION getAgeStr(age INT)
@@ -248,7 +235,7 @@ RETURN results;
 END ||
 DELIMITER ;
 
--- 触发器
+-- 再次测试触发器
 DROP TABLE IF EXISTS test1;
 CREATE TABLE test1(a1 INT);
 DROP TABLE IF EXISTS test2;
@@ -261,9 +248,7 @@ CREATE TRIGGER tri_test
 END ||
 DELIMITER ;
 
-/*
-    索引
- */
+-- 测试索引
 DROP TABLE IF EXISTS IndexT;
 CREATE TABLE IndexT(
     `id` INT(11) NOT NULL,

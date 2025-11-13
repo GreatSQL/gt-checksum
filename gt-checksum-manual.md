@@ -194,6 +194,8 @@ $ mv gt-checksum /usr/local/bin
 
 截止最新的v1.2.3版本，已知存在以下几个问题。
 
+- 为了安全起见，当设置checkObject=data之外的其他值时，即便同时设置datafix=table，也不会直接在线完成修复，需要改成datafix=file，生成fix SQL后再由DBA手动完成。
+
 - 因元数据间存在较多不一致，目前主要支持MySQL 8.0/GreatSQL 8.0版本，暂不支持跨5.7和8.0之间的校验。
 
 - 不支持对非InnoDB引擎表的数据校验。
