@@ -2,9 +2,29 @@ package global
 
 import (
 	"fmt"
-	"gt-checksum/go-log/log"
+	"strings"
 	"sync"
+
+	"gt-checksum/go-log/log"
 )
+
+// ExtractCharsetFromDSN 从MySQL DSN连接字符串中提取charset参数值
+// 如果未指定charset，则默认返回utf8mb4
+func ExtractCharsetFromDSN(dsn string) string {
+	// 解析DSN格式：mysql|user:password@tcp(host:port)/dbname?charset=utf8mb4
+	// 或者标准DSN格式：user:password@tcp(host:port)/dbname?charset=utf8mb4
+	if strings.Contains(dsn, "?charset=") {
+		// 提取?charset=后面的部分
+		charsetPart := dsn[strings.Index(dsn, "?charset=")+9:]
+		// 检查是否有其他参数
+		if strings.Contains(charsetPart, "&") {
+			charsetPart = charsetPart[:strings.Index(charsetPart, "&")]
+		}
+		return strings.TrimSpace(charsetPart)
+	}
+	// 默认返回utf8mb4
+	return "utf8mb4"
+}
 
 /*
 初始化日志文件

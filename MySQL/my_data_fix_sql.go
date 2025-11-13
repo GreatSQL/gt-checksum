@@ -1043,7 +1043,8 @@ func WriteFixIfNeeded(datafix, fixFileName string, sqls []string, logThreadSeq i
 }
 
 // WriteFixIfNeededFile writes fix SQLs to an opened *os.File when datafix is "file"
-func WriteFixIfNeededFile(datafix string, sfile *os.File, sqls []string, logThreadSeq int64) error {
+// dstDSN 参数用于获取字符集设置
+func WriteFixIfNeededFile(datafix string, sfile *os.File, sqls []string, logThreadSeq int64, dstDSN ...string) error {
 	if !strings.EqualFold(datafix, "file") || sfile == nil || len(sqls) == 0 {
 		return nil
 	}
@@ -1052,6 +1053,33 @@ func WriteFixIfNeededFile(datafix string, sfile *os.File, sqls []string, logThre
 	filteredSqls := filterRedundantPrimaryKeyStatements(sqls)
 
 	w := bufio.NewWriter(sfile)
+	
+	// 检查文件是否为空，为空则添加必要的前置语句
+	fileInfo, err := sfile.Stat()
+	if err == nil && fileInfo.Size() == 0 {
+		// 从dstDSN参数中获取charset值，如果没有提供则使用默认值utf8mb4
+		charset := "utf8mb4"
+		if len(dstDSN) > 0 && dstDSN[0] != "" {
+			charset = global.ExtractCharsetFromDSN(dstDSN[0])
+		}
+		
+		// 添加必要的前置语句
+		preSqls := []string{
+			fmt.Sprintf("SET NAMES %s;", charset),
+			"SET FOREIGN_KEY_CHECKS=0;",
+			"SET UNIQUE_CHECKS=0;",
+		}
+		
+		for _, preSql := range preSqls {
+			if _, err := w.WriteString(preSql + "\n"); err != nil {
+				return err
+			}
+		}
+		
+		vlog := fmt.Sprintf("(%d) Added necessary SET statements to fix SQL file", logThreadSeq)
+		global.Wlog.Debug(vlog)
+	}
+	
 	for _, s := range filteredSqls {
 		ss := strings.TrimSpace(s)
 		if ss == "" {
