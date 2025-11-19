@@ -40,7 +40,7 @@ func (sp *SchedulePlan) sampSingleTableCheckProcessing(chanrowCount int, logThre
 
 	pods := Pod{Schema: sp.schema, Table: sp.table,
 		IndexColumn: "NULL",
-		CheckObject: "data", // 设置CheckObject字段为"data"
+		CheckObject: "struct", // 设置CheckObject字段为"struct"
 		DIFFS:       "no",
 		Datafix:     sp.datafixType,
 	}

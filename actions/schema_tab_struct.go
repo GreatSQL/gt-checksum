@@ -313,12 +313,13 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 			global.Wlog.Warn(vlog)
 			// 记录跳过的表
 			global.AddSkippedTable(sourceSchema, stcls.table, "data", "table does not exist")
-			// 创建跳过的数据校验记录
+			// 创建表结构检查记录，使用struct类型
 			pod := Pod{
 				Schema:      sourceSchema,
 				Table:       stcls.table,
-				CheckObject: "data",
-				DIFFS:       "skipped",
+				CheckObject: "struct",
+				DIFFS:       "yes",
+				Datafix:     stcls.datafix,
 			}
 			stcls.appendPod(pod)
 			continue // 跳过当前表，处理下一个表
@@ -338,15 +339,6 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 			global.Wlog.Warn(vlog)
 			// 记录跳过的表
 			global.AddSkippedTable(destSchema, stcls.table, "data", "target table does not exist")
-			// 创建跳过的数据校验记录
-			pod := Pod{
-				Schema:      destSchema,
-				Table:       stcls.table,
-				CheckObject: "data",
-				DIFFS:       "skipped",
-			}
-			stcls.appendPod(pod)
-			continue // 跳过当前表，处理下一个表
 		} else if err != nil {
 			vlog = fmt.Sprintf("(%d) %s Error checking target table existence %s.%s: %v", logThreadSeq, event, destSchema, stcls.table, err)
 			global.Wlog.Error(vlog)
@@ -360,14 +352,6 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 			if err != nil {
 				vlog = fmt.Sprintf("(%d) %s Error generating CREATE TABLE statement for %s.%s: %v", logThreadSeq, event, destSchema, stcls.table, err)
 				global.Wlog.Error(vlog)
-				// 创建跳过的数据校验记录
-				pod := Pod{
-					Schema:      destSchema,
-					Table:       stcls.table,
-					CheckObject: "data",
-					DIFFS:       "skipped",
-				}
-				stcls.appendPod(pod)
 				return nil, nil, err
 			}
 
@@ -378,10 +362,27 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 			vlog = fmt.Sprintf("(%d) %s Applying CREATE TABLE statement to %s.%s", logThreadSeq, event, destSchema, destTableName)
 			global.Wlog.Debug(vlog)
 			if err = mysql.WriteFixIfNeededFile(stcls.datafix, stcls.sfile, []string{createTableSql}, logThreadSeq, stcls.djdbc); err != nil {
+				vlog = fmt.Sprintf("(%d) %s Error writing CREATE TABLE statement to file: %v", logThreadSeq, event, err)
+				global.Wlog.Error(vlog)
 				return nil, nil, err
 			}
 
+			// 创建表示差异的Pod记录
+			pod := Pod{
+				Schema:      destSchema,
+				Table:       destTableName,
+				CheckObject: "struct",
+				DIFFS:       "yes",
+				Datafix:     stcls.datafix,
+			}
+			stcls.appendPod(pod)
+
 			abnormalTableList = append(abnormalTableList, fmt.Sprintf("%s.%s", destSchema, destTableName))
+
+			// 重要：将此表标记为已处理，以防止后续的索引比较逻辑生成额外的ALTER语句
+			tableKey := fmt.Sprintf("%s.%s", destSchema, destTableName)
+			stcls.skipIndexCheckTables = append(stcls.skipIndexCheckTables, tableKey)
+
 			continue
 		}
 
@@ -618,14 +619,15 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 			}
 		}
 
-		if stcls.checkRules.CheckObject == "data" {
+		// 移除对data类型的特殊处理，只处理struct类型的检查对象
+		if stcls.checkRules.CheckObject != "struct" {
 			if len(addColumn) == 0 && len(delColumn) == 0 {
 				// 使用目标端schema
 				newCheckTableList = append(newCheckTableList, fmt.Sprintf("%s.%s", destSchema, stcls.table))
 			} else {
 				// 检查是否包含INVISIBLE列的差异
 				hasInvisibleColumns := false
-				
+
 				// 检查addColumn中是否有INVISIBLE列
 				for _, col := range addColumn {
 					if colDef, exists := sourceColumnMap[col]; exists && len(colDef) > 0 {
@@ -640,31 +642,32 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 						}
 					}
 				}
-				
+
 				// 使用正确的源和目标数据库名
 				if hasInvisibleColumns {
 					// 设置全局变量标记存在INVISIBLE列差异
 					global.HasInvisibleColumnMismatch = true
 					// 对于包含INVISIBLE列差异的情况，使用更明确的警告信息
-					vlog = fmt.Sprintf("(%d) %s Structure mismatch with INVISIBLE columns %s.%s -> %s.%s - Extra: %v, Missing: %v. Data validation skipped.", 
+					vlog = fmt.Sprintf("(%d) %s Structure mismatch with INVISIBLE columns %s.%s -> %s.%s - Extra: %v, Missing: %v. Data validation skipped.",
 						logThreadSeq, event, sourceSchema, stcls.table, destSchema, stcls.table, addColumn, delColumn)
 					global.Wlog.Warn(vlog)
-					// 创建跳过的数据校验记录
+					// 创建表结构检查记录，使用struct类型
 					pod := Pod{
 						Schema:      destSchema,
 						Table:       stcls.table,
-						CheckObject: "data",
-						DIFFS:       "skipped",
+						CheckObject: "struct",
+						DIFFS:       "yes",
+						Datafix:     stcls.datafix,
 					}
 					stcls.appendPod(pod)
 				} else {
-					vlog = fmt.Sprintf("(%d) %s Structure mismatch %s.%s -> %s.%s - Extra: %v, Missing: %v", 
+					vlog = fmt.Sprintf("(%d) %s Structure mismatch %s.%s -> %s.%s - Extra: %v, Missing: %v",
 						logThreadSeq, event, sourceSchema, stcls.table, destSchema, stcls.table, addColumn, delColumn)
 					global.Wlog.Error(vlog)
 				}
 				abnormalTableList = append(abnormalTableList, fmt.Sprintf("%s.%s", destSchema, stcls.table))
 			}
-			// 当checkObject=data时，只进行数据校验，不进行表结构校验或生成修改表结构的SQL语句
+			// 无论checkObject设置如何，都只生成struct类型的记录，避免重复
 			continue
 		}
 
@@ -832,10 +835,10 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 					originalColName := getOriginalColumnName(v1)
 					originalLastColumn := getOriginalColumnName(lastcolumn)
 					// 检查目标表是否存在主键
-if mysqlDataFix, ok := dbf.DataAbnormalFix().(*mysql.MysqlDataAbnormalFixStruct); ok {
-	mysqlDataFix.CheckDestTableHasPrimaryKey(stcls.destDB, logThreadSeq)
-}
-modifySql := dbf.DataAbnormalFix().FixAlterColumnSqlDispos("modify", alterColumnData, k1, originalLastColumn, originalColName, logThreadSeq)
+					if mysqlDataFix, ok := dbf.DataAbnormalFix().(*mysql.MysqlDataAbnormalFixStruct); ok {
+						mysqlDataFix.CheckDestTableHasPrimaryKey(stcls.destDB, logThreadSeq)
+					}
+					modifySql := dbf.DataAbnormalFix().FixAlterColumnSqlDispos("modify", alterColumnData, k1, originalLastColumn, originalColName, logThreadSeq)
 					vlog = fmt.Sprintf("(%d) %s The column name of column %s of the source and target table %s.%s:[%s.%s] is the same, but the definition of the column is inconsistent, and a modify statement is generated, and the modification statement is {%v}", logThreadSeq, originalColName, stcls.schema, stcls.table, destSchema, stcls.table, modifySql)
 					global.Wlog.Warn(vlog)
 					alterSlice = append(alterSlice, modifySql)
@@ -851,10 +854,10 @@ modifySql := dbf.DataAbnormalFix().FixAlterColumnSqlDispos("modify", alterColumn
 				originalColName := getOriginalColumnName(v1)
 				originalLastColumn := getOriginalColumnName(lastcolumn)
 				// 检查目标表是否存在主键
-if mysqlDataFix, ok := dbf.DataAbnormalFix().(*mysql.MysqlDataAbnormalFixStruct); ok {
-	mysqlDataFix.CheckDestTableHasPrimaryKey(stcls.destDB, logThreadSeq)
-}
-addSql := dbf.DataAbnormalFix().FixAlterColumnSqlDispos("add", sourceColumnMap[v1], position, originalLastColumn, originalColName, logThreadSeq)
+				if mysqlDataFix, ok := dbf.DataAbnormalFix().(*mysql.MysqlDataAbnormalFixStruct); ok {
+					mysqlDataFix.CheckDestTableHasPrimaryKey(stcls.destDB, logThreadSeq)
+				}
+				addSql := dbf.DataAbnormalFix().FixAlterColumnSqlDispos("add", sourceColumnMap[v1], position, originalLastColumn, originalColName, logThreadSeq)
 				vlog = fmt.Sprintf("(%d) %s Missing column %s in %s.%s - ADD: %v", logThreadSeq, event, originalColName, destSchema, stcls.table, addSql)
 				global.Wlog.Warn(vlog)
 				alterSlice = append(alterSlice, addSql)
@@ -3077,28 +3080,28 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 					}
 				}
 				// 获取数据修复实例
-						fixInstance := dbf.DataAbnormalFix()
-						
-						// 对于MySQL数据库，尝试加载外键定义
-						if stcls.sourceDrive == "mysql" {
-							// 将接口转换为MySQL具体类型
-							if mysqlFix, ok := fixInstance.(*mysql.MysqlDataAbnormalFixStruct); ok {
-								// 使用源端数据库连接加载外键定义
-								err := mysqlFix.LoadForeignKeyDefinitions(stcls.sourceDB, logThreadSeq)
-								if err != nil {
-									vlog := fmt.Sprintf("(%d) Failed to load foreign key definitions for table %s.%s: %v", 
-										logThreadSeq, stcls.schema, stcls.table, err)
-									global.Wlog.Warn(vlog)
-								} else {
-									vlog := fmt.Sprintf("(%d) Successfully loaded %d foreign key definitions for table %s.%s", 
-										logThreadSeq, len(mysqlFix.ForeignKeyDefinitions), stcls.schema, stcls.table)
-									global.Wlog.Debug(vlog)
-								}
-							}
+				fixInstance := dbf.DataAbnormalFix()
+
+				// 对于MySQL数据库，尝试加载外键定义
+				if stcls.sourceDrive == "mysql" {
+					// 将接口转换为MySQL具体类型
+					if mysqlFix, ok := fixInstance.(*mysql.MysqlDataAbnormalFixStruct); ok {
+						// 使用源端数据库连接加载外键定义
+						err := mysqlFix.LoadForeignKeyDefinitions(stcls.sourceDB, logThreadSeq)
+						if err != nil {
+							vlog := fmt.Sprintf("(%d) Failed to load foreign key definitions for table %s.%s: %v",
+								logThreadSeq, stcls.schema, stcls.table, err)
+							global.Wlog.Warn(vlog)
+						} else {
+							vlog := fmt.Sprintf("(%d) Successfully loaded %d foreign key definitions for table %s.%s",
+								logThreadSeq, len(mysqlFix.ForeignKeyDefinitions), stcls.schema, stcls.table)
+							global.Wlog.Debug(vlog)
 						}
-						
-						// 执行索引修复SQL生成
-						cc = fixInstance.FixAlterIndexSqlExec(e, f, newIndexMap, stcls.sourceDrive, logThreadSeq)
+					}
+				}
+
+				// 执行索引修复SQL生成
+				cc = fixInstance.FixAlterIndexSqlExec(e, f, newIndexMap, stcls.sourceDrive, logThreadSeq)
 			} else {
 				// 即使索引名称相同，也要比较索引的具体内容
 				for k, sColumns := range smu {
@@ -3485,6 +3488,8 @@ func (stcls *schemaTable) Struct(dtabS []string, logThreadSeq, logThreadSeq2 int
 		event string
 		// 用于记录每个表的索引、分区和外键是否一致的映射
 		tableStructDiffs = make(map[string]bool)
+		// 用于跟踪已经添加过Pod记录的表，避免重复添加
+		existingTableKeys = make(map[string]bool)
 	)
 	event = fmt.Sprintf("[check_table_columns]")
 	fmt.Println("gt-checksum: Checking table structure")
@@ -3549,43 +3554,61 @@ func (stcls *schemaTable) Struct(dtabS []string, logThreadSeq, logThreadSeq2 int
 			}
 		}
 
-		// 为每个表创建新的Pod实例
-		pods := Pod{
-			Datafix:     stcls.datafix,
-			CheckObject: "struct",
-			Schema:      sourceSchema,
-			Table:       tableName,
-			DIFFS:       "no",
-		}
+		// 构建表的唯一键
+		tableKey := fmt.Sprintf("%s.%s", sourceSchema, tableName)
 
-		// 如果表在abnormal列表中，则标记为不一致
-		for _, abnormalTable := range abnormal {
-			if abnormalTable == i {
-				pods.DIFFS = "yes"
+		// 检查该表是否已在skipIndexCheckTables中（表示已被特殊处理过）
+		isProcessed := false
+		destTableKey := fmt.Sprintf("%s.%s", destSchema, tableName)
+		for _, skipTable := range stcls.skipIndexCheckTables {
+			if skipTable == destTableKey {
+				isProcessed = true
 				break
 			}
 		}
 
-		// 设置映射信息
-		if sourceSchema != destSchema {
-			// 记录映射关系到全局变量
-			mappingRelation := fmt.Sprintf("%s.%s:%s.%s", sourceSchema, tableName, destSchema, tableName)
-			exists := false
-			for _, existingMapping := range TableMappingRelations {
-				if existingMapping == mappingRelation {
-					exists = true
+		// 如果表已经被处理过，或者已经添加过Pod记录，则跳过
+		if !isProcessed && !existingTableKeys[tableKey] {
+			// 为每个表创建新的Pod实例
+			pods := Pod{
+				Datafix:     stcls.datafix,
+				CheckObject: "struct",
+				Schema:      sourceSchema,
+				Table:       tableName,
+				DIFFS:       "no",
+			}
+
+			// 如果表在abnormal列表中，则标记为不一致
+			for _, abnormalTable := range abnormal {
+				if abnormalTable == i {
+					pods.DIFFS = "yes"
 					break
 				}
 			}
-			if !exists {
-				TableMappingRelations = append(TableMappingRelations, mappingRelation)
-			}
 
 			// 设置映射信息
-			pods.MappingInfo = fmt.Sprintf("Schema: %s:%s", sourceSchema, destSchema)
-		}
+			if sourceSchema != destSchema {
+				// 记录映射关系到全局变量
+				mappingRelation := fmt.Sprintf("%s.%s:%s.%s", sourceSchema, tableName, destSchema, tableName)
+				exists := false
+				for _, existingMapping := range TableMappingRelations {
+					if existingMapping == mappingRelation {
+						exists = true
+						break
+					}
+				}
+				if !exists {
+					TableMappingRelations = append(TableMappingRelations, mappingRelation)
+				}
 
-		measuredDataPods = append(measuredDataPods, pods)
+				// 设置映射信息
+				pods.MappingInfo = fmt.Sprintf("Schema: %s:%s", sourceSchema, destSchema)
+			}
+
+			measuredDataPods = append(measuredDataPods, pods)
+			// 标记该表已添加Pod记录
+			existingTableKeys[tableKey] = true
+		}
 	}
 
 	// 创建一个自定义的结构体，用于在Index、Partitions和Foreign函数中捕获不一致的表
