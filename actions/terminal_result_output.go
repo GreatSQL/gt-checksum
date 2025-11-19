@@ -106,7 +106,7 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 				Schema:      skipped.Schema,
 				Table:       skipped.Table,
 				CheckObject: skipped.CheckObject,
-				DIFFS:       "skipped",
+				DIFFS:       "yes",
 			}
 			measuredDataPods = append(measuredDataPods, pod)
 			processedTables[skipped.Schema+"."+skipped.Table] = true
@@ -204,6 +204,10 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 		}
 
 		for _, pod := range measuredDataPods {
+			// 只显示CheckObject为struct的记录，过滤掉data类型的记录
+			if pod.CheckObject != "struct" {
+				continue
+			}
 			// 检查Table字段是否包含schema.table或schema:table格式
 			tableName := pod.Table
 			schemaName := pod.Schema
