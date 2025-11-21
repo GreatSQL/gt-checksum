@@ -266,13 +266,8 @@ func (dbpos *DBdataDispos) DataRowsAndColumnSliceDispos(tableData []map[string]i
 			val := values[i]
 			b, ok := val.([]byte)
 			if ok {
-				// 对于字符串类型，去除尾部空格
-				// 特殊处理ROUTINE_DEFINITION列，不去除尾部空格，保留原始格式
-				if col == "ROUTINE_DEFINITION" {
-					v = string(b)
-				} else {
-					v = strings.TrimRight(string(b), " ")
-				}
+				// 保留原始字符串，不去除尾部空格，确保数据比较的准确性
+				v = string(b)
 			} else {
 				v = val
 			}
@@ -323,8 +318,8 @@ func (dbpos *DBdataDispos) DataRowsDispos(tableData []string) ([]string, error) 
 			val := values[i]
 			b, ok := val.([]byte)
 			if ok {
-				// 对于字符串类型，去除尾部空格
-				v = strings.TrimRight(string(b), " ")
+				// 保留原始字符串，但确保不会重复添加空格
+							v = string(b)
 			} else {
 				v = val
 			}
