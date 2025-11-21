@@ -194,6 +194,8 @@ $ mv gt-checksum /usr/local/bin
 
 截止最新的v1.2.3版本，已知存在以下几个问题。
 
+- 当表存在varchar字段时且该字段末尾存在空格，该表如果没有任何可用索引，则可能导致校验结果不准确。这种情况下，可以通过添加合适的索引来解决问题。
+
 - 为了安全起见，当设置checkObject=data之外的其他值时，即便同时设置datafix=table，也不会直接在线完成修复，需要改成datafix=file，生成fix SQL后再由DBA手动完成。
 
 - 因元数据间存在较多不一致，目前主要支持MySQL 8.0/GreatSQL 8.0版本，暂不支持跨5.7和8.0之间的校验。
@@ -202,7 +204,7 @@ $ mv gt-checksum /usr/local/bin
 
 - 不支持数据库名、表名等数据对象名为**gtchecksum**。
 
-- 当添加的字段是主键/外键约束字段时，会多一个额外的`ADD PRIMARY KEY/ADD CONSTRAINT`操作，需要手动删掉。
+- 当添加的字段是主键/外键约束字段或包含索引时，会多一个额外的`ADD PRIMARY KEY/ADD CONSTRAINT/ADD KEY`操作，需要手动删掉，或者执行时加上"-f"强制忽略错误即可。
 
 - 当表的partition定义生成报告（Diffs=no）但不生成fixSQL（生成提示信息，没有具体SQL，需要DBA手动调整修复）。
 
