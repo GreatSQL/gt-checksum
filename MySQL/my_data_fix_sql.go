@@ -1081,11 +1081,13 @@ func WriteFixIfNeededFile(datafix string, sfile *os.File, sqls []string, logThre
 		}
 		
 		// 添加必要的前置语句
-		preSqls := []string{
-			fmt.Sprintf("SET NAMES %s;", charset),
-			"SET FOREIGN_KEY_CHECKS=0;",
-			"SET UNIQUE_CHECKS=0;",
-		}
+			preSqls := []string{
+				fmt.Sprintf("SET NAMES %s;", charset),
+				"SET FOREIGN_KEY_CHECKS=0;",
+				"SET UNIQUE_CHECKS=0;",
+				"SET sql_generate_invisible_primary_key=0;",
+				"SET sql_require_primary_key=0;",
+			}
 		
 		for _, preSql := range preSqls {
 			if _, err := w.WriteString(preSql + "\n"); err != nil {
