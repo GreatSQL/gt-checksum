@@ -83,15 +83,15 @@ func (or *OracleDataAbnormalFixStruct) FixInsertSqlExec(db *sql.DB, sourceDrive 
 					} else if strings.Contains(strings.ToUpper(dataType), "TIMESTAMP") {
 						tmpcolumnName = fmt.Sprintf("TO_TIMESTAMP('%s','YYYY-MM-DD HH24:MI:SS.FF')", v)
 					} else {
-						tmpcolumnName = fmt.Sprintf("'%v'", strings.TrimSpace(v))
+						tmpcolumnName = fmt.Sprintf("'%v'", v)
 					}
 				} else {
 					// 如果没有dataType字段，使用默认格式
-					tmpcolumnName = fmt.Sprintf("'%v'", strings.TrimSpace(v))
+					tmpcolumnName = fmt.Sprintf("'%v'", v)
 				}
 			} else {
 				// 如果索引越界，使用默认格式
-				tmpcolumnName = fmt.Sprintf("'%v'", strings.TrimSpace(v))
+					tmpcolumnName = fmt.Sprintf("'%v'", v)
 				vlog = fmt.Sprintf("(%d) Warning: Column index %d exceeds available column data for %s.%s",
 					logThreadSeq, k, targetSchema, or.Table)
 				global.Wlog.Warn(vlog)

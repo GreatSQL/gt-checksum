@@ -571,6 +571,8 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 					dtt, _ := idxcDest.TableIndexColumn().GeneratingQueryCriteria(ddb, logThreadSeq)
 
 					if aa.CheckMd5(stt) != aa.CheckMd5(dtt) {
+						// 注意：这里add包含的是源端有但目标端没有的数据（需要从源端读取并插入到目标端）
+						// del包含的是目标端有但源端没有的数据（需要从目标端删除）
 						add, del := aa.Arrcmp(strings.Split(stt, "/*go actions rowData*/"), strings.Split(dtt, "/*go actions rowData*/"))
 						stt, dtt = "", ""
 						vlog = fmt.Sprintf("(%d) Generating repair statements for %s.%s differences", logThreadSeq, c1.Schema, c1.Table)
@@ -822,8 +824,9 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 										var canMerge bool = true
 										
 										// 处理第一条记录，提取列名部分
-										dbf.RowData = batchAdd[0]
-										sqlstr, err := dbf.DataAbnormalFix().FixInsertSqlExec(ddb, sp.ddrive, logThreadSeq)
+														// batchAdd包含的是源端有但目标端没有的数据，直接使用
+														dbf.RowData = batchAdd[0]
+														sqlstr, err := dbf.DataAbnormalFix().FixInsertSqlExec(ddb, sp.ddrive, logThreadSeq)
 										if err != nil {
 											sp.getErr(fmt.Sprintf("dest: checksum table %s.%s generate INSERT sql error.", c1.Schema, c1.Table), err)
 											canMerge = false
@@ -843,9 +846,10 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 										}
 										
 										// 处理剩余记录，提取VALUES部分
-										for _, i := range batchAdd[1:] {
-											dbf.RowData = i
-											sqlstr, err := dbf.DataAbnormalFix().FixInsertSqlExec(ddb, sp.ddrive, logThreadSeq)
+														// batchAdd包含的是源端有但目标端没有的数据，直接使用这些源端数据
+														for _, i := range batchAdd[1:] {
+															dbf.RowData = i
+															sqlstr, err := dbf.DataAbnormalFix().FixInsertSqlExec(ddb, sp.ddrive, logThreadSeq)
 											if err != nil {
 												sp.getErr(fmt.Sprintf("dest: checksum table %s.%s generate INSERT sql error.", c1.Schema, c1.Table), err)
 												canMerge = false
@@ -929,9 +933,10 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 											}
 										} else {
 											// 如果无法合并，回退到单独执行
-											for _, i := range batchAdd {
-												dbf.RowData = i
-												sqlstr, err := dbf.DataAbnormalFix().FixInsertSqlExec(ddb, sp.ddrive, logThreadSeq)
+														// batchAdd包含的是源端有但目标端没有的数据，直接使用这些源端数据
+														for _, i := range batchAdd {
+															dbf.RowData = i
+															sqlstr, err := dbf.DataAbnormalFix().FixInsertSqlExec(ddb, sp.ddrive, logThreadSeq)
 												if err != nil {
 													sp.getErr(fmt.Sprintf("dest: checksum table %s.%s generate INSERT sql error.", c1.Schema, c1.Table), err)
 												}

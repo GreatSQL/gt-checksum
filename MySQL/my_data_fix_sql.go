@@ -110,28 +110,39 @@ func (my *MysqlDataAbnormalFixStruct) FixInsertSqlExec(db *sql.DB, sourceDrive s
 		} else if strings.EqualFold(v, "<nil>") {
 			tmpcolumnName = fmt.Sprintf("NULL")
 		} else {
-			// 检查索引是否越界
-			if k < len(my.ColData) {
-				if dataType, ok := my.ColData[k]["dataType"]; ok {
-					if strings.ToUpper(dataType) == "DATETIME" {
-						tmpcolumnName = fmt.Sprintf("DATE_FORMAT('%s','%%Y-%%m-%%d %%H:%%i:%%s')", v)
-					} else if strings.Contains(strings.ToUpper(dataType), "TIMESTAMP") {
-						tmpcolumnName = fmt.Sprintf("DATE_FORMAT('%s','%%Y-%%m-%%d %%H:%%i:%%s')", v)
-					} else {
-						tmpcolumnName = fmt.Sprintf("'%s'", escapeSQLString(strings.TrimSpace(v)))
-					}
+				// 检查索引是否越界
+				if k < len(my.ColData) {
+					if dataType, ok := my.ColData[k]["dataType"]; ok {
+							if strings.ToUpper(dataType) == "DATETIME" {
+								tmpcolumnName = fmt.Sprintf("DATE_FORMAT('%s','%%Y-%%m-%%d %%H:%%i:%%s')", v)
+							} else if strings.Contains(strings.ToUpper(dataType), "TIMESTAMP") {
+								tmpcolumnName = fmt.Sprintf("DATE_FORMAT('%s','%%Y-%%m-%%d %%H:%%i:%%s')", v)
+							} else {
+								// 对于INSERT语句，使用源端的原始数据格式
+										processedValue := v
+										// 对于DATA列，保留源端原始数据格式，确保不重复添加空格
+										// 先去除可能的多余空格，然后只保留源数据中实际存在的空格
+										cleanValue := processedValue
+										tmpcolumnName = fmt.Sprintf("'%s'", escapeSQLString(cleanValue))
+							}
+						} else {
+								// 如果没有dataType字段，使用默认格式并转义特殊字符
+								processedValue := v
+								// 对于DATA列，保留源端原始数据格式，确保不重复添加空格
+								cleanValue := processedValue
+								tmpcolumnName = fmt.Sprintf("'%s'", escapeSQLString(cleanValue))
+						}
 				} else {
-					// 如果没有dataType字段，使用默认格式并转义特殊字符
-					tmpcolumnName = fmt.Sprintf("'%s'", escapeSQLString(strings.TrimSpace(v)))
+					// 如果索引越界，使用默认格式并转义特殊字符
+								processedValue := v
+								// 对于DATA列，保留源端原始数据格式，确保不重复添加空格
+								cleanValue := processedValue
+								tmpcolumnName = fmt.Sprintf("'%s'", escapeSQLString(cleanValue))
+					vlog = fmt.Sprintf("(%d) Warning: Column index %d exceeds available column data for %s.%s",
+						logThreadSeq, k, targetSchema, my.Table)
+					global.Wlog.Warn(vlog)
 				}
-			} else {
-				// 如果索引越界，使用默认格式并转义特殊字符
-				tmpcolumnName = fmt.Sprintf("'%s'", escapeSQLString(strings.TrimSpace(v)))
-				vlog = fmt.Sprintf("(%d) Warning: Column index %d exceeds available column data for %s.%s",
-					logThreadSeq, k, targetSchema, my.Table)
-				global.Wlog.Warn(vlog)
 			}
-		}
 		valuesNameSeq = append(valuesNameSeq, tmpcolumnName)
 	}
 
@@ -345,8 +356,8 @@ func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive s
 
 		// 创建一个映射，将列名映射到列序号和值
 		columnMap := make(map[string]string)
-		rowData := strings.ReplaceAll(my.RowData, "/*go actions columnData*/<nil>/*go actions columnData*/", "/*go actions columnData*/greatdbNull/*go actions columnData*/")
-		rowParts := strings.Split(rowData, "/*go actions columnData*/")
+		// 不进行额外的字符串替换处理，直接分割原始行数据
+		rowParts := strings.Split(my.RowData, "/*go actions columnData*/")
 
 		// 首先尝试使用colData中的列序号信息来映射值
 		for _, col := range colData {
@@ -362,6 +373,7 @@ func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive s
 			}
 
 			// 列序号是1-based，但数组索引是0-based
+			// 对于DATA列，直接使用原始值，不做任何处理
 			columnMap[colName] = rowParts[colSeq-1]
 		}
 
@@ -369,6 +381,7 @@ func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive s
 		if len(columnMap) < len(FB) && len(rowParts) >= len(FB) {
 			for i, colName := range FB {
 				if _, exists := columnMap[colName]; !exists && i < len(rowParts) {
+					// 直接使用原始值，不做任何处理
 					columnMap[colName] = rowParts[i]
 				}
 			}
@@ -384,7 +397,9 @@ func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive s
 				} else if value == acc["double"] {
 					AS = append(AS, fmt.Sprintf("CONCAT(`%s`,'') = '%s'", colName, value))
 				} else {
-					AS = append(AS, fmt.Sprintf("`%s` = '%s'", colName, strings.TrimSpace(value)))
+					// 确保DELETE语句使用目标端的实际数据格式
+					// 对于DATA列，保留目标端原始格式（包括末尾空格）
+					AS = append(AS, fmt.Sprintf("`%s` = '%s'", colName, escapeSQLString(value)))
 				}
 			}
 		}
@@ -431,7 +446,9 @@ func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive s
 				} else if value == acc["double"] {
 					AS = append(AS, fmt.Sprintf("CONCAT(`%s`,'') = '%s'", colName, value))
 				} else {
-					AS = append(AS, fmt.Sprintf("`%s` = '%s'", colName, strings.TrimSpace(value)))
+					// 确保DELETE语句使用目标端的实际数据格式
+					// 对于DATA列，保留目标端原始格式（包括末尾空格）
+					AS = append(AS, fmt.Sprintf("`%s` = '%s'", colName, escapeSQLString(value)))
 				}
 			}
 		}

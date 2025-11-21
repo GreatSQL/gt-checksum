@@ -55,39 +55,41 @@ func (csts CheckSumTypeStruct) Arrcmap(src, dest []string) []string {
    数据校验并输出差异性数据
 */
 func (csts CheckSumTypeStruct) Arrcmp(src []string, dest []string) ([]string, []string) { //对比数据
-	msrc := make(map[string]byte) //按目数组建索引
-	mall := make(map[string]byte) //源+目所有元素建索引  并集
-	var set []string              //交集
-	//1.目数组建立map
-	for _, v := range dest {
-		if v != "" {
-			msrc[v] = 0
-			mall[v] = 0
-		}
-	}
-	//2.源数组中，存不进去，即重复元素，所有存不进去的集合就是并集
+	// 创建源端和目标端数据的映射
+	srcMap := make(map[string]struct{}) // 源端数据映射
+	destMap := make(map[string]struct{}) // 目标端数据映射
+	
+	// 填充源端数据映射
 	for _, v := range src {
 		if v != "" {
-			if val, ok := mall[v]; ok && val == 0 {
-				set = append(set, v)
-			}
-			mall[v] = 1
+			srcMap[v] = struct{}{}
 		}
 	}
-	//3.遍历交集，在并集中找，找到就从并集中删，删完后就是补集（即并-交=所有变化的元素）
-	for _, v := range set {
-		delete(mall, v)
+	
+	// 填充目标端数据映射
+	for _, v := range dest {
+		if v != "" {
+			destMap[v] = struct{}{}
+		}
 	}
-	//4.此时，mall是补集，所有元素去源中找，找到就是删除的，找不到的必定能在目数组中找到，即新加的
+	
+	// 计算差异
 	var added, deleted []string
-	for v, _ := range mall {
-		_, exist := msrc[v]
-		if exist {
-			deleted = append(deleted, v)
-		} else {
+	
+	// added: 源端有但目标端没有的数据（需要从源端读取并插入到目标端）
+	for v := range srcMap {
+		if _, exists := destMap[v]; !exists {
 			added = append(added, v)
 		}
 	}
+	
+	// deleted: 目标端有但源端没有的数据（需要从目标端删除）
+	for v := range destMap {
+		if _, exists := srcMap[v]; !exists {
+			deleted = append(deleted, v)
+		}
+	}
+	
 	return added, deleted
 }
 
