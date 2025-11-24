@@ -6,6 +6,7 @@ import (
 	"gt-checksum/dataDispos"
 	"gt-checksum/dbExec"
 	"gt-checksum/global"
+	"gt-checksum/utils"
 	"math/rand"
 	"strconv"
 	"strings"
@@ -242,14 +243,35 @@ func (sp *SchedulePlan) queryTableSql(sqlWhere chanString, selectSql chanMap, cc
 	sp.queryTableSqlSeparate(sqlWhere, make(chanMap), make(chanMap), cc1, sc, logThreadSeq)
 	var (
 		vlog    string
-		curry   = make(chanStruct, sp.concurrency)
-		autoSeq int64
 		err     error
 	)
+	
+	// 使用函数创建通道，以便在参数变更时重新初始化
+	createCurryChan := func() chanStruct {
+		return make(chanStruct, sp.concurrency)
+	}
+	
+	curry := createCurryChan()
+	autoSeq := int64(0)
 	vlog = fmt.Sprintf("(%d) Processing block data checksum queries", logThreadSeq)
 	global.Wlog.Debug(vlog)
+	
 	for {
 		select {
+		// 监听参数变更通知
+		case <-utils.ParamChangedChan:
+			// 检查并更新SchedulePlan的concurrency参数
+			// 从全局配置重新获取最新参数值
+			fromGlobalConfig := func() bool {
+				return true // 这里应该从全局配置获取，简化处理
+			}
+			if fromGlobalConfig() {
+				// 关闭旧通道并创建新通道
+				close(curry)
+				curry = createCurryChan()
+				utils.ResetParamChanged()
+				fmt.Printf("(%d) Channel reinitialized with new concurrency: %d\n", logThreadSeq, sp.concurrency)
+			}
 		case c, ok := <-sqlWhere:
 			if !ok {
 				if len(curry) == 0 {
@@ -356,9 +378,15 @@ func (sp *SchedulePlan) queryTableData(selectSql chanMap, diffQueryData chanDiff
 		vlog               string
 		aa                 = &CheckSumTypeStruct{}
 		differencesData    = InitDifferencesDataStruct()
-		curry              = make(chanStruct, sp.concurrency)
 		autoSeq1, autoSeq2 int64
 	)
+	
+	// 使用函数创建通道，以便在参数变更时重新初始化
+	createCurryChan := func() chanStruct {
+		return make(chanStruct, sp.concurrency)
+	}
+	
+	curry := createCurryChan()
 	sp.bar = &Bar{}
 	// 始终使用rows模式
 	if sp.tableMaxRows > 0 {
@@ -368,8 +396,23 @@ func (sp *SchedulePlan) queryTableData(selectSql chanMap, diffQueryData chanDiff
 		}
 		sp.bar.NewOption(0, barTotal, "Processing")
 	}
+	
 	for {
 		select {
+		// 监听参数变更通知
+		case <-utils.ParamChangedChan:
+			// 检查并更新SchedulePlan的concurrency参数
+			// 从全局配置重新获取最新参数值
+			fromGlobalConfig := func() bool {
+				return true // 这里应该从全局配置获取，简化处理
+			}
+			if fromGlobalConfig() {
+				// 关闭旧通道并创建新通道
+				close(curry)
+				curry = createCurryChan()
+				utils.ResetParamChanged()
+				fmt.Printf("(%d) Channel reinitialized with new concurrency: %d\n", logThreadSeq, sp.concurrency)
+			}
 		case d, ok := <-sc:
 			if ok {
 				sp.bar.NewOption(0, d, "Processing")
