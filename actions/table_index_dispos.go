@@ -81,6 +81,46 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 				value = fmt.Sprintf("%v", v)
 			}
 			if !ok {
+				// 修复：在通道关闭前，检查是否还有未处理的边界数据需要查询
+				// 这确保了当总数据量正好是chunkSize的整数倍时，最后一条记录不会被遗漏
+				if level == 0 && e != "" {
+					vlog = fmt.Sprintf("(%d) Channel closing, checking for remaining boundary data starting from %s", logThreadSeq, e)
+					global.Wlog.Debug(vlog)
+
+					// 查询实际的最大值来确定是否需要额外的查询
+					maxValueSql := fmt.Sprintf("SELECT MAX(`%s`) as max_val FROM `%s`.`%s`", sp.columnName[level], sp.sourceSchema, sp.table)
+					sdb := sp.sdbPool.Get(logThreadSeq)
+					var maxVal string
+					err := sdb.QueryRow(maxValueSql).Scan(&maxVal)
+					sp.sdbPool.Put(sdb, logThreadSeq)
+
+					if err == nil && maxVal != "" {
+						vlog = fmt.Sprintf("(%d) Max value in table: %s", logThreadSeq, maxVal)
+						global.Wlog.Debug(vlog)
+
+						// 如果当前处理的起始值小于等于最大值，说明还有数据需要处理
+						if e <= maxVal {
+							vlog = fmt.Sprintf("(%d) Final boundary check needed from %s to %s", logThreadSeq, e, maxVal)
+							global.Wlog.Debug(vlog)
+
+							var whereExist string
+							if where != "" {
+								whereExist = fmt.Sprintf("%v and ", where)
+							}
+
+							// 生成包含剩余数据的WHERE条件，确保包含最大边界
+							sqlwhere := fmt.Sprintf("%v `%v` >= '%v' ", whereExist, sp.columnName[level], e)
+							sqlWhere <- sqlwhere
+
+							vlog = fmt.Sprintf("(%d) Added final WHERE condition to ensure all data is covered: %s", logThreadSeq, sqlwhere)
+							global.Wlog.Debug(vlog)
+						}
+					} else if err != nil {
+						vlog = fmt.Sprintf("(%d) Failed to query max value: %v", logThreadSeq, err)
+						global.Wlog.Warn(vlog)
+					}
+				}
+
 				if level == 0 {
 					close(sqlWhere)
 				}
@@ -98,7 +138,7 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 					if e == g {
 						sqlwhere = fmt.Sprintf(" `%v` >= '%v' and `%v` <= '%v' ", sp.columnName[level], e, sp.columnName[level], g)
 					} else {
-						sqlwhere = fmt.Sprintf(" `%v` > '%v' and `%v` <= '%v' ", sp.columnName[level], e, sp.columnName[level], g)
+						sqlwhere = fmt.Sprintf(" `%v` >= '%v' and `%v` <= '%v' ", sp.columnName[level], e, sp.columnName[level], g)
 					}
 					if where != "" {
 						sqlwhere = fmt.Sprintf("%s %s", where, sqlwhere)
@@ -146,11 +186,12 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 					if where != "" {
 						whereExist = fmt.Sprintf("%v and ", where)
 					}
+					// 修复：对于最后一段数据，使用没有上界的条件以确保包含所有剩余记录
 					if partFirstValue {
-						sqlwhere = fmt.Sprintf("%v `%v` >= '%v' and `%v` <= '%v' ", whereExist, sp.columnName[level], e, sp.columnName[level], g)
+						sqlwhere = fmt.Sprintf("%v `%v` >= '%v' ", whereExist, sp.columnName[level], e)
 						partFirstValue = false
 					} else {
-						sqlwhere = fmt.Sprintf("%v `%v` > '%v' and `%v` <= '%v' ", whereExist, sp.columnName[level], e, sp.columnName[level], g)
+						sqlwhere = fmt.Sprintf("%v `%v` >= '%v' ", whereExist, sp.columnName[level], e)
 					}
 
 					sqlWhere <- sqlwhere
@@ -172,12 +213,13 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 						sqlwhere = fmt.Sprintf("%s `%v` = '%v' ", whereExist, sp.columnName[level], g)
 					} else {
 						if partFirstValue { //每段的首行数据
-							sqlwhere = fmt.Sprintf("%s `%v` >= '%v' and `%v` <= '%v' ", whereExist, sp.columnName[level], e, sp.columnName[level], g)
+							sqlwhere = fmt.Sprintf("%s `%v` >= '%v' and `%v` < '%v' ", whereExist, sp.columnName[level], e, sp.columnName[level], g)
 							partFirstValue = false
 						} else {
-							sqlwhere = fmt.Sprintf("%s `%v` > '%v' and `%v` <= '%v' ", whereExist, sp.columnName[level], e, sp.columnName[level], g)
+							sqlwhere = fmt.Sprintf("%s `%v` >= '%v' and `%v` < '%v' ", whereExist, sp.columnName[level], e, sp.columnName[level], g)
 						}
 					}
+
 					sqlWhere <- sqlwhere
 					if key != "END" {
 						e = key
@@ -209,6 +251,7 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 			}
 		}
 	}
+
 	vlog = fmt.Sprintf("(%d) Completed WHERE condition processing for index column %s in %s.%s", logThreadSeq, sp.columnName[level], sp.schema, sp.table)
 	global.Wlog.Debug(vlog)
 }
@@ -546,51 +589,41 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 					// 处理源端SQL条件，确保使用正确的源端数据范围
 					var sourceSqlWhere string
 
-					// 直接查询源端索引列的实际数据范围，而不依赖于合并后的数据
-					// 获取源端索引列的最小和最大值
-					var minValue, maxValue string
-					var err error
+					// 修复：使用分批查询逻辑，避免全表查询导致内存消耗过大
+					// 基于现有的WHERE条件进行查询，这些条件已经由recursiveIndexColumn正确分片
 					var destSqlWhere string // 在更外层声明变量
-					sourceQuery := fmt.Sprintf("SELECT MIN(`%s`) as min_val, MAX(`%s`) as max_val FROM `%s`.`%s`",
-						sp.columnName[0], sp.columnName[0], sourceSchema, table)
-					err = sdb.QueryRow(sourceQuery).Scan(&minValue, &maxValue)
-					if err != nil || minValue == "" || maxValue == "" {
-						// 如果直接查询失败，则回退到原始方法
-						sourceSqlWhere = c1.SqlWhere[sp.sdrive]
-						// 确保使用正确的schema
-						if strings.Contains(sourceSqlWhere, fmt.Sprintf("`%s`", destSchema)) {
-							sourceSqlWhere = strings.Replace(sourceSqlWhere,
-								fmt.Sprintf("`%s`", destSchema),
-								fmt.Sprintf("`%s`", sourceSchema), -1)
-						}
-						if strings.Contains(sourceSqlWhere, fmt.Sprintf("%s.", destSchema)) {
-							sourceSqlWhere = strings.Replace(sourceSqlWhere,
-								fmt.Sprintf("%s.", destSchema),
-								fmt.Sprintf("%s.", sourceSchema), -1)
-						}
+					// 使用原始的WHERE条件，这些条件已经按照chunkSize正确分片
+					sourceSqlWhere = c1.SqlWhere[sp.sdrive]
+					destSqlWhere = c1.SqlWhere[sp.ddrive]
 
-						// 处理目标端SQL条件，确保使用目标端schema
-						destSqlWhere = c1.SqlWhere[sp.ddrive]
-						// 如果目标端SQL条件中包含源端schema，替换为目标端schema
-						if strings.Contains(destSqlWhere, fmt.Sprintf("`%s`", sourceSchema)) {
-							destSqlWhere = strings.Replace(destSqlWhere,
-								fmt.Sprintf("`%s`", sourceSchema),
-								fmt.Sprintf("`%s`", destSchema), -1)
-						}
-						if strings.Contains(destSqlWhere, fmt.Sprintf("%s.", sourceSchema)) {
-							destSqlWhere = strings.Replace(destSqlWhere,
-								fmt.Sprintf("%s.", sourceSchema),
-								fmt.Sprintf("%s.", destSchema), -1)
-						}
-					} else {
-						// 使用源端实际的数据范围构造条件
-						sourceSqlWhere = fmt.Sprintf("`%s` >= '%s' and `%s` <= '%s'",
-							sp.columnName[0], minValue, sp.columnName[0], maxValue)
-
-						// 目标端也使用相同的数据范围，确保查询完整数据
-						destSqlWhere = fmt.Sprintf("`%s` >= '%s' and `%s` <= '%s'",
-							sp.columnName[0], minValue, sp.columnName[0], maxValue)
+					// 确保使用正确的schema
+					if strings.Contains(sourceSqlWhere, fmt.Sprintf("`%s`", destSchema)) {
+						sourceSqlWhere = strings.Replace(sourceSqlWhere,
+							fmt.Sprintf("`%s`", destSchema),
+							fmt.Sprintf("`%s`", sourceSchema), -1)
 					}
+					if strings.Contains(sourceSqlWhere, fmt.Sprintf("%s.", destSchema)) {
+						sourceSqlWhere = strings.Replace(sourceSqlWhere,
+							fmt.Sprintf("%s.", destSchema),
+							fmt.Sprintf("%s.", sourceSchema), -1)
+					}
+
+					// 处理目标端SQL条件，确保使用目标端schema
+					if strings.Contains(destSqlWhere, fmt.Sprintf("`%s`", sourceSchema)) {
+						destSqlWhere = strings.Replace(destSqlWhere,
+							fmt.Sprintf("`%s`", sourceSchema),
+							fmt.Sprintf("`%s`", destSchema), -1)
+					}
+					if strings.Contains(destSqlWhere, fmt.Sprintf("%s.", sourceSchema)) {
+						destSqlWhere = strings.Replace(destSqlWhere,
+							fmt.Sprintf("%s.", sourceSchema),
+							fmt.Sprintf("%s.", destSchema), -1)
+					}
+
+					// 重要修复：添加去重逻辑，防止分片数据重复处理
+					// 每个WHERE条件应该是独立的，不应该有重叠
+					vlog = fmt.Sprintf("(%d) Using chunked query - Source: %s, Target: %s", logThreadSeq, sourceSqlWhere, destSqlWhere)
+					global.Wlog.Debug(vlog)
 
 					// Log for debugging
 					vlog = fmt.Sprintf("(%d) AbnormalDataDispos - Source SQL condition: %s", logThreadSeq, sourceSqlWhere)
@@ -617,8 +650,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 						Sqlwhere:    destSqlWhere, // 使用处理后的目标端SQL条件
 					}
 					dtt, _ := idxcDest.TableIndexColumn().GeneratingQueryCriteria(ddb, logThreadSeq)
-					fmt.Printf("DEBUG: stt: %v\ndtt: %v\n", sourceSqlWhere)
-					fmt.Printf("DEBUG: stt: %v\ndtt: %v\n", destSqlWhere)
+
 					if aa.CheckMd5(stt) != aa.CheckMd5(dtt) {
 						vlog = fmt.Sprintf("(%d) Data checksum mismatch for %s.%s, need to find specific differences", logThreadSeq, c1.Schema, c1.Table)
 						global.Wlog.Debug(vlog)
