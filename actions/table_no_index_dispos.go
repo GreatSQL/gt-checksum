@@ -5,8 +5,12 @@ import (
 	"gt-checksum/dbExec"
 	"gt-checksum/global"
 	"strings"
+	"sync"
 	"time"
 )
+
+// 包级变量，用于存储已处理的SQL语句，实现跨函数调用的去重
+var globalSqlMap sync.Map
 
 /*
 Perform MD5 verification on different data rows and remove duplicate values
@@ -14,6 +18,7 @@ Perform MD5 verification on different data rows and remove duplicate values
 func (sp *SchedulePlan) AbDataMd5Unique(md5Chan <-chan map[string]string, logThreadSeq int64) chan map[string]string {
 	var A = make(chan map[string]string, 1)
 	var tmpAnDateMap = make(map[string]string)
+	var md5Mutex sync.Mutex // 添加互斥锁保护并发访问
 	go func() {
 		for {
 			select {
@@ -23,6 +28,7 @@ func (sp *SchedulePlan) AbDataMd5Unique(md5Chan <-chan map[string]string, logThr
 					close(A)
 					return
 				} else {
+					md5Mutex.Lock() // 加锁保护map操作
 					for k, v := range i {
 						if l, ok := tmpAnDateMap[k]; ok && v != l {
 							delete(tmpAnDateMap, k)
@@ -30,6 +36,7 @@ func (sp *SchedulePlan) AbDataMd5Unique(md5Chan <-chan map[string]string, logThr
 							tmpAnDateMap[k] = v
 						}
 					}
+					md5Mutex.Unlock() // 解锁
 				}
 			}
 		}
@@ -209,7 +216,10 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 								return
 							}
 							if sqlstr != "" {
-								sqlStrExec <- sqlstr
+								// 使用sqlstr作为键进行去重，确保同一SQL语句只被处理一次
+						if _, loaded := globalSqlMap.LoadOrStore(sqlstr, true); !loaded {
+							sqlStrExec <- sqlstr
+						}
 							}
 							displayTableName = sp.getDisplayTableName()
 							vlog = fmt.Sprintf("(%d) DELETE repair statements generated for table %s", logThreadSeq, displayTableName)
@@ -256,7 +266,10 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 								return
 							}
 							if sqlstr != "" {
-								sqlStrExec <- sqlstr
+								// 使用sqlstr作为键进行去重，确保同一SQL语句只被处理一次
+						if _, loaded := globalSqlMap.LoadOrStore(sqlstr, true); !loaded {
+							sqlStrExec <- sqlstr
+						}
 							}
 							displayTableName = sp.getDisplayTableName()
 							vlog = fmt.Sprintf("(%d) INSERT repair statements generated for table %s", logThreadSeq, displayTableName)

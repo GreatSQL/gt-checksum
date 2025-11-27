@@ -136,11 +136,11 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 	if rc.FirstL.Rules != nil {
 		if rc.SecondaryL.RulesV.ChanRowCount, err = rc.FirstL.Rules.Key("chunkSize").Int(); err != nil {
 			fmt.Println("Using default value '1000' for option chunkSize")
-			rc.SecondaryL.RulesV.ChanRowCount = 10000
+			rc.SecondaryL.RulesV.ChanRowCount = 1000
 		}
 	} else {
 		fmt.Println("Using default value '1000' for option chunkSize")
-		rc.SecondaryL.RulesV.ChanRowCount = 10000
+		rc.SecondaryL.RulesV.ChanRowCount = 1000
 	}
 	if rc.FirstL.Rules != nil {
 		if rc.SecondaryL.RulesV.QueueSize, err = rc.FirstL.Rules.Key("queueSize").Int(); err != nil {
