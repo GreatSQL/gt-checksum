@@ -75,6 +75,7 @@ func (f FileOperate) ConcurrencyWriteFile(writeString []string) ([]string, error
 func ProcessChunk(chunk []byte, linesPool *sync.Pool, stringPool *sync.Pool, m map[string]string, c chan<- map[string]string) {
 	var (
 		wg2 sync.WaitGroup
+		processedMD5 sync.Map // 使用sync.Map进行线程安全的去重
 	)
 	logs := stringPool.Get().(string)
 	logs = string(chunk)
@@ -100,8 +101,10 @@ func ProcessChunk(chunk []byte, linesPool *sync.Pool, stringPool *sync.Pool, m m
 				md5Sum := logSlice[0]
 				sqlType := logSlice[1]
 				if v, ok := m[md5Sum]; ok && v == sqlType {
-					//fmt.Println(logSlice[2])
-					c <- map[string]string{logSlice[2]: v}
+					// 使用md5Sum作为键进行去重，确保同一行数据只被处理一次
+					if _, loaded := processedMD5.LoadOrStore(md5Sum, true); !loaded {
+						c <- map[string]string{logSlice[2]: v}
+					}
 				}
 			}
 		}(i*chunkSize, int(math.Min(float64((i+1)*chunkSize), float64(len(logsSlice)))))

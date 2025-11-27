@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // 跟踪已经在添加列时设置了主键的列
@@ -1059,6 +1060,9 @@ func WriteFixIfNeeded(datafix, fixFileName string, sqls []string, logThreadSeq i
 	return nil
 }
 
+// 包级变量，用于存储已写入文件的SQL语句，实现跨函数调用的去重
+var writtenSqlMap sync.Map
+
 // WriteFixIfNeededFile writes fix SQLs to an opened *os.File when datafix is "file"
 // dstDSN 参数用于获取字符集设置
 func WriteFixIfNeededFile(datafix string, sfile *os.File, sqls []string, logThreadSeq int64, dstDSN ...string) error {
@@ -1068,6 +1072,21 @@ func WriteFixIfNeededFile(datafix string, sfile *os.File, sqls []string, logThre
 
 	// 过滤多余的ADD PRIMARY KEY语句
 	filteredSqls := filterRedundantPrimaryKeyStatements(sqls)
+	
+	// 过滤重复的SQL语句
+	var uniqueSqls []string
+	for _, sql := range filteredSqls {
+		// 去除首尾空白字符进行比较
+		trimmedSql := strings.TrimSpace(sql)
+		if trimmedSql == "" {
+			continue
+		}
+		
+		// 使用sync.Map检查SQL是否已存在
+		if _, loaded := writtenSqlMap.LoadOrStore(trimmedSql, true); !loaded {
+			uniqueSqls = append(uniqueSqls, sql)
+		}
+	}
 
 	w := bufio.NewWriter(sfile)
 	
@@ -1099,7 +1118,7 @@ func WriteFixIfNeededFile(datafix string, sfile *os.File, sqls []string, logThre
 		global.Wlog.Debug(vlog)
 	}
 	
-	for _, s := range filteredSqls {
+	for _, s := range uniqueSqls {
 		ss := strings.TrimSpace(s)
 		if ss == "" {
 			continue

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // 解析binlog event生成回滚的sql语句
@@ -93,25 +94,30 @@ func DifferencesDataDispos(SourceItemAbnormalDataChan chan SourceItemAbnormalDat
 }
 
 /*
-针对差异数据，生成修复语句，并根据修复方式进行处理,通过对字符串做hash值，使用map进行group by去重
+针对差异数据，生成修复语句，并根据修复方式进行处理,通过对字符串做hash值，使用sync.Map进行并发安全的去重
 */
 func DataFixSql(addChan chan string, delChan chan string) {
 	var (
-		delHashMap = make(map[string]string)
-		addHashMap = make(map[string]string)
+		delHashMap = sync.Map{} // 使用sync.Map确保并发安全
+		addHashMap = sync.Map{} // 使用sync.Map确保并发安全
 	)
 
 	for {
 		select {
 		case del := <-delChan:
 			delStr := CheckSum().CheckSha1(del)
-			if _, ok := delHashMap[delStr]; !ok {
-				delHashMap[delStr] = ""
-			}
+			// 使用sync.Map的Store方法安全地存储
+			delHashMap.LoadOrStore(delStr, del)
+			// 同时使用全局SQL去重Map，确保与其他去重机制一致
+			globalSqlMap.LoadOrStore(del, true)
 		case add := <-addChan:
 			addStr := CheckSum().CheckSha1(add)
-			if _, ok := delHashMap[addStr]; !ok {
-				addHashMap[addStr] = ""
+			// 检查是否在delete集合中存在
+			if _, loaded := delHashMap.Load(addStr); !loaded {
+				// 使用sync.Map的Store方法安全地存储
+				addHashMap.LoadOrStore(addStr, add)
+				// 同时使用全局SQL去重Map，确保与其他去重机制一致
+				globalSqlMap.LoadOrStore(add, true)
 			}
 		}
 	}
