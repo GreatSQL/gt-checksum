@@ -78,7 +78,7 @@ func MemoryMonitor(memoryLimit string, config *inputArg.ConfigParameter) {
 				// 检查参数是否已经是最小值
 				if config.SecondaryL.RulesV.ParallelThds <= 1 && config.SecondaryL.RulesV.QueueSize <= 1 && config.SecondaryL.RulesV.ChanRowCount <= 100 {
 					// 所有参数已降至最小值，仍然内存超限，退出程序
-					fmt.Printf("\nFatal error: Current memory usage %dMB has reached the limit (%dMB). Parameters already at minimum values. Exiting...\n", currentMB, limitMB)
+					fmt.Printf("\nFatal error: Current memory usage %dMB has reached the limit (%dMB). Parameters already at minimal values. Exiting...\n", currentMB, limitMB)
 					os.Exit(1)
 				}
 
