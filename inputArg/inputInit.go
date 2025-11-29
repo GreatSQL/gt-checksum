@@ -127,3 +127,8 @@ func replaceDateTimeFormat(filename string) string {
 	result = strings.ReplaceAll(result, "%T", now.Format("15:04:05"))
 	return result
 }
+
+// GetGlobalConfig 返回全局配置的引用
+func GetGlobalConfig() *ConfigParameter {
+	return &rc
+}

@@ -6,6 +6,7 @@ import (
 	"gt-checksum/dataDispos"
 	"gt-checksum/dbExec"
 	"gt-checksum/global"
+	"gt-checksum/inputArg"
 	"gt-checksum/utils"
 	"math/rand"
 	"strconv"
@@ -303,17 +304,24 @@ func (sp *SchedulePlan) queryTableSql(sqlWhere chanString, selectSql chanMap, cc
 		select {
 		// 监听参数变更通知
 		case <-utils.ParamChangedChan:
-			// 检查并更新SchedulePlan的concurrency参数
+			// 检查并更新SchedulePlan的参数
 			// 从全局配置重新获取最新参数值
 			fromGlobalConfig := func() bool {
-				return true // 这里应该从全局配置获取，简化处理
+				// 获取全局配置的最新参数值
+				globalConfig := inputArg.GetGlobalConfig()
+				if globalConfig != nil {
+					sp.concurrency = globalConfig.SecondaryL.RulesV.ParallelThds
+					sp.chunkSize = globalConfig.SecondaryL.RulesV.ChanRowCount
+					return true
+				}
+				return false
 			}
 			if fromGlobalConfig() {
 				// 关闭旧通道并创建新通道
 				close(curry)
 				curry = createCurryChan()
 				utils.ResetParamChanged()
-				fmt.Printf("(%d) Channel reinitialized with new concurrency: %d\n", logThreadSeq, sp.concurrency)
+				fmt.Printf("(%d) Parameters updated - concurrency: %d, chunkSize: %d\n", logThreadSeq, sp.concurrency, sp.chunkSize)
 			}
 		case c, ok := <-sqlWhere:
 			if !ok {
@@ -444,17 +452,24 @@ func (sp *SchedulePlan) queryTableData(selectSql chanMap, diffQueryData chanDiff
 		select {
 		// 监听参数变更通知
 		case <-utils.ParamChangedChan:
-			// 检查并更新SchedulePlan的concurrency参数
+			// 检查并更新SchedulePlan的参数
 			// 从全局配置重新获取最新参数值
 			fromGlobalConfig := func() bool {
-				return true // 这里应该从全局配置获取，简化处理
+				// 获取全局配置的最新参数值
+				globalConfig := inputArg.GetGlobalConfig()
+				if globalConfig != nil {
+					sp.concurrency = globalConfig.SecondaryL.RulesV.ParallelThds
+					sp.chunkSize = globalConfig.SecondaryL.RulesV.ChanRowCount
+					return true
+				}
+				return false
 			}
 			if fromGlobalConfig() {
 				// 关闭旧通道并创建新通道
 				close(curry)
 				curry = createCurryChan()
 				utils.ResetParamChanged()
-				fmt.Printf("(%d) Channel reinitialized with new concurrency: %d\n", logThreadSeq, sp.concurrency)
+				fmt.Printf("(%d) Parameters updated - concurrency: %d, chunkSize: %d\n", logThreadSeq, sp.concurrency, sp.chunkSize)
 			}
 		case d, ok := <-sc:
 			if ok {
