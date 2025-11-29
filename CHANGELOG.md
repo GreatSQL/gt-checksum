@@ -1,5 +1,5 @@
 ## 1.2.3
-- 增加内存使用量限制，默认1024MB，当内存使用量超过该值时，会自动将影响性能的参数ParallelThds和QueueSize减半，并进行GC操作
+- 增加内存使用量限制，且当内存使用量超过该值时，会自动调低parallelThds,queueSize,chunkSize这几个影响性能的参数，并进行GC操作
 - 增加数据库名映射功能，支持将源端数据库名映射为目标端不同名数据库，例如"db1.*:db2.*"
 - 删除checkMode和ratio参数，也即总是校验所有数据，不再支持仅采样和仅查总数两种校验方式
 - 删除ScheckMod参数，也即总是严格校验表结构，不只是校验列名
@@ -32,6 +32,8 @@
   - 修复了testcase脚本错误
   - 修复了因为表结构CHARSET&COLLATE或COMMENT不一致导致执行时可能报告字段不存在的问题
   - 修复了checkObject=data时,如果指定的tables不存在时可能被hang住的问题
+  - 修复了字符串列末尾多一个空格可能导致校验不准的问题
+  - 修复了当不一致的数据量超过1万行时，可能校验不正确且生成fixSQL也不正确的问题
 
 ## 1.2.2(2025.09.22)
 - 合并`jointIndexChanRowCount`和`singleIndexChanRowCount`两个参数为新的参数`chunkSize`
