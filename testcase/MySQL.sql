@@ -1,3 +1,6 @@
+SET NAMES utf8mb4;
+SET FOREIGN_KEY_CHECKS=0;
+SET UNIQUE_CHECKS=0;
 SET sql_generate_invisible_primary_key=OFF;
 
 DROP DATABASE IF EXISTS gt_checksum;
@@ -65,7 +68,7 @@ CREATE TABLE testString(
    f9 SET('aa','bb','cc','dd')
 );
 ALTER TABLE testString ADD INDEX idx_1(f1);
-INSERT INTO testString(f1,f2,f3,f4,f5,f6,f7,f8,f9) VALUES('1','abcde','ab123','1adf','hello gt-checksum','aa','hello gt-checksum','d','aa,bb');
+INSERT INTO testString(f1,f2,f3,f4,f5,f6,f7,f8,f9) VALUES('1','abcde','abc123','abcd.1234','hello gt-checksum','hello ','hello gt-checksum','d','aa,bb');
 
 DROP TABLE IF EXISTS testBin;
 CREATE TABLE testBin(
@@ -78,16 +81,23 @@ CREATE TABLE testBin(
     f7 LONGBLOB
 );
 ALTER TABLE testBin ADD INDEX idx_1(f1);
-INSERT INTO testBin(f1,f2,f3,f4,f5,f6,f7) VALUES('a','abc','ab','01010101','0x9023123123','hello gt-checksum','hello gt-checksum');
+INSERT INTO testBin(f1,f2,f3,f4,f5,f6,f7) VALUES('a','abc','abcd.1234','01010101','0x9023123123','hello gt-checksum','hello gt-checksum');
 
 -- 测试触发器的处理
 DROP TABLE IF EXISTS account;
-CREATE TABLE account (acct_num INT, amount DECIMAL(10,2));
+CREATE TABLE account (
+    acct_num INT, 
+    amount DECIMAL(10,2)
+);
 INSERT INTO account VALUES(137,14.98),(141,1937.50),(97,-100.00);
 
 -- 创建影子表
 DROP TABLE IF EXISTS tmp_account;
-CREATE TABLE tmp_account (acct_num INT, amount DECIMAL(10,2),sql_text VARCHAR(100));
+CREATE TABLE tmp_account (
+    acct_num INT, 
+    amount DECIMAL(10,2),
+    sql_text VARCHAR(100)
+);
 
 -- 监控insert
 DELIMITER ||
@@ -146,9 +156,9 @@ CREATE TABLE gt_checksum.CUSTOMER(
     CUSTOMER_ID INT NOT NULL PRIMARY KEY,
     FIRST_NAME  VARCHAR(30) NOT NULL,
     LAST_NAME   VARCHAR(30) NOT NULL,
-    PHONE        VARCHAR(15) NOT NULL,
-    EMAIL        VARCHAR(80),
-    STATUS       CHAR(1)
+    PHONE       VARCHAR(15) NOT NULL,
+    EMAIL       VARCHAR(80),
+    STATUS      CHAR(1)
 )PARTITION BY RANGE (CUSTOMER_ID)(
  PARTITION CUS_PART1 VALUES LESS THAN (100000),
  PARTITION CUS_PART2 VALUES LESS THAN (200000)
@@ -237,9 +247,13 @@ DELIMITER ;
 
 -- 再次测试触发器
 DROP TABLE IF EXISTS test1;
-CREATE TABLE test1(a1 INT);
+CREATE TABLE test1(
+    a1 INT
+);
 DROP TABLE IF EXISTS test2;
-CREATE TABLE test2(a2 INT);
+CREATE TABLE test2(
+    a2 INT
+);
 DELIMITER ||
 DROP TRIGGER IF EXISTS tri_test;
 CREATE TRIGGER tri_test
