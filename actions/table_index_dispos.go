@@ -88,37 +88,44 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 					vlog = fmt.Sprintf("(%d) Channel closing, checking for remaining boundary data starting from %s", logThreadSeq, e)
 					global.Wlog.Debug(vlog)
 
-					// 查询实际的最大值来确定是否需要额外的查询
-					maxValueSql := fmt.Sprintf("SELECT MAX(`%s`) as max_val FROM `%s`.`%s`", sp.columnName[level], sp.sourceSchema, sp.table)
-					sdb := sp.sdbPool.Get(logThreadSeq)
-					var maxVal string
-					err := sdb.QueryRow(maxValueSql).Scan(&maxVal)
-					sp.sdbPool.Put(sdb, logThreadSeq)
+					// 对于小表（数据量<queryNum），检查是否已经处理了所有数据
+					// 只有当已处理行数<表实际行数时，才进行边界检查
+					if sp.tableMaxRows > uint64(curryCount) {
+						// 查询实际的最大值来确定是否需要额外的查询
+						maxValueSql := fmt.Sprintf("SELECT MAX(`%s`) as max_val FROM `%s`.`%s`", sp.columnName[level], sp.sourceSchema, sp.table)
+						sdb := sp.sdbPool.Get(logThreadSeq)
+						var maxVal string
+						err := sdb.QueryRow(maxValueSql).Scan(&maxVal)
+						sp.sdbPool.Put(sdb, logThreadSeq)
 
-					if err == nil && maxVal != "" {
-						vlog = fmt.Sprintf("(%d) Max value in table: %s", logThreadSeq, maxVal)
-						global.Wlog.Debug(vlog)
-
-						// 如果当前处理的起始值小于等于最大值，说明还有数据需要处理
-						if e <= maxVal {
-							vlog = fmt.Sprintf("(%d) Final boundary check needed from %s to %s", logThreadSeq, e, maxVal)
+						if err == nil && maxVal != "" {
+							vlog = fmt.Sprintf("(%d) Max value in table: %s", logThreadSeq, maxVal)
 							global.Wlog.Debug(vlog)
 
-							var whereExist string
-							if where != "" {
-								whereExist = fmt.Sprintf("%v and ", where)
+							// 如果当前处理的起始值小于等于最大值，说明还有数据需要处理
+							if e <= maxVal {
+								vlog = fmt.Sprintf("(%d) Final boundary check needed from %s to %s", logThreadSeq, e, maxVal)
+								global.Wlog.Debug(vlog)
+
+								var whereExist string
+								if where != "" {
+									whereExist = fmt.Sprintf("%v and ", where)
+								}
+
+								// 生成包含剩余数据的WHERE条件，确保包含最大边界
+								sqlwhere := fmt.Sprintf("%v `%v` >= '%v' ", whereExist, sp.columnName[level], e)
+								sqlWhere <- sqlwhere
+
+								vlog = fmt.Sprintf("(%d) Added final WHERE condition to ensure all data is covered: %s", logThreadSeq, sqlwhere)
+								global.Wlog.Debug(vlog)
 							}
-
-							// 生成包含剩余数据的WHERE条件，确保包含最大边界
-							sqlwhere := fmt.Sprintf("%v `%v` >= '%v' ", whereExist, sp.columnName[level], e)
-							sqlWhere <- sqlwhere
-
-							vlog = fmt.Sprintf("(%d) Added final WHERE condition to ensure all data is covered: %s", logThreadSeq, sqlwhere)
-							global.Wlog.Debug(vlog)
+						} else if err != nil {
+							vlog = fmt.Sprintf("(%d) Failed to query max value: %v", logThreadSeq, err)
+							global.Wlog.Warn(vlog)
 						}
-					} else if err != nil {
-						vlog = fmt.Sprintf("(%d) Failed to query max value: %v", logThreadSeq, err)
-						global.Wlog.Warn(vlog)
+					} else {
+						vlog = fmt.Sprintf("(%d) Skipping boundary check as all data (%d rows) has been processed", logThreadSeq, curryCount)
+						global.Wlog.Debug(vlog)
 					}
 				}
 
