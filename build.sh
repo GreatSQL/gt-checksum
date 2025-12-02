@@ -36,14 +36,22 @@ fi
 export LD_LIBRARY_PATH=/tmp/${OracleDrive}:$LD_LIBRARY_PATH
 
 echo "3. Compiling gt-checksum"
-go build -o gt-checksum gt-checksum.go
+go build -o gt-checksum gt-checksum.go && \
 chmod +x gt-checksum
+
+if [ $? -ne 0 ] ; then
+ echo "build gt-checksum failed, exit!"
+ exit
+fi
+
 echo "4. Packaging gt-checksum"
-cp -rpf Oracle/${OracleDrive}.tar.xz gt-checksum README.md CHANGELOG.md gc-sample.conf gt-checksum-manual.md gt-checksum-${vs}-linux-${arch}
-tar zcf gt-checksum-${vs}-linux-${arch}.tar.gz gt-checksum-${vs}-linux-${arch}
-tar -zcf gt-checksum-${vs}-linux-${arch}-minimal.tar.gz --exclude=gt-checksum-${vs}-linux-${arch}/${OracleDrive}.tar.xz gt-checksum-${vs}-linux-${arch}
-echo "5. The gt-checksum binary package is: gt-checksum-${vs}-linux-${arch}.tar.gz under directory release"
-mv gt-checksum-${vs}-linux-${arch}.tar.gz release
-mv gt-checksum-${vs}-linux-${arch}-minimal.tar.gz release
-ls -la release
+cp -rpf Oracle/${OracleDrive}.tar.xz gt-checksum README.md CHANGELOG.md gc-sample.conf gt-checksum-manual.md gt-checksum-${vs}-linux-${arch} && \
+tar cf gt-checksum-${vs}-linux-${arch}.tar gt-checksum-${vs}-linux-${arch} && \
+tar cf gt-checksum-${vs}-linux-${arch}-minimal.tar --exclude=gt-checksum-${vs}-linux-${arch}/${OracleDrive}.tar.xz gt-checksum-${vs}-linux-${arch} && \
+xz -9 -f gt-checksum-${vs}-linux-${arch}.tar && \
+xz -9 -f gt-checksum-${vs}-linux-${arch}-minimal.tar && \
+echo "5. The gt-checksum binary package is: gt-checksum-${vs}-linux-${arch}.tar.gz under directory release" && \
+mv gt-checksum-${vs}-linux-${arch}.tar.xz release && \
+mv gt-checksum-${vs}-linux-${arch}-minimal.tar.xz release && \
+ls -la release && \
 rm -fr gt-checksum-${vs}-linux-${arch}
