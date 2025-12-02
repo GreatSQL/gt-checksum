@@ -2149,7 +2149,12 @@ func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 in
 						}
 					}
 				}
-				tsqls := mysql.GenerateTriggerFixSQL(schema, trName, trSourceDef)
+				// 确定目标schema
+			destSchema := schema
+			if mappedSchema, exists := stcls.tableMappings[schema]; exists {
+				destSchema = mappedSchema
+			}
+			tsqls := mysql.GenerateTriggerFixSQL(schema, destSchema, trName, trSourceDef)
 				// wrap with DELIMITER to ensure body semicolons don't conflict
 				var out []string
 				out = append(out, "DELIMITER $$")
@@ -2577,7 +2582,12 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 								sourceDef = def
 							}
 						}
-						sqls := mysql.GenerateRoutineFixSQL(schema, k, "PROCEDURE", sourceDef)
+						// 确定目标schema
+					destSchema := schema
+					if mappedSchema, exists := stcls.tableMappings[schema]; exists {
+						destSchema = mappedSchema
+					}
+					sqls := mysql.GenerateRoutineFixSQL(schema, destSchema, k, "PROCEDURE", sourceDef)
 						// wrap with DELIMITER for routine definitions
 						var out []string
 						out = append(out, "DELIMITER $$")
@@ -2706,7 +2716,12 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 								funcSource = def
 							}
 						}
-						funcSqls := mysql.GenerateRoutineFixSQL(schema, k, "FUNCTION", funcSource)
+						// 确定目标schema
+					destSchema := schema
+					if mappedSchema, exists := stcls.tableMappings[schema]; exists {
+						destSchema = mappedSchema
+					}
+					funcSqls := mysql.GenerateRoutineFixSQL(schema, destSchema, k, "FUNCTION", funcSource)
 						// wrap with DELIMITER for routine definitions
 						var fout []string
 						fout = append(fout, "DELIMITER $$")

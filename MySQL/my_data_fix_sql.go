@@ -111,39 +111,39 @@ func (my *MysqlDataAbnormalFixStruct) FixInsertSqlExec(db *sql.DB, sourceDrive s
 		} else if strings.EqualFold(v, "<nil>") {
 			tmpcolumnName = fmt.Sprintf("NULL")
 		} else {
-				// 检查索引是否越界
-				if k < len(my.ColData) {
-					if dataType, ok := my.ColData[k]["dataType"]; ok {
-							if strings.ToUpper(dataType) == "DATETIME" {
-								tmpcolumnName = fmt.Sprintf("DATE_FORMAT('%s','%%Y-%%m-%%d %%H:%%i:%%s')", v)
-							} else if strings.Contains(strings.ToUpper(dataType), "TIMESTAMP") {
-								tmpcolumnName = fmt.Sprintf("DATE_FORMAT('%s','%%Y-%%m-%%d %%H:%%i:%%s')", v)
-							} else {
-								// 对于INSERT语句，使用源端的原始数据格式
-										processedValue := v
-										// 对于DATA列，保留源端原始数据格式，确保不重复添加空格
-										// 先去除可能的多余空格，然后只保留源数据中实际存在的空格
-										cleanValue := processedValue
-										tmpcolumnName = fmt.Sprintf("'%s'", escapeSQLString(cleanValue))
-							}
-						} else {
-								// 如果没有dataType字段，使用默认格式并转义特殊字符
-								processedValue := v
-								// 对于DATA列，保留源端原始数据格式，确保不重复添加空格
-								cleanValue := processedValue
-								tmpcolumnName = fmt.Sprintf("'%s'", escapeSQLString(cleanValue))
-						}
+			// 检查索引是否越界
+			if k < len(my.ColData) {
+				if dataType, ok := my.ColData[k]["dataType"]; ok {
+					if strings.ToUpper(dataType) == "DATETIME" {
+						tmpcolumnName = fmt.Sprintf("DATE_FORMAT('%s','%%Y-%%m-%%d %%H:%%i:%%s')", v)
+					} else if strings.Contains(strings.ToUpper(dataType), "TIMESTAMP") {
+						tmpcolumnName = fmt.Sprintf("DATE_FORMAT('%s','%%Y-%%m-%%d %%H:%%i:%%s')", v)
+					} else {
+						// 对于INSERT语句，使用源端的原始数据格式
+						processedValue := v
+						// 对于DATA列，保留源端原始数据格式，确保不重复添加空格
+						// 先去除可能的多余空格，然后只保留源数据中实际存在的空格
+						cleanValue := processedValue
+						tmpcolumnName = fmt.Sprintf("'%s'", escapeSQLString(cleanValue))
+					}
 				} else {
-					// 如果索引越界，使用默认格式并转义特殊字符
-								processedValue := v
-								// 对于DATA列，保留源端原始数据格式，确保不重复添加空格
-								cleanValue := processedValue
-								tmpcolumnName = fmt.Sprintf("'%s'", escapeSQLString(cleanValue))
-					vlog = fmt.Sprintf("(%d) Warning: Column index %d exceeds available column data for %s.%s",
-						logThreadSeq, k, targetSchema, my.Table)
-					global.Wlog.Warn(vlog)
+					// 如果没有dataType字段，使用默认格式并转义特殊字符
+					processedValue := v
+					// 对于DATA列，保留源端原始数据格式，确保不重复添加空格
+					cleanValue := processedValue
+					tmpcolumnName = fmt.Sprintf("'%s'", escapeSQLString(cleanValue))
 				}
+			} else {
+				// 如果索引越界，使用默认格式并转义特殊字符
+				processedValue := v
+				// 对于DATA列，保留源端原始数据格式，确保不重复添加空格
+				cleanValue := processedValue
+				tmpcolumnName = fmt.Sprintf("'%s'", escapeSQLString(cleanValue))
+				vlog = fmt.Sprintf("(%d) Warning: Column index %d exceeds available column data for %s.%s",
+					logThreadSeq, k, targetSchema, my.Table)
+				global.Wlog.Warn(vlog)
 			}
+		}
 		valuesNameSeq = append(valuesNameSeq, tmpcolumnName)
 	}
 
@@ -1072,7 +1072,7 @@ func WriteFixIfNeededFile(datafix string, sfile *os.File, sqls []string, logThre
 
 	// 过滤多余的ADD PRIMARY KEY语句
 	filteredSqls := filterRedundantPrimaryKeyStatements(sqls)
-	
+
 	// 过滤重复的SQL语句
 	var uniqueSqls []string
 	for _, sql := range filteredSqls {
@@ -1081,7 +1081,7 @@ func WriteFixIfNeededFile(datafix string, sfile *os.File, sqls []string, logThre
 		if trimmedSql == "" {
 			continue
 		}
-		
+
 		// 使用sync.Map检查SQL是否已存在
 		if _, loaded := writtenSqlMap.LoadOrStore(trimmedSql, true); !loaded {
 			uniqueSqls = append(uniqueSqls, sql)
@@ -1089,7 +1089,7 @@ func WriteFixIfNeededFile(datafix string, sfile *os.File, sqls []string, logThre
 	}
 
 	w := bufio.NewWriter(sfile)
-	
+
 	// 检查文件是否为空，为空则添加必要的前置语句
 	fileInfo, err := sfile.Stat()
 	if err == nil && fileInfo.Size() == 0 {
@@ -1098,26 +1098,26 @@ func WriteFixIfNeededFile(datafix string, sfile *os.File, sqls []string, logThre
 		if len(dstDSN) > 0 && dstDSN[0] != "" {
 			charset = global.ExtractCharsetFromDSN(dstDSN[0])
 		}
-		
+
 		// 添加必要的前置语句
-			preSqls := []string{
-				fmt.Sprintf("SET NAMES %s;", charset),
-				"SET FOREIGN_KEY_CHECKS=0;",
-				"SET UNIQUE_CHECKS=0;",
-				"SET sql_generate_invisible_primary_key=0;",
-				"SET sql_require_primary_key=0;",
-			}
-		
+		preSqls := []string{
+			fmt.Sprintf("SET NAMES %s;", charset),
+			"SET FOREIGN_KEY_CHECKS=0;",
+			"SET UNIQUE_CHECKS=0;",
+			"SET sql_generate_invisible_primary_key=0;",
+			"SET sql_require_primary_key=0;",
+		}
+
 		for _, preSql := range preSqls {
 			if _, err := w.WriteString(preSql + "\n"); err != nil {
 				return err
 			}
 		}
-		
+
 		vlog := fmt.Sprintf("(%d) Added necessary SET statements to fix SQL file", logThreadSeq)
 		global.Wlog.Debug(vlog)
 	}
-	
+
 	for _, s := range uniqueSqls {
 		ss := strings.TrimSpace(s)
 		if ss == "" {
@@ -1367,15 +1367,281 @@ func writeFixSQLToFile(path string, sqls []string, logThreadSeq int64) error {
 
 // GenerateRoutineFixSQL builds DROP + CREATE statements for procedure/function
 // routineType should be "PROCEDURE" or "FUNCTION"
-func GenerateRoutineFixSQL(schema, name, routineType, sourceDef string) []string {
-	drop := fmt.Sprintf("DROP %s IF EXISTS `%s`.`%s`;", strings.ToUpper(routineType), schema, name)
-	// sourceDef is expected to be a full CREATE PROCEDURE/FUNCTION definition from source
-	return []string{drop, strings.TrimSpace(sourceDef)}
+func GenerateRoutineFixSQL(sourceSchema, destSchema, name, routineType, sourceDef string) []string {
+	drop := fmt.Sprintf("DROP %s IF EXISTS `%s`.`%s`;", strings.ToUpper(routineType), destSchema, name)
+
+	// 处理源端定义中的schema名称替换
+	processedDef := processRoutineSchemaNames(sourceDef, sourceSchema, destSchema)
+
+	return []string{drop, strings.TrimSpace(processedDef)}
 }
 
 // GenerateTriggerFixSQL builds DROP + CREATE statements for trigger
-func GenerateTriggerFixSQL(schema, name, sourceDef string) []string {
-	drop := fmt.Sprintf("DROP TRIGGER IF EXISTS `%s`.`%s`;", schema, name)
-	// sourceDef is expected to be a full CREATE TRIGGER definition from source
-	return []string{drop, strings.TrimSpace(sourceDef)}
+func GenerateTriggerFixSQL(sourceSchema, destSchema, name, sourceDef string) []string {
+	drop := fmt.Sprintf("DROP TRIGGER IF EXISTS `%s`.`%s`;", destSchema, name)
+
+	// 处理源端定义中的schema名称替换
+	processedDef := processTriggerSchemaNames(sourceDef, sourceSchema, destSchema)
+
+	return []string{drop, strings.TrimSpace(processedDef)}
+}
+
+// processRoutineSchemaNames 处理存储过程和函数定义中的schema名称替换
+func processRoutineSchemaNames(sourceDef, sourceSchema, destSchema string) string {
+	// 替换过程/函数名中的schema名称
+	processedDef := strings.ReplaceAll(sourceDef, fmt.Sprintf("`%s`", sourceSchema), fmt.Sprintf("`%s`", destSchema))
+
+	// 如果替换后没有包含目标schema名，说明原始语句没有schema名，需要手动添加
+	if !strings.Contains(processedDef, fmt.Sprintf("`%s`", destSchema)) {
+		// 查找"PROCEDURE"或"FUNCTION"关键字的位置
+		procIndex := strings.Index(strings.ToUpper(processedDef), "PROCEDURE")
+		funcIndex := strings.Index(strings.ToUpper(processedDef), "FUNCTION")
+
+		var keywordIndex int
+		var keywordType string
+		if procIndex != -1 && funcIndex != -1 {
+			if procIndex < funcIndex {
+				keywordIndex = procIndex
+				keywordType = "PROCEDURE"
+			} else {
+				keywordIndex = funcIndex
+				keywordType = "FUNCTION"
+			}
+		} else if procIndex != -1 {
+			keywordIndex = procIndex
+			keywordType = "PROCEDURE"
+		} else if funcIndex != -1 {
+			keywordIndex = funcIndex
+			keywordType = "FUNCTION"
+		}
+
+		if keywordIndex != -1 {
+			// 从关键字之后开始处理
+			afterKeyword := processedDef[keywordIndex+len(keywordType):]
+
+			// 跳过可能的DEFINER子句
+			afterKeyword = strings.TrimSpace(afterKeyword)
+			if strings.HasPrefix(strings.ToUpper(afterKeyword), "DEFINER=") {
+				// 跳过DEFINER子句直到下一个关键字
+				parenCount := 0
+				for i, char := range afterKeyword {
+					if char == '(' {
+						parenCount++
+					} else if char == ')' {
+						parenCount--
+						if parenCount == 0 {
+							afterKeyword = afterKeyword[i+1:]
+							break
+						}
+					}
+				}
+			}
+
+			// 跳过IF NOT EXISTS
+			afterKeyword = strings.TrimSpace(afterKeyword)
+			if strings.HasPrefix(strings.ToUpper(afterKeyword), "IF NOT EXISTS") {
+				afterKeyword = afterKeyword[len("IF NOT EXISTS"):]
+			}
+
+			// 查找真正的过程/函数名
+			afterKeyword = strings.TrimSpace(afterKeyword)
+
+			// 跳过可能的DEFINER部分后，找到真正的函数名
+			// 策略：找到第一个反引号，然后检查后面是否包含(字符(参数开始)
+			funcNameStart := strings.Index(afterKeyword, "`")
+			if funcNameStart != -1 {
+				// 找到下一个反引号
+				funcNameEnd := strings.Index(afterKeyword[funcNameStart+1:], "`")
+				if funcNameEnd != -1 {
+					// 提取候选名称
+					candidateName := afterKeyword[funcNameStart+1 : funcNameStart+funcNameEnd+1]
+
+					// 检查这个名称后面是否跟着(
+					restAfterName := afterKeyword[funcNameStart+funcNameEnd+2:]
+					restAfterName = strings.TrimSpace(restAfterName)
+
+					// 如果后面跟着(或者是第一个出现在FUNCTION/PROCEDURE后面的反引号名称，认为这是真正的函数名
+					if strings.HasPrefix(restAfterName, "(") {
+						routineName := candidateName
+						restOfDef := afterKeyword[funcNameStart+funcNameEnd+2:]
+
+						// 在过程/函数名前添加schema名，确保格式为`destSchema`.`routineName`
+						newRoutineName := fmt.Sprintf("`%s`.`%s`", destSchema, routineName)
+						beforeKeyword := processedDef[:keywordIndex]
+						processedDef = beforeKeyword + keywordType + " " + newRoutineName + restOfDef
+					} else {
+						// 如果没有找到合适的函数名，尝试查找FUNCTION/PROCEDURE关键字后的函数名
+						// 这是针对特殊情况的备用逻辑
+						funcKeyword := keywordType
+
+						// 从关键字后开始查找真正的函数名
+						keywordPos := strings.ToUpper(processedDef)
+						funcStartPos := strings.Index(keywordPos, funcKeyword)
+						if funcStartPos != -1 {
+							funcStartPos += len(funcKeyword)
+							afterFunc := processedDef[funcStartPos:]
+							afterFunc = strings.TrimSpace(afterFunc)
+
+							// 跳过IF NOT EXISTS
+							if strings.HasPrefix(strings.ToUpper(afterFunc), "IF NOT EXISTS") {
+								afterFunc = afterFunc[len("IF NOT EXISTS"):]
+								afterFunc = strings.TrimSpace(afterFunc)
+							}
+
+							// 再次查找反引号
+							if strings.HasPrefix(afterFunc, "`") {
+								endQuoteIndex := strings.Index(afterFunc[1:], "`")
+								if endQuoteIndex != -1 {
+									routineName := afterFunc[1 : endQuoteIndex+1]
+									restOfDef := afterFunc[endQuoteIndex+2:]
+
+									// 添加schema名
+									newRoutineName := fmt.Sprintf("`%s`.`%s`", destSchema, routineName)
+									beforeFunc := processedDef[:funcStartPos]
+									processedDef = beforeFunc + " " + newRoutineName + restOfDef
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return processedDef
+}
+
+// processTriggerSchemaNames 处理触发器定义中的schema名称替换
+func processTriggerSchemaNames(sourceDef, sourceSchema, destSchema string) string {
+	// 首先尝试直接替换已有的schema名称
+	processedDef := strings.ReplaceAll(sourceDef, fmt.Sprintf("`%s`.`", sourceSchema), fmt.Sprintf("`%s`.`", destSchema))
+
+	// 检查是否需要添加schema前缀到触发器名
+	if !strings.Contains(strings.ToUpper(processedDef), fmt.Sprintf("TRIGGER `%s`.`", destSchema)) {
+		// 查找TRIGGER关键字的位置（忽略大小写）
+		triggerIndex := strings.Index(strings.ToUpper(processedDef), "TRIGGER")
+		if triggerIndex != -1 {
+			// 从TRIGGER之后开始查找触发器名
+			searchStart := triggerIndex + len("TRIGGER")
+
+			// 跳过可能的DEFINER部分
+			remaining := processedDef[searchStart:]
+			trimmed := strings.TrimSpace(remaining)
+
+			// 如果包含DEFINER，找到其结束位置
+			if strings.HasPrefix(strings.ToUpper(trimmed), "DEFINER=") {
+				// 使用括号匹配来正确跳过整个DEFINER子句
+				parenCount := 0
+				for i, char := range trimmed {
+					if char == '(' {
+						parenCount++
+					} else if char == ')' {
+						parenCount--
+						if parenCount == 0 {
+							searchStart += i + 1
+							break
+						}
+					}
+				}
+			}
+
+			// 查找真正的触发器名
+			remaining = processedDef[searchStart:]
+
+			// 跳过可能的DEFINER部分后，找到真正的触发器名
+			// 策略：找到第一个反引号，然后检查后面是否包含ON关键字
+			triggerNameStart := strings.Index(remaining, "`")
+			if triggerNameStart != -1 {
+				// 找到下一个反引号
+				triggerNameEnd := strings.Index(remaining[triggerNameStart+1:], "`")
+				if triggerNameEnd != -1 {
+					// 提取候选名称
+					candidateName := remaining[triggerNameStart+1 : triggerNameStart+triggerNameEnd+1]
+
+					// 检查这个名称后面是否包含ON关键字(触发器语法中ON表示表名开始)
+					restAfterName := remaining[triggerNameStart+triggerNameEnd+2:]
+					restAfterName = strings.TrimSpace(restAfterName)
+
+					// 如果后面包含ON关键字，认为这是真正的触发器名
+					if strings.Contains(strings.ToUpper(restAfterName), " ON ") {
+						// 构建新的触发器名，添加schema前缀
+						newTriggerName := fmt.Sprintf("`%s`.`%s`", destSchema, candidateName)
+
+						// 替换原始触发器名
+						before := processedDef[:searchStart+triggerNameStart]
+						after := processedDef[searchStart+triggerNameStart+triggerNameEnd+2:]
+						processedDef = before + newTriggerName + after
+					}
+				}
+			} else {
+				// 如果没有找到反引号包围的触发器名，尝试备用策略
+				// 从CREATE TRIGGER关键字后开始查找
+				keywordPos := strings.ToUpper(processedDef)
+				triggerStartPos := strings.Index(keywordPos, "TRIGGER")
+				if triggerStartPos != -1 {
+					triggerStartPos += len("TRIGGER")
+					afterTrigger := processedDef[triggerStartPos:]
+					afterTrigger = strings.TrimSpace(afterTrigger)
+
+					// 再次尝试查找反引号
+					if strings.HasPrefix(afterTrigger, "`") {
+						endQuoteIndex := strings.Index(afterTrigger[1:], "`")
+						if endQuoteIndex != -1 {
+							triggerName := afterTrigger[1 : endQuoteIndex+1]
+							restOfDef := afterTrigger[endQuoteIndex+2:]
+
+							// 添加schema名
+							newTriggerName := fmt.Sprintf("`%s`.`%s`", destSchema, triggerName)
+							beforeCreate := processedDef[:triggerStartPos]
+							processedDef = beforeCreate + " " + newTriggerName + restOfDef
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// 确保表名也有正确的schema前缀
+	processedDef = replaceTableSchemaInTrigger(processedDef, sourceSchema, destSchema)
+
+	return processedDef
+}
+
+// replaceTableSchemaInTrigger 替换触发器ON子句中的表名schema
+func replaceTableSchemaInTrigger(triggerDef, sourceSchema, destSchema string) string {
+	// 使用字符串匹配来处理ON子句
+	onIndex := strings.Index(strings.ToUpper(triggerDef), " ON ")
+	if onIndex != -1 {
+		afterOn := triggerDef[onIndex+4:] // +4 跳过 " ON "
+		afterOn = strings.TrimSpace(afterOn)
+
+		// 检查是否是反引号包围的表名
+		if strings.HasPrefix(afterOn, "`") {
+			endQuoteIndex := strings.Index(afterOn[1:], "`")
+			if endQuoteIndex != -1 {
+				tablePart := afterOn[:endQuoteIndex+2] // 包含反引号
+
+				// 检查是否已经包含schema
+				if !strings.Contains(tablePart, ".") {
+					// 只有表名，没有schema，添加schema
+					tableName := tablePart
+					newTablePart := fmt.Sprintf("`%s`.%s", destSchema, tableName)
+					triggerDef = triggerDef[:onIndex+4] + newTablePart + afterOn[endQuoteIndex+2:]
+				} else {
+					// 已经有schema.table格式，检查是否需要替换
+					parts := strings.Split(tablePart, ".")
+					if len(parts) == 2 {
+						schemaPart := strings.Trim(parts[0], "` ")
+						tableNamePart := parts[1]
+						if schemaPart == sourceSchema {
+							newTablePart := fmt.Sprintf("`%s`.%s", destSchema, tableNamePart)
+							triggerDef = triggerDef[:onIndex+4] + newTablePart + afterOn[endQuoteIndex+2:]
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return triggerDef
 }
