@@ -17,6 +17,7 @@
 - 支持合并fixSQL中的INSERT和DELETE操作，提高SQL执行效率
 - 支持生成fixSQL时，如果是INSERT操作，则总是声明所有字段名，应对隐藏字段情况
 - 支持生成fixSQL时，在文件头加上字符集设定（从dstDSN参数中的"charset"值获取）、临时禁用外键和唯一约束检查
+- 支持生成fixSQL时，在CREATE TABLE/TRIGGER/PROCEDURE/FUNCTION前面加上相应的schema name
 - Bugs fixed
   - 修复生成fixSQL时无法正确使用索引问题
   - 修复生成fixSQL时无法正确处理映射规则问题
