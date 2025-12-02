@@ -2692,7 +2692,30 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 					if v == 2 {
 						sv := sourceFunc[k]
 						dv := destFunc[k]
-						if sv != dv {
+						
+						// 忽略元数据注释部分，只比较函数的实际定义内容
+						// 移除 GT_CHECKSUM_METADATA 注释
+						cleanSourceFunc := sv
+						if idx := strings.Index(cleanSourceFunc, "/*GT_CHECKSUM_METADATA:"); idx != -1 {
+							endIdx := strings.Index(cleanSourceFunc[idx:], "*/")
+							if endIdx != -1 {
+								cleanSourceFunc = cleanSourceFunc[:idx] + cleanSourceFunc[idx+endIdx+2:]
+							}
+						}
+						
+						cleanDestFunc := dv
+						if idx := strings.Index(cleanDestFunc, "/*GT_CHECKSUM_METADATA:"); idx != -1 {
+							endIdx := strings.Index(cleanDestFunc[idx:], "*/")
+							if endIdx != -1 {
+								cleanDestFunc = cleanDestFunc[:idx] + cleanDestFunc[idx+endIdx+2:]
+							}
+						}
+						
+						// 去除所有空格后进行比较
+						cleanSourceFunc = strings.Join(strings.Fields(cleanSourceFunc), "")
+						cleanDestFunc = strings.Join(strings.Fields(cleanDestFunc), "")
+						
+						if cleanSourceFunc != cleanDestFunc {
 							pods.ProcName = k
 							pods.DIFFS = "yes"
 							d = append(d, k)
