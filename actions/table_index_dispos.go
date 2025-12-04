@@ -84,48 +84,49 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 			if !ok {
 				// 修复：在通道关闭前，检查是否还有未处理的边界数据需要查询
 				// 这确保了当总数据量正好是chunkSize的整数倍时，最后一条记录不会被遗漏
+				//fmt.Printf("DEBUG_CHANNEL_CLOSE: level=%d, e='%s', e!=''=%v\n", level, e, e != "")
 				if level == 0 && e != "" {
 					vlog = fmt.Sprintf("(%d) Channel closing, checking for remaining boundary data starting from %s", logThreadSeq, e)
 					global.Wlog.Debug(vlog)
 
-					// 对于小表（数据量<queryNum），检查是否已经处理了所有数据
-					// 只有当已处理行数<表实际行数时，才进行边界检查
-					if sp.tableMaxRows > uint64(curryCount) {
-						// 查询实际的最大值来确定是否需要额外的查询
-						maxValueSql := fmt.Sprintf("SELECT MAX(`%s`) as max_val FROM `%s`.`%s`", sp.columnName[level], sp.sourceSchema, sp.table)
-						sdb := sp.sdbPool.Get(logThreadSeq)
-						var maxVal string
-						err := sdb.QueryRow(maxValueSql).Scan(&maxVal)
-						sp.sdbPool.Put(sdb, logThreadSeq)
+					// 修复：无论预估行数多少，只要还有起始值未处理，就应该进行边界检查
+					// 这确保了当预估行数不准确时，边界数据仍然能被正确处理
+					//fmt.Printf("DEBUG_TABLE_ROWS: tableMaxRows=%d, curryCount=%d\n", sp.tableMaxRows, curryCount)
+					// 移除错误的条件判断，直接进行边界检查
+					// 查询实际的最大值来确定是否需要额外的查询
+					maxValueSql := fmt.Sprintf("SELECT MAX(`%s`) as max_val FROM `%s`.`%s`", sp.columnName[level], sp.sourceSchema, sp.table)
+					sdb := sp.sdbPool.Get(logThreadSeq)
+					var maxVal string
+					err := sdb.QueryRow(maxValueSql).Scan(&maxVal)
+					sp.sdbPool.Put(sdb, logThreadSeq)
+					//fmt.Printf("DEBUG_BOUNDARY_CHECK: err=%v, maxVal='%s'\n", err, maxVal)
 
-						if err == nil && maxVal != "" {
-							vlog = fmt.Sprintf("(%d) Max value in table: %s", logThreadSeq, maxVal)
+					if err == nil && maxVal != "" {
+						vlog = fmt.Sprintf("(%d) Max value in table: %s", logThreadSeq, maxVal)
+						global.Wlog.Debug(vlog)
+
+						// 如果当前处理的起始值小于等于最大值，说明还有数据需要处理
+						//fmt.Printf("DEBUG_COMPARISON: e='%s', maxVal='%s', e <= maxVal = %v\n", e, maxVal, e <= maxVal)
+						if e <= maxVal {
+							vlog = fmt.Sprintf("(%d) Final boundary check needed from %s to %s", logThreadSeq, e, maxVal)
 							global.Wlog.Debug(vlog)
 
-							// 如果当前处理的起始值小于等于最大值，说明还有数据需要处理
-							if e <= maxVal {
-								vlog = fmt.Sprintf("(%d) Final boundary check needed from %s to %s", logThreadSeq, e, maxVal)
-								global.Wlog.Debug(vlog)
-
-								var whereExist string
-								if where != "" {
-									whereExist = fmt.Sprintf("%v and ", where)
-								}
-
-								// 生成包含剩余数据的WHERE条件，确保包含最大边界
-								sqlwhere := fmt.Sprintf("%v `%v` >= '%v' ", whereExist, sp.columnName[level], e)
-								sqlWhere <- sqlwhere
-
-								vlog = fmt.Sprintf("(%d) Added final WHERE condition to ensure all data is covered: %s", logThreadSeq, sqlwhere)
-								global.Wlog.Debug(vlog)
+							var whereExist string
+							if where != "" {
+								whereExist = fmt.Sprintf("%v and ", where)
 							}
-						} else if err != nil {
-							vlog = fmt.Sprintf("(%d) Failed to query max value: %v", logThreadSeq, err)
-							global.Wlog.Warn(vlog)
+
+							// 生成包含剩余数据的WHERE条件，确保包含最大边界
+							sqlwhere := fmt.Sprintf("%v `%v` >= '%v' ", whereExist, sp.columnName[level], e)
+							sqlWhere <- sqlwhere
+							//fmt.Printf("DEBUG1: %v\n", sqlwhere)
+
+							vlog = fmt.Sprintf("(%d) Added final WHERE condition to ensure all data is covered: %s", logThreadSeq, sqlwhere)
+							global.Wlog.Debug(vlog)
 						}
-					} else {
-						vlog = fmt.Sprintf("(%d) Skipping boundary check as all data (%d rows) has been processed", logThreadSeq, curryCount)
-						global.Wlog.Debug(vlog)
+					} else if err != nil {
+						vlog = fmt.Sprintf("(%d) Failed to query max value: %v", logThreadSeq, err)
+						global.Wlog.Warn(vlog)
 					}
 				}
 
@@ -152,6 +153,7 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 						sqlwhere = fmt.Sprintf("%s %s", where, sqlwhere)
 					}
 					sqlWhere <- sqlwhere
+					//fmt.Printf("DEBUG2: %v\n", sqlwhere)
 					sqlwhere, e, g = "", "", ""
 				}
 				var whereExist string
@@ -168,6 +170,7 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 				vlog = fmt.Sprintf("(%d) NULL values processed for index column %s level %d - WHERE: %s", logThreadSeq, sp.columnName[level], level, sqlwhere)
 				global.Wlog.Debug(vlog)
 				sqlWhere <- sqlwhere
+				//fmt.Printf("DEBUG3: %v\n", sqlwhere)
 				sqlwhere = ""
 			} else {
 				//获取联合索引或单列索引的首值
@@ -203,6 +206,7 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 					}
 
 					sqlWhere <- sqlwhere
+					//fmt.Printf("DEBUG4: %v\n", sqlwhere)
 					sqlwhere = ""
 					vlog = fmt.Sprintf("(%d) Completed processing end of index column %s level %d - WHERE: %s", logThreadSeq, sp.columnName[level], level, sqlwhere)
 					global.Wlog.Debug(vlog)
@@ -222,13 +226,24 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 					} else {
 						if partFirstValue { //每段的首行数据
 							sqlwhere = fmt.Sprintf("%s `%v` >= '%v' and `%v` < '%v' ", whereExist, sp.columnName[level], e, sp.columnName[level], g)
+							//fmt.Printf("DEBUGXX4: %v\n", sqlwhere)
 							partFirstValue = false
 						} else {
-							sqlwhere = fmt.Sprintf("%s `%v` >= '%v' and `%v` < '%v' ", whereExist, sp.columnName[level], e, sp.columnName[level], g)
+							// 修复边界条件：只有当是最后一块数据时，才使用>=条件来包含所有剩余记录
+							// 这样确保最后一条记录不会被遗漏，但其他块仍然使用范围条件
+							if key == "END" {
+								sqlwhere = fmt.Sprintf("%s `%v` >= '%v' ", whereExist, sp.columnName[level], e)
+								//fmt.Printf("DEBUGXX1: %v\n", sqlwhere)
+							} else {
+								sqlwhere = fmt.Sprintf("%s `%v` >= '%v' and `%v` < '%v' ", whereExist, sp.columnName[level], e, sp.columnName[level], g)
+								//fmt.Printf("DEBUGXX2: %v\n", sqlwhere)
+							}
+							//fmt.Printf("DEBUG3: %v\n", key)
 						}
 					}
 
 					sqlWhere <- sqlwhere
+					//fmt.Printf("DEBUG5: %v\n", sqlwhere)
 					if key != "END" {
 						e = key
 					}
@@ -239,6 +254,7 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 					} else {
 						where = fmt.Sprintf(" `%v` = '%v' ", sp.columnName[level], g)
 					}
+					//fmt.Printf("DEBUG2: %v\n", where)
 					level++ //索引列层数递增
 					//进入下一层的索引计算
 					sp.recursiveIndexColumn(sqlWhere, sdb, ddb, level, queryNum, where, selectColumn, logThreadSeq)
