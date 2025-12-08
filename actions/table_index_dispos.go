@@ -67,14 +67,14 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 	if err != nil {
 		return
 	}
-	
+
 	// 调试：直接查询目标端的数据来验证
 	go func() {
 		// 查询目标端的几个最小值
 		debugSql := fmt.Sprintf("SELECT `%s` as id_val FROM `%s`.`%s` WHERE `%s` IS NOT NULL ORDER BY `%s` LIMIT 5", sp.columnName[level], sp.destSchema, sp.table, sp.columnName[level], sp.columnName[level])
 		debugDb := sp.ddbPool.Get(logThreadSeq)
 		defer sp.ddbPool.Put(debugDb, logThreadSeq)
-		
+
 		rows, err := debugDb.Query(debugSql)
 		if err == nil {
 			defer rows.Close()
@@ -82,15 +82,15 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 			for rows.Next() {
 				var val string
 				rows.Scan(&val)
-				fmt.Printf("DEBUG_DEST_DIRECT_%d: id='%s'\n", count, val)
+				global.Wlog.Debug("DEBUG_DEST_DIRECT_%d: id='%s'\n", count, val)
 				count++
 			}
-			fmt.Printf("DEBUG_DEST_DIRECT_TOTAL: Found %d non-null values in target table\n", count)
+			global.Wlog.Debug("DEBUG_DEST_DIRECT_TOTAL: Found %d non-null values in target table\n", count)
 		}
 	}()
 	cMerge := dataDispos.DataInfo{ChanQueueDepth: sp.mqQueueDepth}
 	ascUniqSDDataChan := cMerge.ChangeMerge(SdataChan1, DdataChan1)
-	
+
 	// 修复：在level=0且没有初始WHERE条件时，检查是否需要处理范围扩展
 	// 这确保了目标端超出源端范围的数据能被正确包含
 	if level == 0 && where == "" {
@@ -100,26 +100,26 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 		var sourceMinVal, destMinVal string
 		sourceMinErr := sdb.QueryRow(sourceMinSql).Scan(&sourceMinVal)
 		destMinErr := ddb.QueryRow(destMinSql).Scan(&destMinVal)
-		
-		fmt.Printf("DEBUG_LEVEL0_CHECK: level=%d, where='%s', source_min=%s, dest_min=%s\n", level, where, sourceMinVal, destMinVal)
-		
+
+		global.Wlog.Debug("DEBUG_LEVEL0_CHECK: level=%d, where='%s', source_min=%s, dest_min=%s\n", level, where, sourceMinVal, destMinVal)
+
 		if sourceMinErr == nil && destMinErr == nil && sourceMinVal != "" && destMinVal != "" {
 			// 检查目标端是否有比源端更小的值
 			if destMinVal < sourceMinVal {
-				fmt.Printf("DEBUG_RANGE_EXPANSION: Target has smaller values (dest_min=%s < source_min=%s), ensuring coverage\n", destMinVal, sourceMinVal)
+				global.Wlog.Debug("DEBUG_RANGE_EXPANSION: Target has smaller values (dest_min=%s < source_min=%s), ensuring coverage\n", destMinVal, sourceMinVal)
 				vlog = fmt.Sprintf("(%d) Target table has smaller values than source (dest_min=%s < source_min=%s), ensuring full coverage", logThreadSeq, destMinVal, sourceMinVal)
 				global.Wlog.Debug(vlog)
-				
+
 				// 问题可能在于数据流合并：虽然ChangeMerge应该正确合并，但我们需要验证
 				// 添加更详细的调试信息来跟踪数据流
-				fmt.Printf("DEBUG_DATA_STREAM: Checking if dest_min=%s appears in merged data stream\n", destMinVal)
+				global.Wlog.Debug("DEBUG_DATA_STREAM: Checking if dest_min=%s appears in merged data stream\n", destMinVal)
 			}
 		}
 	}
-	
+
 	vlog = fmt.Sprintf("(%d) Processing WHERE conditions for index column %s in %s.%s", logThreadSeq, sp.columnName[level], sp.schema, sp.table)
 	global.Wlog.Debug(vlog)
-	
+
 	// 在开始处理前，先查询源端和目标端的数据范围，确定合并后的最小值
 	var mergedMinVal string
 	{
@@ -127,16 +127,16 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 		ddb := sp.ddbPool.Get(logThreadSeq)
 		defer sp.sdbPool.Put(sdb, logThreadSeq)
 		defer sp.ddbPool.Put(ddb, logThreadSeq)
-		
+
 		// 查询源端和目标端的最小值
 		sourceMinSql := fmt.Sprintf("SELECT MIN(`%s`) as min_val FROM `%s`.`%s`", sp.columnName[level], sp.sourceSchema, sp.table)
 		destMinSql := fmt.Sprintf("SELECT MIN(`%s`) as min_val FROM `%s`.`%s`", sp.columnName[level], sp.destSchema, sp.table)
 		var sourceMinVal, destMinVal string
 		sourceMinErr := sdb.QueryRow(sourceMinSql).Scan(&sourceMinVal)
 		destMinErr := ddb.QueryRow(destMinSql).Scan(&destMinVal)
-		
-		fmt.Printf("DEBUG_LEVEL0_CHECK: level=%d, where='%s', source_min=%s, dest_min=%s\n", level, where, sourceMinVal, destMinVal)
-		
+
+		global.Wlog.Debug("DEBUG_LEVEL0_CHECK: level=%d, where='%s', source_min=%s, dest_min=%s\n", level, where, sourceMinVal, destMinVal)
+
 		// 计算合并后的最小值
 		if sourceMinErr == nil && sourceMinVal != "" && destMinErr == nil && destMinVal != "" {
 			// 尝试转换为整数进行比较
@@ -157,14 +157,14 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 					mergedMinVal = destMinVal
 				}
 			}
-			fmt.Printf("DEBUG_MERGED_MIN_CALCULATION: source_min=%s, dest_min=%s => merged_min=%s\n", sourceMinVal, destMinVal, mergedMinVal)
+			global.Wlog.Debug("DEBUG_MERGED_MIN_CALCULATION: source_min=%s, dest_min=%s => merged_min=%s\n", sourceMinVal, destMinVal, mergedMinVal)
 		} else if sourceMinErr == nil && sourceMinVal != "" {
 			mergedMinVal = sourceMinVal
 		} else if destMinErr == nil && destMinVal != "" {
 			mergedMinVal = destMinVal
 		}
 	}
-	
+
 	//处理原目标端索引列数据的集合，并按照单次校验数据块大小来进行数据截取，如果是多列索引，则需要递归查询截取
 	for {
 		select {
@@ -178,156 +178,156 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 			if !ok {
 				// 修复：在通道关闭前，检查是否还有未处理的边界数据需要查询
 				// 这确保了当总数据量正好是chunkSize的整数倍时，最后一条记录不会被遗漏
-				//fmt.Printf("DEBUG_CHANNEL_CLOSE: level=%d, e='%s', e!=''=%v\n", level, e, e != "")
+				global.Wlog.Debug("DEBUG_CHANNEL_CLOSE: level=%d, e='%s', e!=''=%v\n", level, e, e != "")
 				if level == 0 && e != "" {
 					vlog = fmt.Sprintf("(%d) Channel closing, checking for remaining boundary data starting from %s", logThreadSeq, e)
 					global.Wlog.Debug(vlog)
 
 					// 修复：无论预估行数多少，只要还有起始值未处理，就应该进行边界检查
 					// 这确保了当预估行数不准确时，边界数据仍然能被正确处理
-			//fmt.Printf("DEBUG_TABLE_ROWS: tableMaxRows=%d, curryCount=%d\n", sp.tableMaxRows, curryCount)
-			// 修复：分别查询源端和目标端的数据范围，确保覆盖所有数据
-			sdb := sp.sdbPool.Get(logThreadSeq)
-			ddb := sp.ddbPool.Get(logThreadSeq)
-			defer sp.sdbPool.Put(sdb, logThreadSeq)
-			defer sp.ddbPool.Put(ddb, logThreadSeq)
-			
-			// 查询源端的最小值和最大值
-			sourceMinSql := fmt.Sprintf("SELECT MIN(`%s`) as min_val FROM `%s`.`%s`", sp.columnName[level], sp.sourceSchema, sp.table)
-			sourceMaxSql := fmt.Sprintf("SELECT MAX(`%s`) as max_val FROM `%s`.`%s`", sp.columnName[level], sp.sourceSchema, sp.table)
-			var sourceMinVal, sourceMaxVal string
-			sourceMinErr := sdb.QueryRow(sourceMinSql).Scan(&sourceMinVal)
-			sourceMaxErr := sdb.QueryRow(sourceMaxSql).Scan(&sourceMaxVal)
-			
-			// 查询目标端的最小值和最大值
-			destMinSql := fmt.Sprintf("SELECT MIN(`%s`) as min_val FROM `%s`.`%s`", sp.columnName[level], sp.destSchema, sp.table)
-			destMaxSql := fmt.Sprintf("SELECT MAX(`%s`) as max_val FROM `%s`.`%s`", sp.columnName[level], sp.destSchema, sp.table)
-			var destMinVal, destMaxVal string
-			destMinErr := ddb.QueryRow(destMinSql).Scan(&destMinVal)
-			destMaxErr := ddb.QueryRow(destMaxSql).Scan(&destMaxVal)
-			
-			//fmt.Printf("DEBUG_RANGE: source=[%s,%s], dest=[%s,%s]\n", sourceMinVal, sourceMaxVal, destMinVal, destMaxVal)
-			fmt.Printf("DEBUG_RANGE_COMPARE: Source=[%s,%s], Destination=[%s,%s]\n", sourceMinVal, sourceMaxVal, destMinVal, destMaxVal)
-			fmt.Printf("DEBUG_INITIAL_E: Before boundary check, current e='%s'\n", e)
-			
-			// 计算合并后的最小值和最大值（使用之前已经查询的数据）
-			var mergedMinVal, mergedMaxVal string
-			if sourceMinErr == nil && sourceMinVal != "" && destMinErr == nil && destMinVal != "" {
-				// 修复：将字符串转换为数字进行比较，而不是字符串比较
-				sourceMinInt, err1 := strconv.ParseInt(sourceMinVal, 10, 64)
-				destMinInt, err2 := strconv.ParseInt(destMinVal, 10, 64)
-				
-				if err1 == nil && err2 == nil {
-					if sourceMinInt < destMinInt {
-						mergedMinVal = sourceMinVal
-					} else {
-						mergedMinVal = destMinVal
-					}
-				} else {
-					// 如果转换失败，使用字符串比较作为备选
-					if sourceMinVal < destMinVal {
-						mergedMinVal = sourceMinVal
-					} else {
-						mergedMinVal = destMinVal
-					}
-				}
-			} else if sourceMinErr == nil && sourceMinVal != "" {
-				mergedMinVal = sourceMinVal
-			} else if destMinErr == nil && destMinVal != "" {
-				mergedMinVal = destMinVal
-			}
-			
-			if sourceMaxErr == nil && sourceMaxVal != "" && destMaxErr == nil && destMaxVal != "" {
-				// 修复：将字符串转换为数字进行比较
-				sourceMaxInt, err1 := strconv.ParseInt(sourceMaxVal, 10, 64)
-				destMaxInt, err2 := strconv.ParseInt(destMaxVal, 10, 64)
-				
-				if err1 == nil && err2 == nil {
-					if sourceMaxInt > destMaxInt {
-						mergedMaxVal = sourceMaxVal
-					} else {
-						mergedMaxVal = destMaxVal
-					}
-				} else {
-					// 如果转换失败，使用字符串比较作为备选
-					if sourceMaxVal > destMaxVal {
-						mergedMaxVal = sourceMaxVal
-					} else {
-						mergedMaxVal = destMaxVal
-					}
-				}
-			} else if sourceMaxErr == nil && sourceMaxVal != "" {
-				mergedMaxVal = sourceMaxVal
-			} else if destMaxErr == nil && destMaxVal != "" {
-				mergedMaxVal = destMaxVal
-			}
-			
-			fmt.Printf("DEBUG_MERGED_RANGE_CALCULATION: source_min=%s, dest_min=%s => merged_min=%s\n", sourceMinVal, destMinVal, mergedMinVal)
-			
-			fmt.Printf("DEBUG_MERGED_RANGE: merged_min=%s, merged_max=%s\n", mergedMinVal, mergedMaxVal)
-			
-			// 关键修复：如果当前处理的起始值大于合并后的最小值，需要扩展查询范围
-			// 这确保了目标端超出源端范围的数据被正确包含
-			if mergedMinVal != "" && e != "" {
-				if e > mergedMinVal {
-					fmt.Printf("DEBUG_RANGE_FIX: Current e='%s' > merged_min='%s', need to extend query range\n", e, mergedMinVal)
-					
-					// 生成扩展的查询条件，从合并后的最小值开始
-					var whereExist string
-					if where != "" {
-						whereExist = fmt.Sprintf("%v and ", where)
-					}
-					
-					// 生成扩展的WHERE条件：从合并后的最小值到当前e值
-					extendedWhere := fmt.Sprintf("%v `%v` >= '%v' and `%v` < '%v'", whereExist, sp.columnName[level], mergedMinVal, sp.columnName[level], e)
-					fmt.Printf("DEBUG_EXTENDED_WHERE: %s\n", extendedWhere)
-					
-					// 将扩展的WHERE条件发送到channel
-					sqlWhere <- extendedWhere
-					
-					vlog = fmt.Sprintf("(%d) Extended query range to cover missing data: %s to %s (merged min: %s)", logThreadSeq, mergedMinVal, e, mergedMinVal)
-					global.Wlog.Debug(vlog)
-				}
-			}
-			
-			// 计算合并后的最小值和最大值
-			var minVal, maxVal string
-			if sourceMinErr == nil && sourceMinVal != "" && destMinErr == nil && destMinVal != "" {
-				// 比较两个最小值，取较小者
-				if sourceMinVal < destMinVal {
-					minVal = sourceMinVal
-				} else {
-					minVal = destMinVal
-				}
-			} else if sourceMinErr == nil && sourceMinVal != "" {
-				minVal = sourceMinVal
-			} else if destMinErr == nil && destMinVal != "" {
-				minVal = destMinVal
-			}
-			
-			if sourceMaxErr == nil && sourceMaxVal != "" && destMaxErr == nil && destMaxVal != "" {
-				// 比较两个最大值，取较大者
-				if sourceMaxVal > destMaxVal {
-					maxVal = sourceMaxVal
-				} else {
-					maxVal = destMaxVal
-				}
-			} else if sourceMaxErr == nil && sourceMaxVal != "" {
-				maxVal = sourceMaxVal
-			} else if destMaxErr == nil && destMaxVal != "" {
-				maxVal = destMaxVal
-			}
-			
-			if maxVal != "" {
-				vlog = fmt.Sprintf("(%d) Merged data range: min=%s, max=%s (source=[%s,%s], dest=[%s,%s])", logThreadSeq, minVal, maxVal, sourceMinVal, sourceMaxVal, destMinVal, destMaxVal)
-				global.Wlog.Debug(vlog)
+					global.Wlog.Debug("DEBUG_TABLE_ROWS: tableMaxRows=%d, curryCount=%d\n", sp.tableMaxRows, curryCount)
+					// 修复：分别查询源端和目标端的数据范围，确保覆盖所有数据
+					sdb := sp.sdbPool.Get(logThreadSeq)
+					ddb := sp.ddbPool.Get(logThreadSeq)
+					defer sp.sdbPool.Put(sdb, logThreadSeq)
+					defer sp.ddbPool.Put(ddb, logThreadSeq)
 
-				// 检查当前边界值是否在合并后的范围内
-				// 关键：使用合并后的maxVal进行判断，确保覆盖所有数据
-				//fmt.Printf("DEBUG_COMPARISON: e='%s', maxVal='%s', e <= maxVal = %v\n", e, maxVal, e <= maxVal)
-				if e <= maxVal {
-					vlog = fmt.Sprintf("(%d) Final boundary check needed from %s to %s (merged range)", logThreadSeq, e, maxVal)
-					global.Wlog.Debug(vlog)
+					// 查询源端的最小值和最大值
+					sourceMinSql := fmt.Sprintf("SELECT MIN(`%s`) as min_val FROM `%s`.`%s`", sp.columnName[level], sp.sourceSchema, sp.table)
+					sourceMaxSql := fmt.Sprintf("SELECT MAX(`%s`) as max_val FROM `%s`.`%s`", sp.columnName[level], sp.sourceSchema, sp.table)
+					var sourceMinVal, sourceMaxVal string
+					sourceMinErr := sdb.QueryRow(sourceMinSql).Scan(&sourceMinVal)
+					sourceMaxErr := sdb.QueryRow(sourceMaxSql).Scan(&sourceMaxVal)
+
+					// 查询目标端的最小值和最大值
+					destMinSql := fmt.Sprintf("SELECT MIN(`%s`) as min_val FROM `%s`.`%s`", sp.columnName[level], sp.destSchema, sp.table)
+					destMaxSql := fmt.Sprintf("SELECT MAX(`%s`) as max_val FROM `%s`.`%s`", sp.columnName[level], sp.destSchema, sp.table)
+					var destMinVal, destMaxVal string
+					destMinErr := ddb.QueryRow(destMinSql).Scan(&destMinVal)
+					destMaxErr := ddb.QueryRow(destMaxSql).Scan(&destMaxVal)
+
+					global.Wlog.Debug("DEBUG_RANGE: source=[%s,%s], dest=[%s,%s]\n", sourceMinVal, sourceMaxVal, destMinVal, destMaxVal)
+					global.Wlog.Debug("DEBUG_RANGE_COMPARE: Source=[%s,%s], Destination=[%s,%s]\n", sourceMinVal, sourceMaxVal, destMinVal, destMaxVal)
+					global.Wlog.Debug("DEBUG_INITIAL_E: Before boundary check, current e='%s'\n", e)
+
+					// 计算合并后的最小值和最大值（使用之前已经查询的数据）
+					var mergedMinVal, mergedMaxVal string
+					if sourceMinErr == nil && sourceMinVal != "" && destMinErr == nil && destMinVal != "" {
+						// 修复：将字符串转换为数字进行比较，而不是字符串比较
+						sourceMinInt, err1 := strconv.ParseInt(sourceMinVal, 10, 64)
+						destMinInt, err2 := strconv.ParseInt(destMinVal, 10, 64)
+
+						if err1 == nil && err2 == nil {
+							if sourceMinInt < destMinInt {
+								mergedMinVal = sourceMinVal
+							} else {
+								mergedMinVal = destMinVal
+							}
+						} else {
+							// 如果转换失败，使用字符串比较作为备选
+							if sourceMinVal < destMinVal {
+								mergedMinVal = sourceMinVal
+							} else {
+								mergedMinVal = destMinVal
+							}
+						}
+					} else if sourceMinErr == nil && sourceMinVal != "" {
+						mergedMinVal = sourceMinVal
+					} else if destMinErr == nil && destMinVal != "" {
+						mergedMinVal = destMinVal
+					}
+
+					if sourceMaxErr == nil && sourceMaxVal != "" && destMaxErr == nil && destMaxVal != "" {
+						// 修复：将字符串转换为数字进行比较
+						sourceMaxInt, err1 := strconv.ParseInt(sourceMaxVal, 10, 64)
+						destMaxInt, err2 := strconv.ParseInt(destMaxVal, 10, 64)
+
+						if err1 == nil && err2 == nil {
+							if sourceMaxInt > destMaxInt {
+								mergedMaxVal = sourceMaxVal
+							} else {
+								mergedMaxVal = destMaxVal
+							}
+						} else {
+							// 如果转换失败，使用字符串比较作为备选
+							if sourceMaxVal > destMaxVal {
+								mergedMaxVal = sourceMaxVal
+							} else {
+								mergedMaxVal = destMaxVal
+							}
+						}
+					} else if sourceMaxErr == nil && sourceMaxVal != "" {
+						mergedMaxVal = sourceMaxVal
+					} else if destMaxErr == nil && destMaxVal != "" {
+						mergedMaxVal = destMaxVal
+					}
+
+					global.Wlog.Debug("DEBUG_MERGED_RANGE_CALCULATION: source_min=%s, dest_min=%s => merged_min=%s\n", sourceMinVal, destMinVal, mergedMinVal)
+
+					global.Wlog.Debug("DEBUG_MERGED_RANGE: merged_min=%s, merged_max=%s\n", mergedMinVal, mergedMaxVal)
+
+					// 关键修复：如果当前处理的起始值大于合并后的最小值，需要扩展查询范围
+					// 这确保了目标端超出源端范围的数据被正确包含
+					if mergedMinVal != "" && e != "" {
+						if e > mergedMinVal {
+							global.Wlog.Debug("DEBUG_RANGE_FIX: Current e='%s' > merged_min='%s', need to extend query range\n", e, mergedMinVal)
+
+							// 生成扩展的查询条件，从合并后的最小值开始
+							var whereExist string
+							if where != "" {
+								whereExist = fmt.Sprintf("%v and ", where)
+							}
+
+							// 生成扩展的WHERE条件：从合并后的最小值到当前e值
+							extendedWhere := fmt.Sprintf("%v `%v` >= '%v' and `%v` < '%v'", whereExist, sp.columnName[level], mergedMinVal, sp.columnName[level], e)
+							global.Wlog.Debug("DEBUG_EXTENDED_WHERE: %s\n", extendedWhere)
+
+							// 将扩展的WHERE条件发送到channel
+							sqlWhere <- extendedWhere
+
+							vlog = fmt.Sprintf("(%d) Extended query range to cover missing data: %s to %s (merged min: %s)", logThreadSeq, mergedMinVal, e, mergedMinVal)
+							global.Wlog.Debug(vlog)
+						}
+					}
+
+					// 计算合并后的最小值和最大值
+					var minVal, maxVal string
+					if sourceMinErr == nil && sourceMinVal != "" && destMinErr == nil && destMinVal != "" {
+						// 比较两个最小值，取较小者
+						if sourceMinVal < destMinVal {
+							minVal = sourceMinVal
+						} else {
+							minVal = destMinVal
+						}
+					} else if sourceMinErr == nil && sourceMinVal != "" {
+						minVal = sourceMinVal
+					} else if destMinErr == nil && destMinVal != "" {
+						minVal = destMinVal
+					}
+
+					if sourceMaxErr == nil && sourceMaxVal != "" && destMaxErr == nil && destMaxVal != "" {
+						// 比较两个最大值，取较大者
+						if sourceMaxVal > destMaxVal {
+							maxVal = sourceMaxVal
+						} else {
+							maxVal = destMaxVal
+						}
+					} else if sourceMaxErr == nil && sourceMaxVal != "" {
+						maxVal = sourceMaxVal
+					} else if destMaxErr == nil && destMaxVal != "" {
+						maxVal = destMaxVal
+					}
+
+					if maxVal != "" {
+						vlog = fmt.Sprintf("(%d) Merged data range: min=%s, max=%s (source=[%s,%s], dest=[%s,%s])", logThreadSeq, minVal, maxVal, sourceMinVal, sourceMaxVal, destMinVal, destMaxVal)
+						global.Wlog.Debug(vlog)
+
+						// 检查当前边界值是否在合并后的范围内
+						// 关键：使用合并后的maxVal进行判断，确保覆盖所有数据
+						global.Wlog.Debug("DEBUG_COMPARISON: e='%s', maxVal='%s', e <= maxVal = %v\n", e, maxVal, e <= maxVal)
+						if e <= maxVal {
+							vlog = fmt.Sprintf("(%d) Final boundary check needed from %s to %s (merged range)", logThreadSeq, e, maxVal)
+							global.Wlog.Debug(vlog)
 
 							var whereExist string
 							if where != "" {
@@ -337,7 +337,6 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 							// 生成包含剩余数据的WHERE条件，确保包含最大边界
 							sqlwhere := fmt.Sprintf("%v `%v` >= '%v' ", whereExist, sp.columnName[level], e)
 							sqlWhere <- sqlwhere
-							//fmt.Printf("DEBUG1: %v\n", sqlwhere)
 
 							vlog = fmt.Sprintf("(%d) Added final WHERE condition to ensure all data is covered: %s", logThreadSeq, sqlwhere)
 							global.Wlog.Debug(vlog)
@@ -371,7 +370,7 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 						sqlwhere = fmt.Sprintf("%s %s", where, sqlwhere)
 					}
 					sqlWhere <- sqlwhere
-					//fmt.Printf("DEBUG2: %v\n", sqlwhere)
+
 					sqlwhere, e, g = "", "", ""
 				}
 				var whereExist string
@@ -388,27 +387,27 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 				vlog = fmt.Sprintf("(%d) NULL values processed for index column %s level %d - WHERE: %s", logThreadSeq, sp.columnName[level], level, sqlwhere)
 				global.Wlog.Debug(vlog)
 				sqlWhere <- sqlwhere
-				//fmt.Printf("DEBUG3: %v\n", sqlwhere)
+
 				sqlwhere = ""
 			} else {
-			//获取联合索引或单列索引的首值
-			if key != "END" && e == "" {
-				// 关键修复：使用合并后的最小值作为起始点，而不是ChangeMerge的第一个值
-				if mergedMinVal != "" && level == 0 {
-					e = mergedMinVal
-					fmt.Printf("DEBUG_FIRST_VALUE: Using merged minimum value '%s' instead of first key '%s'\n", mergedMinVal, key)
-				} else {
-					e = key
-					fmt.Printf("DEBUG_FIRST_VALUE: First key from merged data stream is '%s'\n", key)
+				//获取联合索引或单列索引的首值
+				if key != "END" && e == "" {
+					// 关键修复：使用合并后的最小值作为起始点，而不是ChangeMerge的第一个值
+					if mergedMinVal != "" && level == 0 {
+						e = mergedMinVal
+						global.Wlog.Debug("DEBUG_FIRST_VALUE: Using merged minimum value '%s' instead of first key '%s'\n", mergedMinVal, key)
+					} else {
+						e = key
+						global.Wlog.Debug("DEBUG_FIRST_VALUE: First key from merged data stream is '%s'\n", key)
+					}
 				}
-			}
-			vlog = fmt.Sprintf("(%d) Index column %s level %d starting value: %s", logThreadSeq, sp.columnName[level], level, e)
-			global.Wlog.Debug(vlog)
-			
-			// 如果是level=0的前几个值，额外记录调试信息
-			if level == 0 && autoIncSeq <= 3 {
-				fmt.Printf("DEBUG_DATA_STREAM_%d: key='%s', value='%s', current e='%s'\n", autoIncSeq, key, value, e)
-			}
+				vlog = fmt.Sprintf("(%d) Index column %s level %d starting value: %s", logThreadSeq, sp.columnName[level], level, e)
+				global.Wlog.Debug(vlog)
+
+				// 如果是level=0的前几个值，额外记录调试信息
+				if level == 0 && autoIncSeq <= 3 {
+					global.Wlog.Debug("DEBUG_DATA_STREAM_%d: key='%s', value='%s', current e='%s'\n", autoIncSeq, key, value, e)
+				}
 				//获取每行的count值,并将count值记录及每次动态的值
 				if key != "END" {
 					c, _ = strconv.Atoi(value)
@@ -436,7 +435,7 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 					}
 
 					sqlWhere <- sqlwhere
-					//fmt.Printf("DEBUG4: %v\n", sqlwhere)
+
 					sqlwhere = ""
 					vlog = fmt.Sprintf("(%d) Completed processing end of index column %s level %d - WHERE: %s", logThreadSeq, sp.columnName[level], level, sqlwhere)
 					global.Wlog.Debug(vlog)
@@ -456,24 +455,24 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 					} else {
 						if partFirstValue { //每段的首行数据
 							sqlwhere = fmt.Sprintf("%s `%v` >= '%v' and `%v` < '%v' ", whereExist, sp.columnName[level], e, sp.columnName[level], g)
-							//fmt.Printf("DEBUGXX4: %v\n", sqlwhere)
+
 							partFirstValue = false
 						} else {
 							// 修复边界条件：只有当是最后一块数据时，才使用>=条件来包含所有剩余记录
 							// 这样确保最后一条记录不会被遗漏，但其他块仍然使用范围条件
 							if key == "END" {
 								sqlwhere = fmt.Sprintf("%s `%v` >= '%v' ", whereExist, sp.columnName[level], e)
-								//fmt.Printf("DEBUGXX1: %v\n", sqlwhere)
+
 							} else {
 								sqlwhere = fmt.Sprintf("%s `%v` >= '%v' and `%v` < '%v' ", whereExist, sp.columnName[level], e, sp.columnName[level], g)
-								//fmt.Printf("DEBUGXX2: %v\n", sqlwhere)
+
 							}
-							//fmt.Printf("DEBUG3: %v\n", key)
+
 						}
 					}
 
 					sqlWhere <- sqlwhere
-					//fmt.Printf("DEBUG5: %v\n", sqlwhere)
+
 					if key != "END" {
 						e = key
 					}
@@ -484,7 +483,7 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 					} else {
 						where = fmt.Sprintf(" `%v` = '%v' ", sp.columnName[level], g)
 					}
-					//fmt.Printf("DEBUG2: %v\n", where)
+
 					level++ //索引列层数递增
 					//进入下一层的索引计算
 					sp.recursiveIndexColumn(sqlWhere, sdb, ddb, level, queryNum, where, selectColumn, logThreadSeq)
@@ -1231,81 +1230,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 										batchAdd = batchAdd[:10]
 									}
 
-									// 对于MySQL，尝试合并VALUES
-									if sp.ddrive == "mysql" {
-										// 先获取第一条记录的表名和列名信息
-										if len(batchAdd) > 0 {
-											dbf.RowData = batchAdd[0]
-											firstSql, err := dbf.DataAbnormalFix().FixInsertSqlExec(ddb, sp.ddrive, logThreadSeq)
-											if err == nil && firstSql != "" {
-												// 解析第一条SQL，提取表名和列名部分
-												// INSERT INTO `schema`.`table`(`col1`,`col2`,...) VALUES('val1','val2',...);
-												insertPrefixEnd := strings.Index(firstSql, " VALUES(")
-												if insertPrefixEnd > 0 {
-													insertPrefix := firstSql[:insertPrefixEnd]
-													valuesEnd := strings.LastIndex(firstSql, ");")
-													if valuesEnd > 0 && valuesEnd > insertPrefixEnd+8 {
-														// 开始构建合并的SQL
-														var mergedValues []string
-														currentSqlLength := len(insertPrefix) + 9 // + " VALUES(" 的长度
-														valuesCount := 0
-
-														// 处理第一条记录的VALUES部分
-														firstValues := firstSql[insertPrefixEnd+8 : valuesEnd]
-														mergedValues = append(mergedValues, firstValues)
-														currentSqlLength += len(firstValues)
-														valuesCount++
-
-														// 处理剩余记录
-														for i := 1; i < len(batchAdd); i++ {
-															dbf.RowData = batchAdd[i]
-															singleSql, err := dbf.DataAbnormalFix().FixInsertSqlExec(ddb, sp.ddrive, logThreadSeq)
-															if err != nil {
-																sp.getErr(fmt.Sprintf("dest: checksum table %s.%s generate INSERT sql error for row %d.", c1.Schema, c1.Table, i), err)
-																continue
-															}
-
-															if singleSql != "" {
-																// 提取当前记录的VALUES部分
-																valStart := strings.Index(singleSql, " VALUES(")
-																valEnd := strings.LastIndex(singleSql, ");")
-																if valStart > 0 && valEnd > valStart+8 {
-																	curValues := singleSql[valStart+8 : valEnd]
-																	// 检查合并后是否会超过长度限制
-																	additionalLength := 2 + len(curValues) // + ", " 的长度
-																	if currentSqlLength+additionalLength <= maxSqlSize {
-																		mergedValues = append(mergedValues, curValues)
-																		currentSqlLength += additionalLength
-																		valuesCount++
-																	} else {
-																		// 达到长度限制，先生成当前合并的SQL
-																		mergedSql := insertPrefix + " VALUES(" + strings.Join(mergedValues, "), (") + ");"
-																		cc <- mergedSql
-
-																		// 重新开始一个新的合并组
-																		mergedValues = []string{curValues}
-																		currentSqlLength = len(insertPrefix) + 9 + len(curValues)
-																		valuesCount = 1
-																	}
-																}
-															}
-														}
-
-														// 处理最后一组合并值
-														if len(mergedValues) > 0 {
-															mergedSql := insertPrefix + " VALUES(" + strings.Join(mergedValues, "), (") + ");"
-															cc <- mergedSql
-															vlog = fmt.Sprintf("(%d) Generated merged INSERT statement with %d values for %s.%s", logThreadSeq, valuesCount, c1.Schema, c1.Table)
-															global.Wlog.Debug(vlog)
-														}
-														continue // 继续下一个批次
-													}
-												}
-											}
-										}
-									}
-
-									// 如果无法合并（非MySQL或解析失败），回退到单独执行
+									// 生成单独的INSERT语句，避免多线程并发下的重复冲突
 									for _, i := range batchAdd {
 										dbf.RowData = i
 										sqlstr, err := dbf.DataAbnormalFix().FixInsertSqlExec(ddb, sp.ddrive, logThreadSeq)

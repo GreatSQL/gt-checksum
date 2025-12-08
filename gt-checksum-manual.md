@@ -194,6 +194,8 @@ $ mv gt-checksum /usr/local/bin
 
 截止最新的v1.2.3版本，已知存在以下几个问题。
 
+- 由于是并行校验，所以生成的fixSQL中可能存在重复的INSERT修复操作，在执行修复时可能报告重复冲突，这种情况下通常可以忽略。可以在修复完成后再执行一次校验（或执行 `CHECKSUM TABLE x` 进行校验），确认修复成功。
+
 - 当表存在varchar字段时且该字段末尾存在空格，该表如果没有任何可用索引，则可能导致校验结果不准确。这种情况下，可以通过添加合适的索引来解决问题。
 
 - 为了安全起见，当设置checkObject=data之外的其他值时，即便同时设置datafix=table，也不会直接在线完成修复，需要改成datafix=file，生成fix SQL后再由DBA手动完成。
@@ -209,39 +211,6 @@ $ mv gt-checksum /usr/local/bin
 - 当添加的字段是主键/外键约束字段或包含索引时，会多一个额外的`ADD PRIMARY KEY/ADD CONSTRAINT/ADD KEY`操作，需要手动删掉，或者执行时加上"-f"强制忽略错误即可。
 
 - 当表的partition定义生成报告（Diffs=no）但不生成fixSQL（生成提示信息，没有具体SQL，需要DBA手动调整修复）。
-
-TODO
-- 当待校验表的数据量特别少
-Checksum Results Overview
-Schema  Table   IndexColumn     CheckObject     Rows    Diffs   Datafix
-sbtest  t3      id              data            8,32    no      file
-表t3源端有主键，目标端没有，校验错误
-
-
-
-场景2：
-Checksum Results Overview
-Schema  Table   IndexColumn     CheckObject     Rows    Diffs   Datafix
-sbtest  t3      id              data            16,14   no      file
-
-greatsql> select id from t3;  <-- 目标
-|        94 |
-|       296 |
-...
-| 661815870 |
-| 775707896 |
-
-greatsql> select id from t3;  <-- 源
-+-----------+
-| id        |
-+-----------+
-|      8300 |
-...
-| 775707896 |
-+-----------+
-
-源端最小值比目标端最小值大，无法校验相应位置，这种情况下，源端、目标端的数据都要分别全部读取出来对比，不能只根据源端数据来取值查询
-
 
 - 当数据表没有显式主键，且表中有多行数据是重复的，可能会导致校验结果不准确。
 
