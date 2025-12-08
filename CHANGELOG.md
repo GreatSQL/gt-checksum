@@ -14,7 +14,7 @@
 - 支持当partition不一致时，仅生成报告（Diffs=no）但不生成fixSQL（生成提示信息，没有具体SQL）
 - 支持生成外键约束（FOREIGN KEY）修复SQL
 - 在checkObject=data时，当发现待检查表结构不一致时，略过该表，并加上skipped提示，同时避免被hang住
-- 支持合并fixSQL中的INSERT和DELETE操作，提高SQL执行效率
+- 支持合并fixSQL中的DELETE操作，提高SQL执行效率
 - 支持生成fixSQL时，如果是INSERT操作，则总是声明所有字段名，应对隐藏字段情况
 - 支持生成fixSQL时，在文件头加上字符集设定（从dstDSN参数中的"charset"值获取）、临时禁用外键和唯一约束检查
 - 支持生成fixSQL时，在CREATE TABLE/TRIGGER/PROCEDURE/FUNCTION前面加上相应的schema name
