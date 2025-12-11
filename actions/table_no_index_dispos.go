@@ -307,7 +307,7 @@ func (sp *SchedulePlan) FixSqlExec(sqlStrExec <-chan string, logThreadSeq int64)
 			if !ok {
 				if len(noIndexD) == 0 {
 					if len(sqlSlice) > 0 {
-						ApplyDataFix(sqlSlice, sp.datafixType, sp.sfile, sp.ddrive, sp.djdbc, logThreadSeq)
+						ApplyDataFixWithTrxNum(sqlSlice, sp.datafixType, sp.sfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
 						displayTableName := sp.getDisplayTableName()
 						vlog = fmt.Sprintf("(%d) The delete repair sql statements of table %s are generated.", logThreadSeq, displayTableName)
 						global.Wlog.Debug(vlog)
@@ -331,7 +331,7 @@ func (sp *SchedulePlan) FixSqlExec(sqlStrExec <-chan string, logThreadSeq int64)
 						defer func() {
 							<-noIndexD
 						}()
-						ApplyDataFix(a, sp.datafixType, sp.sfile, sp.ddrive, sp.djdbc, logThreadSeq)
+						ApplyDataFixWithTrxNum(a, sp.datafixType, sp.sfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
 						displayTableName := sp.getDisplayTableName()
 						vlog = fmt.Sprintf("(%d) The delete repair sql statements of table %s are generated.", logThreadSeq, displayTableName)
 						global.Wlog.Debug(vlog)
