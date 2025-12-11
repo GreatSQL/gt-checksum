@@ -9,8 +9,9 @@ import (
 )
 
 type repairSqlStruct struct {
-	Drive string
-	JDBC  string
+	Drive     string
+	JDBC      string
+	FixTrxNum int
 }
 
 func isFile(file string) *os.File {
@@ -119,9 +120,8 @@ func (rs repairSqlStruct) execRepairSql(sqlstr []string, dbType string, logThrea
 */
 func (rs repairSqlStruct) SqlFile(sfile *os.File, sql []string, logThreadSeq int64) error { //在/tmp/下创建数据修复文件，将在目标端数据修复的语句写入到文件中
 	var (
-		vlog      string
-		sqlCommit []string
-		err       error
+		vlog string
+		err  error
 	)
 	vlog = fmt.Sprintf("(%d) Writing repair statements to file", logThreadSeq)
 	global.Wlog.Debug(vlog)
@@ -150,26 +150,63 @@ func (rs repairSqlStruct) SqlFile(sfile *os.File, sql []string, logThreadSeq int
 	}
 	
 	if strings.HasPrefix(strings.ToUpper(strings.Join(sql, ";")), "ALTER TABLE") {
-		sqlCommit = sql
+		// ALTER TABLE语句不需要事务包装
+		_, err = FileOperate{File: sfile, BufSize: 1024 * 4 * 1024, SqlType: "sql"}.ConcurrencyWriteFile(sql)
+		if err != nil {
+			return err
+		}
 	} else {
-		sqlCommit = []string{"BEGIN;"}
-		sqlCommit = append(sqlCommit, sql...)
-		sqlCommit = append(sqlCommit, "COMMIT;")
+		// 根据fixTrxNum参数拆分事务
+		if rs.FixTrxNum <= 0 {
+			// 如果fixTrxNum <= 0，则所有SQL放在一个事务中（默认行为）
+			sqlCommit := []string{"BEGIN;"}
+			sqlCommit = append(sqlCommit, sql...)
+			sqlCommit = append(sqlCommit, "COMMIT;")
+			_, err = FileOperate{File: sfile, BufSize: 1024 * 4 * 1024, SqlType: "sql"}.ConcurrencyWriteFile(sqlCommit)
+			if err != nil {
+				return err
+			}
+		} else {
+			// 根据fixTrxNum拆分成多个事务
+			totalSql := len(sql)
+			for i := 0; i < totalSql; i += rs.FixTrxNum {
+				end := i + rs.FixTrxNum
+				if end > totalSql {
+					end = totalSql
+				}
+				
+				// 构建一个事务的SQL语句
+				batchSql := []string{"BEGIN;"}
+				batchSql = append(batchSql, sql[i:end]...)
+				batchSql = append(batchSql, "COMMIT;")
+				
+				_, err = FileOperate{File: sfile, BufSize: 1024 * 4 * 1024, SqlType: "sql"}.ConcurrencyWriteFile(batchSql)
+				if err != nil {
+					return err
+				}
+				
+				vlog = fmt.Sprintf("(%d) Written transaction batch %d-%d (total %d SQL statements)", 
+					logThreadSeq, i+1, end, end-i)
+				global.Wlog.Debug(vlog)
+			}
+		}
 	}
-	_, err = FileOperate{File: sfile, BufSize: 1024 * 4 * 1024, SqlType: "sql"}.ConcurrencyWriteFile(sqlCommit)
-	if err != nil {
-		return err
-	}
+	
 	vlog = fmt.Sprintf("(%d) Repair statements written to file successfully", logThreadSeq)
 	global.Wlog.Debug(vlog)
 	return nil
 }
 func ApplyDataFix(fixSql []string, datafixType string, sfile *os.File, ddrive, jdbc string, logThreadSeq int64) error {
+	return ApplyDataFixWithTrxNum(fixSql, datafixType, sfile, ddrive, jdbc, logThreadSeq, 0)
+}
+
+func ApplyDataFixWithTrxNum(fixSql []string, datafixType string, sfile *os.File, ddrive, jdbc string, logThreadSeq int64, fixTrxNum int) error {
 	var (
 		err       error
 		repairdml = repairSqlStruct{
-			Drive: ddrive,
-			JDBC:  jdbc,
+			Drive:     ddrive,
+			JDBC:      jdbc,
+			FixTrxNum: fixTrxNum,
 		}
 	)
 	if datafixType == "file" {

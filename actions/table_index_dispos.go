@@ -968,9 +968,9 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 						if len(cleanSourceData) < maxDebug {
 							maxDebug = len(cleanSourceData)
 						}
-						fmt.Printf("DEBUG_SOURCE_DATA_%d: First %d records:\n", logThreadSeq, maxDebug)
+						global.Wlog.Debug("DEBUG_SOURCE_DATA_%d: First %d records:\n", logThreadSeq, maxDebug)
 						for i := 0; i < maxDebug; i++ {
-							fmt.Printf("  [%d]: %s\n", i, cleanSourceData[i])
+							global.Wlog.Debug("  [%d]: %s\n", i, cleanSourceData[i])
 						}
 					}
 					
@@ -998,10 +998,10 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 					// 添加调试信息：检查差异数量的合理性
 					expectedAddCount := len(cleanSourceData) - len(cleanDestData)
 					if len(cleanDestData) == 0 {
-						fmt.Printf("DEBUG_DIFF_ANALYSIS_%d: Expected add count: %d (source=%d, dest=0), Actual add count: %d\n", 
+						global.Wlog.Debug("DEBUG_DIFF_ANALYSIS_%d: Expected add count: %d (source=%d, dest=0), Actual add count: %d\n", 
 							logThreadSeq, len(cleanSourceData), len(cleanSourceData), len(add))
 					} else {
-						fmt.Printf("DEBUG_DIFF_ANALYSIS_%d: Expected add count: %d (source=%d, dest=%d), Actual add count: %d\n", 
+						global.Wlog.Debug("DEBUG_DIFF_ANALYSIS_%d: Expected add count: %d (source=%d, dest=%d), Actual add count: %d\n", 
 							logThreadSeq, expectedAddCount, len(cleanSourceData), len(cleanDestData), len(add))
 					}
 					
@@ -1011,9 +1011,9 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 						if len(add) < maxDebug {
 							maxDebug = len(add)
 						}
-						fmt.Printf("DEBUG_ADD_DATA_%d: First %d records (showing because count is abnormal):\n", logThreadSeq, maxDebug)
+						global.Wlog.Debug("DEBUG_ADD_DATA_%d: First %d records (showing because count is abnormal):\n", logThreadSeq, maxDebug)
 						for i := 0; i < maxDebug; i++ {
-							fmt.Printf("  [%d]: %s\n", i, add[i])
+							global.Wlog.Debug("  [%d]: %s\n", i, add[i])
 						}
 					}
 
@@ -1134,7 +1134,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 							if len(del) > 0 {
 								vlog = fmt.Sprintf("(%d) Generating DELETE statements for %s.%s", logThreadSeq, c1.Schema, c1.Table)
 								global.Wlog.Debug(vlog)
-								fmt.Printf("DEBUG_SQL_ORDER_%d: Processing %d DELETE statements first for %s.%s\n", 
+								global.Wlog.Debug("DEBUG_SQL_ORDER_%d: Processing %d DELETE statements first for %s.%s\n", 
 									logThreadSeq, len(del), c1.Schema, c1.Table)
 
 								// 定义SQL长度限制 (1MB)
@@ -1281,7 +1281,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 							if len(add) > 0 {
 								vlog = fmt.Sprintf("(%d) Generating INSERT statements for %s.%s", logThreadSeq, c1.Schema, c1.Table)
 								global.Wlog.Debug(vlog)
-								fmt.Printf("DEBUG_SQL_ORDER_%d: Processing %d INSERT statements after DELETE for %s.%s\n", 
+								global.Wlog.Debug("DEBUG_SQL_ORDER_%d: Processing %d INSERT statements after DELETE for %s.%s\n", 
 									logThreadSeq, len(add), c1.Schema, c1.Table)
 
 								// 定义SQL长度限制 (1MB)
@@ -1303,7 +1303,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 									}
 
 				// 生成单独的INSERT语句，避免多线程并发下的重复冲突
-				fmt.Printf("DEBUG_INSERT_LOOP_%d: Starting INSERT generation for %d records in batch for %s.%s\n", 
+				global.Wlog.Debug("DEBUG_INSERT_LOOP_%d: Starting INSERT generation for %d records in batch for %s.%s\n", 
 					logThreadSeq, len(batchAdd), c1.Schema, c1.Table)
 				
 				insertCount := 0
@@ -1336,7 +1336,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 								if len(insertKey) > 50 {
 									insertPreview = insertKey[:50]
 								}
-								fmt.Printf("DEBUG_DUPLICATE_INSERT_%d: Skipping duplicate INSERT: %s\n", 
+								global.Wlog.Debug("DEBUG_DUPLICATE_INSERT_%d: Skipping duplicate INSERT: %s\n", 
 									logThreadSeq, insertPreview)
 							}
 							continue
@@ -1357,7 +1357,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 							if len(sqlstr) > 50 {
 								sqlPreview = sqlstr[:50] + "..."
 							}
-							fmt.Printf("DEBUG_INSERT_DETAIL_%d: Batch[%d] - Insert count %d - SQL starts with: %s\n", 
+							global.Wlog.Debug("DEBUG_INSERT_DETAIL_%d: Batch[%d] - Insert count %d - SQL starts with: %s\n", 
 								logThreadSeq, batchIndex, insertCount, sqlPreview)
 						}
 						
@@ -1367,10 +1367,10 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 				}
 				
 				if duplicateCount > 0 {
-					fmt.Printf("DEBUG_INSERT_LOOP_%d: Generated %d INSERT statements, skipped %d duplicates for batch with %d records in %s.%s (Total so far: %d)\n", 
+					global.Wlog.Debug("DEBUG_INSERT_LOOP_%d: Generated %d INSERT statements, skipped %d duplicates for batch with %d records in %s.%s (Total so far: %d)\n", 
 						logThreadSeq, insertCount, duplicateCount, len(batchAdd), c1.Schema, c1.Table, totalInsertCount)
 				} else {
-					fmt.Printf("DEBUG_INSERT_LOOP_%d: Generated %d INSERT statements for batch with %d records in %s.%s (Total so far: %d)\n", 
+					global.Wlog.Debug("DEBUG_INSERT_LOOP_%d: Generated %d INSERT statements for batch with %d records in %s.%s (Total so far: %d)\n", 
 						logThreadSeq, insertCount, len(batchAdd), c1.Schema, c1.Table, totalInsertCount)
 				}
 								}
@@ -1383,7 +1383,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 			}
 		}
 	}
-	fmt.Printf("DEBUG_FINAL_COUNT_%d: Total INSERT statements generated for %s.%s: %d\n", 
+	global.Wlog.Debug("DEBUG_FINAL_COUNT_%d: Total INSERT statements generated for %s.%s: %d\n", 
 		logThreadSeq, sp.schema, sp.table, totalInsertCount)
 	vlog = fmt.Sprintf("(%d) Completed difference processing and repair statements for %s.%s", logThreadSeq, sp.schema, sp.table)
 	global.Wlog.Info(vlog)
@@ -1409,7 +1409,7 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 			v, ok := <-fixSQL
 			if !ok {
 				// 通道关闭，开始最终处理
-				fmt.Printf("DEBUG_FINAL_SORT_%d: Channel closed, starting final SQL sorting\n", logThreadSeq)
+				global.Wlog.Debug("DEBUG_FINAL_SORT_%d: Channel closed, starting final SQL sorting\n", logThreadSeq)
 				
 				// 按SQL类型重新排序：所有DELETE在前，INSERT在后
 				deleteSqls = []string{}
@@ -1424,7 +1424,7 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 					}
 				}
 				
-				fmt.Printf("DEBUG_FINAL_SORT_%d: Sorted SQLs - DELETE: %d, INSERT: %d\n", 
+				global.Wlog.Debug("DEBUG_FINAL_SORT_%d: Sorted SQLs - DELETE: %d, INSERT: %d\n", 
 					logThreadSeq, len(deleteSqls), len(insertSqls))
 				
 				// 构建最终的有序SQL列表
@@ -1432,8 +1432,9 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 				finalSqls = append(finalSqls, deleteSqls...)  // 先添加所有DELETE语句
 				finalSqls = append(finalSqls, insertSqls...)  // 再添加所有INSERT语句
 				
+				// 无论是否有差异，都将表结果添加到measuredDataPods中
 				if len(finalSqls) > 0 {
-					fmt.Printf("DEBUG_APPLY_ORDER_%d: Applying %d SQL statements in correct order\n", 
+					global.Wlog.Debug("DEBUG_APPLY_ORDER_%d: Applying %d SQL statements in correct order\n", 
 						logThreadSeq, len(finalSqls))
 					
 					// 输出前几条SQL验证顺序
@@ -1449,17 +1450,21 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 						} else if strings.HasPrefix(sqlTrim, "INSERT") {
 							sqlType = "INSERT"
 						}
-						fmt.Printf("DEBUG_FINAL_SQL_%d[%d]: %s - %s\n", logThreadSeq, i+1, sqlType, 
+						global.Wlog.Debug("DEBUG_FINAL_SQL_%d[%d]: %s - %s\n", logThreadSeq, i+1, sqlType, 
 							finalSqls[i][:min(100, len(finalSqls[i]))])
 					}
 					
-					ApplyDataFix(finalSqls, sp.datafixType, sp.sfile, sp.ddrive, sp.djdbc, logThreadSeq)
+					ApplyDataFixWithTrxNum(finalSqls, sp.datafixType, sp.sfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
 					vlog = fmt.Sprintf("(%d) Repair statements generated for %s.%s: DELETE=%d, INSERT=%d", 
 						logThreadSeq, sp.schema, sp.table, len(deleteSqls), len(insertSqls))
 					global.Wlog.Debug(vlog)
-				} else {
-					measuredDataPods = append(measuredDataPods, *sp.pods)
+					
+					// 有差异时标记DIFFS为yes
+					sp.pods.DIFFS = "yes"
 				}
+				
+				// 无论是否有差异，都添加到结果中
+				measuredDataPods = append(measuredDataPods, *sp.pods)
 				isFinished = true
 				return
 			} else {
@@ -1470,11 +1475,11 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 				sqlTrim := strings.TrimSpace(strings.ToUpper(v))
 				if strings.HasPrefix(sqlTrim, "DELETE") {
 					deleteCount++
-					fmt.Printf("DEBUG_BUFFER_DELETE_%d: Buffered DELETE statement #%d for %s.%s\n", 
+					global.Wlog.Debug("DEBUG_BUFFER_DELETE_%d: Buffered DELETE statement #%d for %s.%s\n", 
 						logThreadSeq, deleteCount, sp.schema, sp.table)
 				} else if strings.HasPrefix(sqlTrim, "INSERT") {
 					insertCount++
-					fmt.Printf("DEBUG_BUFFER_INSERT_%d: Buffered INSERT statement #%d for %s.%s\n", 
+					global.Wlog.Debug("DEBUG_BUFFER_INSERT_%d: Buffered INSERT statement #%d for %s.%s\n", 
 						logThreadSeq, insertCount, sp.schema, sp.table)
 				}
 			}
