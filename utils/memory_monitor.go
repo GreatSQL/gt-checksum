@@ -90,39 +90,11 @@ func MemoryMonitor(memoryLimit string, config *inputArg.ConfigParameter) {
 				prevQueueSize := config.SecondaryL.RulesV.QueueSize
 				prevChunkSize := config.SecondaryL.RulesV.ChanRowCount
 
-				// 计算新的参数值，采用更激进的调整策略
-				// 对于parallelThds，保持相对温和的调整
-				var newParallelThds int
-				if adjustmentCount == 0 {
-					// 第一次调整，减半
-					newParallelThds = max(1, prevParallelThds/2)
-				} else {
-					// 后续调整，更激进地减少到前一次的1/3
-					newParallelThds = max(1, prevParallelThds/3)
-				}
-
-				// 对于queueSize，采用更激进的调整，因为它对内存影响更大
-				var newQueueSize int
-				if adjustmentCount == 0 {
-					// 第一次调整，减少到原来的1/3
-					newQueueSize = max(1, prevQueueSize/3)
-				} else if adjustmentCount == 1 {
-					// 第二次调整，进一步减少到当前值的1/2
-					newQueueSize = max(1, prevQueueSize/2)
-				} else {
-					// 后续调整，持续减少到当前值的1/2
-					newQueueSize = max(1, prevQueueSize/2)
-				}
-
-				// 对于chunkSize，采用和parallelThds相同的调整策略
-				var newChunkSize int
-				if adjustmentCount == 0 {
-					// 第一次调整，减半
-					newChunkSize = max(100, prevChunkSize/2) // 最小值为100，避免过小影响性能
-				} else {
-					// 后续调整，更激进地减少到前一次的1/3
-					newChunkSize = max(100, prevChunkSize/3)
-				}
+				// 计算新的参数值，采用更温和的调整策略
+				// 所有参数都统一调整为原来的90%
+				newParallelThds := max(1, int(float64(prevParallelThds)*0.9))
+				newQueueSize := max(1, int(float64(prevQueueSize)*0.9))
+				newChunkSize := max(100, int(float64(prevChunkSize)*0.9)) // 最小值为100，避免过小影响性能
 
 				// 更新配置值
 				config.SecondaryL.RulesV.ParallelThds = newParallelThds
