@@ -16,6 +16,14 @@ var (
 	AutoIncrementColumnsWithPrimaryKey map[string]bool
 	// 跟踪目标端表是否存在主键，key格式：schema.table
 	DestTableHasPrimaryKey map[string]bool
+	// 缓存表的主键列信息，key格式：schema.table
+	TablePrimaryKeyColumns map[string][]string
+	// 跟踪每个数据库连接当前使用的数据库，key格式：connectionPointer|schema
+	CurrentDatabaseCache map[string]string
+	
+	// 互斥锁保护缓存map的并发访问
+	tablePrimaryKeyMutex sync.RWMutex
+	databaseCacheMutex   sync.RWMutex
 )
 
 type MysqlDataAbnormalFixStruct struct {
@@ -185,19 +193,33 @@ func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive s
 	// 检查表是否有主键，如果有，强制使用主键作为条件
 	hasPrimaryKey := false
 	primaryKeyColumns := []string{}
+	tableKey := fmt.Sprintf("%s.%s", targetSchema, my.Table)
 
-	// 查询表的主键信息
-	query := fmt.Sprintf("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA = '%s' AND TABLE_NAME = '%s' AND CONSTRAINT_NAME = 'PRIMARY' ORDER BY ORDINAL_POSITION", targetSchema, my.Table)
-	rows, err := db.Query(query)
-	if err == nil {
-		defer rows.Close()
-		for rows.Next() {
-			var columnName string
-			if err := rows.Scan(&columnName); err == nil {
-				hasPrimaryKey = true
-				primaryKeyColumns = append(primaryKeyColumns, columnName)
+	// 先检查缓存（使用读锁）
+	tablePrimaryKeyMutex.RLock()
+	if columns, exists := TablePrimaryKeyColumns[tableKey]; exists {
+		tablePrimaryKeyMutex.RUnlock()
+		hasPrimaryKey = len(columns) > 0
+		primaryKeyColumns = columns
+	} else {
+		tablePrimaryKeyMutex.RUnlock()
+		// 查询表的主键信息
+		query := fmt.Sprintf("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA = '%s' AND TABLE_NAME = '%s' AND CONSTRAINT_NAME = 'PRIMARY' ORDER BY ORDINAL_POSITION", targetSchema, my.Table)
+		rows, err := db.Query(query)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var columnName string
+				if err := rows.Scan(&columnName); err == nil {
+					hasPrimaryKey = true
+					primaryKeyColumns = append(primaryKeyColumns, columnName)
+				}
 			}
 		}
+		// 缓存结果（使用写锁）
+		tablePrimaryKeyMutex.Lock()
+		TablePrimaryKeyColumns[tableKey] = primaryKeyColumns
+		tablePrimaryKeyMutex.Unlock()
 	}
 
 	// 如果表有主键，强制使用主键作为条件
@@ -459,9 +481,23 @@ func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive s
 		}
 	}
 	if len(deleteSqlWhere) > 0 {
-		// 确保目标数据库存在
-		if _, err := db.Exec(fmt.Sprintf("USE `%s`", targetSchema)); err != nil {
-			return "", fmt.Errorf("target database %s does not exist", targetSchema)
+		// 生成数据库连接的唯一标识符
+		dbPointer := fmt.Sprintf("%p", db)
+		
+		// 检查缓存，避免重复执行USE语句（使用读锁）
+		databaseCacheMutex.RLock()
+		currentDB, exists := CurrentDatabaseCache[dbPointer]
+		databaseCacheMutex.RUnlock()
+		
+		if !exists || currentDB != targetSchema {
+			// 确保目标数据库存在
+			if _, err := db.Exec(fmt.Sprintf("USE `%s`", targetSchema)); err != nil {
+				return "", fmt.Errorf("target database %s does not exist", targetSchema)
+			}
+			// 更新缓存（使用写锁）
+			databaseCacheMutex.Lock()
+			CurrentDatabaseCache[dbPointer] = targetSchema
+			databaseCacheMutex.Unlock()
 		}
 		deleteSql = fmt.Sprintf("DELETE FROM `%s`.`%s` WHERE %s;", targetSchema, my.Table, deleteSqlWhere)
 	} else {
@@ -721,16 +757,21 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterIndexSqlExec(e, f []string, si map
 func init() {
 	AutoIncrementColumnsWithPrimaryKey = make(map[string]bool)
 	DestTableHasPrimaryKey = make(map[string]bool)
+	TablePrimaryKeyColumns = make(map[string][]string)
+	CurrentDatabaseCache = make(map[string]string)
 }
 
 // 检查目标表是否存在主键并更新DestTableHasPrimaryKey映射
 func (my *MysqlDataAbnormalFixStruct) CheckDestTableHasPrimaryKey(db *sql.DB, logThreadSeq int64) bool {
 	key := fmt.Sprintf("%s.%s", my.Schema, my.Table)
 
-	// 如果已经检查过，直接返回结果
+	// 如果已经检查过，直接返回结果（使用读锁）
+	tablePrimaryKeyMutex.RLock()
 	if hasPK, exists := DestTableHasPrimaryKey[key]; exists {
+		tablePrimaryKeyMutex.RUnlock()
 		return hasPK
 	}
+	tablePrimaryKeyMutex.RUnlock()
 
 	// 查询表的主键信息
 	query := fmt.Sprintf("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA = '%s' AND TABLE_NAME = '%s' AND CONSTRAINT_NAME = 'PRIMARY' LIMIT 1", my.Schema, my.Table)
@@ -738,8 +779,10 @@ func (my *MysqlDataAbnormalFixStruct) CheckDestTableHasPrimaryKey(db *sql.DB, lo
 	err := db.QueryRow(query).Scan(&columnName)
 	hasPK := err == nil && columnName != ""
 
-	// 更新映射
+	// 更新映射（使用写锁）
+	tablePrimaryKeyMutex.Lock()
 	DestTableHasPrimaryKey[key] = hasPK
+	tablePrimaryKeyMutex.Unlock()
 
 	return hasPK
 }
