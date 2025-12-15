@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"gt-checksum/dbExec"
 	"gt-checksum/global"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -145,14 +146,14 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 		}
 
 		dbf := dbExec.DataAbnormalFixStruct{
-			Schema:                 sp.destSchema,   // 使用目标schema而不是原始schema
-			SourceSchema:           sp.sourceSchema, // 添加源schema用于处理映射关系
-			Table:                  sp.table,
-			ColData:                colData.DColumnInfo,
-			DestDevice:             sp.ddrive,
+			Schema:                  sp.destSchema,   // 使用目标schema而不是原始schema
+			SourceSchema:            sp.sourceSchema, // 添加源schema用于处理映射关系
+			Table:                   sp.table,
+			ColData:                 colData.DColumnInfo,
+			DestDevice:              sp.ddrive,
 			CaseSensitiveObjectName: sp.caseSensitiveObjectName,
-			DatafixType:  sp.datafixType,
-			IndexColumn:  indexColumns, // 添加索引列信息
+			DatafixType:             sp.datafixType,
+			IndexColumn:             indexColumns, // 添加索引列信息
 		}
 		for {
 			select {
@@ -217,9 +218,9 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 							}
 							if sqlstr != "" {
 								// 使用sqlstr作为键进行去重，确保同一SQL语句只被处理一次
-						if _, loaded := globalSqlMap.LoadOrStore(sqlstr, true); !loaded {
-							sqlStrExec <- sqlstr
-						}
+								if _, loaded := globalSqlMap.LoadOrStore(sqlstr, true); !loaded {
+									sqlStrExec <- sqlstr
+								}
 							}
 							displayTableName = sp.getDisplayTableName()
 							vlog = fmt.Sprintf("(%d) DELETE repair statements generated for table %s", logThreadSeq, displayTableName)
@@ -267,9 +268,9 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 							}
 							if sqlstr != "" {
 								// 使用sqlstr作为键进行去重，确保同一SQL语句只被处理一次
-						if _, loaded := globalSqlMap.LoadOrStore(sqlstr, true); !loaded {
-							sqlStrExec <- sqlstr
-						}
+								if _, loaded := globalSqlMap.LoadOrStore(sqlstr, true); !loaded {
+									sqlStrExec <- sqlstr
+								}
 							}
 							displayTableName = sp.getDisplayTableName()
 							vlog = fmt.Sprintf("(%d) INSERT repair statements generated for table %s", logThreadSeq, displayTableName)
@@ -484,7 +485,19 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 		DIFFS:       "no",
 		Datafix:     sp.datafixType,
 	}
-	sp.bar.NewOption(0, barTableRow, "rows")
+	// 确保进度条至少有1个总数，避免0导致不显示
+	if barTableRow <= 0 {
+		barTableRow = 1
+	}
+	// 确保进度条至少有1个总数，避免0导致不显示
+	if barTableRow <= 0 {
+		barTableRow = 1
+	}
+	sp.bar.NewOption(0, barTableRow, "task")
+
+	// DEBUG: 记录进度条初始化信息
+	global.Wlog.Debug("DEBUG_NOINDEX_BAR_INIT: barTableRow=%d, chanrowCount=%d\n",
+		barTableRow, sp.chanrowCount)
 	//Count the total number of rows in the table
 	go func() {
 		var cc int
@@ -548,9 +561,19 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 		beginSeq = beginSeq + uint64(chanrowCount)
 		time.Sleep(500 * time.Millisecond)
 		if beginSeq < uint64(barTableRow) {
+			// DEBUG: 记录进度更新
+			global.Wlog.Debug("DEBUG_NOINDEX_PROGRESS_UPDATE: beginSeq=%d, barTableRow=%d, percent=%.1f%%\n",
+				beginSeq, barTableRow, float64(beginSeq)/float64(barTableRow)*100)
 			sp.bar.Play(int64(beginSeq))
+			// 强制刷新缓冲区确保实时显示
+			fmt.Fprint(os.Stdout, "")
 		} else {
+			// DEBUG: 记录达到100%
+			global.Wlog.Debug("DEBUG_NOINDEX_PROGRESS_COMPLETE: beginSeq=%d, barTableRow=%d\n",
+				beginSeq, barTableRow)
 			sp.bar.Play(barTableRow)
+			// 强制刷新缓冲区确保实时显示
+			fmt.Fprint(os.Stdout, "")
 		}
 	}
 	sp.bar.Finish()
@@ -564,7 +587,6 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 	displayTableName = sp.getDisplayTableName()
 	vlog = fmt.Sprintf("(%d) Data checksum completed for table without index %s", logThreadSeq, displayTableName)
 	global.Wlog.Info(vlog)
-	fmt.Printf("%s checksum completed\n", displayTableName)
 }
 
 // getExactRowCount Query the exact number of rows in a table

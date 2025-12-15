@@ -77,6 +77,8 @@ gt-checksum: Establishing database connections
 gt-checksum: Generating data checksum plan
 
 gt-checksum: Starting index checksum for table sbtest.sbtest2
+[██████████████████████████████████████████████████]100%  Processing:     100/100    Elapsed: 0.06s
+table sbtest.t2 checksum completed
 gt-checksum: Table sbtest.sbtest2 checksum completed
 
 Checksum Results Overview

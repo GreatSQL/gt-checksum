@@ -30,7 +30,6 @@ type SchedulePlan struct {
 
 	file                      *os.File
 	TmpFileName               string
-	bar                       *Bar
 	fixTrxNum                 int
 	chanrowCount, concurrency int //单次并发一次校验的行数
 	TmpTablePath              string
@@ -40,6 +39,7 @@ type SchedulePlan struct {
 	tableMaxRows              uint64
 	djdbc                     string
 	tableMappings             map[string]string // 表映射关系
+	bar                       *Bar              // 进度条
 }
 
 // getDisplayTableName 返回表的显示名称，包含映射关系信息
@@ -74,8 +74,8 @@ type DifferencesDataStruct struct {
 查询索引列信息，并发执行调度生成
 */
 func (sp *SchedulePlan) Schedulingtasks() {
-	sp.bar = &Bar{}
 	rand.Seed(time.Now().UnixNano())
+
 	for k, v := range sp.tableIndexColumnMap {
 		//是否校验无索引表
 		if sp.checkNoIndexTable == "no" && len(v) == 0 {
@@ -155,33 +155,47 @@ func (sp *SchedulePlan) Schedulingtasks() {
 		if len(v) == 0 { //校验无索引表
 			sp.chanrowCount = sp.chunkSize
 			logThreadSeq := rand.Int63()
+
+			// 开始新表的进度显示
+			tableName := fmt.Sprintf("begin checksum no-index table %s.%s", sp.schema, sp.table)
+			fmt.Printf("\n%s\n", tableName)
+
+			// 为每个表创建独立的进度条，但不在初始化时设置总数
+			// 总数将在SingleTableCheckProcessing中根据实际行数设置
+			sp.bar = &Bar{}
+
 			sp.SingleTableCheckProcessing(sp.chanrowCount, logThreadSeq)
+
+			// 显示完成消息
+			fmt.Printf("table %s.%s checksum completed\n", sp.schema, sp.table)
 		} else { //校验有索引的表
 			sp.chanrowCount = sp.chunkSize
 			sp.columnName = v
-			// 开始新表的进度显示
+			// 显示开始信息
 			displayTableName := sp.getDisplayTableName()
-			tableName := fmt.Sprintf("gt-checksum: Starting index checksum for table %s\n", displayTableName)
-			sp.bar.NewTableProgress(tableName)
-			sp.doIndexDataCheck() // 确保SchedulePlan结构体已定义此方法
+			fmt.Printf("\nbegin checksum index table %s\n", displayTableName)
 
-			// 显示映射关系信息
-			if sp.sourceSchema != sp.destSchema || sp.table != sp.table {
-				fmt.Println(fmt.Sprintf("gt-checksum: Table %s checksum completed (Schema: %s->%s, Table: %s->%s)",
-					displayTableName, sp.sourceSchema, sp.destSchema, sp.table, sp.table))
-			} else {
-				fmt.Println(fmt.Sprintf("gt-checksum: Table %s checksum completed", displayTableName))
-			}
+			// 为每个表创建独立的进度条，以100为总数显示百分比进度
+			sp.bar = &Bar{}
+			sp.bar.NewOption(0, 100, "task") // 以100为总数，显示百分比进度
+
+			sp.doIndexDataCheck()
+
+			// 显示完成消息
+			fmt.Printf("table %s checksum completed\n", displayTableName)
 		}
 		sp.file.Close()
 		os.Remove(sp.TmpFileName)
 	}
+
 }
+
+// NewTableProgress is deprecated and removed as each table now creates its own progress bar directly in Schedulingtasks
 
 func CheckTableQuerySchedule(sdb, ddb *global.Pool, tableIndexColumnMap map[string][]string, tableAllCol map[string]global.TableAllColumnInfoS, m inputArg.ConfigParameter) *SchedulePlan {
 	// 清空之前的结果数据
 	measuredDataPods = []Pod{}
-	
+
 	// 解析表映射关系
 	tableMappings := make(map[string]string)
 
@@ -232,8 +246,8 @@ func CheckTableQuerySchedule(sdb, ddb *global.Pool, tableIndexColumnMap map[stri
 		checkObject:             m.SecondaryL.RulesV.CheckObject,
 		TmpFileName:             m.NoIndexTableTmpFile,
 		caseSensitiveObjectName: m.SecondaryL.SchemaV.CaseSensitiveObjectName,
-		fixTrxNum:           m.SecondaryL.RepairV.FixTrxNum,
-		djdbc:               m.SecondaryL.DsnsV.DestJdbc,
-		tableMappings:       tableMappings,
+		fixTrxNum:               m.SecondaryL.RepairV.FixTrxNum,
+		djdbc:                   m.SecondaryL.DsnsV.DestJdbc,
+		tableMappings:           tableMappings,
 	}
 }
