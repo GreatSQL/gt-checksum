@@ -12,6 +12,8 @@ import (
 	"time"
 )
 
+var err error
+
 // extractSchemasFromTables 从tables参数中提取schema信息
 // 例如：从"db1.table1,db2.table2,db3.*"中提取出["db1", "db2", "db3"]
 func extractSchemasFromTables(tables string) []string {
@@ -48,16 +50,16 @@ func extractSchemasFromTables(tables string) []string {
 	return result
 }
 
-var err error
-
 func main() {
 	//获取当前时间
 	beginTime := time.Now()
-	var setupTime, tableInfoTime, connPoolTime, checkTime, totalCheckTime, extraOpsTime time.Duration
 
 	//获取配置文件
 	m := inputArg.ConfigInit(0)
-	setupTime = time.Since(beginTime)
+	
+	// 初始化性能指标变量
+	var initStartTime time.Time
+	var metadataCollectionTime, connSetupTime, checksumTime, extraOpsTime, totalElapsedTime, miscellaneousTime time.Duration
 
 	//启动内存监控
 	utils.MemoryMonitor(fmt.Sprintf("%dMB", m.SecondaryL.RulesV.MemoryLimit), m)
@@ -94,7 +96,6 @@ func main() {
 		}
 	}
 
-	tableInfoTime = time.Since(beginTime) - setupTime
 
 	switch m.SecondaryL.RulesV.CheckObject {
 	case "struct":
@@ -111,6 +112,8 @@ func main() {
 		schemaTableInstance.Routine(tableList, 13, 14, "")
 	// 注意：proc和func选项已在参数处理阶段被强制改为data，所以这里不再需要单独的case
 	case "data":
+		initStartTime = time.Now()
+		
 		//校验表结构
 		tableListColCheck, _, err = schemaTableInstance.TableColumnNameCheck(tableList, 9, 10)
 		if err != nil {
@@ -127,15 +130,6 @@ func main() {
 			fmt.Println("-----------------------------------------------------")
 			os.Exit(1)
 		}
-		//19、20
-		if tableListPriCheck, _, err = actions.SchemaTableInit(m).TableAccessPriCheck(tableList, 19, 20); err != nil {
-			fmt.Println("gt-checksum: Failed to verify table access permissions. Check log file or set logLevel=debug for details")
-			os.Exit(1)
-		} else if len(tableListPriCheck) == 0 {
-			fmt.Println("gt-checksum: Insufficient table access permissions. Check log file or set logLevel=debug for details")
-			os.Exit(1)
-		}
-
 		if err != nil {
 			fmt.Println("gt-checksum report: Table structure verification failed. Please check the log file or set option \"logLevel=debug\" to get more information.")
 			os.Exit(1)
@@ -152,6 +146,8 @@ func main() {
 			os.Exit(1)
 		}
 
+		metadataCollectionTime = time.Since(initStartTime)
+		
 		//根据要校验的表，获取该表的全部列信息
 		fmt.Println("gt-checksum: Collecting table column information")
 		tableAllCol := schemaTableInstance.SchemaTableAllCol(tableList, 21, 22)
@@ -161,42 +157,48 @@ func main() {
 
 		//初始化数据库连接池
 		fmt.Println("gt-checksum: Establishing database connections")
-		connStart := time.Now()
+		connSetupStart := time.Now()
 		sdc, _ := dbExec.GCN().GcnObject(m.ConnPoolV.PoolMin, m.SecondaryL.DsnsV.SrcJdbc, m.SecondaryL.DsnsV.SrcDrive).NewConnPool(27)
 		ddc, _ := dbExec.GCN().GcnObject(m.ConnPoolV.PoolMin, m.SecondaryL.DsnsV.DestJdbc, m.SecondaryL.DsnsV.DestDrive).NewConnPool(28)
-		connPoolTime = time.Since(connStart)
+		connSetupTime = time.Since(connSetupStart)
 
 		//针对待校验表生成查询条件计划清单
 		fmt.Println("gt-checksum: Generating data checksum plan")
-		checkStart := time.Now()
-
+		checksumStart := time.Now()
 		actions.CheckTableQuerySchedule(sdc, ddc, tableIndexColumnMap, tableAllCol, *m).Schedulingtasks()
-		totalCheckTime = time.Since(checkStart)
+		checksumTime = time.Since(checksumStart)
 
-		// 计算实际数据校验耗时（从总校验时间中减去精确行数查询等额外操作耗时）
-		// 假设精确行数查询等额外操作占总校验时间的30%
-		checkTime = time.Duration(float64(totalCheckTime) * 0.7)
-		extraOpsTime = totalCheckTime - checkTime
+		// 记录额外操作时间
+		extraOpsStart := time.Now()
+		
 		//关闭连接池连接
 		sdc.Close(27)
 		ddc.Close(28)
+		
+		extraOpsTime = time.Since(extraOpsStart)
+		
+		// 计算杂项时间（主要是初始化时间）
+		totalElapsedTime = time.Since(beginTime)
+		miscellaneousTime = totalElapsedTime - (initStartTime.Sub(beginTime)) - metadataCollectionTime - connSetupTime - checksumTime - extraOpsTime
+		
 	default:
 		fmt.Println("gt-checksum: Invalid checkObject option value. Check log file or set logLevel=debug for details")
 		os.Exit(1)
 	}
-	global.Wlog.Info(fmt.Sprintf("gt-checksum: Checksum completed for object %s", m.SecondaryL.RulesV.CheckObject))
+	global.Wlog.Info("gt-checksum check object {", m.SecondaryL.RulesV.CheckObject, "} complete !!!")
 	//输出结果信息
-	fmt.Println("\nChecksum Results Overview")
+	fmt.Println("")
+	fmt.Println("** gt-checksum Overview of results **")
 	actions.CheckResultOut(m)
-
-	//输出详细耗时统计
-	totalTime := time.Since(beginTime)
-	fmt.Println("\nPerformance Metrics:")
-	fmt.Printf("  Initialization: %.2fs\n", setupTime.Seconds())
-	fmt.Printf("  Metadata collection: %.2fs\n", tableInfoTime.Seconds())
-	fmt.Printf("  Connection setup: %.2fs\n", connPoolTime.Seconds())
-	fmt.Printf("  Data checksum: %.2fs\n", checkTime.Seconds())
+	
+	// 输出性能指标
+	fmt.Println()
+	fmt.Println("Performance Metrics:")
+	fmt.Printf("  Initialization: %.2fs\n", initStartTime.Sub(beginTime).Seconds())
+	fmt.Printf("  Metadata collection: %.2fs\n", metadataCollectionTime.Seconds())
+	fmt.Printf("  Connection setup: %.2fs\n", connSetupTime.Seconds())
+	fmt.Printf("  Data checksum: %.2fs\n", checksumTime.Seconds())
 	fmt.Printf("  Additional operations: %.2fs\n", extraOpsTime.Seconds())
-	fmt.Printf("  Miscellaneous: %.2fs\n", (totalTime - setupTime - tableInfoTime - connPoolTime - totalCheckTime).Seconds())
-	fmt.Printf("Total execution time: %.2fs\n", totalTime.Seconds())
+	fmt.Printf("  Miscellaneous: %.2fs\n", miscellaneousTime.Seconds())
+	fmt.Printf("Total execution time: %.2fs\n", totalElapsedTime.Seconds())
 }

@@ -4,14 +4,15 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
-	rotatelogs "github.com/lestrrat-go/file-rotatelogs" /* 引入日志回滚功能 */
-	"github.com/rifflock/lfshook"                       /* logrus本地文件系统钩子 */
-	"github.com/sirupsen/logrus"                        /* logrus日志包 */
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
 	"time"
+
+	rotatelogs "github.com/lestrrat-go/file-rotatelogs" /* 引入日志回滚功能 */
+	"github.com/rifflock/lfshook"                       /* logrus本地文件系统钩子 */
+	"github.com/sirupsen/logrus"                        /* logrus日志包 */
 )
 
 /* 创建logrus 日志实例 */
@@ -56,7 +57,7 @@ func (s *wlLogFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 /* 使用闭包特性，初始化带回滚功能的logrus日志环境 */
 func LoggerToFile() func(int, ...interface{}) {
 	/* 日志路径和名称 */
-	logFilePath := "E:\\万里开源\\goProject\\tableCheckSum\\src\\wl-table-checkSum"
+	logFilePath := "/tmp/"
 	logFileName := "table-checksum"
 	partFileName := path.Join(logFilePath, logFileName)
 	/* 禁止日志打印到标准输出stdout */

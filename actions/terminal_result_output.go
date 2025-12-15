@@ -2,8 +2,9 @@ package actions
 
 import (
 	"fmt"
-	"gt-checksum/inputArg"
 	"gt-checksum/global"
+	"gt-checksum/inputArg"
+	"os"
 	"strings"
 	"time"
 
@@ -13,15 +14,16 @@ import (
 
 // 进度条
 type Bar struct {
-	percent        int64  //百分比
-	cur            int64  //当前进度位置
-	total          int64  //总进度
-	rate           string //进度条
-	graph          string //显示符号
-	taskUnit       string //task单位
-	lastUpdate     int64  //上次更新时间戳（毫秒）
-	updateInterval int64  //更新间隔（毫秒）
-	startTime      int64  //开始时间戳（毫秒）
+	percent         int64  //百分比
+	cur             int64  //当前进度位置
+	total           int64  //总进度
+	rate            string //进度条
+	graph           string //显示符号
+	taskUnit        string //task单位
+	lastUpdate      int64  //上次更新时间戳（毫秒）
+	lastForceUpdate int64  //上次强制更新时间戳（毫秒）
+	updateInterval  int64  //更新间隔（毫秒）
+	startTime       int64  //开始时间戳（毫秒）
 }
 
 type Pod struct {
@@ -91,14 +93,14 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 	skippedTables := global.GetSkippedTables()
 	// 创建一个映射来跟踪已处理的表，避免重复
 	processedTables := make(map[string]bool)
-	
+
 	// 先处理已有的measuredDataPods，记录已存在的表
 	for _, pod := range measuredDataPods {
 		if pod.CheckObject == "data" {
 			processedTables[pod.Schema+"."+pod.Table] = true
 		}
 	}
-	
+
 	// 只添加那些真正被跳过且尚未处理的表
 	for _, skipped := range skippedTables {
 		if (skipped.CheckObject == "data" || skipped.CheckObject == "struct") && !processedTables[skipped.Schema+"."+skipped.Table] {
@@ -679,22 +681,33 @@ func (bar *Bar) NewOption(start, total int64, taskUnit string) {
 	bar.cur = start
 	bar.total = total
 	bar.taskUnit = taskUnit
-	bar.updateInterval = 100               // 调整为100毫秒更新一次，使进度条更流畅
+	bar.updateInterval = 100               // 调整为100毫秒更新一次，但强制每秒刷新
 	bar.startTime = time.Now().UnixMilli() // 记录开始时间
 	if bar.graph == "" {
 		bar.graph = "█"
 	}
-	bar.percent = bar.getPercent()
-	// 计算进度条长度：每个█字符代表5%的进度（100% / 20个字符）
-	progressBars := int(float64(bar.percent) * 20 / 100)
-	bar.rate = strings.Repeat(bar.graph, progressBars) //初始化进度条位置
+	
+	// 如果总数为0，设置为未初始化状态，避免显示异常
+	if bar.total <= 0 {
+		bar.percent = 0
+		bar.rate = ""
+		bar.total = 0 // 保持0，表示未初始化
+	} else {
+		bar.percent = bar.getPercent()
+		// 计算进度条长度：每个█字符代表2%的进度（100% / 50个字符）
+		progressBars := int(float64(bar.percent) * 50 / 100)
+		bar.rate = strings.Repeat(bar.graph, progressBars) //初始化进度条位置
+	}
+	
+	bar.lastUpdate = 0      // 初始化最后更新时间
+	bar.lastForceUpdate = 0 // 初始化强制更新时间
 }
 
 func (bar *Bar) getPercent() int64 {
-	if bar.total == 0 {
+	if bar.total <= 0 {
 		return 0
 	}
-	percent := int64(float32(bar.cur) / float32(bar.total) * 100)
+	percent := int64(float64(bar.cur) / float64(bar.total) * 100)
 	// 确保百分比不超过100%
 	if percent > 100 {
 		return 100
@@ -706,60 +719,91 @@ func (bar *Bar) NewOptionWithGraph(start, total int64, graph, taskUnit string) {
 	bar.NewOption(start, total, taskUnit)
 }
 
+// Reinitialize 重新初始化进度条，用于获得实际任务数时
+func (bar *Bar) Reinitialize(total int64) {
+	if total <= 0 {
+		return
+	}
+	bar.total = total
+	bar.cur = 0
+	bar.percent = 0
+	bar.rate = ""
+	bar.lastUpdate = 0
+	bar.lastForceUpdate = 0
+	bar.startTime = time.Now().UnixMilli()
+}
+
 // 显示进度条需要放在循环中执行，循环中展示每轮循环当前的进度状态，fmt.Pringf打印的那句话通过\r控制打印效果，在构建rate进度条时
 // 需要保存上一次完成的百分比，只有当百分比发生了变化，且步长变化了2，才能改变进度条长度，也可以设置进度条为100个字符，这样就不需要空值进度条的步长为2了
 // 每增长1%，进度条前进1格
 func (bar *Bar) Play(cur int64) {
+	// 如果进度条未初始化（total=0），不显示进度
+	if bar.total <= 0 {
+		bar.cur = cur
+		return
+	}
+	
 	bar.cur = cur
-	last := bar.percent
 	bar.percent = bar.getPercent()
 
 	currentTime := time.Now().UnixMilli()
 
 	// 强制在进度完成时更新进度条
 	if bar.percent == 100 || bar.cur == bar.total {
-		// 补全进度条到100% (20个█字符)
-		for len(bar.rate) < 20 {
+		// 补全进度条到100% (50个█字符，更精细的显示)
+		for len(bar.rate) < 50 {
 			bar.rate += bar.graph
 		}
 		bar.percent = 100
 		// 计算实时耗时（秒）
 		elapsedMilliseconds := time.Now().UnixMilli() - bar.startTime
-		fmt.Printf("\r\033[K[%-20s]%3d%%  %s%5d/100  Elapsed: %.2fs", bar.rate, bar.percent, fmt.Sprintf("%s:", bar.taskUnit), bar.percent, float64(elapsedMilliseconds)/1000)
-	} else if (bar.percent != last || bar.cur == bar.total) && (currentTime-bar.lastUpdate) >= bar.updateInterval {
-		// 只在百分比变化且达到更新时间间隔时才更新进度条
-		// 计算当前应该显示的进度条长度（每个█字符代表5%的进度）
-		progressBars := int(float64(bar.percent) * 20 / 100)
-		// 确保进度条长度不超过20个字符
-		if progressBars > 20 {
-			progressBars = 20
+		if elapsedMilliseconds < 0 {
+			elapsedMilliseconds = 0
+		}
+		fmt.Printf("\r\033[K[%-50s]%3d%%  %s:     %d/%d    Elapsed: %.2fs", bar.rate, bar.percent, bar.taskUnit, bar.cur, bar.total, float64(elapsedMilliseconds)/1000)
+		// 强制刷新输出缓冲区，确保实时显示
+		os.Stdout.Sync()
+	} else {
+		// 每次调用Play都更新显示，确保实时性
+		// 计算当前应该显示的进度条长度（每个█字符代表2%的进度）
+		progressBars := int(float64(bar.percent) * 50 / 100)
+		// 确保进度条长度不超过50个字符
+		if progressBars > 50 {
+			progressBars = 50
 		}
 		bar.rate = strings.Repeat(bar.graph, progressBars)
-		bar.lastUpdate = currentTime
-		// 使用回车符覆盖当前行，避免刷屏
+
 		// 计算实时耗时（秒）
 		elapsedMilliseconds := currentTime - bar.startTime
-		fmt.Printf("\r\033[K[%-20s]%3d%%  %s%5d/100     Elapsed time: %.2fs", bar.rate, bar.percent, fmt.Sprintf("%s:", bar.taskUnit), bar.percent, float64(elapsedMilliseconds)/1000)
+		if elapsedMilliseconds < 0 {
+			elapsedMilliseconds = 0
+		}
+		fmt.Printf("\r\033[K[%-50s]%3d%%  %s:     %d/%d    Elapsed: %.2fs", bar.rate, bar.percent, bar.taskUnit, bar.cur, bar.total, float64(elapsedMilliseconds)/1000)
+		// 强制刷新输出缓冲区，确保实时显示
+		os.Stdout.Sync()
 	}
 }
 
-// NewTableProgress 开始新表的进度显示，先输出换行再开始进度条
+// NewTableProgress 开始新表的进度显示，不再输出额外表名
 func (bar *Bar) NewTableProgress(tableName string) {
-	// 先输出换行确保新表进度在新行开始
-	fmt.Printf("\n%-40s", fmt.Sprintf("%s", tableName))
+	// 不再输出表名，避免重复显示
 }
 
 // 由于上面的打印没有打印换行符，因此，在进度全部结束之后（也就是跳出循环之外时），需要打印一个换行符，因此，封装了一个Finish函数，该函数纯粹的打印一个换行，表示进度条已经完成。
 func (bar *Bar) Finish() {
+	// 如果进度条未初始化（total=0），不显示进度
+	if bar.total <= 0 {
+		return
+	}
+	
 	// 强制设置进度为100%并补全进度条
 	bar.cur = bar.total
 	bar.percent = 100
-	bar.rate = strings.Repeat(bar.graph, 20) // 强制补全进度条到20个字符
+	bar.rate = strings.Repeat(bar.graph, 50) // 强制补全进度条到50个字符
 
 	// 计算耗时（秒）
 	endTime := time.Now().UnixMilli()
 	elapsedSeconds := float64(endTime-bar.startTime) / 1000.0
 
-	fmt.Printf("\r\033[K[%-20s]%3d%%  %s%5d/100  Elapsed: %.2fs", bar.rate, bar.percent, fmt.Sprintf("%s:", bar.taskUnit), bar.percent, elapsedSeconds)
-	fmt.Println()
+	fmt.Printf("\r\033[K[%-50s]%3d%%  %s:     %d/%d    Elapsed: %.2fs\n", bar.rate, bar.percent, bar.taskUnit, bar.cur, bar.total, elapsedSeconds)
 }

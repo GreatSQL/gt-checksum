@@ -9,6 +9,7 @@ import (
 	"gt-checksum/inputArg"
 	"gt-checksum/utils"
 	"math/rand"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -822,10 +823,10 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 		vlog string
 		aa   = &CheckSumTypeStruct{}
 		//strsqlSliect []string
-		curry = make(chanStruct, sp.concurrency)
-		totalInsertCount int64  // 全局INSERT语句计数器
-		processedInserts = make(map[string]struct{})  // 全局已处理的INSERT记录去重
-		insertMutex sync.Mutex  // 保护并发访问processedInserts map的互斥锁
+		curry            = make(chanStruct, sp.concurrency)
+		totalInsertCount int64                       // 全局INSERT语句计数器
+		processedInserts = make(map[string]struct{}) // 全局已处理的INSERT记录去重
+		insertMutex      sync.Mutex                  // 保护并发访问processedInserts map的互斥锁
 	)
 	vlog = fmt.Sprintf("(%d) Processing differences and generating repair statements for %s.%s", logThreadSeq, sp.schema, sp.table)
 	global.Wlog.Info(vlog)
@@ -930,92 +931,92 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 						sourceData := strings.Split(stt, "/*go actions rowData*/")
 						destData := strings.Split(dtt, "/*go actions rowData*/")
 
-					// 2. 使用优化的Arrcmp实现，只返回真正需要修复的记录
-					// 先清理空记录并去重
-					cleanSourceData := make([]string, 0, len(sourceData))
-					cleanDestData := make([]string, 0, len(destData))
-					sourceSeen := make(map[string]struct{})
-					destSeen := make(map[string]struct{})
+						// 2. 使用优化的Arrcmp实现，只返回真正需要修复的记录
+						// 先清理空记录并去重
+						cleanSourceData := make([]string, 0, len(sourceData))
+						cleanDestData := make([]string, 0, len(destData))
+						sourceSeen := make(map[string]struct{})
+						destSeen := make(map[string]struct{})
 
-					for _, data := range sourceData {
-						data = strings.TrimSpace(data)
-						if data != "" {
-							if _, exists := sourceSeen[data]; !exists {
-								sourceSeen[data] = struct{}{}
-								cleanSourceData = append(cleanSourceData, data)
+						for _, data := range sourceData {
+							data = strings.TrimSpace(data)
+							if data != "" {
+								if _, exists := sourceSeen[data]; !exists {
+									sourceSeen[data] = struct{}{}
+									cleanSourceData = append(cleanSourceData, data)
+								}
 							}
 						}
-					}
 
-					for _, data := range destData {
-						data = strings.TrimSpace(data)
-						if data != "" {
-							if _, exists := destSeen[data]; !exists {
-								destSeen[data] = struct{}{}
-								cleanDestData = append(cleanDestData, data)
+						for _, data := range destData {
+							data = strings.TrimSpace(data)
+							if data != "" {
+								if _, exists := destSeen[data]; !exists {
+									destSeen[data] = struct{}{}
+									cleanDestData = append(cleanDestData, data)
+								}
 							}
 						}
-					}
 
-					// 3. 记录去重前后的数据量
-					vlog = fmt.Sprintf("(%d) Data deduplication - Source: %d->%d, Dest: %d->%d for %s.%s", 
-						logThreadSeq, len(sourceData), len(cleanSourceData), len(destData), len(cleanDestData), c1.Schema, c1.Table)
-					global.Wlog.Debug(vlog)
-					
-					// 添加调试信息：输出前几条数据用于分析重复问题
-					if len(cleanSourceData) > 0 {
-						maxDebug := 5
-						if len(cleanSourceData) < maxDebug {
-							maxDebug = len(cleanSourceData)
-						}
-						global.Wlog.Debug("DEBUG_SOURCE_DATA_%d: First %d records:\n", logThreadSeq, maxDebug)
-						for i := 0; i < maxDebug; i++ {
-							global.Wlog.Debug("  [%d]: %s\n", i, cleanSourceData[i])
-						}
-					}
-					
-					// 检查去重是否真的有效
-					if len(sourceData) != len(cleanSourceData) {
-						duplicateCount := len(sourceData) - len(cleanSourceData)
-						vlog = fmt.Sprintf("(%d) Found %d duplicate records in source data for %s.%s", logThreadSeq, duplicateCount, c1.Schema, c1.Table)
-						global.Wlog.Warn(vlog)
-					}
-					
-					if len(destData) != len(cleanDestData) {
-						duplicateCount := len(destData) - len(cleanDestData)
-						vlog = fmt.Sprintf("(%d) Found %d duplicate records in dest data for %s.%s", logThreadSeq, duplicateCount, c1.Schema, c1.Table)
-						global.Wlog.Warn(vlog)
-					}
+						// 3. 记录去重前后的数据量
+						vlog = fmt.Sprintf("(%d) Data deduplication - Source: %d->%d, Dest: %d->%d for %s.%s",
+							logThreadSeq, len(sourceData), len(cleanSourceData), len(destData), len(cleanDestData), c1.Schema, c1.Table)
+						global.Wlog.Debug(vlog)
 
-					// 4. 使用Arrcmp进行精确比较
-					add, del := aa.Arrcmp(cleanSourceData, cleanDestData)
-					stt, dtt = "", ""
+						// 添加调试信息：输出前几条数据用于分析重复问题
+						if len(cleanSourceData) > 0 {
+							maxDebug := 5
+							if len(cleanSourceData) < maxDebug {
+								maxDebug = len(cleanSourceData)
+							}
+							global.Wlog.Debug("DEBUG_SOURCE_DATA_%d: First %d records:\n", logThreadSeq, maxDebug)
+							for i := 0; i < maxDebug; i++ {
+								global.Wlog.Debug("  [%d]: %s\n", i, cleanSourceData[i])
+							}
+						}
 
-					// 5. 记录发现的差异数量
-					vlog = fmt.Sprintf("(%d) Found %d records to add and %d records to delete for %s.%s", logThreadSeq, len(add), len(del), c1.Schema, c1.Table)
-					global.Wlog.Debug(vlog)
-					
-					// 添加调试信息：检查差异数量的合理性
-					expectedAddCount := len(cleanSourceData) - len(cleanDestData)
-					if len(cleanDestData) == 0 {
-						global.Wlog.Debug("DEBUG_DIFF_ANALYSIS_%d: Expected add count: %d (source=%d, dest=0), Actual add count: %d\n", 
-							logThreadSeq, len(cleanSourceData), len(cleanSourceData), len(add))
-					} else {
-						global.Wlog.Debug("DEBUG_DIFF_ANALYSIS_%d: Expected add count: %d (source=%d, dest=%d), Actual add count: %d\n", 
-							logThreadSeq, expectedAddCount, len(cleanSourceData), len(cleanDestData), len(add))
-					}
-					
-					// 如果添加数量异常，输出前几条add数据进行检查
-					if len(add) > expectedAddCount+10 {
-						maxDebug := 10
-						if len(add) < maxDebug {
-							maxDebug = len(add)
+						// 检查去重是否真的有效
+						if len(sourceData) != len(cleanSourceData) {
+							duplicateCount := len(sourceData) - len(cleanSourceData)
+							vlog = fmt.Sprintf("(%d) Found %d duplicate records in source data for %s.%s", logThreadSeq, duplicateCount, c1.Schema, c1.Table)
+							global.Wlog.Warn(vlog)
 						}
-						global.Wlog.Debug("DEBUG_ADD_DATA_%d: First %d records (showing because count is abnormal):\n", logThreadSeq, maxDebug)
-						for i := 0; i < maxDebug; i++ {
-							global.Wlog.Debug("  [%d]: %s\n", i, add[i])
+
+						if len(destData) != len(cleanDestData) {
+							duplicateCount := len(destData) - len(cleanDestData)
+							vlog = fmt.Sprintf("(%d) Found %d duplicate records in dest data for %s.%s", logThreadSeq, duplicateCount, c1.Schema, c1.Table)
+							global.Wlog.Warn(vlog)
 						}
-					}
+
+						// 4. 使用Arrcmp进行精确比较
+						add, del := aa.Arrcmp(cleanSourceData, cleanDestData)
+						stt, dtt = "", ""
+
+						// 5. 记录发现的差异数量
+						vlog = fmt.Sprintf("(%d) Found %d records to add and %d records to delete for %s.%s", logThreadSeq, len(add), len(del), c1.Schema, c1.Table)
+						global.Wlog.Debug(vlog)
+
+						// 添加调试信息：检查差异数量的合理性
+						expectedAddCount := len(cleanSourceData) - len(cleanDestData)
+						if len(cleanDestData) == 0 {
+							global.Wlog.Debug("DEBUG_DIFF_ANALYSIS_%d: Expected add count: %d (source=%d, dest=0), Actual add count: %d\n",
+								logThreadSeq, len(cleanSourceData), len(cleanSourceData), len(add))
+						} else {
+							global.Wlog.Debug("DEBUG_DIFF_ANALYSIS_%d: Expected add count: %d (source=%d, dest=%d), Actual add count: %d\n",
+								logThreadSeq, expectedAddCount, len(cleanSourceData), len(cleanDestData), len(add))
+						}
+
+						// 如果添加数量异常，输出前几条add数据进行检查
+						if len(add) > expectedAddCount+10 {
+							maxDebug := 10
+							if len(add) < maxDebug {
+								maxDebug = len(add)
+							}
+							global.Wlog.Debug("DEBUG_ADD_DATA_%d: First %d records (showing because count is abnormal):\n", logThreadSeq, maxDebug)
+							for i := 0; i < maxDebug; i++ {
+								global.Wlog.Debug("  [%d]: %s\n", i, add[i])
+							}
+						}
 
 						// 6. 比较记录数量差异的日志记录
 						// 记录删除和添加的记录数量，但不再自动清空add数组
@@ -1036,15 +1037,15 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 								vlog = fmt.Sprintf("(%d) Source data count: %d, Destination data count: %d, Difference: %d", logThreadSeq, sourceCount, destCount, diffCount)
 								global.Wlog.Debug(vlog)
 
-			// 如果差异数量合理，则只保留必要的add记录
-				if diffCount > 0 {
-					// 根据实际数据差异限制add数组的大小，确保不会生成过多的INSERT语句
-					vlog = fmt.Sprintf("(%d) Adjusting add records count from %d to %d based on actual data difference", logThreadSeq, len(add), diffCount)
-					global.Wlog.Debug(vlog)
-					if len(add) > diffCount {
-						add = add[:diffCount]
-					}
-				}
+								// 如果差异数量合理，则只保留必要的add记录
+								if diffCount > 0 {
+									// 根据实际数据差异限制add数组的大小，确保不会生成过多的INSERT语句
+									vlog = fmt.Sprintf("(%d) Adjusting add records count from %d to %d based on actual data difference", logThreadSeq, len(add), diffCount)
+									global.Wlog.Debug(vlog)
+									if len(add) > diffCount {
+										add = add[:diffCount]
+									}
+								}
 							}
 						}
 						if len(del) > 0 || len(add) > 0 {
@@ -1128,13 +1129,13 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 							} else {
 								dbf.IndexType = "mul"
 							}
-							
+
 							// 关键修复：确保DELETE语句一定在INSERT语句之前生成
 							// 先处理所有DELETE语句
 							if len(del) > 0 {
 								vlog = fmt.Sprintf("(%d) Generating DELETE statements for %s.%s", logThreadSeq, c1.Schema, c1.Table)
 								global.Wlog.Debug(vlog)
-								global.Wlog.Debug("DEBUG_SQL_ORDER_%d: Processing %d DELETE statements first for %s.%s\n", 
+								global.Wlog.Debug("DEBUG_SQL_ORDER_%d: Processing %d DELETE statements first for %s.%s\n",
 									logThreadSeq, len(del), c1.Schema, c1.Table)
 
 								// 定义SQL长度限制 (1MB)
@@ -1218,9 +1219,9 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 															if err != nil {
 																sp.getErr(fmt.Sprintf("\ndest: checksum table %s.%s generate DELETE sql error.", c1.Schema, c1.Table), err)
 															}
-							if sqlstr != "" {
-								cc <- sqlstr
-							}
+															if sqlstr != "" {
+																cc <- sqlstr
+															}
 														}
 													} else {
 														// 添加当前值到合并列表
@@ -1281,7 +1282,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 							if len(add) > 0 {
 								vlog = fmt.Sprintf("(%d) Generating INSERT statements for %s.%s", logThreadSeq, c1.Schema, c1.Table)
 								global.Wlog.Debug(vlog)
-								global.Wlog.Debug("DEBUG_SQL_ORDER_%d: Processing %d INSERT statements after DELETE for %s.%s\n", 
+								global.Wlog.Debug("DEBUG_SQL_ORDER_%d: Processing %d INSERT statements after DELETE for %s.%s\n",
 									logThreadSeq, len(add), c1.Schema, c1.Table)
 
 								// 定义SQL长度限制 (1MB)
@@ -1302,77 +1303,77 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 										batchAdd = batchAdd[:10]
 									}
 
-				// 生成单独的INSERT语句，避免多线程并发下的重复冲突
-				global.Wlog.Debug("DEBUG_INSERT_LOOP_%d: Starting INSERT generation for %d records in batch for %s.%s\n", 
-					logThreadSeq, len(batchAdd), c1.Schema, c1.Table)
-				
-				insertCount := 0
-				duplicateCount := 0
-				for batchIndex, i := range batchAdd {
-					dbf.RowData = i
-					sqlstr, err := dbf.DataAbnormalFix().FixInsertSqlExec(ddb, sp.ddrive, logThreadSeq)
-					if err != nil {
-						sp.getErr(fmt.Sprintf("dest: checksum table %s.%s generate INSERT sql error.", c1.Schema, c1.Table), err)
-					} else if sqlstr != "" {
-						// 生成INSERT语句的唯一标识符用于去重
-						// 提取VALUES部分作为唯一标识
-						valuesStart := strings.Index(sqlstr, "VALUES(")
-						valuesEnd := strings.LastIndex(sqlstr, ");")
-						var insertKey string
-						if valuesStart > 0 && valuesEnd > valuesStart+7 {
-							insertKey = sqlstr[valuesStart+7 : valuesEnd]
-						} else {
-							// 如果解析失败，使用完整SQL作为key
-							insertKey = sqlstr
-						}
-						
-						// 检查是否已经处理过这条INSERT记录（需要加锁保护并发访问）
-						insertMutex.Lock()
-						if _, exists := processedInserts[insertKey]; exists {
-							insertMutex.Unlock()
-							duplicateCount++
-							if duplicateCount <= 5 {
-								insertPreview := insertKey
-								if len(insertKey) > 50 {
-									insertPreview = insertKey[:50]
-								}
-								global.Wlog.Debug("DEBUG_DUPLICATE_INSERT_%d: Skipping duplicate INSERT: %s\n", 
-									logThreadSeq, insertPreview)
-							}
-							continue
-						}
-						
-						// 标记为已处理
-						processedInserts[insertKey] = struct{}{}
-						insertMutex.Unlock()
-						insertCount++
-						
-						// 记录生成的SQL语句
-						vlog = fmt.Sprintf("(%d) Generated INSERT statement for %s.%s", logThreadSeq, c1.Schema, c1.Table)
-						global.Wlog.Debug(vlog)
-						
-						// 如果是前几条记录，输出调试信息
-						if insertCount <= 5 {
-							sqlPreview := sqlstr
-							if len(sqlstr) > 50 {
-								sqlPreview = sqlstr[:50] + "..."
-							}
-							global.Wlog.Debug("DEBUG_INSERT_DETAIL_%d: Batch[%d] - Insert count %d - SQL starts with: %s\n", 
-								logThreadSeq, batchIndex, insertCount, sqlPreview)
-						}
-						
-						cc <- sqlstr
-						totalInsertCount++
-					}
-				}
-				
-				if duplicateCount > 0 {
-					global.Wlog.Debug("DEBUG_INSERT_LOOP_%d: Generated %d INSERT statements, skipped %d duplicates for batch with %d records in %s.%s (Total so far: %d)\n", 
-						logThreadSeq, insertCount, duplicateCount, len(batchAdd), c1.Schema, c1.Table, totalInsertCount)
-				} else {
-					global.Wlog.Debug("DEBUG_INSERT_LOOP_%d: Generated %d INSERT statements for batch with %d records in %s.%s (Total so far: %d)\n", 
-						logThreadSeq, insertCount, len(batchAdd), c1.Schema, c1.Table, totalInsertCount)
-				}
+									// 生成单独的INSERT语句，避免多线程并发下的重复冲突
+									global.Wlog.Debug("DEBUG_INSERT_LOOP_%d: Starting INSERT generation for %d records in batch for %s.%s\n",
+										logThreadSeq, len(batchAdd), c1.Schema, c1.Table)
+
+									insertCount := 0
+									duplicateCount := 0
+									for batchIndex, i := range batchAdd {
+										dbf.RowData = i
+										sqlstr, err := dbf.DataAbnormalFix().FixInsertSqlExec(ddb, sp.ddrive, logThreadSeq)
+										if err != nil {
+											sp.getErr(fmt.Sprintf("dest: checksum table %s.%s generate INSERT sql error.", c1.Schema, c1.Table), err)
+										} else if sqlstr != "" {
+											// 生成INSERT语句的唯一标识符用于去重
+											// 提取VALUES部分作为唯一标识
+											valuesStart := strings.Index(sqlstr, "VALUES(")
+											valuesEnd := strings.LastIndex(sqlstr, ");")
+											var insertKey string
+											if valuesStart > 0 && valuesEnd > valuesStart+7 {
+												insertKey = sqlstr[valuesStart+7 : valuesEnd]
+											} else {
+												// 如果解析失败，使用完整SQL作为key
+												insertKey = sqlstr
+											}
+
+											// 检查是否已经处理过这条INSERT记录（需要加锁保护并发访问）
+											insertMutex.Lock()
+											if _, exists := processedInserts[insertKey]; exists {
+												insertMutex.Unlock()
+												duplicateCount++
+												if duplicateCount <= 5 {
+													insertPreview := insertKey
+													if len(insertKey) > 50 {
+														insertPreview = insertKey[:50]
+													}
+													global.Wlog.Debug("DEBUG_DUPLICATE_INSERT_%d: Skipping duplicate INSERT: %s\n",
+														logThreadSeq, insertPreview)
+												}
+												continue
+											}
+
+											// 标记为已处理
+											processedInserts[insertKey] = struct{}{}
+											insertMutex.Unlock()
+											insertCount++
+
+											// 记录生成的SQL语句
+											vlog = fmt.Sprintf("(%d) Generated INSERT statement for %s.%s", logThreadSeq, c1.Schema, c1.Table)
+											global.Wlog.Debug(vlog)
+
+											// 如果是前几条记录，输出调试信息
+											if insertCount <= 5 {
+												sqlPreview := sqlstr
+												if len(sqlstr) > 50 {
+													sqlPreview = sqlstr[:50] + "..."
+												}
+												global.Wlog.Debug("DEBUG_INSERT_DETAIL_%d: Batch[%d] - Insert count %d - SQL starts with: %s\n",
+													logThreadSeq, batchIndex, insertCount, sqlPreview)
+											}
+
+											cc <- sqlstr
+											totalInsertCount++
+										}
+									}
+
+									if duplicateCount > 0 {
+										global.Wlog.Debug("DEBUG_INSERT_LOOP_%d: Generated %d INSERT statements, skipped %d duplicates for batch with %d records in %s.%s (Total so far: %d)\n",
+											logThreadSeq, insertCount, duplicateCount, len(batchAdd), c1.Schema, c1.Table, totalInsertCount)
+									} else {
+										global.Wlog.Debug("DEBUG_INSERT_LOOP_%d: Generated %d INSERT statements for batch with %d records in %s.%s (Total so far: %d)\n",
+											logThreadSeq, insertCount, len(batchAdd), c1.Schema, c1.Table, totalInsertCount)
+									}
 								}
 								vlog = fmt.Sprintf("(%d) INSERT statements generated for %s.%s", logThreadSeq, c1.Schema, c1.Table)
 								global.Wlog.Debug(vlog)
@@ -1383,7 +1384,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 			}
 		}
 	}
-	global.Wlog.Debug("DEBUG_FINAL_COUNT_%d: Total INSERT statements generated for %s.%s: %d\n", 
+	global.Wlog.Debug("DEBUG_FINAL_COUNT_%d: Total INSERT statements generated for %s.%s: %d\n",
 		logThreadSeq, sp.schema, sp.table, totalInsertCount)
 	vlog = fmt.Sprintf("(%d) Completed difference processing and repair statements for %s.%s", logThreadSeq, sp.schema, sp.table)
 	global.Wlog.Info(vlog)
@@ -1395,14 +1396,14 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 		deleteCount int
 		insertCount int
 		// 关键修复：分别存储DELETE和INSERT语句，确保最终顺序
-		deleteSqls  []string
-		insertSqls  []string
-		sqlBuffer   []string  // 缓冲所有SQL语句
-		isFinished  bool      // 标记是否已完成接收
+		deleteSqls []string
+		insertSqls []string
+		sqlBuffer  []string // 缓冲所有SQL语句
+		isFinished bool     // 标记是否已完成接收
 	)
 	vlog = fmt.Sprintf("(%d) Applying repair statements to target table %s.%s", logThreadSeq, sp.schema, sp.table)
 	global.Wlog.Info(vlog)
-	
+
 	// 启动一个goroutine来收集和排序所有SQL语句
 	go func() {
 		for {
@@ -1410,11 +1411,11 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 			if !ok {
 				// 通道关闭，开始最终处理
 				global.Wlog.Debug("DEBUG_FINAL_SORT_%d: Channel closed, starting final SQL sorting\n", logThreadSeq)
-				
+
 				// 按SQL类型重新排序：所有DELETE在前，INSERT在后
 				deleteSqls = []string{}
 				insertSqls = []string{}
-				
+
 				for _, sql := range sqlBuffer {
 					sqlTrim := strings.TrimSpace(strings.ToUpper(sql))
 					if strings.HasPrefix(sqlTrim, "DELETE") {
@@ -1423,20 +1424,20 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 						insertSqls = append(insertSqls, sql)
 					}
 				}
-				
-				global.Wlog.Debug("DEBUG_FINAL_SORT_%d: Sorted SQLs - DELETE: %d, INSERT: %d\n", 
+
+				global.Wlog.Debug("DEBUG_FINAL_SORT_%d: Sorted SQLs - DELETE: %d, INSERT: %d\n",
 					logThreadSeq, len(deleteSqls), len(insertSqls))
-				
+
 				// 构建最终的有序SQL列表
 				var finalSqls []string
-				finalSqls = append(finalSqls, deleteSqls...)  // 先添加所有DELETE语句
-				finalSqls = append(finalSqls, insertSqls...)  // 再添加所有INSERT语句
-				
+				finalSqls = append(finalSqls, deleteSqls...) // 先添加所有DELETE语句
+				finalSqls = append(finalSqls, insertSqls...) // 再添加所有INSERT语句
+
 				// 无论是否有差异，都将表结果添加到measuredDataPods中
 				if len(finalSqls) > 0 {
-					global.Wlog.Debug("DEBUG_APPLY_ORDER_%d: Applying %d SQL statements in correct order\n", 
+					global.Wlog.Debug("DEBUG_APPLY_ORDER_%d: Applying %d SQL statements in correct order\n",
 						logThreadSeq, len(finalSqls))
-					
+
 					// 输出前几条SQL验证顺序
 					maxDebug := 10
 					if len(finalSqls) < maxDebug {
@@ -1450,42 +1451,42 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 						} else if strings.HasPrefix(sqlTrim, "INSERT") {
 							sqlType = "INSERT"
 						}
-						global.Wlog.Debug("DEBUG_FINAL_SQL_%d[%d]: %s - %s\n", logThreadSeq, i+1, sqlType, 
+						global.Wlog.Debug("DEBUG_FINAL_SQL_%d[%d]: %s - %s\n", logThreadSeq, i+1, sqlType,
 							finalSqls[i][:min(100, len(finalSqls[i]))])
 					}
-					
+
 					ApplyDataFixWithTrxNum(finalSqls, sp.datafixType, sp.sfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
-					vlog = fmt.Sprintf("(%d) Repair statements generated for %s.%s: DELETE=%d, INSERT=%d", 
+					vlog = fmt.Sprintf("(%d) Repair statements generated for %s.%s: DELETE=%d, INSERT=%d",
 						logThreadSeq, sp.schema, sp.table, len(deleteSqls), len(insertSqls))
 					global.Wlog.Debug(vlog)
-					
+
 					// 有差异时标记DIFFS为yes
 					sp.pods.DIFFS = "yes"
 				}
-				
+
 				// 无论是否有差异，都添加到结果中
 				measuredDataPods = append(measuredDataPods, *sp.pods)
 				isFinished = true
 				return
 			} else {
 				sp.pods.DIFFS = "yes"
-				
+
 				// 直接缓冲所有SQL语句，不做任何处理
 				sqlBuffer = append(sqlBuffer, v)
 				sqlTrim := strings.TrimSpace(strings.ToUpper(v))
 				if strings.HasPrefix(sqlTrim, "DELETE") {
 					deleteCount++
-					global.Wlog.Debug("DEBUG_BUFFER_DELETE_%d: Buffered DELETE statement #%d for %s.%s\n", 
+					global.Wlog.Debug("DEBUG_BUFFER_DELETE_%d: Buffered DELETE statement #%d for %s.%s\n",
 						logThreadSeq, deleteCount, sp.schema, sp.table)
 				} else if strings.HasPrefix(sqlTrim, "INSERT") {
 					insertCount++
-					global.Wlog.Debug("DEBUG_BUFFER_INSERT_%d: Buffered INSERT statement #%d for %s.%s\n", 
+					global.Wlog.Debug("DEBUG_BUFFER_INSERT_%d: Buffered INSERT statement #%d for %s.%s\n",
 						logThreadSeq, insertCount, sp.schema, sp.table)
 				}
 			}
 		}
 	}()
-	
+
 	// 等待处理完成
 	for !isFinished {
 		time.Sleep(time.Millisecond * 10)
@@ -1641,33 +1642,95 @@ func (sp *SchedulePlan) queryTableSqlSeparate(sqlWhere chanString, sourceSelectS
 
 func (sp *SchedulePlan) queryTableDataSeparate(sourceSelectSql chanMap, destSelectSql chanMap, diffQueryData chanDiffDataS, cc1 global.TableAllColumnInfoS, sc chan int64, logThreadSeq int64) {
 	var (
-		curry = make(chanStruct, sp.concurrency)
+		curry     = make(chanStruct, sp.concurrency)
+		autoSeq   = int64(0) // 任务计数器
+		total     = int64(0)
+		startTime = time.Now().UnixMilli() // 开始时间
 	)
+	
+	// 重新初始化进度条为100，用于显示百分比进度
+	sp.bar = &Bar{}
+	sp.bar.NewOption(0, 100, "Processing")
 
 	for {
 		select {
 		case d, ok := <-sc:
-			if ok {
-				sp.bar.NewOption(0, d, "Processing")
+			if ok && d > 0 {
+				total = d
+				global.Wlog.Debug("DEBUG_PROGRESS_%d: Total tasks received=%d at time=%.2fs\n", 
+					logThreadSeq, d, float64(time.Now().UnixMilli()-startTime)/1000)
 			}
 		case sourceSql, ok := <-sourceSelectSql:
 			if !ok {
 				if len(curry) == 0 {
+					// 完成进度条显示
+					sp.bar.Finish()
 					close(diffQueryData)
 					return
 				}
 			} else {
 				destSql := <-destSelectSql
-				autoSeq := int64(0)
 				autoSeq++
+				
+				// 计算当前完成百分比并更新进度条
+				var displayProgress int64
+				if total > 0 {
+					// 计算当前完成的百分比，映射到100的刻度上
+					percent := float64(autoSeq) / float64(total)
+					displayProgress = int64(percent * 100)
+					if displayProgress > 100 {
+						displayProgress = 100
+					}
+				} else {
+					// 没有总数时，使用更平滑的进度估算
+					var estimatedTotal int64
+					if autoSeq <= 50 {
+						estimatedTotal = 100 // 前50个任务时，估算总共100个
+					} else if autoSeq <= 100 {
+						estimatedTotal = autoSeq * 2 // 51-100个任务时，估算为当前的2倍
+					} else if autoSeq <= 300 {
+						estimatedTotal = autoSeq + autoSeq/2 // 101-300个任务时，估算再需要50%的任务
+					} else {
+						estimatedTotal = autoSeq + 150 // 超过300个任务时，估算再需要150个
+					}
+					
+					percent := float64(autoSeq) / float64(estimatedTotal)
+					displayProgress = int64(percent * 100)
+					
+					// 限制进度显示，避免过早达到100%
+					if displayProgress > 95 {
+						displayProgress = 95 // 最多显示95%，给最终完成留空间
+					}
+				}
+				
+				// DEBUG: 记录进度更新
+				currentTime := time.Now().UnixMilli()
+				global.Wlog.Debug("DEBUG_PROGRESS_UPDATE_%d: autoSeq=%d, total=%d, displayProgress=%d, time=%.2fs, curry_len=%d\n", 
+					logThreadSeq, autoSeq, total, displayProgress, float64(currentTime-startTime)/1000, len(curry))
+				
+				// 更新进度条
+				sp.bar.Play(displayProgress)
+				// 强制刷新缓冲区确保实时显示
+				fmt.Fprint(os.Stdout, "")
+				
 				curry <- struct{}{}
-				go func(sourceSql, destSql map[string]string) {
+				go func(currentSeq int64, sourceSql, destSql map[string]string) {
 					defer func() {
 						<-curry
 					}()
 
+					// DEBUG: 记录任务开始处理
+					taskStartTime := time.Now().UnixMilli()
+					global.Wlog.Debug("DEBUG_TASK_START_%d: currentSeq=%d, autoSeq=%d, total=%d, time=%.2fs\n", 
+						logThreadSeq, currentSeq, autoSeq, total, float64(taskStartTime-startTime)/1000)
+					
+
+
 					// 源端查询
 					sdb := sp.sdbPool.Get(logThreadSeq)
+					sourceQueryStart := time.Now().UnixMilli()
+					global.Wlog.Debug("DEBUG_SOURCE_START_%d: seq=%d, getting source query...\n", 
+						logThreadSeq, currentSeq)
 					stt, err := (&dbExec.IndexColumnStruct{
 						Schema:   sp.sourceSchema,
 						Table:    sp.table,
@@ -1675,13 +1738,20 @@ func (sp *SchedulePlan) queryTableDataSeparate(sourceSelectSql chanMap, destSele
 						Sqlwhere: sourceSql[sp.sdrive],
 						ColData:  cc1.SColumnInfo,
 					}).TableIndexColumn().GeneratingQueryCriteria(sdb, logThreadSeq)
+					sourceQueryEnd := time.Now().UnixMilli()
 					sp.sdbPool.Put(sdb, logThreadSeq)
 					if err != nil {
+						global.Wlog.Debug("DEBUG_TASK_ERROR_%d: source query failed for seq=%d: %v\n", logThreadSeq, currentSeq, err)
 						return
 					}
+					
+					sourceDuration := float64(sourceQueryEnd-sourceQueryStart)/1000
+					global.Wlog.Debug("DEBUG_SOURCE_QUERY_%d: seq=%d, duration=%.2fs, total_time_so_far=%.2fs\n", 
+						logThreadSeq, currentSeq, sourceDuration, float64(sourceQueryEnd-startTime)/1000)
 
 					// 目标端查询
 					ddb := sp.ddbPool.Get(logThreadSeq)
+					destQueryStart := time.Now().UnixMilli()
 					dtt, err := (&dbExec.IndexColumnStruct{
 						Schema:   sp.destSchema,
 						Table:    sp.table,
@@ -1689,10 +1759,15 @@ func (sp *SchedulePlan) queryTableDataSeparate(sourceSelectSql chanMap, destSele
 						Sqlwhere: destSql[sp.ddrive],
 						ColData:  cc1.DColumnInfo,
 					}).TableIndexColumn().GeneratingQueryCriteria(ddb, logThreadSeq)
+					destQueryEnd := time.Now().UnixMilli()
 					sp.ddbPool.Put(ddb, logThreadSeq)
 					if err != nil {
+						global.Wlog.Debug("DEBUG_TASK_ERROR_%d: dest query failed for seq=%d: %v\n", logThreadSeq, currentSeq, err)
 						return
 					}
+					
+					global.Wlog.Debug("DEBUG_DEST_QUERY_%d: seq=%d, duration=%.2fs\n", 
+						logThreadSeq, currentSeq, float64(destQueryEnd-destQueryStart)/1000)
 
 					// 比较结果
 					aa := &CheckSumTypeStruct{}
@@ -1705,7 +1780,17 @@ func (sp *SchedulePlan) queryTableDataSeparate(sourceSelectSql chanMap, destSele
 						}
 						diffQueryData <- differencesData
 					}
-				}(sourceSql, destSql)
+					
+					// DEBUG: 记录任务完成时间
+					taskEndTime := time.Now().UnixMilli()
+					global.Wlog.Debug("DEBUG_TASK_END_%d: currentSeq=%d, autoSeq=%d, total=%d, totalTaskTime=%.2fs, timeFromStart=%.2fs\n", 
+						logThreadSeq, currentSeq, autoSeq, total, float64(taskEndTime-taskStartTime)/1000, float64(taskEndTime-startTime)/1000)
+					
+					// DEBUG: 记录任务完成（不更新进度条，避免跳动）
+					currentTime := time.Now().UnixMilli()
+					global.Wlog.Debug("DEBUG_TASK_COMPLETE_%d: currentSeq=%d, autoSeq=%d, total=%d, time=%.2fs, curry_len=%d\n", 
+						logThreadSeq, currentSeq, autoSeq, total, float64(currentTime-startTime)/1000, len(curry))
+				}(autoSeq, sourceSql, destSql)
 			}
 		}
 	}
