@@ -269,9 +269,15 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 
 					// 关键修复：如果当前处理的起始值大于合并后的最小值，需要扩展查询范围
 					// 这确保了目标端超出源端范围的数据被正确包含
+					// 但只有当e与mergedMinVal不同且e已经被处理过，才需要生成扩展查询
 					if mergedMinVal != "" && e != "" {
-						if e > mergedMinVal {
-							global.Wlog.Debug("DEBUG_RANGE_FIX: Current e='%s' > merged_min='%s', need to extend query range\n", e, mergedMinVal)
+						// 检查是否真的需要扩展查询：
+						// 1. e必须大于mergedMinVal（否则没有需要扩展的范围）
+						// 2. e不能等于mergedMinVal（避免生成从最小值到最小值的无意义查询）
+						// 3. 更重要的是：只有当mergedMinVal < e < mergedMaxVal时，才需要扩展查询
+						// 4. 如果e已经接近或等于mergedMaxVal，说明所有数据都已经被处理过了
+						if e > mergedMinVal && mergedMaxVal != "" && e < mergedMaxVal {
+							global.Wlog.Debug("DEBUG_RANGE_FIX: Current e='%s' > merged_min='%s' and e < merged_max='%s', need to extend query range\n", e, mergedMinVal, mergedMaxVal)
 
 							// 生成扩展的查询条件，从合并后的最小值开始
 							var whereExist string
@@ -281,12 +287,18 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 
 							// 生成扩展的WHERE条件：从合并后的最小值到当前e值
 							extendedWhere := fmt.Sprintf("%v `%v` >= '%v' and `%v` < '%v'", whereExist, sp.columnName[level], mergedMinVal, sp.columnName[level], e)
-							global.Wlog.Debug("DEBUG_EXTENDED_WHERE: %s\n", extendedWhere)
-
+							global.Wlog.Debug("DEBUG_WHERE4: %s\n", extendedWhere)
 							// 将扩展的WHERE条件发送到channel
 							sqlWhere <- extendedWhere
 
 							vlog = fmt.Sprintf("(%d) Extended query range to cover missing data: %s to %s (merged min: %s)", logThreadSeq, mergedMinVal, e, mergedMinVal)
+							global.Wlog.Debug(vlog)
+						} else {
+							// 不需要扩展查询的情况：
+							// 1. e等于或小于mergedMinVal
+							// 2. e大于或等于mergedMaxVal（说明所有数据都已经被处理过了）
+							// 3. mergedMaxVal为空
+							vlog = fmt.Sprintf("(%d) No extended query needed: e='%s' is either <= mergedMinVal='%s' or >= mergedMaxVal='%s'", logThreadSeq, e, mergedMinVal, mergedMaxVal)
 							global.Wlog.Debug(vlog)
 						}
 					}
@@ -324,9 +336,10 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 						global.Wlog.Debug(vlog)
 
 						// 检查当前边界值是否在合并后的范围内
-						// 关键：使用合并后的maxVal进行判断，确保覆盖所有数据
+						// 关键优化：仅当e已经前进过（即不是初始值）且e <= maxVal时，才添加最终查询
+						// 这避免了在所有数据块都已处理的情况下执行全表扫描
 						global.Wlog.Debug("DEBUG_COMPARISON: e='%s', maxVal='%s', e <= maxVal = %v\n", e, maxVal, e <= maxVal)
-						if e <= maxVal {
+						if e <= maxVal && e != mergedMinVal {
 							vlog = fmt.Sprintf("(%d) Final boundary check needed from %s to %s (merged range)", logThreadSeq, e, maxVal)
 							global.Wlog.Debug(vlog)
 
@@ -337,9 +350,13 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 
 							// 生成包含剩余数据的WHERE条件，确保包含最大边界
 							sqlwhere := fmt.Sprintf("%v `%v` >= '%v' ", whereExist, sp.columnName[level], e)
+							vlog = fmt.Sprintf("DEBUG_WHERE5: %s", sqlwhere)
 							sqlWhere <- sqlwhere
 
 							vlog = fmt.Sprintf("(%d) Added final WHERE condition to ensure all data is covered: %s", logThreadSeq, sqlwhere)
+							global.Wlog.Debug(vlog)
+						} else {
+							vlog = fmt.Sprintf("(%d) No final boundary check needed. e='%s' is either equal to mergedMinVal or beyond maxVal='%s'", logThreadSeq, e, maxVal)
 							global.Wlog.Debug(vlog)
 						}
 					} else if err != nil {
@@ -370,6 +387,7 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 					if where != "" {
 						sqlwhere = fmt.Sprintf("%s %s", where, sqlwhere)
 					}
+					global.Wlog.Debug("DEBUG_WHERE1: %s", sqlwhere)
 					sqlWhere <- sqlwhere
 
 					sqlwhere, e, g = "", "", ""
@@ -384,6 +402,7 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 				if key == "<nil>" {
 					sqlwhere = fmt.Sprintf("%s `%s` is null ", whereExist, sp.columnName[level])
 				}
+				global.Wlog.Debug("DEBUG_WHERE6: %s", sqlwhere)
 				partFirstValue = true
 				vlog = fmt.Sprintf("(%d) NULL values processed for index column %s level %d - WHERE: %s", logThreadSeq, sp.columnName[level], level, sqlwhere)
 				global.Wlog.Debug(vlog)
@@ -434,6 +453,7 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 					} else {
 						sqlwhere = fmt.Sprintf("%v `%v` >= '%v' ", whereExist, sp.columnName[level], e)
 					}
+					global.Wlog.Debug("DEBUG_WHERE7: %s", sqlwhere)
 
 					sqlWhere <- sqlwhere
 
@@ -456,6 +476,7 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 					} else {
 						if partFirstValue { //每段的首行数据
 							sqlwhere = fmt.Sprintf("%s `%v` >= '%v' and `%v` < '%v' ", whereExist, sp.columnName[level], e, sp.columnName[level], g)
+							global.Wlog.Debug("DEBUG_WHERE8: %s", sqlwhere)
 
 							partFirstValue = false
 						} else {
@@ -463,14 +484,17 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 							// 这样确保最后一条记录不会被遗漏，但其他块仍然使用范围条件
 							if key == "END" {
 								sqlwhere = fmt.Sprintf("%s `%v` >= '%v' ", whereExist, sp.columnName[level], e)
+								global.Wlog.Debug("DEBUG_WHERE9: %s", sqlwhere)
 
 							} else {
 								sqlwhere = fmt.Sprintf("%s `%v` >= '%v' and `%v` < '%v' ", whereExist, sp.columnName[level], e, sp.columnName[level], g)
+								global.Wlog.Debug("DEBUG_WHERE10: %s", sqlwhere)
 
 							}
 
 						}
 					}
+					global.Wlog.Debug("DEBUG_WHERE2: %s", sqlwhere)
 
 					sqlWhere <- sqlwhere
 
@@ -484,6 +508,7 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 					} else {
 						where = fmt.Sprintf(" `%v` = '%v' ", sp.columnName[level], g)
 					}
+					global.Wlog.Debug("DEBUG_WHERE3: %s", where)
 
 					level++ //索引列层数递增
 					//进入下一层的索引计算
@@ -902,25 +927,35 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 					vlog = fmt.Sprintf("(%d) AbnormalDataDispos - Target SQL condition: %s", logThreadSeq, destSqlWhere)
 					global.Wlog.Debug(vlog)
 
-					// 源端查询使用sourceSchema和table
-					idxc := dbExec.IndexColumnStruct{
-						Schema:      sourceSchema,
-						Table:       table,
-						TableColumn: colData.SColumnInfo,
-						Drivce:      sp.sdrive,
-						Sqlwhere:    sourceSqlWhere, // 使用处理后的源端SQL条件
-					}
-					stt, _ := idxc.TableIndexColumn().GeneratingQueryCriteria(sdb, logThreadSeq)
+					// 检查是否已经有查询结果，避免重复查询
+					var stt, dtt string
+					if c1.SourceData != "" && c1.DestData != "" {
+						// 直接使用已经查询到的数据，避免重复执行SELECT请求
+						vlog = fmt.Sprintf("(%d) Reusing existing query results, skipping duplicate SELECT requests for %s.%s", logThreadSeq, c1.Schema, c1.Table)
+						global.Wlog.Debug(vlog)
+						stt = c1.SourceData
+						dtt = c1.DestData
+					} else {
+						// 源端查询使用sourceSchema和table
+						idxc := dbExec.IndexColumnStruct{
+							Schema:      sourceSchema,
+							Table:       table,
+							TableColumn: colData.SColumnInfo,
+							Drivce:      sp.sdrive,
+							Sqlwhere:    sourceSqlWhere, // 使用处理后的源端SQL条件
+						}
+						stt, _ = idxc.TableIndexColumn().GeneratingQueryCriteria(sdb, logThreadSeq)
 
-					// 目标端查询使用destSchema和table
-					idxcDest := dbExec.IndexColumnStruct{
-						Schema:      destSchema,
-						Table:       table,
-						TableColumn: colData.DColumnInfo,
-						Drivce:      sp.ddrive,
-						Sqlwhere:    destSqlWhere, // 使用处理后的目标端SQL条件
+						// 目标端查询使用destSchema和table
+						idxcDest := dbExec.IndexColumnStruct{
+							Schema:      destSchema,
+							Table:       table,
+							TableColumn: colData.DColumnInfo,
+							Drivce:      sp.ddrive,
+							Sqlwhere:    destSqlWhere, // 使用处理后的目标端SQL条件
+						}
+						dtt, _ = idxcDest.TableIndexColumn().GeneratingQueryCriteria(ddb, logThreadSeq)
 					}
-					dtt, _ := idxcDest.TableIndexColumn().GeneratingQueryCriteria(ddb, logThreadSeq)
 
 					if aa.CheckMd5(stt) != aa.CheckMd5(dtt) {
 						vlog = fmt.Sprintf("(%d) Data checksum mismatch for %s.%s, need to find specific differences", logThreadSeq, c1.Schema, c1.Table)
@@ -1647,7 +1682,7 @@ func (sp *SchedulePlan) queryTableDataSeparate(sourceSelectSql chanMap, destSele
 		total     = int64(0)
 		startTime = time.Now().UnixMilli() // 开始时间
 	)
-	
+
 	// 重新初始化进度条为100，用于显示百分比进度
 	sp.bar = &Bar{}
 	sp.bar.NewOption(0, 100, "Processing")
@@ -1657,7 +1692,7 @@ func (sp *SchedulePlan) queryTableDataSeparate(sourceSelectSql chanMap, destSele
 		case d, ok := <-sc:
 			if ok && d > 0 {
 				total = d
-				global.Wlog.Debug("DEBUG_PROGRESS_%d: Total tasks received=%d at time=%.2fs\n", 
+				global.Wlog.Debug("DEBUG_PROGRESS_%d: Total tasks received=%d at time=%.2fs\n",
 					logThreadSeq, d, float64(time.Now().UnixMilli()-startTime)/1000)
 			}
 		case sourceSql, ok := <-sourceSelectSql:
@@ -1671,7 +1706,7 @@ func (sp *SchedulePlan) queryTableDataSeparate(sourceSelectSql chanMap, destSele
 			} else {
 				destSql := <-destSelectSql
 				autoSeq++
-				
+
 				// 计算当前完成百分比并更新进度条
 				var displayProgress int64
 				if total > 0 {
@@ -1693,26 +1728,26 @@ func (sp *SchedulePlan) queryTableDataSeparate(sourceSelectSql chanMap, destSele
 					} else {
 						estimatedTotal = autoSeq + 150 // 超过300个任务时，估算再需要150个
 					}
-					
+
 					percent := float64(autoSeq) / float64(estimatedTotal)
 					displayProgress = int64(percent * 100)
-					
+
 					// 限制进度显示，避免过早达到100%
 					if displayProgress > 95 {
 						displayProgress = 95 // 最多显示95%，给最终完成留空间
 					}
 				}
-				
+
 				// DEBUG: 记录进度更新
 				currentTime := time.Now().UnixMilli()
-				global.Wlog.Debug("DEBUG_PROGRESS_UPDATE_%d: autoSeq=%d, total=%d, displayProgress=%d, time=%.2fs, curry_len=%d\n", 
+				global.Wlog.Debug("DEBUG_PROGRESS_UPDATE_%d: autoSeq=%d, total=%d, displayProgress=%d, time=%.2fs, curry_len=%d\n",
 					logThreadSeq, autoSeq, total, displayProgress, float64(currentTime-startTime)/1000, len(curry))
-				
+
 				// 更新进度条
 				sp.bar.Play(displayProgress)
 				// 强制刷新缓冲区确保实时显示
 				fmt.Fprint(os.Stdout, "")
-				
+
 				curry <- struct{}{}
 				go func(currentSeq int64, sourceSql, destSql map[string]string) {
 					defer func() {
@@ -1721,15 +1756,13 @@ func (sp *SchedulePlan) queryTableDataSeparate(sourceSelectSql chanMap, destSele
 
 					// DEBUG: 记录任务开始处理
 					taskStartTime := time.Now().UnixMilli()
-					global.Wlog.Debug("DEBUG_TASK_START_%d: currentSeq=%d, autoSeq=%d, total=%d, time=%.2fs\n", 
+					global.Wlog.Debug("DEBUG_TASK_START_%d: currentSeq=%d, autoSeq=%d, total=%d, time=%.2fs\n",
 						logThreadSeq, currentSeq, autoSeq, total, float64(taskStartTime-startTime)/1000)
-					
-
 
 					// 源端查询
 					sdb := sp.sdbPool.Get(logThreadSeq)
 					sourceQueryStart := time.Now().UnixMilli()
-					global.Wlog.Debug("DEBUG_SOURCE_START_%d: seq=%d, getting source query...\n", 
+					global.Wlog.Debug("DEBUG_SOURCE_START_%d: seq=%d, getting source query...\n",
 						logThreadSeq, currentSeq)
 					stt, err := (&dbExec.IndexColumnStruct{
 						Schema:   sp.sourceSchema,
@@ -1744,9 +1777,9 @@ func (sp *SchedulePlan) queryTableDataSeparate(sourceSelectSql chanMap, destSele
 						global.Wlog.Debug("DEBUG_TASK_ERROR_%d: source query failed for seq=%d: %v\n", logThreadSeq, currentSeq, err)
 						return
 					}
-					
-					sourceDuration := float64(sourceQueryEnd-sourceQueryStart)/1000
-					global.Wlog.Debug("DEBUG_SOURCE_QUERY_%d: seq=%d, duration=%.2fs, total_time_so_far=%.2fs\n", 
+
+					sourceDuration := float64(sourceQueryEnd-sourceQueryStart) / 1000
+					global.Wlog.Debug("DEBUG_SOURCE_QUERY_%d: seq=%d, duration=%.2fs, total_time_so_far=%.2fs\n",
 						logThreadSeq, currentSeq, sourceDuration, float64(sourceQueryEnd-startTime)/1000)
 
 					// 目标端查询
@@ -1765,8 +1798,8 @@ func (sp *SchedulePlan) queryTableDataSeparate(sourceSelectSql chanMap, destSele
 						global.Wlog.Debug("DEBUG_TASK_ERROR_%d: dest query failed for seq=%d: %v\n", logThreadSeq, currentSeq, err)
 						return
 					}
-					
-					global.Wlog.Debug("DEBUG_DEST_QUERY_%d: seq=%d, duration=%.2fs\n", 
+
+					global.Wlog.Debug("DEBUG_DEST_QUERY_%d: seq=%d, duration=%.2fs\n",
 						logThreadSeq, currentSeq, float64(destQueryEnd-destQueryStart)/1000)
 
 					// 比较结果
@@ -1777,18 +1810,20 @@ func (sp *SchedulePlan) queryTableDataSeparate(sourceSelectSql chanMap, destSele
 							Table:           sp.table,
 							SqlWhere:        map[string]string{sp.sdrive: sourceSql[sp.sdrive], sp.ddrive: destSql[sp.ddrive]},
 							TableColumnInfo: cc1,
+							SourceData:      stt, // 传递已经查询到的源端数据，避免重复查询
+							DestData:        dtt, // 传递已经查询到的目标端数据，避免重复查询
 						}
 						diffQueryData <- differencesData
 					}
-					
+
 					// DEBUG: 记录任务完成时间
 					taskEndTime := time.Now().UnixMilli()
-					global.Wlog.Debug("DEBUG_TASK_END_%d: currentSeq=%d, autoSeq=%d, total=%d, totalTaskTime=%.2fs, timeFromStart=%.2fs\n", 
+					global.Wlog.Debug("DEBUG_TASK_END_%d: currentSeq=%d, autoSeq=%d, total=%d, totalTaskTime=%.2fs, timeFromStart=%.2fs\n",
 						logThreadSeq, currentSeq, autoSeq, total, float64(taskEndTime-taskStartTime)/1000, float64(taskEndTime-startTime)/1000)
-					
+
 					// DEBUG: 记录任务完成（不更新进度条，避免跳动）
 					currentTime := time.Now().UnixMilli()
-					global.Wlog.Debug("DEBUG_TASK_COMPLETE_%d: currentSeq=%d, autoSeq=%d, total=%d, time=%.2fs, curry_len=%d\n", 
+					global.Wlog.Debug("DEBUG_TASK_COMPLETE_%d: currentSeq=%d, autoSeq=%d, total=%d, time=%.2fs, curry_len=%d\n",
 						logThreadSeq, currentSeq, autoSeq, total, float64(currentTime-startTime)/1000, len(curry))
 				}(autoSeq, sourceSql, destSql)
 			}

@@ -128,10 +128,10 @@ func GetDBexec(jdbcurl, dbDevice string) *DBConnStruct {
 	return &DBConnStruct{
 		JDBC:            jdbcurl,
 		DBDevice:        dbDevice,
-		MaxOpenConns:    1000,
-		MaxIdleConns:    100,
-		ConnMaxIdleTime: 100,
-		ConnMaxLifetime: 0,
+		MaxOpenConns:    100,  // 减少最大打开连接数，避免创建过多连接
+		MaxIdleConns:    50,   // 减少最大空闲连接数，优化连接池资源
+		ConnMaxIdleTime: 3600, // 增加连接最大空闲时间，减少连接频繁销毁和重建
+		ConnMaxLifetime: 0,    // 0表示连接永不过期，避免频繁创建新连接
 	}
 }
 

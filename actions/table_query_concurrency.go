@@ -60,14 +60,16 @@ func (sp *SchedulePlan) getDisplayTableName() string {
 差异数据信息结构体
 */
 type DifferencesDataStruct struct {
-	Schema string //存在差异数据的库
-	Table  string //存在差异数据的表
-	Spoint string //校验开始时的源端全局一致性点
-	Dpoint string //校验开始时的目端全局一致性点
+	Schema          string //存在差异数据的库
+	Table           string //存在差异数据的表
+	Spoint          string //校验开始时的源端全局一致性点
+	Dpoint          string //校验开始时的目端全局一致性点
 	//TableColumnInfo []map[string]string //该表的所有列信息，包括列类型
 	TableColumnInfo global.TableAllColumnInfoS //该表的所有列信息，包括列类型
 	SqlWhere        map[string]string          //差异数据查询的where 条件
 	indexColumnType string                     //索引列类型
+	SourceData      string                     //源端查询到的数据，避免重复查询
+	DestData        string                     //目标端查询到的数据，避免重复查询
 }
 
 /*
