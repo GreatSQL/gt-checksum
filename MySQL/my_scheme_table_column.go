@@ -7,6 +7,7 @@ import (
 	"gt-checksum/global"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 type QueryTable struct {
@@ -25,6 +26,10 @@ type QueryTable struct {
 	BeginSeq                string
 	RowDataCh               int64
 	SelectColumn            map[string]string
+	// Caching fields to optimize repeated INFORMATION_SCHEMA queries
+	columnExistsCache   map[string]bool   // Cache for column existence checks
+	allColumnsCache     []string          // Cache for all column names ordered by ORDINAL_POSITION
+	columnDataTypeCache map[string]string // Cache for column name to data type mapping
 }
 
 var (
@@ -32,7 +37,22 @@ var (
 	vlog   string
 	err    error
 	strsql string
-	procP  = func(inout []map[string]interface{}, event string) map[string]string {
+
+	// Global caching for expensive INFORMATION_SCHEMA queries
+	// These caches are shared across all QueryTable instances
+	// cache key format: schema.table.column for column existence
+	// cache key format: schema.table for column lists and data types
+	columnExistsGlobalCache   = make(map[string]bool)
+	allColumnsGlobalCache     = make(map[string][]string)
+	columnDataTypeGlobalCache = make(map[string]string)
+	tableColumnGlobalCache    = make(map[string][]map[string]string) // Cache for complete table column information (fills TableColumn field)
+	// Cache for database version information (fills SELECT VERSION() requests)
+	// Cache key format: connection identifier
+	databaseVersionCache = make(map[string]string)
+	// Mutex to protect global caches
+	cacheMutex sync.RWMutex
+
+	procP = func(inout []map[string]interface{}, event string) map[string]string {
 		var tmpa = make(map[string]string)
 		for _, v := range inout {
 			ORDINAL_POSITIO, err1 := strconv.Atoi(fmt.Sprintf("%s", v["ORDINAL_POSITION"]))
@@ -203,6 +223,21 @@ func (my *QueryTable) DatabaseVersion(db *sql.DB, logThreadSeq int64) (string, e
 		rows    *sql.Rows
 		Event   = "Q_M_Versions"
 	)
+
+	// Use database connection address as cache key
+	// This ensures different connections to different MySQL instances get their own cached version
+	cacheKey := fmt.Sprintf("%p", db)
+
+	// Try to get cached version first
+	cacheMutex.RLock()
+	if cachedVersion, ok := databaseVersionCache[cacheKey]; ok {
+		cacheMutex.RUnlock()
+		global.Wlog.Debug("(%d) [%s] Using cached version information for database connection %p: %s", logThreadSeq, Event, db, cachedVersion)
+		return cachedVersion, nil
+	}
+	cacheMutex.RUnlock()
+
+	// Cache miss, execute the query
 	vlog = fmt.Sprintf("(%d) [%s] Start querying the version information of the %s database", logThreadSeq, Event, DBType)
 	strsql = fmt.Sprintf("SELECT VERSION() AS VERSION")
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
@@ -211,6 +246,8 @@ func (my *QueryTable) DatabaseVersion(db *sql.DB, logThreadSeq int64) (string, e
 			return "", err
 		}
 	}
+	defer rows.Close()
+
 	dispos.SqlRows = rows
 	a, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
 	if err != nil {
@@ -225,9 +262,15 @@ func (my *QueryTable) DatabaseVersion(db *sql.DB, logThreadSeq int64) (string, e
 			break
 		}
 	}
-	vlog = fmt.Sprintf("(%d) [%s] Complete the version information query of the %s database.", logThreadSeq, Event, DBType)
+
+	// Cache the version information for future use
+	cacheMutex.Lock()
+	databaseVersionCache[cacheKey] = version
+	cacheMutex.Unlock()
+
+	vlog = fmt.Sprintf("(%d) [%s] Complete the version information query of the %s database and cached version: %s", logThreadSeq, Event, DBType, version)
 	global.Wlog.Debug(vlog)
-	defer rows.Close()
+
 	return version, nil
 }
 

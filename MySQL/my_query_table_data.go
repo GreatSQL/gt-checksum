@@ -231,11 +231,25 @@ func (my *QueryTable) TmpTableIndexColumnRowsCount(db *sql.DB, logThreadSeq int6
 */
 
 // 检查指定的列是否存在于表中
-func (my QueryTable) checkColumnExists(db *sql.DB, columnName string, logThreadSeq int64) (bool, error) {
+func (my *QueryTable) checkColumnExists(db *sql.DB, columnName string, logThreadSeq int64) (bool, error) {
 	var (
 		Event = "Check_Column_Exists"
 		count int
 	)
+
+	// Generate cache key in format: schema.table.column
+	cacheKey := fmt.Sprintf("%s.%s.%s", my.Schema, my.Table, columnName)
+
+	// Check if result is already in global cache
+	cacheMutex.RLock()
+	if exists, ok := columnExistsGlobalCache[cacheKey]; ok {
+		cacheMutex.RUnlock()
+		vlog := fmt.Sprintf("(%d) [%s] Column %s existence check result from global cache: %v", logThreadSeq, Event, columnName, exists)
+		global.Wlog.Debug(vlog)
+		return exists, nil
+	}
+	cacheMutex.RUnlock()
+
 	// 直接使用一条SQL查询列是否存在，避免使用用户变量
 	strsql := fmt.Sprintf("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = '%s' AND table_name = '%s' AND column_name = '%s'", my.Schema, my.Table, columnName)
 
@@ -255,18 +269,30 @@ func (my QueryTable) checkColumnExists(db *sql.DB, columnName string, logThreadS
 		if err != nil {
 			vlog = fmt.Sprintf("(%d) [%s] DESCRIBE query failed, column %s likely does not exist. Error: %s", logThreadSeq, Event, columnName, err)
 			global.Wlog.Debug(vlog)
+			// Cache the result in global cache
+			cacheMutex.Lock()
+			columnExistsGlobalCache[cacheKey] = false
+			cacheMutex.Unlock()
 			return false, nil // 列不存在
 		}
 		defer rows.Close()
 		exists := rows.Next()
 		vlog = fmt.Sprintf("(%d) [%s] Column %s existence check result: %v", logThreadSeq, Event, columnName, exists)
 		global.Wlog.Debug(vlog)
+		// Cache the result in global cache
+		cacheMutex.Lock()
+		columnExistsGlobalCache[cacheKey] = exists
+		cacheMutex.Unlock()
 		return exists, nil
 	}
 
 	exists := count > 0
 	vlog = fmt.Sprintf("(%d) [%s] Column %s existence check result: %v", logThreadSeq, Event, columnName, exists)
 	global.Wlog.Debug(vlog)
+	// Cache the result in global cache
+	cacheMutex.Lock()
+	columnExistsGlobalCache[cacheKey] = exists
+	cacheMutex.Unlock()
 	return exists, nil
 }
 
@@ -661,26 +687,48 @@ func (my QueryTable) GeneratingQueryCriteria(db *sql.DB, logThreadSeq int64) (st
 
 	// 获取表的所有列名
 	if len(my.TableColumn) == 0 {
-		// 从INFORMATION_SCHEMA.COLUMNS获取列信息
-		strsql := fmt.Sprintf("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s' ORDER BY ORDINAL_POSITION", my.Schema, my.Table)
-		dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
-		if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
-			vlog = fmt.Sprintf("(%d) [%s] Failed to execute query: %s, Error: %v", logThreadSeq, Event, strsql, err)
-			global.Wlog.Error(vlog)
-			// 记录跳过的表信息到全局变量中
-			global.AddSkippedTable(my.Schema, my.Table, "data", fmt.Sprintf("query failed: %v", err))
-			return "", err
-		}
-		for dispos.SqlRows.Next() {
-			var columnName string
-			if err := dispos.SqlRows.Scan(&columnName); err != nil {
-				global.Wlog.Error(fmt.Sprintf("(%d) [%s] Failed to scan column name: %v", logThreadSeq, Event, err))
-				dispos.SqlRows.Close()
+		// Generate cache key in format: schema.table
+		cacheKey := fmt.Sprintf("%s.%s", my.Schema, my.Table)
+
+		// Check if result is already in global cache
+		cacheMutex.RLock()
+		if cachedColumns, ok := allColumnsGlobalCache[cacheKey]; ok {
+			cacheMutex.RUnlock()
+			// Use cached column names
+			for _, columnName := range cachedColumns {
+				columnNameSeq = append(columnNameSeq, fmt.Sprintf("`%s`", columnName))
+			}
+		} else {
+			cacheMutex.RUnlock()
+			// 从INFORMATION_SCHEMA.COLUMNS获取列信息
+			strsql := fmt.Sprintf("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s' ORDER BY ORDINAL_POSITION", my.Schema, my.Table)
+			dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
+			if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
+				vlog = fmt.Sprintf("(%d) [%s] Failed to execute query: %s, Error: %v", logThreadSeq, Event, strsql, err)
+				global.Wlog.Error(vlog)
+				// 记录跳过的表信息到全局变量中
+				global.AddSkippedTable(my.Schema, my.Table, "data", fmt.Sprintf("query failed: %v", err))
 				return "", err
 			}
-			columnNameSeq = append(columnNameSeq, fmt.Sprintf("`%s`", columnName))
+			// Cache the raw column names in global cache for future use
+			var cachedColumns []string
+			for dispos.SqlRows.Next() {
+				var columnName string
+				if err := dispos.SqlRows.Scan(&columnName); err != nil {
+					global.Wlog.Error(fmt.Sprintf("(%d) [%s] Failed to scan column name: %v", logThreadSeq, Event, err))
+					dispos.SqlRows.Close()
+					return "", err
+				}
+				cachedColumns = append(cachedColumns, columnName)
+				columnNameSeq = append(columnNameSeq, fmt.Sprintf("`%s`", columnName))
+			}
+			dispos.SqlRows.Close()
+
+			// Save to global cache
+			cacheMutex.Lock()
+			allColumnsGlobalCache[cacheKey] = cachedColumns
+			cacheMutex.Unlock()
 		}
-		dispos.SqlRows.Close()
 	} else {
 		// 使用已有的列名
 		for _, column := range my.TableColumn {
@@ -755,31 +803,60 @@ func (my *QueryTable) GeneratingQuerySql(db *sql.DB, logThreadSeq int64) (string
 
 	// 如果TableColumn为空，从数据库查询获取列信息
 	if len(my.TableColumn) == 0 {
-		vlog = fmt.Sprintf("(%d) [%s] TableColumn is empty, querying column info from database for table %s.%s", logThreadSeq, Event, my.Schema, my.Table)
-		global.Wlog.Debug(vlog)
+		// Generate cache key in format: schema.table
+		cacheKey := fmt.Sprintf("%s.%s", my.Schema, my.Table)
 
-		// 查询表的所有列信息
-		query := fmt.Sprintf("SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s'", my.Schema, my.Table)
-		rows, err := db.Query(query)
-		if err != nil {
-			vlog = fmt.Sprintf("(%d) [%s] Failed to query column info for table %s.%s: %v", logThreadSeq, Event, my.Schema, my.Table, err)
-			global.Wlog.Error(vlog)
-			return "", err
-		}
-		defer rows.Close()
+		// Check if complete table column information is already in global cache
+		cacheMutex.RLock()
+		if cachedTableColumn, ok := tableColumnGlobalCache[cacheKey]; ok {
+			cacheMutex.RUnlock()
+			vlog = fmt.Sprintf("(%d) [%s] TableColumn information loaded from global cache for table %s.%s", logThreadSeq, Event, my.Schema, my.Table)
+			global.Wlog.Debug(vlog)
+			// Use cached table column information
+			my.TableColumn = cachedTableColumn
+		} else {
+			cacheMutex.RUnlock()
+			vlog = fmt.Sprintf("(%d) [%s] TableColumn is empty, querying column info from database for table %s.%s", logThreadSeq, Event, my.Schema, my.Table)
+			global.Wlog.Debug(vlog)
 
-		// 将查询结果填充到TableColumn中
-		for rows.Next() {
-			var columnName, dataType string
-			if err := rows.Scan(&columnName, &dataType); err != nil {
-				vlog = fmt.Sprintf("(%d) [%s] Failed to scan column info for table %s.%s: %v", logThreadSeq, Event, my.Schema, my.Table, err)
+			// 查询表的所有列信息
+			query := fmt.Sprintf("SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s'", my.Schema, my.Table)
+			rows, err := db.Query(query)
+			if err != nil {
+				vlog = fmt.Sprintf("(%d) [%s] Failed to query column info for table %s.%s: %v", logThreadSeq, Event, my.Schema, my.Table, err)
 				global.Wlog.Error(vlog)
 				return "", err
 			}
-			my.TableColumn = append(my.TableColumn, map[string]string{
-				"columnName": columnName,
-				"dataType":   dataType,
-			})
+			defer rows.Close()
+
+			// 将查询结果填充到TableColumn
+			var cachedTableColumn []map[string]string
+			for rows.Next() {
+				var columnName, dataType string
+				if err := rows.Scan(&columnName, &dataType); err != nil {
+					vlog = fmt.Sprintf("(%d) [%s] Failed to scan column info for table %s.%s: %v", logThreadSeq, Event, my.Schema, my.Table, err)
+					global.Wlog.Error(vlog)
+					return "", err
+				}
+				tableColumnEntry := map[string]string{
+					"columnName": columnName,
+					"dataType":   dataType,
+				}
+				cachedTableColumn = append(cachedTableColumn, tableColumnEntry)
+				// Cache individual column mappings as well
+				columnCacheKey := fmt.Sprintf("%s.%s.%s", my.Schema, my.Table, columnName)
+				cacheMutex.Lock()
+				columnDataTypeGlobalCache[columnCacheKey] = dataType
+				cacheMutex.Unlock()
+			}
+
+			// Save complete table column information to global cache
+			cacheMutex.Lock()
+			tableColumnGlobalCache[cacheKey] = cachedTableColumn
+			cacheMutex.Unlock()
+
+			// Assign to current instance
+			my.TableColumn = cachedTableColumn
 		}
 	}
 
