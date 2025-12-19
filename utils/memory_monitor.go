@@ -38,6 +38,9 @@ func MemoryMonitor(memoryLimit string, config *inputArg.ConfigParameter) {
 	// 标记是否刚刚进行过参数调整
 	justAdjusted := false
 
+	// 记录上次输出GC提示的时间，用于控制输出频率
+	lastGCTime := time.Now()
+
 	go func() {
 		ticker := time.NewTicker(50 * time.Millisecond)
 		defer ticker.Stop()
@@ -48,10 +51,16 @@ func MemoryMonitor(memoryLimit string, config *inputArg.ConfigParameter) {
 			// 当内存使用接近限制时触发垃圾回收
 			if currentMB >= gcThresholdMB && currentMB < limitMB {
 				runtime.GC()
-				gcMessage := fmt.Sprintf("Info: Memory usage %dMB approaching limit, triggering garbage collection", currentMB)
-				//fmt.Println(gcMessage)
-				if global.Wlog != nil {
-					global.Wlog.Info(gcMessage)
+
+				// 控制GC提示信息输出频率，最多每2秒输出一次
+				if time.Since(lastGCTime) >= 2*time.Second {
+					gcMessage := fmt.Sprintf("Info: Memory usage %dMB approaching limit, triggering garbage collection", currentMB)
+					//fmt.Println(gcMessage)
+					if global.Wlog != nil {
+						global.Wlog.Info(gcMessage)
+					}
+					// 更新上次输出GC提示的时间
+					lastGCTime = time.Now()
 				}
 
 				// 等待GC完成
