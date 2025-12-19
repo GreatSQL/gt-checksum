@@ -223,24 +223,40 @@ func (rs repairSqlStruct) SqlFile(sfile *os.File, sql []string, logThreadSeq int
 			}
 		}
 	} else {
+		// 先对SQL语句进行去重，保留原始顺序
+		var uniqueSqls []string
+		for _, s := range sql {
+			trimmedSql := strings.TrimSpace(s)
+			if trimmedSql == "" {
+				continue
+			}
+			// 使用全局writtenSqlMap进行去重，确保跨调用去重
+			if _, loaded := writtenSqlMap.LoadOrStore(trimmedSql, true); !loaded {
+				uniqueSqls = append(uniqueSqls, s)
+			}
+		}
+
+		// 如果去重后没有SQL语句，直接返回
+		if len(uniqueSqls) == 0 {
+			vlog = fmt.Sprintf("(%d) No unique repair statements to write after deduplication", logThreadSeq)
+			global.Wlog.Debug(vlog)
+			return nil
+		}
+
 		// 根据fixTrxNum参数拆分事务
 		if rs.FixTrxNum <= 0 {
 			// 如果fixTrxNum <= 0，则所有SQL放在一个事务中（默认行为）
 			sqlCommit := []string{"BEGIN;"}
-			sqlCommit = append(sqlCommit, sql...)
+			sqlCommit = append(sqlCommit, uniqueSqls...)
 			sqlCommit = append(sqlCommit, "COMMIT;")
 
-			// 将整个事务作为一个单元进行去重
-			transactionKey := strings.Join(sql, "")
-			if _, loaded := writtenSqlMap.LoadOrStore(strings.TrimSpace(transactionKey), true); !loaded {
-				_, err = FileOperate{File: sfile, BufSize: 1024 * 4 * 1024, SqlType: "sql"}.ConcurrencyWriteFile(sqlCommit)
-				if err != nil {
-					return err
-				}
+			_, err = FileOperate{File: sfile, BufSize: 1024 * 4 * 1024, SqlType: "sql"}.ConcurrencyWriteFile(sqlCommit)
+			if err != nil {
+				return err
 			}
 		} else {
 			// 根据fixTrxNum拆分成多个事务
-			totalSql := len(sql)
+			totalSql := len(uniqueSqls)
 			for i := 0; i < totalSql; i += rs.FixTrxNum {
 				end := i + rs.FixTrxNum
 				if end > totalSql {
@@ -249,22 +265,18 @@ func (rs repairSqlStruct) SqlFile(sfile *os.File, sql []string, logThreadSeq int
 
 				// 构建一个事务的SQL语句
 				batchSql := []string{"BEGIN;"}
-				currentBatch := sql[i:end]
+				currentBatch := uniqueSqls[i:end]
 				batchSql = append(batchSql, currentBatch...)
 				batchSql = append(batchSql, "COMMIT;")
 
-				// 将整个事务批次作为一个单元进行去重
-				transactionKey := strings.Join(currentBatch, "")
-				if _, loaded := writtenSqlMap.LoadOrStore(strings.TrimSpace(transactionKey), true); !loaded {
-					_, err = FileOperate{File: sfile, BufSize: 1024 * 4 * 1024, SqlType: "sql"}.ConcurrencyWriteFile(batchSql)
-					if err != nil {
-						return err
-					}
-
-					vlog = fmt.Sprintf("(%d) Written transaction batch %d-%d (total %d SQL statements)",
-						logThreadSeq, i+1, end, end-i)
-					global.Wlog.Debug(vlog)
+				_, err = FileOperate{File: sfile, BufSize: 1024 * 4 * 1024, SqlType: "sql"}.ConcurrencyWriteFile(batchSql)
+				if err != nil {
+					return err
 				}
+
+				vlog = fmt.Sprintf("(%d) Written transaction batch %d-%d (total %d SQL statements)",
+					logThreadSeq, i+1, end, end-i)
+				global.Wlog.Debug(vlog)
 			}
 		}
 	}
