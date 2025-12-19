@@ -27,6 +27,10 @@ type (
 
 var (
 	lock sync.Mutex
+
+	// 用于跟踪已经输出过目标表为空提示的表，避免重复输出
+	emptyTableWarned = make(map[string]bool)
+	emptyTableMutex  sync.Mutex
 )
 
 /*
@@ -1011,16 +1015,41 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 						}
 
 						// 检查去重是否真的有效
+						// 只有当源数据确实有内容时，才检查重复记录
 						if len(sourceData) != len(cleanSourceData) {
-							duplicateCount := len(sourceData) - len(cleanSourceData)
-							vlog = fmt.Sprintf("(%d) Found %d duplicate records in source data for %s.%s", logThreadSeq, duplicateCount, c1.Schema, c1.Table)
-							global.Wlog.Warn(vlog)
+							// 检查是否只有一个空字符串（源表为空的情况）
+							if len(sourceData) == 1 && sourceData[0] == "" {
+								// 源表为空，不是真正的重复记录
+								global.Wlog.Debug("(%d) Source data is empty, skipping duplicate check for %s.%s", logThreadSeq, c1.Schema, c1.Table)
+							} else {
+								duplicateCount := len(sourceData) - len(cleanSourceData)
+								vlog = fmt.Sprintf("(%d) Found %d duplicate records in source data for %s.%s", logThreadSeq, duplicateCount, c1.Schema, c1.Table)
+								global.Wlog.Warn(vlog)
+							}
 						}
 
 						if len(destData) != len(cleanDestData) {
-							duplicateCount := len(destData) - len(cleanDestData)
-							vlog = fmt.Sprintf("(%d) Found %d duplicate records in dest data for %s.%s", logThreadSeq, duplicateCount, c1.Schema, c1.Table)
-							global.Wlog.Warn(vlog)
+							// 检查是否只有一个空字符串（目标表为空的情况）
+							if len(destData) == 1 && destData[0] == "" {
+								// 目标表为空，不是真正的重复记录
+								global.Wlog.Debug("(%d) Destination table %s.%s is empty, skipping duplicate check", logThreadSeq, c1.Schema, c1.Table)
+
+								// 每个表只输出一次目标表为空的提示
+								tableKey := fmt.Sprintf("%s.%s", c1.Schema, c1.Table)
+								emptyTableMutex.Lock()
+								if !emptyTableWarned[tableKey] {
+									// 输出目标表为空的提示
+									vlog = fmt.Sprintf("(%d) Destination table %s.%s is empty, all source records will be added", logThreadSeq, c1.Schema, c1.Table)
+									global.Wlog.Warn(vlog)
+									// 标记该表已输出提示
+									emptyTableWarned[tableKey] = true
+								}
+								emptyTableMutex.Unlock()
+							} else {
+								duplicateCount := len(destData) - len(cleanDestData)
+								vlog = fmt.Sprintf("(%d) Found %d duplicate records in dest data for %s.%s", logThreadSeq, duplicateCount, c1.Schema, c1.Table)
+								global.Wlog.Warn(vlog)
+							}
 						}
 
 						// 4. 使用Arrcmp进行精确比较
@@ -1691,6 +1720,7 @@ func (sp *SchedulePlan) queryTableDataSeparate(sourceSelectSql chanMap, destSele
 		autoSeq   = int64(0) // 任务计数器
 		total     = int64(0)
 		startTime = time.Now().UnixMilli() // 开始时间
+		allClosed = false
 	)
 
 	// 重新初始化进度条为100，用于显示百分比进度
@@ -1698,6 +1728,20 @@ func (sp *SchedulePlan) queryTableDataSeparate(sourceSelectSql chanMap, destSele
 	sp.bar.NewOption(0, 100, "Processing")
 
 	for {
+		// 检查是否所有工作都已完成
+		if allClosed {
+			// 等待所有协程完成
+			if len(curry) == 0 {
+				// 完成进度条显示
+				sp.bar.Finish()
+				close(diffQueryData)
+				return
+			}
+			// 继续循环，等待协程完成
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+
 		select {
 		case d, ok := <-sc:
 			if ok && d > 0 {
@@ -1707,136 +1751,147 @@ func (sp *SchedulePlan) queryTableDataSeparate(sourceSelectSql chanMap, destSele
 			}
 		case sourceSql, ok := <-sourceSelectSql:
 			if !ok {
-				if len(curry) == 0 {
-					// 完成进度条显示
-					sp.bar.Finish()
-					close(diffQueryData)
-					return
+				// 源通道关闭，检查目标通道
+				select {
+				case _, destOk := <-destSelectSql:
+					if !destOk {
+						// 目标通道也关闭了
+						allClosed = true
+					}
+				default:
+					// 目标通道可能还有数据，继续处理
+				}
+				continue
+			}
+
+			// 从目标通道读取数据，检查是否已关闭
+			destSql, destOk := <-destSelectSql
+			if !destOk {
+				allClosed = true
+				continue
+			}
+
+			autoSeq++
+
+			// 计算当前完成百分比并更新进度条
+			var displayProgress int64
+			if total > 0 {
+				// 计算当前完成的百分比，映射到100的刻度上
+				percent := float64(autoSeq) / float64(total)
+				displayProgress = int64(percent * 100)
+				if displayProgress > 100 {
+					displayProgress = 100
 				}
 			} else {
-				destSql := <-destSelectSql
-				autoSeq++
-
-				// 计算当前完成百分比并更新进度条
-				var displayProgress int64
-				if total > 0 {
-					// 计算当前完成的百分比，映射到100的刻度上
-					percent := float64(autoSeq) / float64(total)
-					displayProgress = int64(percent * 100)
-					if displayProgress > 100 {
-						displayProgress = 100
-					}
+				// 没有总数时，使用更平滑的进度估算
+				var estimatedTotal int64
+				if autoSeq <= 50 {
+					estimatedTotal = 100 // 前50个任务时，估算总共100个
+				} else if autoSeq <= 100 {
+					estimatedTotal = autoSeq * 2 // 51-100个任务时，估算为当前的2倍
+				} else if autoSeq <= 300 {
+					estimatedTotal = autoSeq + autoSeq/2 // 101-300个任务时，估算再需要50%的任务
 				} else {
-					// 没有总数时，使用更平滑的进度估算
-					var estimatedTotal int64
-					if autoSeq <= 50 {
-						estimatedTotal = 100 // 前50个任务时，估算总共100个
-					} else if autoSeq <= 100 {
-						estimatedTotal = autoSeq * 2 // 51-100个任务时，估算为当前的2倍
-					} else if autoSeq <= 300 {
-						estimatedTotal = autoSeq + autoSeq/2 // 101-300个任务时，估算再需要50%的任务
-					} else {
-						estimatedTotal = autoSeq + 150 // 超过300个任务时，估算再需要150个
-					}
-
-					percent := float64(autoSeq) / float64(estimatedTotal)
-					displayProgress = int64(percent * 100)
-
-					// 限制进度显示，避免过早达到100%
-					if displayProgress > 95 {
-						displayProgress = 95 // 最多显示95%，给最终完成留空间
-					}
+					estimatedTotal = autoSeq + 150 // 超过300个任务时，估算再需要150个
 				}
 
-				// DEBUG: 记录进度更新
-				currentTime := time.Now().UnixMilli()
-				global.Wlog.Debug("DEBUG_PROGRESS_UPDATE_%d: autoSeq=%d, total=%d, displayProgress=%d, time=%.2fs, curry_len=%d\n",
-					logThreadSeq, autoSeq, total, displayProgress, float64(currentTime-startTime)/1000, len(curry))
+				percent := float64(autoSeq) / float64(estimatedTotal)
+				displayProgress = int64(percent * 100)
 
-				// 更新进度条
-				sp.bar.Play(displayProgress)
-				// 强制刷新缓冲区确保实时显示
-				fmt.Fprint(os.Stdout, "")
-
-				curry <- struct{}{}
-				go func(currentSeq int64, sourceSql, destSql map[string]string) {
-					defer func() {
-						<-curry
-					}()
-
-					// DEBUG: 记录任务开始处理
-					taskStartTime := time.Now().UnixMilli()
-					global.Wlog.Debug("DEBUG_TASK_START_%d: currentSeq=%d, autoSeq=%d, total=%d, time=%.2fs\n",
-						logThreadSeq, currentSeq, autoSeq, total, float64(taskStartTime-startTime)/1000)
-
-					// 源端查询
-					sdb := sp.sdbPool.Get(logThreadSeq)
-					sourceQueryStart := time.Now().UnixMilli()
-					global.Wlog.Debug("DEBUG_SOURCE_START_%d: seq=%d, getting source query...\n",
-						logThreadSeq, currentSeq)
-					stt, err := (&dbExec.IndexColumnStruct{
-						Schema:   sp.sourceSchema,
-						Table:    sp.table,
-						Drivce:   sp.sdrive,
-						Sqlwhere: sourceSql[sp.sdrive],
-						ColData:  cc1.SColumnInfo,
-					}).TableIndexColumn().GeneratingQueryCriteria(sdb, logThreadSeq)
-					sourceQueryEnd := time.Now().UnixMilli()
-					sp.sdbPool.Put(sdb, logThreadSeq)
-					if err != nil {
-						global.Wlog.Debug("DEBUG_TASK_ERROR_%d: source query failed for seq=%d: %v\n", logThreadSeq, currentSeq, err)
-						return
-					}
-
-					sourceDuration := float64(sourceQueryEnd-sourceQueryStart) / 1000
-					global.Wlog.Debug("DEBUG_SOURCE_QUERY_%d: seq=%d, duration=%.2fs, total_time_so_far=%.2fs\n",
-						logThreadSeq, currentSeq, sourceDuration, float64(sourceQueryEnd-startTime)/1000)
-
-					// 目标端查询
-					ddb := sp.ddbPool.Get(logThreadSeq)
-					destQueryStart := time.Now().UnixMilli()
-					dtt, err := (&dbExec.IndexColumnStruct{
-						Schema:   sp.destSchema,
-						Table:    sp.table,
-						Drivce:   sp.ddrive,
-						Sqlwhere: destSql[sp.ddrive],
-						ColData:  cc1.DColumnInfo,
-					}).TableIndexColumn().GeneratingQueryCriteria(ddb, logThreadSeq)
-					destQueryEnd := time.Now().UnixMilli()
-					sp.ddbPool.Put(ddb, logThreadSeq)
-					if err != nil {
-						global.Wlog.Debug("DEBUG_TASK_ERROR_%d: dest query failed for seq=%d: %v\n", logThreadSeq, currentSeq, err)
-						return
-					}
-
-					global.Wlog.Debug("DEBUG_DEST_QUERY_%d: seq=%d, duration=%.2fs\n",
-						logThreadSeq, currentSeq, float64(destQueryEnd-destQueryStart)/1000)
-
-					// 比较结果
-					aa := &CheckSumTypeStruct{}
-					if aa.CheckMd5(stt) != aa.CheckMd5(dtt) {
-						differencesData := DifferencesDataStruct{
-							Schema:          sp.schema,
-							Table:           sp.table,
-							SqlWhere:        map[string]string{sp.sdrive: sourceSql[sp.sdrive], sp.ddrive: destSql[sp.ddrive]},
-							TableColumnInfo: cc1,
-							SourceData:      stt, // 传递已经查询到的源端数据，避免重复查询
-							DestData:        dtt, // 传递已经查询到的目标端数据，避免重复查询
-						}
-						diffQueryData <- differencesData
-					}
-
-					// DEBUG: 记录任务完成时间
-					taskEndTime := time.Now().UnixMilli()
-					global.Wlog.Debug("DEBUG_TASK_END_%d: currentSeq=%d, autoSeq=%d, total=%d, totalTaskTime=%.2fs, timeFromStart=%.2fs\n",
-						logThreadSeq, currentSeq, autoSeq, total, float64(taskEndTime-taskStartTime)/1000, float64(taskEndTime-startTime)/1000)
-
-					// DEBUG: 记录任务完成（不更新进度条，避免跳动）
-					currentTime := time.Now().UnixMilli()
-					global.Wlog.Debug("DEBUG_TASK_COMPLETE_%d: currentSeq=%d, autoSeq=%d, total=%d, time=%.2fs, curry_len=%d\n",
-						logThreadSeq, currentSeq, autoSeq, total, float64(currentTime-startTime)/1000, len(curry))
-				}(autoSeq, sourceSql, destSql)
+				// 限制进度显示，避免过早达到100%
+				if displayProgress > 95 {
+					displayProgress = 95 // 最多显示95%，给最终完成留空间
+				}
 			}
+
+			// DEBUG: 记录进度更新
+			currentTime := time.Now().UnixMilli()
+			global.Wlog.Debug("DEBUG_PROGRESS_UPDATE_%d: autoSeq=%d, total=%d, displayProgress=%d, time=%.2fs, curry_len=%d\n",
+				logThreadSeq, autoSeq, total, displayProgress, float64(currentTime-startTime)/1000, len(curry))
+
+			// 更新进度条
+			sp.bar.Play(displayProgress)
+			// 强制刷新缓冲区确保实时显示
+			fmt.Fprint(os.Stdout, "")
+
+			curry <- struct{}{}
+			go func(currentSeq int64, sourceSql, destSql map[string]string) {
+				defer func() {
+					<-curry
+				}()
+
+				// DEBUG: 记录任务开始处理
+				taskStartTime := time.Now().UnixMilli()
+				global.Wlog.Debug("DEBUG_TASK_START_%d: currentSeq=%d, autoSeq=%d, total=%d, time=%.2fs\n",
+					logThreadSeq, currentSeq, autoSeq, total, float64(taskStartTime-startTime)/1000)
+
+				// 源端查询
+				sdb := sp.sdbPool.Get(logThreadSeq)
+				sourceQueryStart := time.Now().UnixMilli()
+				global.Wlog.Debug("DEBUG_SOURCE_START_%d: seq=%d, getting source query...\n",
+					logThreadSeq, currentSeq)
+				stt, err := (&dbExec.IndexColumnStruct{
+					Schema:   sp.sourceSchema,
+					Table:    sp.table,
+					Drivce:   sp.sdrive,
+					Sqlwhere: sourceSql[sp.sdrive],
+					ColData:  cc1.SColumnInfo,
+				}).TableIndexColumn().GeneratingQueryCriteria(sdb, logThreadSeq)
+				sourceQueryEnd := time.Now().UnixMilli()
+				sp.sdbPool.Put(sdb, logThreadSeq)
+				if err != nil {
+					global.Wlog.Debug("DEBUG_TASK_ERROR_%d: source query failed for seq=%d: %v\n", logThreadSeq, currentSeq, err)
+					return
+				}
+
+				sourceDuration := float64(sourceQueryEnd-sourceQueryStart) / 1000
+				global.Wlog.Debug("DEBUG_SOURCE_QUERY_%d: seq=%d, duration=%.2fs, total_time_so_far=%.2fs\n",
+					logThreadSeq, currentSeq, sourceDuration, float64(sourceQueryEnd-startTime)/1000)
+
+				// 目标端查询
+				ddb := sp.ddbPool.Get(logThreadSeq)
+				destQueryStart := time.Now().UnixMilli()
+				dtt, err := (&dbExec.IndexColumnStruct{
+					Schema:   sp.destSchema,
+					Table:    sp.table,
+					Drivce:   sp.ddrive,
+					Sqlwhere: destSql[sp.ddrive],
+					ColData:  cc1.DColumnInfo,
+				}).TableIndexColumn().GeneratingQueryCriteria(ddb, logThreadSeq)
+				destQueryEnd := time.Now().UnixMilli()
+				sp.ddbPool.Put(ddb, logThreadSeq)
+				if err != nil {
+					global.Wlog.Debug("DEBUG_TASK_ERROR_%d: dest query failed for seq=%d: %v\n", logThreadSeq, currentSeq, err)
+					return
+				}
+
+				global.Wlog.Debug("DEBUG_DEST_QUERY_%d: seq=%d, duration=%.2fs\n",
+					logThreadSeq, currentSeq, float64(destQueryEnd-destQueryStart)/1000)
+
+				// 比较结果
+				aa := &CheckSumTypeStruct{}
+				if aa.CheckMd5(stt) != aa.CheckMd5(dtt) {
+					differencesData := DifferencesDataStruct{
+						Schema:          sp.schema,
+						Table:           sp.table,
+						SqlWhere:        map[string]string{sp.sdrive: sourceSql[sp.sdrive], sp.ddrive: destSql[sp.ddrive]},
+						TableColumnInfo: cc1,
+						SourceData:      stt, // 传递已经查询到的源端数据，避免重复查询
+						DestData:        dtt, // 传递已经查询到的目标端数据，避免重复查询
+					}
+					diffQueryData <- differencesData
+				}
+
+				// DEBUG: 记录任务完成时间
+				taskEndTime := time.Now().UnixMilli()
+				global.Wlog.Debug("DEBUG_TASK_END_%d: currentSeq=%d, autoSeq=%d, total=%d, totalTaskTime=%.2fs, timeFromStart=%.2fs\n",
+					logThreadSeq, currentSeq, autoSeq, total, float64(taskEndTime-taskStartTime)/1000, float64(taskEndTime-startTime)/1000)
+
+				// DEBUG: 记录任务完成（不更新进度条，避免跳动）
+				currentTime := time.Now().UnixMilli()
+				global.Wlog.Debug("DEBUG_TASK_COMPLETE_%d: currentSeq=%d, autoSeq=%d, total=%d, time=%.2fs, curry_len=%d\n",
+					logThreadSeq, currentSeq, autoSeq, total, float64(currentTime-startTime)/1000, len(curry))
+			}(autoSeq, sourceSql, destSql)
 		}
 	}
 }
