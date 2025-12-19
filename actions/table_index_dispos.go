@@ -1431,93 +1431,67 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 		deleteCount int
 		insertCount int
 		// 关键修复：分别存储DELETE和INSERT语句，确保最终顺序
-		deleteSqls []string
-		insertSqls []string
-		sqlBuffer  []string // 缓冲所有SQL语句
-		isFinished bool     // 标记是否已完成接收
+		deleteSqls  []string
+		insertSqls  []string
+		sqlBuffer   []string // 缓冲SQL语句，达到阈值时立即写入
+		bufferLimit = 1000   // 缓冲区大小限制，达到该值时立即写入文件
+		isFinished  bool     // 标记是否已完成接收
 	)
 	vlog = fmt.Sprintf("(%d) Applying repair statements to target table %s.%s", logThreadSeq, sp.schema, sp.table)
 	global.Wlog.Info(vlog)
 
-	// 启动一个goroutine来收集和排序所有SQL语句
+	// 启动一个goroutine来收集和处理所有SQL语句
 	go func() {
+		defer func() {
+			// 处理剩余的SQL语句
+			if len(sqlBuffer) > 0 {
+				processBatch(sqlBuffer, sp.datafixType, sp.sfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
+			}
+			// 处理剩余的DELETE和INSERT语句
+			if len(deleteSqls) > 0 || len(insertSqls) > 0 {
+				var finalSqls []string
+				finalSqls = append(finalSqls, deleteSqls...)
+				finalSqls = append(finalSqls, insertSqls...)
+				processBatch(finalSqls, sp.datafixType, sp.sfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
+				vlog = fmt.Sprintf("(%d) Repair statements generated for %s.%s: DELETE=%d, INSERT=%d",
+					logThreadSeq, sp.schema, sp.table, len(deleteSqls), len(insertSqls))
+				global.Wlog.Debug(vlog)
+				// 有差异时标记DIFFS为yes
+				sp.pods.DIFFS = "yes"
+			}
+			// 无论是否有差异，都添加到结果中
+			measuredDataPods = append(measuredDataPods, *sp.pods)
+			isFinished = true
+		}()
+
 		for {
 			v, ok := <-fixSQL
 			if !ok {
-				// 通道关闭，开始最终处理
-				global.Wlog.Debug("DEBUG_FINAL_SORT_%d: Channel closed, starting final SQL sorting\n", logThreadSeq)
-
-				// 按SQL类型重新排序：所有DELETE在前，INSERT在后
-				deleteSqls = []string{}
-				insertSqls = []string{}
-
-				for _, sql := range sqlBuffer {
-					sqlTrim := strings.TrimSpace(strings.ToUpper(sql))
-					if strings.HasPrefix(sqlTrim, "DELETE") {
-						deleteSqls = append(deleteSqls, sql)
-					} else if strings.HasPrefix(sqlTrim, "INSERT") {
-						insertSqls = append(insertSqls, sql)
-					}
-				}
-
-				global.Wlog.Debug("DEBUG_FINAL_SORT_%d: Sorted SQLs - DELETE: %d, INSERT: %d\n",
-					logThreadSeq, len(deleteSqls), len(insertSqls))
-
-				// 构建最终的有序SQL列表
-				var finalSqls []string
-				finalSqls = append(finalSqls, deleteSqls...) // 先添加所有DELETE语句
-				finalSqls = append(finalSqls, insertSqls...) // 再添加所有INSERT语句
-
-				// 无论是否有差异，都将表结果添加到measuredDataPods中
-				if len(finalSqls) > 0 {
-					global.Wlog.Debug("DEBUG_APPLY_ORDER_%d: Applying %d SQL statements in correct order\n",
-						logThreadSeq, len(finalSqls))
-
-					// 输出前几条SQL验证顺序
-					maxDebug := 10
-					if len(finalSqls) < maxDebug {
-						maxDebug = len(finalSqls)
-					}
-					for i := 0; i < maxDebug; i++ {
-						sqlType := "UNKNOWN"
-						sqlTrim := strings.TrimSpace(strings.ToUpper(finalSqls[i]))
-						if strings.HasPrefix(sqlTrim, "DELETE") {
-							sqlType = "DELETE"
-						} else if strings.HasPrefix(sqlTrim, "INSERT") {
-							sqlType = "INSERT"
-						}
-						global.Wlog.Debug("DEBUG_FINAL_SQL_%d[%d]: %s - %s\n", logThreadSeq, i+1, sqlType,
-							finalSqls[i][:min(100, len(finalSqls[i]))])
-					}
-
-					ApplyDataFixWithTrxNum(finalSqls, sp.datafixType, sp.sfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
-					vlog = fmt.Sprintf("(%d) Repair statements generated for %s.%s: DELETE=%d, INSERT=%d",
-						logThreadSeq, sp.schema, sp.table, len(deleteSqls), len(insertSqls))
-					global.Wlog.Debug(vlog)
-
-					// 有差异时标记DIFFS为yes
-					sp.pods.DIFFS = "yes"
-				}
-
-				// 无论是否有差异，都添加到结果中
-				measuredDataPods = append(measuredDataPods, *sp.pods)
-				isFinished = true
 				return
-			} else {
-				sp.pods.DIFFS = "yes"
+			}
+			sp.pods.DIFFS = "yes"
 
-				// 直接缓冲所有SQL语句，不做任何处理
-				sqlBuffer = append(sqlBuffer, v)
-				sqlTrim := strings.TrimSpace(strings.ToUpper(v))
-				if strings.HasPrefix(sqlTrim, "DELETE") {
-					deleteCount++
-					global.Wlog.Debug("DEBUG_BUFFER_DELETE_%d: Buffered DELETE statement #%d for %s.%s\n",
-						logThreadSeq, deleteCount, sp.schema, sp.table)
-				} else if strings.HasPrefix(sqlTrim, "INSERT") {
-					insertCount++
-					global.Wlog.Debug("DEBUG_BUFFER_INSERT_%d: Buffered INSERT statement #%d for %s.%s\n",
-						logThreadSeq, insertCount, sp.schema, sp.table)
-				}
+			// 按SQL类型分别存储，确保最终顺序
+			sqlTrim := strings.TrimSpace(strings.ToUpper(v))
+			if strings.HasPrefix(sqlTrim, "DELETE") {
+				deleteSqls = append(deleteSqls, v)
+				deleteCount++
+				global.Wlog.Debug("DEBUG_BUFFER_DELETE_%d: Buffered DELETE statement #%d for %s.%s\n",
+					logThreadSeq, deleteCount, sp.schema, sp.table)
+			} else if strings.HasPrefix(sqlTrim, "INSERT") {
+				insertSqls = append(insertSqls, v)
+				insertCount++
+				global.Wlog.Debug("DEBUG_BUFFER_INSERT_%d: Buffered INSERT statement #%d for %s.%s\n",
+					logThreadSeq, insertCount, sp.schema, sp.table)
+			}
+
+			// 缓冲所有SQL语句，达到阈值时立即写入文件
+			sqlBuffer = append(sqlBuffer, v)
+			if len(sqlBuffer) >= bufferLimit {
+				// 立即写入缓冲区中的SQL语句
+				processBatch(sqlBuffer, sp.datafixType, sp.sfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
+				// 清空缓冲区
+				sqlBuffer = []string{}
 			}
 		}
 	}()
@@ -1526,6 +1500,35 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 	for !isFinished {
 		time.Sleep(time.Millisecond * 10)
 	}
+}
+
+// processBatch 批量处理SQL语句，根据类型排序后写入文件
+func processBatch(sqls []string, datafixType string, sfile *os.File, ddrive string, djdbc string, logThreadSeq int64, fixTrxNum int) {
+	if len(sqls) == 0 {
+		return
+	}
+	// 按SQL类型排序：所有DELETE在前，INSERT在后
+	var deleteSqls []string
+	var insertSqls []string
+
+	for _, sql := range sqls {
+		sqlTrim := strings.TrimSpace(strings.ToUpper(sql))
+		if strings.HasPrefix(sqlTrim, "DELETE") {
+			deleteSqls = append(deleteSqls, sql)
+		} else if strings.HasPrefix(sqlTrim, "INSERT") {
+			insertSqls = append(insertSqls, sql)
+		}
+	}
+
+	// 构建最终的有序SQL列表
+	var finalSqls []string
+	finalSqls = append(finalSqls, deleteSqls...)
+	finalSqls = append(finalSqls, insertSqls...)
+
+	// 写入文件
+	ApplyDataFixWithTrxNum(finalSqls, datafixType, sfile, ddrive, djdbc, logThreadSeq, fixTrxNum)
+	global.Wlog.Debug("DEBUG_BATCH_WRITE_%d: Wrote %d SQL statements to file, DELETE=%d, INSERT=%d\n",
+		logThreadSeq, len(finalSqls), len(deleteSqls), len(insertSqls))
 }
 
 // 辅助函数
