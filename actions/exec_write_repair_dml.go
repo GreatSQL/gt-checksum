@@ -6,6 +6,7 @@ import (
 	"gt-checksum/global"
 	"os"
 	"strings"
+	"sync"
 )
 
 type repairSqlStruct struct {
@@ -13,6 +14,9 @@ type repairSqlStruct struct {
 	JDBC      string
 	FixTrxNum int
 }
+
+// 包级变量，用于存储已写入文件的SQL语句，实现跨函数调用的去重
+var writtenSqlMap sync.Map
 
 func isFile(file string) *os.File {
 	sfile, err := os.Open(file)
@@ -57,7 +61,7 @@ func (rs repairSqlStruct) execRepairSql(sqlstr []string, dbType string, logThrea
 			global.Wlog.Error(vlog)
 			return err1
 		}
-		
+
 		// 关闭自动提交
 		sql2 := "SET autocommit=0;"
 		if _, err1 := conn.ExecContext(ctx, sql2); err1 != nil {
@@ -65,17 +69,17 @@ func (rs repairSqlStruct) execRepairSql(sqlstr []string, dbType string, logThrea
 			global.Wlog.Error(vlog)
 			return err1
 		}
-		
+
 		// 添加必要的前置语句
 		// 从rs.JDBC（即dstDSN）中获取charset值
 		charset := global.ExtractCharsetFromDSN(rs.JDBC)
-		
+
 		preSqls := []string{
 			fmt.Sprintf("SET NAMES %s;", charset),
 			"SET FOREIGN_KEY_CHECKS=0;",
 			"SET UNIQUE_CHECKS=0;",
 		}
-		
+
 		for _, preSql := range preSqls {
 			if _, err1 := conn.ExecContext(ctx, preSql); err1 != nil {
 				vlog = fmt.Sprintf("(%d) Failed to execute prep statement: %s. Error: %s", logThreadSeq, preSql, err1)
@@ -83,34 +87,81 @@ func (rs repairSqlStruct) execRepairSql(sqlstr []string, dbType string, logThrea
 				return err1
 			}
 		}
-		
+
 		vlog = fmt.Sprintf("(%d) Executed necessary SET statements before datafix", logThreadSeq)
 		global.Wlog.Debug(vlog)
 	}
-	for _, i := range sqlstr {
-		if strings.HasPrefix(strings.ToUpper(i), "ALTER TABLE") {
-			if _, err = db.Exec(i); err != nil {
-				vlog = fmt.Sprintf("(%d) Failed to commit dataFix SQL. Error: %s", logThreadSeq, err)
-				global.Wlog.Error(vlog)
-				return err
-			}
-		} else {
-			if _, err = conn.ExecContext(ctx, i); err != nil {
-				vlog = fmt.Sprintf("(%d) Failed to prepare dataFix SQL: %s. Error: %s. Starting rollback", logThreadSeq, i, err)
-				global.Wlog.Error(vlog)
-				conn.ExecContext(ctx, "ROLLBACK")
-				return err
+
+	// 根据fixTrxNum参数控制事务提交频率
+	if rs.FixTrxNum <= 0 {
+		// 如果fixTrxNum <= 0，则所有SQL放在一个事务中（默认行为）
+		for _, i := range sqlstr {
+			if strings.HasPrefix(strings.ToUpper(i), "ALTER TABLE") {
+				if _, err = db.Exec(i); err != nil {
+					vlog = fmt.Sprintf("(%d) Failed to commit dataFix SQL. Error: %s", logThreadSeq, err)
+					global.Wlog.Error(vlog)
+					return err
+				}
+			} else {
+				if _, err = conn.ExecContext(ctx, i); err != nil {
+					vlog = fmt.Sprintf("(%d) Failed to prepare dataFix SQL: %s. Error: %s. Starting rollback", logThreadSeq, i, err)
+					global.Wlog.Error(vlog)
+					conn.ExecContext(ctx, "ROLLBACK")
+					return err
+				}
 			}
 		}
 
+		vlog = fmt.Sprintf("(%d) Starting dataFix SQL commit", logThreadSeq)
+		global.Wlog.Info(vlog)
+		if _, err = conn.ExecContext(ctx, "COMMIT"); err != nil {
+			vlog = fmt.Sprintf("(%d) commit dataFix SQL fail. error info is {%s}", logThreadSeq, err)
+			global.Wlog.Error(vlog)
+			return err
+		}
+	} else {
+		// 根据fixTrxNum拆分成多个事务执行
+		totalSql := len(sqlstr)
+		for i := 0; i < totalSql; i += rs.FixTrxNum {
+			end := i + rs.FixTrxNum
+			if end > totalSql {
+				end = totalSql
+			}
+
+			vlog = fmt.Sprintf("(%d) Starting transaction batch %d-%d (total %d SQL statements)",
+				logThreadSeq, i+1, end, end-i)
+			global.Wlog.Debug(vlog)
+
+			// 执行当前批次的SQL语句
+			for j := i; j < end; j++ {
+				sql := sqlstr[j]
+				if strings.HasPrefix(strings.ToUpper(sql), "ALTER TABLE") {
+					if _, err = db.Exec(sql); err != nil {
+						vlog = fmt.Sprintf("(%d) Failed to execute ALTER TABLE statement: %s. Error: %s", logThreadSeq, sql, err)
+						global.Wlog.Error(vlog)
+						return err
+					}
+				} else {
+					if _, err = conn.ExecContext(ctx, sql); err != nil {
+						vlog = fmt.Sprintf("(%d) Failed to execute repair SQL: %s. Error: %s. Starting rollback for batch %d-%d", logThreadSeq, sql, err, i+1, end)
+						global.Wlog.Error(vlog)
+						conn.ExecContext(ctx, "ROLLBACK")
+						return err
+					}
+				}
+			}
+
+			// 提交当前批次的事务
+			vlog = fmt.Sprintf("(%d) Committing transaction batch %d-%d", logThreadSeq, i+1, end)
+			global.Wlog.Debug(vlog)
+			if _, err = conn.ExecContext(ctx, "COMMIT"); err != nil {
+				vlog = fmt.Sprintf("(%d) Failed to commit transaction batch %d-%d. Error: %s", logThreadSeq, i+1, end, err)
+				global.Wlog.Error(vlog)
+				return err
+			}
+		}
 	}
-	vlog = fmt.Sprintf("(%d) Starting dataFix SQL commit", logThreadSeq)
-	global.Wlog.Info(vlog)
-	if _, err = conn.ExecContext(ctx, "COMMIT"); err != nil {
-		vlog = fmt.Sprintf("(%d) commit dataFix SQL fail. error info is {%s}", logThreadSeq, err)
-		global.Wlog.Error(vlog)
-		return err
-	}
+
 	defer db.Close()
 	return nil
 }
@@ -125,35 +176,51 @@ func (rs repairSqlStruct) SqlFile(sfile *os.File, sql []string, logThreadSeq int
 	)
 	vlog = fmt.Sprintf("(%d) Writing repair statements to file", logThreadSeq)
 	global.Wlog.Debug(vlog)
-	
+
 	// 检查文件是否为空，为空则添加必要的前置语句
 	fileInfo, err := sfile.Stat()
 	if err == nil && fileInfo.Size() == 0 {
 		// 从rs.JDBC（即dstDSN）中获取charset值
 		charset := global.ExtractCharsetFromDSN(rs.JDBC)
-		
+
 		// 添加必要的前置语句
 		preSqls := []string{
 			fmt.Sprintf("SET NAMES %s;", charset),
 			"SET FOREIGN_KEY_CHECKS=0;",
 			"SET UNIQUE_CHECKS=0;",
 		}
-		
+
 		for _, preSql := range preSqls {
-			if _, err := sfile.WriteString(preSql + "\n"); err != nil {
-				return err
+			// 使用全局writtenSqlMap进行去重
+			if _, loaded := writtenSqlMap.LoadOrStore(strings.TrimSpace(preSql), true); !loaded {
+				if _, err := sfile.WriteString(preSql + "\n"); err != nil {
+					return err
+				}
 			}
 		}
-		
+
 		vlog = fmt.Sprintf("(%d) Added necessary SET statements to fix SQL file", logThreadSeq)
 		global.Wlog.Debug(vlog)
 	}
-	
+
 	if strings.HasPrefix(strings.ToUpper(strings.Join(sql, ";")), "ALTER TABLE") {
 		// ALTER TABLE语句不需要事务包装
-		_, err = FileOperate{File: sfile, BufSize: 1024 * 4 * 1024, SqlType: "sql"}.ConcurrencyWriteFile(sql)
-		if err != nil {
-			return err
+		// 先去重
+		var uniqueSqls []string
+		for _, s := range sql {
+			trimmedSql := strings.TrimSpace(s)
+			if trimmedSql == "" {
+				continue
+			}
+			if _, loaded := writtenSqlMap.LoadOrStore(trimmedSql, true); !loaded {
+				uniqueSqls = append(uniqueSqls, s)
+			}
+		}
+		if len(uniqueSqls) > 0 {
+			_, err = FileOperate{File: sfile, BufSize: 1024 * 4 * 1024, SqlType: "sql"}.ConcurrencyWriteFile(uniqueSqls)
+			if err != nil {
+				return err
+			}
 		}
 	} else {
 		// 根据fixTrxNum参数拆分事务
@@ -162,9 +229,14 @@ func (rs repairSqlStruct) SqlFile(sfile *os.File, sql []string, logThreadSeq int
 			sqlCommit := []string{"BEGIN;"}
 			sqlCommit = append(sqlCommit, sql...)
 			sqlCommit = append(sqlCommit, "COMMIT;")
-			_, err = FileOperate{File: sfile, BufSize: 1024 * 4 * 1024, SqlType: "sql"}.ConcurrencyWriteFile(sqlCommit)
-			if err != nil {
-				return err
+
+			// 将整个事务作为一个单元进行去重
+			transactionKey := strings.Join(sql, "")
+			if _, loaded := writtenSqlMap.LoadOrStore(strings.TrimSpace(transactionKey), true); !loaded {
+				_, err = FileOperate{File: sfile, BufSize: 1024 * 4 * 1024, SqlType: "sql"}.ConcurrencyWriteFile(sqlCommit)
+				if err != nil {
+					return err
+				}
 			}
 		} else {
 			// 根据fixTrxNum拆分成多个事务
@@ -174,24 +246,29 @@ func (rs repairSqlStruct) SqlFile(sfile *os.File, sql []string, logThreadSeq int
 				if end > totalSql {
 					end = totalSql
 				}
-				
+
 				// 构建一个事务的SQL语句
 				batchSql := []string{"BEGIN;"}
-				batchSql = append(batchSql, sql[i:end]...)
+				currentBatch := sql[i:end]
+				batchSql = append(batchSql, currentBatch...)
 				batchSql = append(batchSql, "COMMIT;")
-				
-				_, err = FileOperate{File: sfile, BufSize: 1024 * 4 * 1024, SqlType: "sql"}.ConcurrencyWriteFile(batchSql)
-				if err != nil {
-					return err
+
+				// 将整个事务批次作为一个单元进行去重
+				transactionKey := strings.Join(currentBatch, "")
+				if _, loaded := writtenSqlMap.LoadOrStore(strings.TrimSpace(transactionKey), true); !loaded {
+					_, err = FileOperate{File: sfile, BufSize: 1024 * 4 * 1024, SqlType: "sql"}.ConcurrencyWriteFile(batchSql)
+					if err != nil {
+						return err
+					}
+
+					vlog = fmt.Sprintf("(%d) Written transaction batch %d-%d (total %d SQL statements)",
+						logThreadSeq, i+1, end, end-i)
+					global.Wlog.Debug(vlog)
 				}
-				
-				vlog = fmt.Sprintf("(%d) Written transaction batch %d-%d (total %d SQL statements)", 
-					logThreadSeq, i+1, end, end-i)
-				global.Wlog.Debug(vlog)
 			}
 		}
 	}
-	
+
 	vlog = fmt.Sprintf("(%d) Repair statements written to file successfully", logThreadSeq)
 	global.Wlog.Debug(vlog)
 	return nil

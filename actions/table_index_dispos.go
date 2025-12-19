@@ -1434,9 +1434,16 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 		deleteSqls  []string
 		insertSqls  []string
 		sqlBuffer   []string // 缓冲SQL语句，达到阈值时立即写入
-		bufferLimit = 1000   // 缓冲区大小限制，达到该值时立即写入文件
+		bufferLimit int      // 缓冲区大小限制，达到该值时立即写入文件
 		isFinished  bool     // 标记是否已完成接收
 	)
+
+	// 使用fixTrxNum作为缓冲区大小，确保COMMIT间隔符合用户设置
+	bufferLimit = sp.fixTrxNum
+	// 如果fixTrxNum为0或负数，使用一个合理的默认值
+	if bufferLimit <= 0 {
+		bufferLimit = 1000
+	}
 	vlog = fmt.Sprintf("(%d) Applying repair statements to target table %s.%s", logThreadSeq, sp.schema, sp.table)
 	global.Wlog.Info(vlog)
 
