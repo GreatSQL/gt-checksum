@@ -45,7 +45,8 @@ var (
 	columnExistsGlobalCache   = make(map[string]bool)
 	allColumnsGlobalCache     = make(map[string][]string)
 	columnDataTypeGlobalCache = make(map[string]string)
-	tableColumnGlobalCache    = make(map[string][]map[string]string) // Cache for complete table column information (fills TableColumn field)
+	tableColumnGlobalCache    = make(map[string][]map[string]string)      // Cache for complete table column information (fills TableColumn field)
+	tableAllColumnGlobalCache = make(map[string][]map[string]interface{}) // Cache for TableAllColumn results
 	// Cache for database version information (fills SELECT VERSION() requests)
 	// Cache key format: connection identifier
 	databaseVersionCache = make(map[string]string)
@@ -232,7 +233,8 @@ func (my *QueryTable) DatabaseVersion(db *sql.DB, logThreadSeq int64) (string, e
 	cacheMutex.RLock()
 	if cachedVersion, ok := databaseVersionCache[cacheKey]; ok {
 		cacheMutex.RUnlock()
-		global.Wlog.Debug("(%d) [%s] Using cached version information for database connection %p: %s", logThreadSeq, Event, db, cachedVersion)
+		vlog := fmt.Sprintf("(%d) [%s] Using cached version information for database connection %p: %s", logThreadSeq, Event, db, cachedVersion)
+		global.Wlog.Debug(vlog)
 		return cachedVersion, nil
 	}
 	cacheMutex.RUnlock()
@@ -544,6 +546,20 @@ func (my *QueryTable) TableAllColumn(db *sql.DB, logThreadSeq int64) ([]map[stri
 		//rows   *sql.Rows
 		Event = "Q_Table_Column_Metadata"
 	)
+
+	// Generate cache key in format: schema.table
+	cacheKey := fmt.Sprintf("%s.%s", my.Schema, my.Table)
+
+	// Check if result is already in global cache
+	cacheMutex.RLock()
+	if cachedTableAllColumn, ok := tableAllColumnGlobalCache[cacheKey]; ok {
+		cacheMutex.RUnlock()
+		vlog := fmt.Sprintf("(%d) [%s] Using cached TableAllColumn information for table %s.%s", logThreadSeq, Event, my.Schema, my.Table)
+		global.Wlog.Debug(vlog)
+		return cachedTableAllColumn, nil
+	}
+	cacheMutex.RUnlock()
+
 	vlog = fmt.Sprintf("(%d) [%s] Start to query the metadata of all the columns of table %s.%s in the %s database", logThreadSeq, Event, my.Schema, my.Table, DBType)
 	global.Wlog.Debug(vlog)
 	strsql = fmt.Sprintf("SELECT COLUMN_NAME AS columnName, COLUMN_TYPE AS dataType, ORDINAL_POSITION AS columnSeq, IS_NULLABLE AS isNull, COLUMN_COMMENT AS columnComment FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s' ORDER BY ORDINAL_POSITION;", my.Schema, my.Table)
@@ -556,7 +572,12 @@ func (my *QueryTable) TableAllColumn(db *sql.DB, logThreadSeq int64) ([]map[stri
 		return nil, err
 	}
 
-	vlog = fmt.Sprintf("(%d) [%s] Complete the metadata query of all columns in table %s.%s in the %s database.", logThreadSeq, Event, my.Schema, my.Table, DBType)
+	// Cache the result in global cache for future use
+	cacheMutex.Lock()
+	tableAllColumnGlobalCache[cacheKey] = tableData
+	cacheMutex.Unlock()
+
+	vlog = fmt.Sprintf("(%d) [%s] Complete the metadata query of all columns in table %s.%s in the %s database. Cached results for future use.", logThreadSeq, Event, my.Schema, my.Table, DBType)
 	global.Wlog.Debug(vlog)
 	defer dispos.SqlRows.Close()
 	return tableData, err
@@ -708,7 +729,7 @@ func (my *QueryTable) TableIndexChoice(queryData []map[string]interface{}, logTh
 			indexChoice[k] = v
 		}
 	}
-	vlog = fmt.Sprintf("(%s) [%s] Complete the selection of the appropriate index column in the following table %s.%s of the %s database.", logThreadSeq, Event, my.Schema, my.Table, DBType)
+	vlog = fmt.Sprintf("(%d) [%s] Complete the selection of the appropriate index column in the following table %s.%s of the %s database.", logThreadSeq, Event, my.Schema, my.Table, DBType)
 	global.Wlog.Debug(vlog)
 	return indexChoice
 }
@@ -764,7 +785,7 @@ func (my *QueryTable) Trigger(db *sql.DB, logThreadSeq int64) (map[string]string
 		//vlog = fmt.Sprintf("(%d) MySQL db query databases %s Trigger data completion...", logThreadSeq, my.Schema)
 		//global.Wlog.Debug(vlog)
 	}
-	vlog = fmt.Sprintf("(%s) [%s] Complete the trigger information query under the %s database.", logThreadSeq, Event, DBType)
+	vlog = fmt.Sprintf("(%d) [%s] Complete the trigger information query under the %s database.", logThreadSeq, Event, DBType)
 	global.Wlog.Debug(vlog)
 	defer dispos.SqlRows.Close()
 	return tmpb, nil
