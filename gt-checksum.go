@@ -58,7 +58,7 @@ func main() {
 	m := inputArg.ConfigInit(0)
 	
 	// 初始化性能指标变量
-	var initStartTime time.Time
+	initStartTime := time.Now()
 	var metadataCollectionTime, connSetupTime, checksumTime, extraOpsTime, totalElapsedTime, miscellaneousTime time.Duration
 
 	//启动内存监控
