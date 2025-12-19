@@ -203,12 +203,12 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 
 	if rc.FirstL.Repair != nil {
 		if rc.SecondaryL.RepairV.FixTrxNum, err = rc.FirstL.Repair.Key("fixTrxNum").Int(); err != nil {
-			fmt.Println("Using default value '100' for option fixTrxNum")
-			rc.SecondaryL.RepairV.FixTrxNum = 100
+			fmt.Println("Using default value '1000' for option fixTrxNum")
+			rc.SecondaryL.RepairV.FixTrxNum = 1000
 		}
 	} else {
-		fmt.Println("Using default value '100' for option fixTrxNum")
-		rc.SecondaryL.RepairV.FixTrxNum = 100
+		fmt.Println("Using default value '1000' for option fixTrxNum")
+		rc.SecondaryL.RepairV.FixTrxNum = 1000
 	}
 	if rc.FirstL.Repair != nil {
 		rc.SecondaryL.RepairV.Datafix = rc.FirstL.Repair.Key("datafix").In("file", []string{"file", "table"})
