@@ -63,8 +63,8 @@ func (p *Pool) Get(logThreadSeq int64) *sql.DB {
 			fmt.Println(err)
 		}
 	}()
-	vlog = fmt.Sprintf("(%d) Get a session connection from the %s DB session connection pool ...", logThreadSeq, p.drive)
-	Wlog.Debug(vlog)
+	//vlog = fmt.Sprintf("(%d) Get a session connection from the %s DB session connection pool ...", logThreadSeq, p.drive)
+	//Wlog.Debug(vlog)
 	if p.close {
 		close(p.conns)
 		return nil
@@ -79,23 +79,23 @@ func (p *Pool) Get(logThreadSeq int64) *sql.DB {
 		d = <-p.conns // 若池中没有可取的连接，则等待其他请求返回连接至池中再取
 	}
 	p.numConn++
-	vlog = fmt.Sprintf("(%d) Obtain a connection successfully, the current %s DB connection pool status, the number of applied connections is [%d], and the remaining number is [%d].", logThreadSeq, p.drive, p.minConn-len(p.conns), len(p.conns))
-	Wlog.Debug(vlog)
+	//vlog = fmt.Sprintf("(%d) Obtain a connection successfully, the current %s DB connection pool status, the number of applied connections is [%d], and the remaining number is [%d].", logThreadSeq, p.drive, p.minConn-len(p.conns), len(p.conns))
+	//Wlog.Debug(vlog)
 	return d
 }
 
 // 将连接返回池中
 func (p *Pool) Put(d *sql.DB, logThreadSeq int64) {
-	var (
-		vlog string
-	)
+	//var (
+	//	vlog string
+	//)
 	defer func() {
 		if err := recover(); err != nil {
 			fmt.Println(err)
 		}
 	}()
-	vlog = fmt.Sprintf("(%d) Put a session connection into the %s DB session connection pool ...", logThreadSeq, p.drive)
-	Wlog.Debug(vlog)
+	//vlog = fmt.Sprintf("(%d) Put a session connection into the %s DB session connection pool ...", logThreadSeq, p.drive)
+	//Wlog.Debug(vlog)
 	if p.close {
 		return
 	}
@@ -103,8 +103,8 @@ func (p *Pool) Put(d *sql.DB, logThreadSeq int64) {
 	defer p.mu.Unlock()
 	p.conns <- d
 	p.numConn--
-	vlog = fmt.Sprintf("(%d) The connection is put in successfully, the %s DB current connection pool status, the number of applied connections is [%d], and the remaining number is [%d].", logThreadSeq, p.drive, p.minConn-len(p.conns), len(p.conns))
-	Wlog.Debug(vlog)
+	//vlog = fmt.Sprintf("(%d) The connection is put in successfully, the %s DB current connection pool status, the number of applied connections is [%d], and the remaining number is [%d].", logThreadSeq, p.drive, p.minConn-len(p.conns), len(p.conns))
+	//Wlog.Debug(vlog)
 }
 
 // 关闭池

@@ -233,8 +233,8 @@ func (my *QueryTable) DatabaseVersion(db *sql.DB, logThreadSeq int64) (string, e
 	cacheMutex.RLock()
 	if cachedVersion, ok := databaseVersionCache[cacheKey]; ok {
 		cacheMutex.RUnlock()
-		vlog := fmt.Sprintf("(%d) [%s] Using cached version information for database connection %p: %s", logThreadSeq, Event, db, cachedVersion)
-		global.Wlog.Debug(vlog)
+		//kvlog := fmt.Sprintf("(%d) [%s] Using cached version information for database connection %p: %s", logThreadSeq, Event, db, cachedVersion)
+		//kglobal.Wlog.Debug(vlog)
 		return cachedVersion, nil
 	}
 	cacheMutex.RUnlock()
