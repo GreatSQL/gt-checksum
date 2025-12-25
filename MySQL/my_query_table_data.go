@@ -244,8 +244,8 @@ func (my *QueryTable) checkColumnExists(db *sql.DB, columnName string, logThread
 	cacheMutex.RLock()
 	if exists, ok := columnExistsGlobalCache[cacheKey]; ok {
 		cacheMutex.RUnlock()
-		vlog := fmt.Sprintf("(%d) [%s] Column %s existence check result from global cache: %v", logThreadSeq, Event, columnName, exists)
-		global.Wlog.Debug(vlog)
+		//vlog := fmt.Sprintf("(%d) [%s] Column %s existence check result from global cache: %v", logThreadSeq, Event, columnName, exists)
+		//global.Wlog.Debug(vlog)
 		return exists, nil
 	}
 	cacheMutex.RUnlock()
@@ -538,8 +538,8 @@ func (my QueryTable) GeneratingQueryCriteria(db *sql.DB, logThreadSeq int64) (st
 		Event         = "Q_Table_Data"
 		columnNameSeq []string
 	)
-	vlog = fmt.Sprintf("(%d) [%s] Start to query the segmented data of the following table %s.%s in the %s database through the where condition.", logThreadSeq, Event, my.Schema, my.Table, DBType)
-	global.Wlog.Debug(vlog)
+	//vlog = fmt.Sprintf("(%d) [%s] Start to query the segmented data of the following table %s.%s in the %s database through the where condition.", logThreadSeq, Event, my.Schema, my.Table, DBType)
+	//global.Wlog.Debug(vlog)
 
 	// 检查WHERE子句中引用的列是否存在
 	if my.Sqlwhere != "" {
@@ -798,8 +798,8 @@ func (my *QueryTable) GeneratingQuerySql(db *sql.DB, logThreadSeq int64) (string
 		Event         = "E_Table_SQL"
 		selectSql     string
 	)
-	vlog = fmt.Sprintf("(%d) [%s] Start to generate the data query sql of table %s.%s in the %s database", logThreadSeq, Event, my.Schema, my.Table, DBType)
-	global.Wlog.Debug(vlog)
+	//vlog = fmt.Sprintf("(%d) [%s] Start to generate the data query sql of table %s.%s in the %s database", logThreadSeq, Event, my.Schema, my.Table, DBType)
+	//global.Wlog.Debug(vlog)
 
 	// 如果TableColumn为空，从数据库查询获取列信息
 	if len(my.TableColumn) == 0 {
@@ -810,8 +810,8 @@ func (my *QueryTable) GeneratingQuerySql(db *sql.DB, logThreadSeq int64) (string
 		cacheMutex.RLock()
 		if cachedTableColumn, ok := tableColumnGlobalCache[cacheKey]; ok {
 			cacheMutex.RUnlock()
-			vlog = fmt.Sprintf("(%d) [%s] TableColumn information loaded from global cache for table %s.%s", logThreadSeq, Event, my.Schema, my.Table)
-			global.Wlog.Debug(vlog)
+			//vlog = fmt.Sprintf("(%d) [%s] TableColumn information loaded from global cache for table %s.%s", logThreadSeq, Event, my.Schema, my.Table)
+			//global.Wlog.Debug(vlog)
 			// Use cached table column information
 			my.TableColumn = cachedTableColumn
 		} else {
@@ -896,7 +896,7 @@ func (my *QueryTable) GeneratingQuerySql(db *sql.DB, logThreadSeq int64) (string
 	cleanSqlWhere = strings.ReplaceAll(cleanSqlWhere, fmt.Sprintf("%s.%s", my.Schema, my.Table), fmt.Sprintf("%s", my.Table))
 
 	selectSql = fmt.Sprintf("SELECT %s FROM `%s`.`%s` %s", queryColumn, my.Schema, my.Table, cleanSqlWhere)
-	vlog = fmt.Sprintf("(%d) [%s] Complete the data query sql of table %s.%s in the %s database.", logThreadSeq, Event, my.Schema, my.Table, DBType)
-	global.Wlog.Debug(vlog)
+	//vlog = fmt.Sprintf("(%d) [%s] Complete the data query sql of table %s.%s in the %s database.", logThreadSeq, Event, my.Schema, my.Table, DBType)
+	//global.Wlog.Debug(vlog)
 	return selectSql, nil
 }
