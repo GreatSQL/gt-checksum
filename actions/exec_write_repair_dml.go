@@ -298,7 +298,8 @@ func ApplyDataFixWithTrxNum(fixSql []string, datafixType string, sfile *os.File,
 			FixTrxNum: fixTrxNum,
 		}
 	)
-	if datafixType == "file" {
+	// 修复：当datafixType为"yes"时，将修复SQL写入文件
+	if datafixType == "yes" || datafixType == "file" {
 		if err = repairdml.SqlFile(sfile, fixSql, logThreadSeq); err != nil {
 			return err
 		}

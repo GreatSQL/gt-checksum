@@ -40,6 +40,7 @@ type SchedulePlan struct {
 	djdbc                     string
 	tableMappings             map[string]string // 表映射关系
 	bar                       *Bar              // 进度条
+	forceFullTableCheck       bool              // 是否强制进行全表检查
 }
 
 // getDisplayTableName 返回表的显示名称，包含映射关系信息
@@ -60,10 +61,10 @@ func (sp *SchedulePlan) getDisplayTableName() string {
 差异数据信息结构体
 */
 type DifferencesDataStruct struct {
-	Schema          string //存在差异数据的库
-	Table           string //存在差异数据的表
-	Spoint          string //校验开始时的源端全局一致性点
-	Dpoint          string //校验开始时的目端全局一致性点
+	Schema string //存在差异数据的库
+	Table  string //存在差异数据的表
+	Spoint string //校验开始时的源端全局一致性点
+	Dpoint string //校验开始时的目端全局一致性点
 	//TableColumnInfo []map[string]string //该表的所有列信息，包括列类型
 	TableColumnInfo global.TableAllColumnInfoS //该表的所有列信息，包括列类型
 	SqlWhere        map[string]string          //差异数据查询的where 条件
@@ -83,7 +84,9 @@ func (sp *SchedulePlan) Schedulingtasks() {
 		if sp.checkNoIndexTable == "no" && len(v) == 0 {
 			continue
 		}
-		sp.file, _ = os.OpenFile(sp.TmpFileName, os.O_CREATE|os.O_RDWR, 0777)
+		// 为每个表创建独立的SchedulePlan副本，避免并发冲突
+		spCopy := *sp
+		spCopy.file, _ = os.OpenFile(sp.TmpFileName, os.O_CREATE|os.O_RDWR, 0777)
 		// 解析key中的源表和目标表信息
 		// key格式: sourceSchema/*gtchecksumSchemaTable*/sourceTable/*indexColumnType*/indexType/*mapping*/destSchema/*mappingTable*/destTable
 		vlog := fmt.Sprintf("Processing table key: %s", k)
@@ -143,51 +146,51 @@ func (sp *SchedulePlan) Schedulingtasks() {
 			}
 		}
 
-		// 设置SchedulePlan的属性
-		sp.schema = sourceSchema
-		sp.table = sourceTable
-		sp.sourceSchema = sourceSchema
-		sp.destSchema = destSchema
-		sp.indexColumnType = indexType
+		// 设置SchedulePlan副本的属性
+		spCopy.schema = sourceSchema
+		spCopy.table = sourceTable
+		spCopy.sourceSchema = sourceSchema
+		spCopy.destSchema = destSchema
+		spCopy.indexColumnType = indexType
 
 		vlog = fmt.Sprintf("Key parsed - Source: %s.%s, Target: %s.%s, Index: %s",
 			sourceSchema, sourceTable, destSchema, destTable, indexType)
 		global.Wlog.Debug(vlog)
 
 		if len(v) == 0 { //校验无索引表
-			sp.chanrowCount = sp.chunkSize
+			spCopy.chanrowCount = spCopy.chunkSize
 			logThreadSeq := rand.Int63()
 
 			// 开始新表的进度显示
-			tableName := fmt.Sprintf("begin checksum no-index table %s.%s", sp.schema, sp.table)
+			tableName := fmt.Sprintf("begin checksum no-index table %s.%s", spCopy.schema, spCopy.table)
 			fmt.Printf("\n%s\n", tableName)
 
 			// 为每个表创建独立的进度条，但不在初始化时设置总数
 			// 总数将在SingleTableCheckProcessing中根据实际行数设置
-			sp.bar = &Bar{}
+			spCopy.bar = &Bar{}
 
-			sp.SingleTableCheckProcessing(sp.chanrowCount, logThreadSeq)
+			spCopy.SingleTableCheckProcessing(spCopy.chanrowCount, logThreadSeq)
 
 			// 显示完成消息
-			fmt.Printf("table %s.%s checksum completed\n", sp.schema, sp.table)
+			fmt.Printf("table %s.%s checksum completed\n", spCopy.schema, spCopy.table)
 		} else { //校验有索引的表
-			sp.chanrowCount = sp.chunkSize
-			sp.columnName = v
+			spCopy.chanrowCount = spCopy.chunkSize
+			spCopy.columnName = v
 			// 显示开始信息
-			displayTableName := sp.getDisplayTableName()
+			displayTableName := spCopy.getDisplayTableName()
 			fmt.Printf("\nbegin checksum index table %s\n", displayTableName)
 
 			// 为每个表创建独立的进度条，以100为总数显示百分比进度
-			sp.bar = &Bar{}
-			sp.bar.NewOption(0, 100, "task") // 以100为总数，显示百分比进度
+			spCopy.bar = &Bar{}
+			spCopy.bar.NewOption(0, 100, "task") // 以100为总数，显示百分比进度
 
-			sp.doIndexDataCheck()
+			spCopy.doIndexDataCheck()
 
 			// 显示完成消息
 			fmt.Printf("table %s checksum completed\n", displayTableName)
 		}
-		sp.file.Close()
-		os.Remove(sp.TmpFileName)
+		spCopy.file.Close()
+		os.Remove(spCopy.TmpFileName)
 	}
 
 }
