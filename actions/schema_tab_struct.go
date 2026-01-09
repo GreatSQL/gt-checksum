@@ -1011,6 +1011,9 @@ func (stcls *schemaTable) tableIndexAlgorithm(indexType map[string][]string) (st
 		if len(indexType["pri_multi"]) > 0 {
 			return "pri_multi", indexType["pri_multi"]
 		}
+		if len(indexType["pri_multiseriate"]) > 0 {
+			return "pri_multiseriate", indexType["pri_multiseriate"]
+		}
 
 		// 其次选择唯一索引
 		if len(indexType["uni_single"]) > 0 {
@@ -1019,6 +1022,9 @@ func (stcls *schemaTable) tableIndexAlgorithm(indexType map[string][]string) (st
 		if len(indexType["uni_multi"]) > 0 {
 			return "uni_multi", indexType["uni_multi"]
 		}
+		if len(indexType["uni_multiseriate"]) > 0 {
+			return "uni_multiseriate", indexType["uni_multiseriate"]
+		}
 
 		// 最后选择普通索引
 		if len(indexType["mul_single"]) > 0 {
@@ -1026,6 +1032,9 @@ func (stcls *schemaTable) tableIndexAlgorithm(indexType map[string][]string) (st
 		}
 		if len(indexType["mul_multi"]) > 0 {
 			return "mul_multi", indexType["mul_multi"]
+		}
+		if len(indexType["mul_multiseriate"]) > 0 {
+			return "mul_multiseriate", indexType["mul_multiseriate"]
 		}
 	}
 	return "", []string{}

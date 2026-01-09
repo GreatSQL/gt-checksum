@@ -363,10 +363,16 @@ func (my QueryTable) TmpTableColumnGroupDataDispos(db *sql.DB, where string, col
 			}
 		}
 	}
-	strsql = fmt.Sprintf("SELECT %s AS columnName, COUNT(1) AS count FROM `%s`.`%s` %s GROUP BY %s", columnName, my.Schema, my.Table, whereExist, columnName)
+	// 修复：对于复合主键，查询所有唯一值，而不是分组后的值
+	// 这确保了所有可能的主键组合都被处理
+	strsql = fmt.Sprintf("SELECT DISTINCT %s AS columnName, COUNT(1) OVER (PARTITION BY %s) AS count FROM `%s`.`%s` %s ORDER BY %s", columnName, columnName, my.Schema, my.Table, whereExist, columnName)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
-		return nil, err
+		// 如果窗口函数失败，回退到分组查询
+		strsql = fmt.Sprintf("SELECT %s AS columnName, COUNT(1) AS count FROM `%s`.`%s` %s GROUP BY %s ORDER BY %s", columnName, my.Schema, my.Table, whereExist, columnName, columnName)
+		if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
+			return nil, err
+		}
 	}
 	C := dispos.DataChanDispos()
 	vlog = fmt.Sprintf("(%d) [%s] The index column data query of the following table %s.%s in the %s database is completed.", logThreadSeq, Event, my.Schema, my.Table, DBType)
@@ -588,75 +594,94 @@ func (my QueryTable) GeneratingQueryCriteria(db *sql.DB, logThreadSeq int64) (st
 		}
 
 		// 匹配不带反引号的列名（通过操作符识别）
-		operatorPatterns := []string{"[=<>!]=", "[=<>!]", " LIKE ", " IN ", " IS ", " BETWEEN ", " NOT LIKE ", " NOT IN ", " IS NOT "}
+		// 注意：只从操作符左边提取列名，避免将值识别为列名
+		// 定义操作符，注意顺序：长操作符在前，避免被短操作符错误分割
+		operators := []string{">=", "<=", "!=", "=", ">", "<", " LIKE ", " IN ", " BETWEEN ", " NOT LIKE ", " NOT IN ", " IS NOT ", " IS "}
 
-		for _, pattern := range operatorPatterns {
-			parts := strings.Split(whereClause, pattern)
-			for _, part := range parts {
-				// 处理AND, OR分隔符
-				for _, subPart := range strings.Split(part, " AND ") {
-					for _, subsubPart := range strings.Split(subPart, " OR ") {
-						// 提取可能的列名
-						words := strings.FieldsFunc(strings.TrimSpace(subsubPart), func(r rune) bool {
-							return !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_')
-						})
+		// 将WHERE子句按AND和OR分割，处理每个条件
+		conditions := strings.Split(whereClause, " AND ")
+		for _, cond := range conditions {
+			// 进一步按OR分割
+			orConditions := strings.Split(cond, " OR ")
+			for _, orCond := range orConditions {
+				// 处理每个原子条件
+				atomCond := strings.TrimSpace(orCond)
+				if atomCond == "" {
+					continue
+				}
 
-						for _, word := range words {
-							if word != "" {
-								// 转换为小写用于比较
-								wordLower := strings.ToLower(word)
+				// 标记是否找到操作符
+				foundOperator := false
 
-								// 1. 检查是否为SQL关键字
-								isKeyword := false
-								for _, keyword := range sqlKeywords {
-									if wordLower == keyword {
-										isKeyword = true
-										break
+				// 遍历所有操作符，尝试匹配
+				for _, op := range operators {
+					if strings.Contains(atomCond, op) {
+						// 找到操作符，只提取操作符左边的部分作为列名
+						parts := strings.Split(atomCond, op)
+						if len(parts) > 0 {
+							// 处理左边部分，提取可能的列名
+							leftPart := strings.TrimSpace(parts[0])
+							// 移除可能的括号
+							leftPart = strings.TrimPrefix(leftPart, "(")
+							leftPart = strings.TrimSuffix(leftPart, ")")
+							leftPart = strings.TrimSpace(leftPart)
+
+							// 如果左边部分包含反引号，已经在前面处理过了，跳过
+							if !strings.Contains(leftPart, "`") && leftPart != "" {
+								// 检查是否已经添加过该列名
+								if !containsString(columns, leftPart) {
+									// 转换为小写用于比较
+									wordLower := strings.ToLower(leftPart)
+
+									// 1. 检查是否为SQL关键字
+									isKeyword := false
+									for _, keyword := range sqlKeywords {
+										if wordLower == keyword {
+											isKeyword = true
+											break
+										}
 									}
-								}
-								if isKeyword {
-									continue
-								}
-
-								// 2. 检查是否为数据库名或表名（使用更严格的检查）
-								if strings.ToLower(word) == strings.ToLower(my.Schema) ||
-									strings.ToLower(word) == strings.ToLower(my.Table) {
-									// 跳过数据库名和表名
-									continue
-								}
-
-								// 额外检查：如果字符串与数据库名或表名完全匹配（不区分大小写），也跳过
-								if strings.EqualFold(word, my.Schema) || strings.EqualFold(word, my.Table) {
-									continue
-								}
-
-								// 3. 检查是否可能是字符串常量（单字符或简单字符串，这里做基本判断）
-								// 注意：这只是一个启发式判断，不是100%准确
-								isLikelyString := false
-								if len(word) <= 3 && !strings.ContainsAny(word, "0123456789_") {
-									// 单字符或短字符串可能是条件值而不是列名
-									isLikelyString = true
-								}
-
-								// 4. 检查是否为纯数字值
-								isNumeric := true
-								for _, r := range word {
-									if !(r >= '0' && r <= '9') {
-										isNumeric = false
-										break
+									if isKeyword {
+										continue
 									}
-								}
 
-								// 如果不是关键字、不是数据库名/表名、不是纯数字值、且不太可能是字符串常量，则认为可能是列名
-								if !isLikelyString && !isNumeric {
-									// 避免重复添加已识别的列名
-									if !containsString(columns, word) {
-										columns = append(columns, word)
+									// 2. 检查是否为数据库名或表名
+									if strings.ToLower(leftPart) == strings.ToLower(my.Schema) ||
+										strings.ToLower(leftPart) == strings.ToLower(my.Table) {
+										// 跳过数据库名和表名
+										continue
 									}
+
+									// 额外检查：如果字符串与数据库名或表名完全匹配（不区分大小写），也跳过
+									if strings.EqualFold(leftPart, my.Schema) || strings.EqualFold(leftPart, my.Table) {
+										continue
+									}
+
+									// 3. 检查是否为纯数字值
+									isNumeric := true
+									for _, r := range leftPart {
+										if !(r >= '0' && r <= '9') {
+											isNumeric = false
+											break
+										}
+									}
+									if isNumeric {
+										continue
+									}
+
+									// 符合条件，添加到列名列表
+									columns = append(columns, leftPart)
 								}
 							}
 						}
+						foundOperator = true
+						break
 					}
+				}
+
+				// 如果没有找到操作符，可能是复杂条件，跳过列名检查
+				if !foundOperator {
+					continue
 				}
 			}
 		}
@@ -696,12 +721,13 @@ func (my QueryTable) GeneratingQueryCriteria(db *sql.DB, logThreadSeq int64) (st
 			cacheMutex.RUnlock()
 			// Use cached column names
 			for _, columnName := range cachedColumns {
-				columnNameSeq = append(columnNameSeq, fmt.Sprintf("`%s`", columnName))
+				// 直接使用列名，后续会添加格式化处理
+				columnNameSeq = append(columnNameSeq, columnName)
 			}
 		} else {
 			cacheMutex.RUnlock()
 			// 从INFORMATION_SCHEMA.COLUMNS获取列信息
-			strsql := fmt.Sprintf("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s' ORDER BY ORDINAL_POSITION", my.Schema, my.Table)
+			strsql := fmt.Sprintf("SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s' ORDER BY ORDINAL_POSITION", my.Schema, my.Table)
 			dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 			if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 				vlog = fmt.Sprintf("(%d) [%s] Failed to execute query: %s, Error: %v", logThreadSeq, Event, strsql, err)
@@ -712,29 +738,106 @@ func (my QueryTable) GeneratingQueryCriteria(db *sql.DB, logThreadSeq int64) (st
 			}
 			// Cache the raw column names in global cache for future use
 			var cachedColumns []string
+			var tableColumnData []map[string]string
 			for dispos.SqlRows.Next() {
-				var columnName string
-				if err := dispos.SqlRows.Scan(&columnName); err != nil {
+				var columnName, dataType string
+				if err := dispos.SqlRows.Scan(&columnName, &dataType); err != nil {
 					global.Wlog.Error(fmt.Sprintf("(%d) [%s] Failed to scan column name: %v", logThreadSeq, Event, err))
 					dispos.SqlRows.Close()
 					return "", err
 				}
 				cachedColumns = append(cachedColumns, columnName)
-				columnNameSeq = append(columnNameSeq, fmt.Sprintf("`%s`", columnName))
+				columnNameSeq = append(columnNameSeq, columnName)
+				// 保存列名和数据类型信息
+				tableColumnData = append(tableColumnData, map[string]string{
+					"columnName": columnName,
+					"dataType":   dataType,
+				})
 			}
 			dispos.SqlRows.Close()
 
 			// Save to global cache
 			cacheMutex.Lock()
 			allColumnsGlobalCache[cacheKey] = cachedColumns
+			// 保存列数据类型信息到my.TableColumn，以便后续使用
+			my.TableColumn = tableColumnData
 			cacheMutex.Unlock()
 		}
 	} else {
 		// 使用已有的列名
 		for _, column := range my.TableColumn {
-			columnNameSeq = append(columnNameSeq, fmt.Sprintf("`%s`", column["columnName"]))
+			columnNameSeq = append(columnNameSeq, column["columnName"])
 		}
 	}
+
+	// 对列名应用格式化，特别是时间类型列
+	formattedColumnSeq := make([]string, 0, len(columnNameSeq))
+	for _, columnName := range columnNameSeq {
+		var tmpcolumnName string
+		tmpcolumnName = fmt.Sprintf("`%s`", columnName)
+
+		// 定义缓存键，在所有条件分支中都可以使用
+		cacheKey := fmt.Sprintf("%s.%s.%s", my.Schema, my.Table, columnName)
+
+		// 查找当前列的数据类型
+		var dataType string
+		columnDataTypeFound := false
+
+		// 1. 首先尝试从my.TableColumn中获取数据类型
+		for _, column := range my.TableColumn {
+			if column["columnName"] == columnName {
+				if dt, ok := column["dataType"]; ok && dt != "" {
+					dataType = dt
+					columnDataTypeFound = true
+					break
+				}
+			}
+		}
+
+		// 2. 如果从my.TableColumn中没有找到数据类型，尝试从全局缓存获取
+		if !columnDataTypeFound {
+			cacheMutex.RLock()
+			if dt, ok := columnDataTypeGlobalCache[cacheKey]; ok {
+				dataType = dt
+				columnDataTypeFound = true
+			}
+			cacheMutex.RUnlock()
+		}
+
+		// 3. 如果从全局缓存中也没有找到数据类型，查询INFORMATION_SCHEMA.COLUMNS获取
+		if !columnDataTypeFound {
+			strsql := fmt.Sprintf("SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s' AND COLUMN_NAME='%s'", my.Schema, my.Table, columnName)
+			dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
+			if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err == nil {
+				if dispos.SqlRows.Next() {
+					dispos.SqlRows.Scan(&dataType)
+					columnDataTypeFound = true
+					// 将数据类型缓存到全局变量中，以便后续使用
+					cacheMutex.Lock()
+					columnDataTypeGlobalCache[cacheKey] = dataType
+					cacheMutex.Unlock()
+				}
+				dispos.SqlRows.Close()
+			}
+		}
+
+		// 应用与GeneratingQuerySql相同的格式化逻辑
+		if strings.ToUpper(dataType) == "DATETIME" {
+			tmpcolumnName = fmt.Sprintf("date_format(%s,'%%Y-%%m-%%d %%H:%%i:%%s')", tmpcolumnName)
+		}
+		if strings.Contains(strings.ToUpper(dataType), "TIMESTAMP") {
+			tmpcolumnName = fmt.Sprintf("date_format(%s,'%%Y-%%m-%%d %%H:%%i:%%s')", tmpcolumnName)
+		}
+		if strings.HasPrefix(strings.ToUpper(dataType), "DOUBLE(") {
+			dianAfter := strings.ReplaceAll(strings.Split(dataType, ",")[1], ")", "")
+			bb, _ := strconv.Atoi(dianAfter)
+			dianBefer := strings.Split(strings.Split(dataType, ",")[0], "(")[1]
+			bbc, _ := strconv.Atoi(dianBefer)
+			tmpcolumnName = fmt.Sprintf("CAST(%s AS DECIMAL(%d,%d))", tmpcolumnName, bbc, bb)
+		}
+		formattedColumnSeq = append(formattedColumnSeq, tmpcolumnName)
+	}
+	columnNameSeq = formattedColumnSeq
 
 	// 确保至少有一个列名
 	if len(columnNameSeq) == 0 {

@@ -8,6 +8,8 @@ import (
 	"math/rand"
 	"os"
 	"time"
+
+	"gt-checksum/global"
 )
 
 type CheckSumTypeStruct struct{}
@@ -89,6 +91,9 @@ func (csts CheckSumTypeStruct) Arrcmp(src []string, dest []string) ([]string, []
 			deleted = append(deleted, v)
 		}
 	}
+	
+	// 调试：记录差异数量
+	global.Wlog.Debug("DEBUG_ARRCMP: src_len=%d, dest_len=%d, added_len=%d, deleted_len=%d", len(src), len(dest), len(added), len(deleted))
 	
 	return added, deleted
 }
