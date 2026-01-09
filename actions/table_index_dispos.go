@@ -58,21 +58,21 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 	//查询源目标端索引列数据
 	idxc := dbExec.IndexColumnStruct{Schema: sp.sourceSchema, Table: sp.table, ColumnName: sp.columnName,
 		ChanrowCount: sp.chanrowCount, Drivce: sp.sdrive, SelectColumn: selectColumn[sp.sdrive], ColData: a}
-	vlog = fmt.Sprintf("(%d) Querying source table %s.%s index column %s", logThreadSeq, sp.sourceSchema, sp.table, sp.columnName[level])
+	vlog = fmt.Sprintf("(%d) Querying source table %s.%s index column %s with WHERE: %s", logThreadSeq, sp.sourceSchema, sp.table, sp.columnName[level], where)
 	global.Wlog.Debug(vlog)
-	// 修复：对于复合主键，查询所有可能的索引值，而不是只查询符合前一个索引列条件的数据
-	// 这确保了所有可能的主键组合都被处理
-	SdataChan1, err := idxc.TableIndexColumn().TmpTableColumnGroupDataDispos(sdb, "", sp.columnName[level], logThreadSeq)
+	// 对于复合主键，查询符合前一个索引列条件的索引值，而不是所有可能的值
+	// 这确保了递归查询的效率
+	SdataChan1, err := idxc.TableIndexColumn().TmpTableColumnGroupDataDispos(sdb, where, sp.columnName[level], logThreadSeq)
 	if err != nil {
 		return
 	}
 	idxcDest := dbExec.IndexColumnStruct{Schema: sp.destSchema, Table: sp.table, ColumnName: sp.columnName,
 		ChanrowCount: sp.chanrowCount, Drivce: sp.ddrive, SelectColumn: selectColumn[sp.ddrive], ColData: a}
-	vlog = fmt.Sprintf("(%d) Querying target table %s.%s index column %s", logThreadSeq, sp.destSchema, sp.table, sp.columnName[level])
+	vlog = fmt.Sprintf("(%d) Querying target table %s.%s index column %s with WHERE: %s", logThreadSeq, sp.destSchema, sp.table, sp.columnName[level], where)
 	global.Wlog.Debug(vlog)
-	// 修复：对于复合主键，查询所有可能的索引值，而不是只查询符合前一个索引列条件的数据
-	// 这确保了所有可能的主键组合都被处理
-	DdataChan1, err := idxcDest.TableIndexColumn().TmpTableColumnGroupDataDispos(ddb, "", sp.columnName[level], logThreadSeq)
+	// 对于复合主键，查询符合前一个索引列条件的索引值，而不是所有可能的值
+	// 这确保了递归查询的效率
+	DdataChan1, err := idxcDest.TableIndexColumn().TmpTableColumnGroupDataDispos(ddb, where, sp.columnName[level], logThreadSeq)
 	if err != nil {
 		return
 	}
