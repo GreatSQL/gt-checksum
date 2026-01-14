@@ -20,7 +20,7 @@ var (
 	TablePrimaryKeyColumns map[string][]string
 	// 跟踪每个数据库连接当前使用的数据库，key格式：connectionPointer|schema
 	CurrentDatabaseCache map[string]string
-	
+
 	// 互斥锁保护缓存map的并发访问
 	tablePrimaryKeyMutex sync.RWMutex
 	databaseCacheMutex   sync.RWMutex
@@ -483,12 +483,12 @@ func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive s
 	if len(deleteSqlWhere) > 0 {
 		// 生成数据库连接的唯一标识符
 		dbPointer := fmt.Sprintf("%p", db)
-		
+
 		// 检查缓存，避免重复执行USE语句（使用读锁）
 		databaseCacheMutex.RLock()
 		currentDB, exists := CurrentDatabaseCache[dbPointer]
 		databaseCacheMutex.RUnlock()
-		
+
 		if !exists || currentDB != targetSchema {
 			// 确保目标数据库存在
 			if _, err := db.Exec(fmt.Sprintf("USE `%s`", targetSchema)); err != nil {

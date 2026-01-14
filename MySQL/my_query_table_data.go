@@ -365,7 +365,9 @@ func (my QueryTable) TmpTableColumnGroupDataDispos(db *sql.DB, where string, col
 	}
 	// 修复：对于复合主键，查询所有唯一值，而不是分组后的值
 	// 这确保了所有可能的主键组合都被处理
-	strsql = fmt.Sprintf("SELECT DISTINCT %s AS columnName, COUNT(1) OVER (PARTITION BY %s) AS count FROM `%s`.`%s` %s ORDER BY %s", columnName, columnName, my.Schema, my.Table, whereExist, columnName)
+	//strsql = fmt.Sprintf("SELECT DISTINCT %s AS columnName, COUNT(1) OVER (PARTITION BY %s) AS count FROM `%s`.`%s` %s ORDER BY %s", columnName, columnName, my.Schema, my.Table, whereExist, columnName)
+	//上面的SQL效率太低，改成下面这样
+	strsql = fmt.Sprintf("SELECT %s AS columnName, COUNT(1) AS count FROM `%s`.`%s` %s GROUP BY %s", columnName, my.Schema, my.Table, whereExist, columnName)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		// 如果窗口函数失败，回退到分组查询

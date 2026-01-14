@@ -74,7 +74,7 @@ func (f FileOperate) ConcurrencyWriteFile(writeString []string) ([]string, error
 
 func ProcessChunk(chunk []byte, linesPool *sync.Pool, stringPool *sync.Pool, m map[string]string, c chan<- map[string]string) {
 	var (
-		wg2 sync.WaitGroup
+		wg2          sync.WaitGroup
 		processedMD5 sync.Map // 使用sync.Map进行线程安全的去重
 	)
 	logs := stringPool.Get().(string)

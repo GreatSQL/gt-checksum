@@ -345,28 +345,28 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 			return nil, nil, err
 		}
 
-	// 处理特殊情况：源表存在但目标表不存在
-	if sourceTableExists && !destTableExists {
-		// 添加调试信息，确认schema映射处理
-		vlog = fmt.Sprintf("(%d) %s Processing table creation with mapping - source: %s.%s -> dest: %s.%s", logThreadSeq, event, sourceSchema, sourceTableName, destSchema, destTableName)
-		global.Wlog.Debug(vlog)
-		
-		// 生成CREATE TABLE语句
-		createTableSql, err := generateCreateTableSql(stcls.sourceDB, sourceSchema, destSchema, sourceTableName, logThreadSeq)
-		if err != nil {
-			vlog = fmt.Sprintf("(%d) %s Error generating CREATE TABLE statement for %s.%s: %v", logThreadSeq, event, destSchema, stcls.table, err)
-			global.Wlog.Error(vlog)
-			return nil, nil, err
-		}
+		// 处理特殊情况：源表存在但目标表不存在
+		if sourceTableExists && !destTableExists {
+			// 添加调试信息，确认schema映射处理
+			vlog = fmt.Sprintf("(%d) %s Processing table creation with mapping - source: %s.%s -> dest: %s.%s", logThreadSeq, event, sourceSchema, sourceTableName, destSchema, destTableName)
+			global.Wlog.Debug(vlog)
 
-		// 验证生成的CREATE TABLE语句是否包含正确的schema名
-		if !strings.Contains(createTableSql, fmt.Sprintf("`%s`", destSchema)) {
-			vlog = fmt.Sprintf("(%d) %s Warning: Generated CREATE TABLE statement may be missing target schema '%s': %s", logThreadSeq, event, destSchema, createTableSql)
-			global.Wlog.Warn(vlog)
-		}
+			// 生成CREATE TABLE语句
+			createTableSql, err := generateCreateTableSql(stcls.sourceDB, sourceSchema, destSchema, sourceTableName, logThreadSeq)
+			if err != nil {
+				vlog = fmt.Sprintf("(%d) %s Error generating CREATE TABLE statement for %s.%s: %v", logThreadSeq, event, destSchema, stcls.table, err)
+				global.Wlog.Error(vlog)
+				return nil, nil, err
+			}
 
-		vlog = fmt.Sprintf("(%d) %s Generated CREATE TABLE statement for %s.%s: %s", logThreadSeq, event, destSchema, destTableName, createTableSql)
-		global.Wlog.Debug(vlog)
+			// 验证生成的CREATE TABLE语句是否包含正确的schema名
+			if !strings.Contains(createTableSql, fmt.Sprintf("`%s`", destSchema)) {
+				vlog = fmt.Sprintf("(%d) %s Warning: Generated CREATE TABLE statement may be missing target schema '%s': %s", logThreadSeq, event, destSchema, createTableSql)
+				global.Wlog.Warn(vlog)
+			}
+
+			vlog = fmt.Sprintf("(%d) %s Generated CREATE TABLE statement for %s.%s: %s", logThreadSeq, event, destSchema, destTableName, createTableSql)
+			global.Wlog.Debug(vlog)
 
 			// 应用修复SQL
 			vlog = fmt.Sprintf("(%d) %s Applying CREATE TABLE statement to %s.%s", logThreadSeq, event, destSchema, destTableName)
@@ -962,7 +962,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 				if errTableComment == nil && sourceTableComment != destTableComment {
 					// 生成修改表注释的SQL语句
 					escapedComment := strings.ReplaceAll(sourceTableComment, "'", "\\'")
-				tableCommentSql := fmt.Sprintf("ALTER TABLE `%s`.`%s` COMMENT = '%s';", destSchema, stcls.table, escapedComment)
+					tableCommentSql := fmt.Sprintf("ALTER TABLE `%s`.`%s` COMMENT = '%s';", destSchema, stcls.table, escapedComment)
 					vlog = fmt.Sprintf("(%d) %s Table comment mismatch: source='%s', dest='%s', generating fix SQL", logThreadSeq, event, sourceTableComment, destTableComment)
 					global.Wlog.Warn(vlog)
 					sqlS = append(sqlS, tableCommentSql)
@@ -2159,11 +2159,11 @@ func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 in
 					}
 				}
 				// 确定目标schema
-			destSchema := schema
-			if mappedSchema, exists := stcls.tableMappings[schema]; exists {
-				destSchema = mappedSchema
-			}
-			tsqls := mysql.GenerateTriggerFixSQL(schema, destSchema, trName, trSourceDef)
+				destSchema := schema
+				if mappedSchema, exists := stcls.tableMappings[schema]; exists {
+					destSchema = mappedSchema
+				}
+				tsqls := mysql.GenerateTriggerFixSQL(schema, destSchema, trName, trSourceDef)
 				// wrap with DELIMITER to ensure body semicolons don't conflict
 				var out []string
 				out = append(out, "DELIMITER $$")
@@ -2592,11 +2592,11 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 							}
 						}
 						// 确定目标schema
-					destSchema := schema
-					if mappedSchema, exists := stcls.tableMappings[schema]; exists {
-						destSchema = mappedSchema
-					}
-					sqls := mysql.GenerateRoutineFixSQL(schema, destSchema, k, "PROCEDURE", sourceDef)
+						destSchema := schema
+						if mappedSchema, exists := stcls.tableMappings[schema]; exists {
+							destSchema = mappedSchema
+						}
+						sqls := mysql.GenerateRoutineFixSQL(schema, destSchema, k, "PROCEDURE", sourceDef)
 						// wrap with DELIMITER for routine definitions
 						var out []string
 						out = append(out, "DELIMITER $$")
@@ -2701,7 +2701,7 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 					if v == 2 {
 						sv := sourceFunc[k]
 						dv := destFunc[k]
-						
+
 						// 忽略元数据注释部分，只比较函数的实际定义内容
 						// 移除 GT_CHECKSUM_METADATA 注释
 						cleanSourceFunc := sv
@@ -2711,7 +2711,7 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 								cleanSourceFunc = cleanSourceFunc[:idx] + cleanSourceFunc[idx+endIdx+2:]
 							}
 						}
-						
+
 						cleanDestFunc := dv
 						if idx := strings.Index(cleanDestFunc, "/*GT_CHECKSUM_METADATA:"); idx != -1 {
 							endIdx := strings.Index(cleanDestFunc[idx:], "*/")
@@ -2719,11 +2719,11 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 								cleanDestFunc = cleanDestFunc[:idx] + cleanDestFunc[idx+endIdx+2:]
 							}
 						}
-						
+
 						// 去除所有空格后进行比较
 						cleanSourceFunc = strings.Join(strings.Fields(cleanSourceFunc), "")
 						cleanDestFunc = strings.Join(strings.Fields(cleanDestFunc), "")
-						
+
 						if cleanSourceFunc != cleanDestFunc {
 							pods.ProcName = k
 							pods.DIFFS = "yes"
@@ -2749,11 +2749,11 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 							}
 						}
 						// 确定目标schema
-					destSchema := schema
-					if mappedSchema, exists := stcls.tableMappings[schema]; exists {
-						destSchema = mappedSchema
-					}
-					funcSqls := mysql.GenerateRoutineFixSQL(schema, destSchema, k, "FUNCTION", funcSource)
+						destSchema := schema
+						if mappedSchema, exists := stcls.tableMappings[schema]; exists {
+							destSchema = mappedSchema
+						}
+						funcSqls := mysql.GenerateRoutineFixSQL(schema, destSchema, k, "FUNCTION", funcSource)
 						// wrap with DELIMITER for routine definitions
 						var fout []string
 						fout = append(fout, "DELIMITER $$")
@@ -3930,8 +3930,6 @@ func generateCreateTableSql(sourceDB *sql.DB, sourceSchema string, destSchema st
 		return "", err
 	}
 
-
-
 	// 添加IF NOT EXISTS前缀
 	if !strings.Contains(strings.ToUpper(createTableStmt), "IF NOT EXISTS") {
 		// 查找"CREATE TABLE"后的位置，并在其后添加"IF NOT EXISTS"
@@ -3943,10 +3941,10 @@ func generateCreateTableSql(sourceDB *sql.DB, sourceSchema string, destSchema st
 			createTableStmt = createTableStmt[:afterCreateTable] + " IF NOT EXISTS" + createTableStmt[afterCreateTable:]
 		}
 	}
-	
+
 	// 替换schema名称
 	createTableStmt = strings.ReplaceAll(createTableStmt, fmt.Sprintf("`%s`", sourceSchema), fmt.Sprintf("`%s`", destSchema))
-	
+
 	// 检查替换后的CREATE TABLE语句是否包含目标schema名
 	// 如果不包含，说明原始语句没有schema名，需要手动添加
 	if !strings.Contains(createTableStmt, fmt.Sprintf("`%s`", destSchema)) {
@@ -3957,16 +3955,16 @@ func generateCreateTableSql(sourceDB *sql.DB, sourceSchema string, destSchema st
 		matches := re.FindStringSubmatchIndex(createTableStmt)
 		if len(matches) > 0 {
 			// 找到匹配，在表名前添加schema名
-			startIdx := matches[0] // 整个匹配的开始位置
+			startIdx := matches[0]       // 整个匹配的开始位置
 			tableNameStart := matches[4] // 表名组的开始位置（不包含反引号）
 			tableNameEnd := matches[5]   // 表名组的结束位置（不包含反引号）
-			
+
 			// 构建新的CREATE TABLE部分
 			prefix := createTableStmt[:startIdx]
-			createPart := createTableStmt[startIdx:tableNameStart-1] // -1 是为了去掉反引号
-			tableName := createTableStmt[tableNameStart:tableNameEnd] // 不包含反引号的纯表名
-			suffix := createTableStmt[tableNameEnd+1:] // +1 是为了跳过反引号
-			
+			createPart := createTableStmt[startIdx : tableNameStart-1] // -1 是为了去掉反引号
+			tableName := createTableStmt[tableNameStart:tableNameEnd]  // 不包含反引号的纯表名
+			suffix := createTableStmt[tableNameEnd+1:]                 // +1 是为了跳过反引号
+
 			// 在表名前添加schema名（重新构建完整的反引号包围的表名）
 			newTableName := fmt.Sprintf("`%s`.`%s`", destSchema, tableName)
 			createTableStmt = prefix + createPart + newTableName + suffix

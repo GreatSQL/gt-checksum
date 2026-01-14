@@ -31,6 +31,14 @@ var (
 	// 用于跟踪已经输出过目标表为空提示的表，避免重复输出
 	emptyTableWarned = make(map[string]bool)
 	emptyTableMutex  sync.Mutex
+
+	// 全局主键值跟踪机制 - 修复重复DELETE/INSERT冲突问题
+	deleteMutex       sync.Mutex                  // 保护并发访问deletePrimaryKeys map的互斥锁
+	deletePrimaryKeys = make(map[string]struct{}) // 全局已处理的DELETE主键值去重
+
+	insertMutex         sync.Mutex                  // 保护并发访问insertedPrimaryKeys map的互斥锁
+	insertedPrimaryKeys = make(map[string]struct{}) // 全局已处理的INSERT主键值跟踪
+	processedInserts    = make(map[string]struct{}) // 全局已处理的INSERT记录去重
 )
 
 /*
@@ -576,14 +584,21 @@ func (sp *SchedulePlan) queryTableData(selectSql chanMap, diffQueryData chanDiff
 */
 func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanString, logThreadSeq int64) {
 	var (
-		vlog string
-		aa   = &CheckSumTypeStruct{}
-		//strsqlSliect []string
+		vlog             string
+		aa               = &CheckSumTypeStruct{}
 		curry            = make(chanStruct, sp.concurrency)
-		totalInsertCount int64                       // 全局INSERT语句计数器
-		processedInserts = make(map[string]struct{}) // 全局已处理的INSERT记录去重
-		insertMutex      sync.Mutex                  // 保护并发访问processedInserts map的互斥锁
+		totalInsertCount int64 // 全局INSERT语句计数器
 	)
+
+	// 在处理前清空所有全局去重映射，确保每次运行都有干净的状态
+	deleteMutex.Lock()
+	deletePrimaryKeys = make(map[string]struct{})
+	deleteMutex.Unlock()
+
+	insertMutex.Lock()
+	processedInserts = make(map[string]struct{})
+	insertedPrimaryKeys = make(map[string]struct{}) // 关键修复：清空INSERT主键跟踪映射
+	insertMutex.Unlock()
 	vlog = fmt.Sprintf("(%d) Processing differences and generating repair statements for %s.%s", logThreadSeq, sp.schema, sp.table)
 	global.Wlog.Info(vlog)
 
@@ -940,18 +955,25 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 									}
 									batchDel := del[batchStart:batchEnd]
 
+									// 处理单字段主键和多字段联合主键的批量DELETE
+									var primaryCols []string
+									var isSinglePrimary bool
+									var primaryCol string
+									if len(dbf.IndexColumn) > 0 {
+										primaryCols = dbf.IndexColumn // 获取所有主键列
+										isSinglePrimary = len(primaryCols) == 1
+										if isSinglePrimary {
+											primaryCol = primaryCols[0] // 使用唯一的主键列
+										}
+									}
+
 									// 对于MySQL，合并DELETE语句
 									if sp.ddrive == "mysql" {
-										// 尝试提取主键或唯一键列名
-										var primaryCol string
-										// 只有当主键只有一列时，才使用IN条件合并
-										if len(dbf.IndexColumn) == 1 {
-											primaryCol = dbf.IndexColumn[0] // 使用唯一的主键列
-										}
+										if len(dbf.IndexColumn) > 0 {
 
-										// 如果有明确的单主键列，使用IN条件合并
-										if primaryCol != "" {
-											var values []string
+											// 收集所有DELETE语句的主键值，并进行去重
+											var primaryValues []string
+											processedPrimaryValues := make(map[string]struct{}) // 局部去重，避免同一批次内重复
 											for _, i := range batchDel {
 												dbf.RowData = i
 												sqlstr, err := dbf.DataAbnormalFix().FixDeleteSqlExec(ddb, sp.ddrive, logThreadSeq)
@@ -964,22 +986,101 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 												if strings.Contains(sqlstr, "WHERE") {
 													wherePart := strings.Split(sqlstr, "WHERE")[1]
 													wherePart = strings.TrimSpace(strings.TrimSuffix(wherePart, ";"))
-													// 使用字符串分割来提取值，避免正则表达式转义问题
-													key := fmt.Sprintf("`%s` = '", primaryCol)
-													if strings.Contains(wherePart, key) {
-														part := strings.Split(wherePart, key)[1]
-														if strings.Contains(part, "'") {
-															value := strings.Split(part, "'")[0]
-															values = append(values, "'"+value+"'")
+
+													var primaryKey string
+													var primaryValue string
+
+													if isSinglePrimary {
+														// 单字段主键：提取单个值
+														key := fmt.Sprintf("`%s` = '", primaryCol)
+														if strings.Contains(wherePart, key) {
+															part := strings.Split(wherePart, key)[1]
+															if strings.Contains(part, "'") {
+																value := strings.Split(part, "'")[0]
+																primaryValue = "'" + value + "'"
+																primaryKey = fmt.Sprintf("%s.%s.%s:%s", c1.Schema, c1.Table, primaryCol, value)
+															}
+														}
+													} else {
+														// 多字段联合主键：提取所有主键值组合
+														var valueList []string
+														var keyList []string
+														foundAllValues := true
+														for _, col := range primaryCols {
+															// 构建匹配模式：`col` = 'value'
+															pattern := fmt.Sprintf("`%s` = '", col)
+															index := strings.Index(wherePart, pattern)
+															if index == -1 {
+																foundAllValues = false
+																break
+															}
+															// 提取值
+															afterPattern := wherePart[index+len(pattern):]
+															valueEnd := strings.Index(afterPattern, "'")
+															if valueEnd == -1 {
+																foundAllValues = false
+																break
+															}
+															value := afterPattern[:valueEnd]
+															valueList = append(valueList, "'"+value+"'")
+															keyList = append(keyList, fmt.Sprintf("%s:%s", col, value))
+															// 从剩余字符串中查找下一个主键条件
+															wherePart = afterPattern[valueEnd+1:]
+														}
+														if foundAllValues {
+															// 构建值组合字符串：('val1', 'val2', 'val3')
+															primaryValue = "(" + strings.Join(valueList, ", ") + ")"
+															// 构建唯一键：schema.table.col1:val1,col2:val2
+															primaryKey = fmt.Sprintf("%s.%s.%s", c1.Schema, c1.Table, strings.Join(keyList, ","))
+														}
+													}
+
+													// 检查该主键值是否已经处理过（全局去重）
+													if primaryKey != "" {
+														deleteMutex.Lock()
+														_, exists := deletePrimaryKeys[primaryKey]
+														deleteMutex.Unlock()
+
+														// 同时检查局部去重，避免同一批次内重复
+														_, localExists := processedPrimaryValues[primaryKey]
+
+														// 关键修复：检查该主键是否已经被INSERT过
+														insertMutex.Lock()
+														_, inserted := insertedPrimaryKeys[primaryKey]
+														insertMutex.Unlock()
+
+														// 如果该主键已经被INSERT过，或者已经被DELETE过，或者在本批次内重复，则跳过
+														if !exists && !localExists && !inserted {
+															// 添加到全局去重map
+															deleteMutex.Lock()
+															deletePrimaryKeys[primaryKey] = struct{}{}
+															deleteMutex.Unlock()
+
+															// 添加到局部去重map
+															processedPrimaryValues[primaryKey] = struct{}{}
+
+															// 添加到主键值列表
+															primaryValues = append(primaryValues, primaryValue)
 														}
 													}
 												}
 											}
 
 											// 如果成功提取了多个值，根据长度限制生成合并的DELETE语句
-											if len(values) > 1 {
+											if len(primaryValues) > 0 {
 												// 生成基础SQL部分
-												baseSql := fmt.Sprintf("DELETE FROM `%s`.`%s` WHERE `%s` IN (", c1.Schema, c1.Table, primaryCol)
+												var baseSql string
+												if isSinglePrimary {
+													// 单字段主键：WHERE `col` IN (
+													baseSql = fmt.Sprintf("DELETE FROM `%s`.`%s` WHERE `%s` IN (", c1.Schema, c1.Table, primaryCol)
+												} else {
+													// 多字段联合主键：WHERE (`col1`, `col2`, `col3`) IN (
+													colNames := make([]string, len(primaryCols))
+													for i, col := range primaryCols {
+														colNames[i] = fmt.Sprintf("`%s`", col)
+													}
+													baseSql = fmt.Sprintf("DELETE FROM `%s`.`%s` WHERE (%s) IN (", c1.Schema, c1.Table, strings.Join(colNames, ", "))
+												}
 												baseSqlLen := len(baseSql)
 												closeBracketLen := len(");")
 
@@ -987,18 +1088,18 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 												var currentValues []string
 												currentLength := baseSqlLen
 
-												for i, value := range values {
+												for i, value := range primaryValues {
 													valueLen := len(value)
 													separatorLen := 0
 													if i > 0 {
-														separatorLen = 1 // 逗号的长度
+														separatorLen = 2 // 逗号和空格的长度 ", "
 													}
 
 													// 检查添加当前值是否会超过长度限制
 													if currentLength+separatorLen+valueLen+closeBracketLen > maxSqlSize {
 														// 如果当前已经有值，先生成并发送当前的合并SQL
 														if len(currentValues) > 0 {
-															mergedSql := fmt.Sprintf("%s%s);", baseSql, strings.Join(currentValues, ","))
+															mergedSql := fmt.Sprintf("%s%s);", baseSql, strings.Join(currentValues, ", "))
 															cc <- mergedSql
 															// 重置当前值列表和长度
 															currentValues = []string{value}
@@ -1024,7 +1125,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 
 												// 处理剩余的值
 												if len(currentValues) > 0 {
-													mergedSql := fmt.Sprintf("%s%s);", baseSql, strings.Join(currentValues, ","))
+													mergedSql := fmt.Sprintf("%s%s);", baseSql, strings.Join(currentValues, ", "))
 													cc <- mergedSql
 												}
 											} else {
@@ -1034,22 +1135,101 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 													sqlstr, err := dbf.DataAbnormalFix().FixDeleteSqlExec(ddb, sp.ddrive, logThreadSeq)
 													if err != nil {
 														sp.getErr(fmt.Sprintf("\ndest: checksum table %s.%s generate DELETE sql error.", c1.Schema, c1.Table), err)
+														continue
 													}
-													if sqlstr != "" {
-														cc <- sqlstr
+
+													// 提取WHERE条件中的主键值，用于去重
+													var primaryKey string
+													if strings.Contains(sqlstr, "WHERE") {
+														wherePart := strings.Split(sqlstr, "WHERE")[1]
+														wherePart = strings.TrimSpace(strings.TrimSuffix(wherePart, ";"))
+
+														if isSinglePrimary {
+															key := fmt.Sprintf("`%s` = '", primaryCol)
+															if strings.Contains(wherePart, key) {
+																part := strings.Split(wherePart, key)[1]
+																if strings.Contains(part, "'") {
+																	value := strings.Split(part, "'")[0]
+																	primaryKey = fmt.Sprintf("%s.%s.%s:%s", c1.Schema, c1.Table, primaryCol, value)
+																}
+															}
+														} else {
+															// 多字段联合主键：提取所有主键值组合
+															var keyList []string
+															foundAllValues := true
+															for _, col := range primaryCols {
+																pattern := fmt.Sprintf("`%s` = '", col)
+																index := strings.Index(wherePart, pattern)
+																if index == -1 {
+																	foundAllValues = false
+																	break
+																}
+																afterPattern := wherePart[index+len(pattern):]
+																valueEnd := strings.Index(afterPattern, "'")
+																if valueEnd == -1 {
+																	foundAllValues = false
+																	break
+																}
+																value := afterPattern[:valueEnd]
+																keyList = append(keyList, fmt.Sprintf("%s:%s", col, value))
+																wherePart = afterPattern[valueEnd+1:]
+															}
+															if foundAllValues {
+																primaryKey = fmt.Sprintf("%s.%s.%s", c1.Schema, c1.Table, strings.Join(keyList, ","))
+															}
+														}
+													}
+
+													// 检查该主键值是否已经处理过
+													if primaryKey != "" {
+														deleteMutex.Lock()
+														_, exists := deletePrimaryKeys[primaryKey]
+														deleteMutex.Unlock()
+
+														if !exists {
+															// 添加到全局去重map
+															deleteMutex.Lock()
+															deletePrimaryKeys[primaryKey] = struct{}{}
+															deleteMutex.Unlock()
+
+															// 发送SQL语句
+															if sqlstr != "" {
+																cc <- sqlstr
+															}
+														}
+													} else {
+														// 如果无法提取主键值，直接发送SQL语句
+														if sqlstr != "" {
+															cc <- sqlstr
+														}
 													}
 												}
 											}
 										} else {
-											// 对于复合主键或无主键，回退到单独执行，使用完整的WHERE条件
+											// 对于无主键，回退到单独执行，使用完整的WHERE条件
 											for _, i := range batchDel {
 												dbf.RowData = i
 												sqlstr, err := dbf.DataAbnormalFix().FixDeleteSqlExec(ddb, sp.ddrive, logThreadSeq)
 												if err != nil {
 													sp.getErr(fmt.Sprintf("\ndest: checksum table %s.%s generate DELETE sql error.", c1.Schema, c1.Table), err)
+													continue
 												}
-												if sqlstr != "" {
-													cc <- sqlstr
+
+												// 使用完整SQL作为去重键
+												deleteMutex.Lock()
+												_, exists := deletePrimaryKeys[sqlstr]
+												deleteMutex.Unlock()
+
+												if !exists {
+													// 添加到全局去重map
+													deleteMutex.Lock()
+													deletePrimaryKeys[sqlstr] = struct{}{}
+													deleteMutex.Unlock()
+
+													// 发送SQL语句
+													if sqlstr != "" {
+														cc <- sqlstr
+													}
 												}
 											}
 										}
@@ -1060,9 +1240,90 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 											sqlstr, err := dbf.DataAbnormalFix().FixDeleteSqlExec(ddb, sp.ddrive, logThreadSeq)
 											if err != nil {
 												sp.getErr(fmt.Sprintf("\ndest: checksum table %s.%s generate DELETE sql error.", c1.Schema, c1.Table), err)
+												continue
 											}
-											if sqlstr != "" {
-												cc <- sqlstr
+
+											// 提取WHERE条件中的主键值，用于去重
+											var primaryKey string
+											if strings.Contains(sqlstr, "WHERE") {
+												wherePart := strings.Split(sqlstr, "WHERE")[1]
+												wherePart = strings.TrimSpace(strings.TrimSuffix(wherePart, ";"))
+
+												if isSinglePrimary {
+													key := fmt.Sprintf("`%s` = '", primaryCol)
+													if strings.Contains(wherePart, key) {
+														part := strings.Split(wherePart, key)[1]
+														if strings.Contains(part, "'") {
+															value := strings.Split(part, "'")[0]
+															primaryKey = fmt.Sprintf("%s.%s.%s:%s", c1.Schema, c1.Table, primaryCol, value)
+														}
+													}
+												} else {
+													// 多字段联合主键：提取所有主键值组合
+													var keyList []string
+													foundAllValues := true
+													for _, col := range primaryCols {
+														pattern := fmt.Sprintf("`%s` = '", col)
+														index := strings.Index(wherePart, pattern)
+														if index == -1 {
+															foundAllValues = false
+															break
+														}
+														afterPattern := wherePart[index+len(pattern):]
+														valueEnd := strings.Index(afterPattern, "'")
+														if valueEnd == -1 {
+															foundAllValues = false
+															break
+														}
+														value := afterPattern[:valueEnd]
+														keyList = append(keyList, fmt.Sprintf("%s:%s", col, value))
+														wherePart = afterPattern[valueEnd+1:]
+													}
+													if foundAllValues {
+														primaryKey = fmt.Sprintf("%s.%s.%s", c1.Schema, c1.Table, strings.Join(keyList, ","))
+													}
+												}
+											}
+
+											// 检查该主键值是否已经处理过
+											if primaryKey != "" {
+												deleteMutex.Lock()
+												_, exists := deletePrimaryKeys[primaryKey]
+												deleteMutex.Unlock()
+
+												// 关键修复：检查该主键是否已经被INSERT过
+												insertMutex.Lock()
+												_, inserted := insertedPrimaryKeys[primaryKey]
+												insertMutex.Unlock()
+
+												if !exists && !inserted {
+													// 添加到全局去重map
+													deleteMutex.Lock()
+													deletePrimaryKeys[primaryKey] = struct{}{}
+													deleteMutex.Unlock()
+
+													// 发送SQL语句
+													if sqlstr != "" {
+														cc <- sqlstr
+													}
+												}
+											} else {
+												// 对于无法提取主键值的情况，使用完整SQL作为去重键
+												deleteMutex.Lock()
+												_, exists := deletePrimaryKeys[sqlstr]
+												deleteMutex.Unlock()
+
+												if !exists {
+													// 添加到全局去重map
+													deleteMutex.Lock()
+													deletePrimaryKeys[sqlstr] = struct{}{}
+													deleteMutex.Unlock()
+
+													// 发送SQL语句
+													if sqlstr != "" {
+														cc <- sqlstr
+													}
+												}
 											}
 										}
 									}
@@ -1135,6 +1396,29 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 												continue
 											}
 
+											// 提取主键值并记录到insertedPrimaryKeys中
+											if len(dbf.IndexColumn) > 0 {
+												// 解析INSERT语句中的主键值
+												var primaryValues []string
+												var keyList []string
+												// 解析VALUES部分
+												valuesPart := sqlstr[valuesStart+7 : valuesEnd]
+												// 分割值列表（注意：这里假设值是单条记录，因为我们现在是单条生成INSERT）
+												values := strings.Split(valuesPart, ", ")
+												if len(values) >= len(dbf.IndexColumn) {
+													for i, col := range dbf.IndexColumn {
+														// 提取值并去除引号
+														val := strings.Trim(values[i], "'\"")
+														primaryValues = append(primaryValues, val)
+														keyList = append(keyList, fmt.Sprintf("%s:%s", col, val))
+													}
+													// 构建唯一主键标识
+													primaryKey := fmt.Sprintf("%s.%s.%s", c1.Schema, c1.Table, strings.Join(keyList, ","))
+													// 记录到insertedPrimaryKeys中
+													insertedPrimaryKeys[primaryKey] = struct{}{}
+												}
+											}
+
 											// 标记为已处理
 											processedInserts[insertKey] = struct{}{}
 											insertMutex.Unlock()
@@ -1188,33 +1472,21 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 		deleteCount int
 		insertCount int
 		// 关键修复：分别存储DELETE和INSERT语句，确保最终顺序
-		deleteSqls  []string
-		insertSqls  []string
-		sqlBuffer   []string // 缓冲SQL语句，达到阈值时立即写入
-		bufferLimit int      // 缓冲区大小限制，达到该值时立即写入文件
-		isFinished  bool     // 标记是否已完成接收
+		deleteSqls []string
+		insertSqls []string
+		isFinished bool // 标记是否已完成接收
 	)
 
 	// 修复：清空全局writtenSqlMap，确保只针对当前表去重，避免跨表影响
 	writtenSqlMap = sync.Map{}
 
-	// 使用fixTrxNum作为缓冲区大小，确保COMMIT间隔符合用户设置
-	bufferLimit = sp.fixTrxNum
-	// 如果fixTrxNum为0或负数，使用一个合理的默认值
-	if bufferLimit <= 0 {
-		bufferLimit = 1000
-	}
 	vlog = fmt.Sprintf("(%d) Applying repair statements to target table %s.%s", logThreadSeq, sp.schema, sp.table)
 	global.Wlog.Info(vlog)
 
 	// 启动一个goroutine来收集和处理所有SQL语句
 	go func() {
 		defer func() {
-			// 处理剩余的SQL语句
-			if len(sqlBuffer) > 0 {
-				processBatch(sqlBuffer, sp.datafixType, sp.sfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
-			}
-			// 处理剩余的DELETE和INSERT语句
+			// 处理所有收集到的DELETE和INSERT语句
 			if len(deleteSqls) > 0 || len(insertSqls) > 0 {
 				var finalSqls []string
 				finalSqls = append(finalSqls, deleteSqls...)
@@ -1248,15 +1520,6 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 				insertSqls = append(insertSqls, v)
 				insertCount++
 				//global.Wlog.Debug("DEBUG_BUFFER_INSERT_%d: Buffered INSERT statement #%d for %s.%s\n", logThreadSeq, insertCount, sp.schema, sp.table)
-			}
-
-			// 缓冲所有SQL语句，达到阈值时立即写入文件
-			sqlBuffer = append(sqlBuffer, v)
-			if len(sqlBuffer) >= bufferLimit {
-				// 立即写入缓冲区中的SQL语句
-				processBatch(sqlBuffer, sp.datafixType, sp.sfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
-				// 清空缓冲区
-				sqlBuffer = []string{}
 			}
 		}
 	}()
