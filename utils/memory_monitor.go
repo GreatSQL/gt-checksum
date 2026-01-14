@@ -72,7 +72,7 @@ func MemoryMonitor(memoryLimit string, config *inputArg.ConfigParameter) {
 			// 如果刚刚进行过参数调整，检查内存是否已经下降到阈值以下
 			if justAdjusted && currentMB < memoryDecreaseThresholdMB {
 				justAdjusted = false
-				memoryDecreaseMsg := fmt.Sprintf("Info: Memory usage decreased to %dMB, below threshold, ready for next adjustment if needed", currentMB)
+				memoryDecreaseMsg := fmt.Sprintf("\nInfo: Memory usage decreased to %dMB, below threshold, ready for next adjustment if needed", currentMB)
 				fmt.Println(memoryDecreaseMsg)
 				if global.Wlog != nil {
 					global.Wlog.Info(memoryDecreaseMsg)
