@@ -74,7 +74,7 @@ func (my *GlobalCS) sessionRR(logThreadSeq int) ([]*sql.DB, error) {
 		db1.SetConnMaxLifetime(-1)
 		db1.SetConnMaxIdleTime(-1)
 		vlog = fmt.Sprintf("(%d) Starting MySQL transaction", logThreadSeq)
-		global.Wlog.Debug(vlog)
+		//global.Wlog.Debug(vlog)
 		tx, err2 := db1.Begin()
 		if err2 != nil {
 			vlog = fmt.Sprintf("(%d) Failed to create MySQL session (JDBC: %s): %v", logThreadSeq, my.Jdbc, err)
@@ -105,7 +105,7 @@ func (my *GlobalCS) sessionRR(logThreadSeq int) ([]*sql.DB, error) {
 			tx.Rollback()
 		} else {
 			vlog = fmt.Sprintf("(%d) MySQL transaction committed", logThreadSeq)
-			global.Wlog.Debug(vlog)
+			//global.Wlog.Debug(vlog)
 		}
 		cisoRRsession = append(cisoRRsession, db1)
 	}
