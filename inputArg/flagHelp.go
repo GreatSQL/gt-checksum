@@ -28,11 +28,11 @@ var jdbcDispos = func(jdbc string) (string, string) {
 		drivS = tmpc["TYPE"]
 		switch drivS {
 		case "mysql":
-			jdbcS = fmt.Sprintf("%s:%s@tcp(%s:%s)/information_schema?charset=%s", tmpc["USER"], tmpc["PASSWD"], tmpc["HOST"], tmpc["PORT"], tmpc["CHARSET"])
+			jdbcS = fmt.Sprintf("%s:%s@tcp(%s:%s)/information_schema?charset=%s&timeout=30s&readTimeout=300s&writeTimeout=300s&maxAllowedPacket=16777216&interpolateParams=true&parseTime=true&reconnect=true", tmpc["USER"], tmpc["PASSWD"], tmpc["HOST"], tmpc["PORT"], tmpc["CHARSET"])
 		case "oracle":
 			jdbcS = fmt.Sprintf("%s/%s@%s:%s/%s", tmpc["USER"], tmpc["PASSWD"], tmpc["HOST"], tmpc["PORT"], tmpc["SID"])
 		default:
-			jdbcS = fmt.Sprintf("%s:%s@tcp(%s:%s)/information_schema?charset=%s", tmpc["USER"], tmpc["PASSWD"], tmpc["HOST"], tmpc["PORT"], tmpc["CHARSET"])
+			jdbcS = fmt.Sprintf("%s:%s@tcp(%s:%s)/information_schema?charset=%s&timeout=30s&readTimeout=300s&writeTimeout=300s&maxAllowedPacket=16777216&interpolateParams=true&parseTime=true&reconnect=true", tmpc["USER"], tmpc["PASSWD"], tmpc["HOST"], tmpc["PORT"], tmpc["CHARSET"])
 		}
 	}
 	return drivS, jdbcS
