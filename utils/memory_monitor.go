@@ -119,7 +119,7 @@ func MemoryMonitor(memoryLimit string, config *inputArg.ConfigParameter) {
 				select {
 				case ParamChangedChan <- struct{}{}:
 					// 通知已发送
-					fmt.Printf("Info: Parameter change notification sent, new values - ParallelThds: %d, QueueSize: %d, ChunkSize: %d\n", newParallelThds, newQueueSize, newChunkSize)
+					fmt.Printf("\nInfo: Parameter change notification sent, new values - ParallelThds: %d, QueueSize: %d, ChunkSize: %d\n", newParallelThds, newQueueSize, newChunkSize)
 				default:
 					// 通道已满，不阻塞
 				}

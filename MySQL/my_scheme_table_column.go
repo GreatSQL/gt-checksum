@@ -270,8 +270,8 @@ func (my *QueryTable) DatabaseVersion(db *sql.DB, logThreadSeq int64) (string, e
 	databaseVersionCache[cacheKey] = version
 	cacheMutex.Unlock()
 
-	vlog = fmt.Sprintf("(%d) [%s] Complete the version information query of the %s database and cached version: %s", logThreadSeq, Event, DBType, version)
-	global.Wlog.Debug(vlog)
+	//vlog = fmt.Sprintf("(%d) [%s] Complete the version information query of the %s database and cached version: %s", logThreadSeq, Event, DBType, version)
+	//global.Wlog.Debug(vlog)
 
 	return version, nil
 }
@@ -708,15 +708,15 @@ func (my *QueryTable) TableIndexChoice(queryData []map[string]interface{}, logTh
 	//global.Wlog.Debug(vlog)
 	//处理主键索引列
 	//判断是否存在主键索引,每个表的索引只有一个
-	//vlog = fmt.Sprintf("(%d) MySQL DB primary key index starts to choose the best.", logThreadSeq)
-	//global.Wlog.Debug(vlog)
+	vlog = fmt.Sprintf("(%d) MySQL DB primary key index starts to choose the best.", logThreadSeq)
+	global.Wlog.Debug(vlog)
 	if len(PriIndexCol) == 1 { //单列主键索引
 		indexChoice["pri_single"] = PriIndexCol
 	} else if len(PriIndexCol) > 1 { //联合主键索引
 		indexChoice["pri_multiseriate"] = PriIndexCol
 	}
-	//vlog = fmt.Sprintf("(%d) MySQL DB unique key index starts to choose the best.", logThreadSeq)
-	//global.Wlog.Debug(vlog)
+	vlog = fmt.Sprintf("(%d) MySQL DB unique key index starts to choose the best.", logThreadSeq)
+	global.Wlog.Debug(vlog)
 	g := my.keyChoiceDispos(nultiseriateIndexColumnMap, "uni")
 	for k, v := range g {
 		if len(v) > 0 {
@@ -782,8 +782,8 @@ func (my *QueryTable) Trigger(db *sql.DB, logThreadSeq int64) (map[string]string
 			}
 			tmpb[triggerNa] = fmt.Sprintf("%s %s %s", triggerAction, triggerOn, triggerTRX)
 		}
-		//vlog = fmt.Sprintf("(%d) MySQL db query databases %s Trigger data completion...", logThreadSeq, my.Schema)
-		//global.Wlog.Debug(vlog)
+		vlog = fmt.Sprintf("(%d) MySQL db query databases %s Trigger data completion...", logThreadSeq, my.Schema)
+		global.Wlog.Debug(vlog)
 	}
 	vlog = fmt.Sprintf("(%d) [%s] Complete the trigger information query under the %s database.", logThreadSeq, Event, DBType)
 	global.Wlog.Debug(vlog)

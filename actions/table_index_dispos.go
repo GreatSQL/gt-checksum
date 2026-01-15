@@ -131,8 +131,8 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 				}
 				return
 			}
-			//vlog = fmt.Sprintf("(%d) Index column %s level %d - WHERE: %s, value: %s, count: %v", logThreadSeq, sp.columnName[level], level, where, key, value)
-			//global.Wlog.Debug(vlog)
+			vlog = fmt.Sprintf("(%d) Index column %s level %d - WHERE: %s, value: %s, count: %v", logThreadSeq, sp.columnName[level], level, where, key, value)
+			global.Wlog.Debug(vlog)
 			if key == "<nil>" || key == "<entry>" {
 				vlog = fmt.Sprintf("(%d) Processing NULL values for index column %s level %d", logThreadSeq, sp.columnName[level], level)
 				global.Wlog.Debug(vlog)
@@ -176,8 +176,8 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 					e = key
 					global.Wlog.Debug("DEBUG_FIRST_VALUE: First key from merged data stream is '%s'\n", key)
 				}
-				//vlog = fmt.Sprintf("(%d) Index column %s level %d starting value: %s", logThreadSeq, sp.columnName[level], level, e)
-				//global.Wlog.Debug(vlog)
+				vlog = fmt.Sprintf("(%d) Index column %s level %d starting value: %s", logThreadSeq, sp.columnName[level], level, e)
+				global.Wlog.Debug(vlog)
 
 				// 如果是level=0的前几个值，额外记录调试信息
 				if level == 0 && autoIncSeq <= 3 {
