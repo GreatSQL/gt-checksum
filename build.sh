@@ -13,6 +13,7 @@ export CXXFLAGS="-stdlib=libstdc++" CC=/usr/bin/gcc CXX=/usr/bin/g++
 
 vs=`cat ./inputArg/flagHelp.go| grep "app.Version"|awk -F "=" '{print $2}'|sed 's/\"//g'|sed 's/\/\/版本//g'|sed 's/ //g'`
 OracleDrive="instantclient_11_2"
+HASH=XXX
 
 # 自动适配CPU架构类型
 if [ ! -z "`which uname > /dev/null 2>&1`" ] ; then
@@ -23,8 +24,8 @@ else
   arch=x86_64
 fi
 
-rm -fr gt-checksum-${vs}-linux-${arch} release
-mkdir -p gt-checksum-${vs}-linux-${arch} release
+rm -fr gt-checksum-${vs}-${HASH}-linux-${arch} release
+mkdir -p gt-checksum-${vs}-${HASH}-linux-${arch} release
 
 echo -n "1. "
 go version
@@ -45,13 +46,13 @@ if [ $? -ne 0 ] ; then
 fi
 
 echo "4. Packaging gt-checksum"
-cp -rpf Oracle/${OracleDrive}.tar.xz gt-checksum README.md CHANGELOG.md gc-sample.conf gt-checksum-manual.md gt-checksum-${vs}-linux-${arch} && \
-tar cf gt-checksum-${vs}-linux-${arch}.tar gt-checksum-${vs}-linux-${arch} && \
-tar cf gt-checksum-${vs}-linux-${arch}-minimal.tar --exclude=gt-checksum-${vs}-linux-${arch}/${OracleDrive}.tar.xz gt-checksum-${vs}-linux-${arch} && \
-xz -9 -f gt-checksum-${vs}-linux-${arch}.tar && \
-xz -9 -f gt-checksum-${vs}-linux-${arch}-minimal.tar && \
-echo "5. The gt-checksum binary package is: gt-checksum-${vs}-linux-${arch}.tar.gz under directory release" && \
-mv gt-checksum-${vs}-linux-${arch}.tar.xz release && \
-mv gt-checksum-${vs}-linux-${arch}-minimal.tar.xz release && \
+cp -rpf Oracle/${OracleDrive}.tar.xz gt-checksum README.md CHANGELOG.md gc-sample.conf gt-checksum-manual.md gt-checksum-${vs}-${HASH}-linux-${arch} && \
+tar cf gt-checksum-${vs}-${HASH}-linux-${arch}.tar gt-checksum-${vs}-${HASH}-linux-${arch} && \
+tar cf gt-checksum-${vs}-${HASH}-linux-${arch}-minimal.tar --exclude=gt-checksum-${vs}-${HASH}-linux-${arch}/${OracleDrive}.tar.xz gt-checksum-${vs}-${HASH}-linux-${arch} && \
+xz -9 -f gt-checksum-${vs}-${HASH}-linux-${arch}.tar && \
+xz -9 -f gt-checksum-${vs}-${HASH}-linux-${arch}-minimal.tar && \
+echo "5. The gt-checksum binary package is: gt-checksum-${vs}-${HASH}-linux-${arch}.tar.gz under directory release" && \
+mv gt-checksum-${vs}-${HASH}-linux-${arch}.tar.xz release && \
+mv gt-checksum-${vs}-${HASH}-linux-${arch}-minimal.tar.xz release && \
 ls -la release && \
-rm -fr gt-checksum-${vs}-linux-${arch}
+rm -fr gt-checksum-${vs}-${HASH}-linux-${arch}
