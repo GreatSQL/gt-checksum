@@ -128,25 +128,18 @@ func (my *MysqlDataAbnormalFixStruct) FixInsertSqlExec(db *sql.DB, sourceDrive s
 						tmpcolumnName = fmt.Sprintf("DATE_FORMAT('%s','%%Y-%%m-%%d %%H:%%i:%%s')", v)
 					} else {
 						// 对于INSERT语句，使用源端的原始数据格式
-						processedValue := v
-						// 对于DATA列，保留源端原始数据格式，确保不重复添加空格
-						// 先去除可能的多余空格，然后只保留源数据中实际存在的空格
-						cleanValue := processedValue
-						tmpcolumnName = fmt.Sprintf("'%s'", escapeSQLString(cleanValue))
+						// 保留源端数据的原始格式，包括尾部空格，不做任何修改
+						tmpcolumnName = fmt.Sprintf("'%s'", escapeSQLString(v))
 					}
 				} else {
 					// 如果没有dataType字段，使用默认格式并转义特殊字符
-					processedValue := v
-					// 对于DATA列，保留源端原始数据格式，确保不重复添加空格
-					cleanValue := processedValue
-					tmpcolumnName = fmt.Sprintf("'%s'", escapeSQLString(cleanValue))
+					// 保留源端数据的原始格式，包括尾部空格，不做任何修改
+					tmpcolumnName = fmt.Sprintf("'%s'", escapeSQLString(v))
 				}
 			} else {
 				// 如果索引越界，使用默认格式并转义特殊字符
-				processedValue := v
-				// 对于DATA列，保留源端原始数据格式，确保不重复添加空格
-				cleanValue := processedValue
-				tmpcolumnName = fmt.Sprintf("'%s'", escapeSQLString(cleanValue))
+				// 保留源端数据的原始格式，包括尾部空格，不做任何修改
+				tmpcolumnName = fmt.Sprintf("'%s'", escapeSQLString(v))
 				vlog = fmt.Sprintf("(%d) Warning: Column index %d exceeds available column data for %s.%s",
 					logThreadSeq, k, targetSchema, my.Table)
 				global.Wlog.Warn(vlog)
@@ -421,7 +414,9 @@ func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive s
 					AS = append(AS, fmt.Sprintf("CONCAT(`%s`,'') = '%s'", colName, value))
 				} else {
 					// 确保DELETE语句使用目标端的实际数据格式
-					// 对于DATA列，保留目标端原始格式（包括末尾空格）
+					// 对于WHERE条件，使用目标端数据的原始格式，包括尾部空格
+					// 这是因为我们需要精确匹配目标端的数据，删除正确的行
+					// 生成WHERE条件时，使用目标端的原始数据格式，包括尾部空格
 					AS = append(AS, fmt.Sprintf("`%s` = '%s'", colName, escapeSQLString(value)))
 				}
 			}
@@ -470,7 +465,9 @@ func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive s
 					AS = append(AS, fmt.Sprintf("CONCAT(`%s`,'') = '%s'", colName, value))
 				} else {
 					// 确保DELETE语句使用目标端的实际数据格式
-					// 对于DATA列，保留目标端原始格式（包括末尾空格）
+					// 对于WHERE条件，使用目标端数据的原始格式，包括尾部空格
+					// 这是因为我们需要精确匹配目标端的数据，删除正确的行
+					// 生成WHERE条件时，使用目标端的原始数据格式，包括尾部空格
 					AS = append(AS, fmt.Sprintf("`%s` = '%s'", colName, escapeSQLString(value)))
 				}
 			}

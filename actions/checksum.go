@@ -15,7 +15,7 @@ import (
 type CheckSumTypeStruct struct{}
 
 /*
-   对字符串进行MD5哈希
+对字符串进行MD5哈希
 */
 func (csts CheckSumTypeStruct) CheckMd5(data string) string {
 	t := md5.New()
@@ -24,7 +24,7 @@ func (csts CheckSumTypeStruct) CheckMd5(data string) string {
 }
 
 /*
-   对字符串进行SHA1哈希
+对字符串进行SHA1哈希
 */
 func (csts CheckSumTypeStruct) CheckSha1(data string) string {
 	t := sha1.New()
@@ -54,52 +54,52 @@ func (csts CheckSumTypeStruct) Arrcmap(src, dest []string) []string {
 }
 
 /*
-   数据校验并输出差异性数据
+数据校验并输出差异性数据
 */
 func (csts CheckSumTypeStruct) Arrcmp(src []string, dest []string) ([]string, []string) { //对比数据
-	// 创建源端和目标端数据的映射
-	srcMap := make(map[string]struct{}) // 源端数据映射
+	// 创建源端和目标端数据的映射，使用原始值作为键
+	srcMap := make(map[string]struct{})  // 源端数据映射
 	destMap := make(map[string]struct{}) // 目标端数据映射
-	
+
 	// 填充源端数据映射
 	for _, v := range src {
 		if v != "" {
 			srcMap[v] = struct{}{}
 		}
 	}
-	
+
 	// 填充目标端数据映射
 	for _, v := range dest {
 		if v != "" {
 			destMap[v] = struct{}{}
 		}
 	}
-	
+
 	// 计算差异
 	var added, deleted []string
-	
+
 	// added: 源端有但目标端没有的数据（需要从源端读取并插入到目标端）
 	for v := range srcMap {
 		if _, exists := destMap[v]; !exists {
-			added = append(added, v)
+			added = append(added, v) // 使用原始值，保留尾部空格
 		}
 	}
-	
+
 	// deleted: 目标端有但源端没有的数据（需要从目标端删除）
 	for v := range destMap {
 		if _, exists := srcMap[v]; !exists {
-			deleted = append(deleted, v)
+			deleted = append(deleted, v) // 使用原始值，保留尾部空格
 		}
 	}
-	
+
 	// 调试：记录差异数量
 	global.Wlog.Debug("DEBUG_ARRCMP: src_len=%d, dest_len=%d, added_len=%d, deleted_len=%d", len(src), len(dest), len(added), len(deleted))
-	
+
 	return added, deleted
 }
 
 /*
-   根据两个切片找到相同的字符
+根据两个切片找到相同的字符
 */
 func (csts CheckSumTypeStruct) Arrsame(src, dest []string) string {
 	msrc := make(map[string]byte) //按源数组建索引
@@ -125,7 +125,7 @@ func (csts CheckSumTypeStruct) Arrsame(src, dest []string) string {
 var defaultLetters = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
 
 // RandomString returns a random string with a fixed length
-//func (csts CheckSumTypeStruct) RandomString(n int, allowedChars ...[]rune) string {
+// func (csts CheckSumTypeStruct) RandomString(n int, allowedChars ...[]rune) string {
 func (csts CheckSumTypeStruct) RandomString(n int, allowedChars ...[]rune) string {
 	var letters []rune
 	if len(allowedChars) == 0 {
@@ -142,7 +142,7 @@ func (csts CheckSumTypeStruct) RandomString(n int, allowedChars ...[]rune) strin
 }
 
 /*
-   校验两个文件的md5值，是否一致
+校验两个文件的md5值，是否一致
 */
 func (csts CheckSumTypeStruct) FileMd5(f1 string) string {
 	f, err := os.Open(f1)

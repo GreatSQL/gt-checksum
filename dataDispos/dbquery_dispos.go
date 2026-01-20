@@ -214,24 +214,24 @@ func (dbpos *DBdataDispos) DataChanDispos() chan map[string]interface{} {
 			dbpos.SqlRows.Scan(valuePtrs...)
 			entry := make(map[string]interface{})
 			for i, col := range columns {
-				var v interface{}
-				val := values[i]
-				b, ok := val.([]byte)
-				if ok {
-					// 对于字符串类型，去除尾部空格
-					v = strings.TrimRight(string(b), " ")
-				} else {
-					v = val
-				}
-				if v == nil {
-					v = "<nil>"
-				}
-				if v == "" {
-					v = "<entry>"
-				}
-				entry[col] = v
+			var v interface{}
+			val := values[i]
+			b, ok := val.([]byte)
+			if ok {
+				// 保留原始字符串，包括尾部空格，用于准确的数据比较
+				v = string(b)
+			} else {
+				v = val
 			}
-			chanEntry <- dbpos.RowsdataNullDispos(entry)
+			if v == nil {
+				v = "<nil>"
+			}
+			if v == "" {
+				v = "<entry>"
+			}
+			entry[col] = v
+		}
+		chanEntry <- dbpos.RowsdataNullDispos(entry)
 		}
 		close(chanEntry)
 		dbpos.SqlRows.Close()
