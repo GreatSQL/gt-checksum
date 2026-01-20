@@ -145,14 +145,14 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 		}
 
 		dbf := dbExec.DataAbnormalFixStruct{
-			Schema:                 sp.destSchema,   // 使用目标schema而不是原始schema
-			SourceSchema:           sp.sourceSchema, // 添加源schema用于处理映射关系
-			Table:                  sp.table,
-			ColData:                colData.DColumnInfo,
-			DestDevice:             sp.ddrive,
+			Schema:                  sp.destSchema,   // 使用目标schema而不是原始schema
+			SourceSchema:            sp.sourceSchema, // 添加源schema用于处理映射关系
+			Table:                   sp.table,
+			ColData:                 colData.DColumnInfo,
+			DestDevice:              sp.ddrive,
 			CaseSensitiveObjectName: sp.caseSensitiveObjectName,
-			DatafixType:  sp.datafixType,
-			IndexColumn:  indexColumns, // 添加索引列信息
+			DatafixType:             sp.datafixType,
+			IndexColumn:             indexColumns, // 添加索引列信息
 		}
 		for {
 			select {
@@ -163,10 +163,11 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 						return
 					}
 				} else {
-					var rowData, sqlType string
+					// 不要在循环外声明rowData和sqlType变量，避免变量覆盖
 					for ki, vi := range v {
-						rowData = ki
-						sqlType = vi
+						// 在循环内声明变量，避免变量覆盖问题
+						rowData := ki
+						sqlType := vi
 						//noIndexD <- struct{}{}
 						pods.DIFFS = "yes"
 						dbf.IndexType = "mul"
@@ -217,9 +218,9 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 							}
 							if sqlstr != "" {
 								// 使用sqlstr作为键进行去重，确保同一SQL语句只被处理一次
-						if _, loaded := globalSqlMap.LoadOrStore(sqlstr, true); !loaded {
-							sqlStrExec <- sqlstr
-						}
+								if _, loaded := globalSqlMap.LoadOrStore(sqlstr, true); !loaded {
+									sqlStrExec <- sqlstr
+								}
 							}
 							displayTableName = sp.getDisplayTableName()
 							vlog = fmt.Sprintf("(%d) DELETE repair statements generated for table %s", logThreadSeq, displayTableName)
@@ -267,9 +268,9 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 							}
 							if sqlstr != "" {
 								// 使用sqlstr作为键进行去重，确保同一SQL语句只被处理一次
-						if _, loaded := globalSqlMap.LoadOrStore(sqlstr, true); !loaded {
-							sqlStrExec <- sqlstr
-						}
+								if _, loaded := globalSqlMap.LoadOrStore(sqlstr, true); !loaded {
+									sqlStrExec <- sqlstr
+								}
 							}
 							displayTableName = sp.getDisplayTableName()
 							vlog = fmt.Sprintf("(%d) INSERT repair statements generated for table %s", logThreadSeq, displayTableName)
@@ -390,18 +391,27 @@ func (sp *SchedulePlan) QueryDataCheckSum(stt, dtt string, md5chan chan<- map[st
 		displayTableName := sp.getDisplayTableName()
 		vlog = fmt.Sprintf("(%d) MD5 checksum mismatch in round %d for table without index %s", logThreadSeq, chunkSeq, displayTableName)
 		global.Wlog.Debug(vlog)
-		add, del := aa.Arrcmp(strings.Split(stt, "/*go actions rowData*/"), strings.Split(dtt, "/*go actions rowData*/"))
-		if len(del) > 0 {
+		// 注意：Arrcmp函数的第一个参数是源端数据，第二个参数是目标端数据
+		// added是源端有但目标端没有的数据，需要插入到目标端
+		// deleted是目标端有但源端没有的数据，需要从目标端删除
+		// 注意：Arrcmp函数的第一个参数是源端数据，第二个参数是目标端数据
+		// added是源端有但目标端没有的数据，需要插入到目标端
+		// deleted是目标端有但源端没有的数据，需要从目标端删除
+		// Arrcmp函数的第一个参数是源端数据，第二个参数是目标端数据
+		// 返回值：
+		// - added: 源端有但目标端没有的数据，需要插入到目标端
+		// - deleted: 目标端有但源端没有的数据，需要从目标端删除
+		added, deleted := aa.Arrcmp(strings.Split(stt, "/*go actions rowData*/"), strings.Split(dtt, "/*go actions rowData*/"))
+		if len(deleted) > 0 {
 			tmpAnDateMap = make(map[string]string)
 			displayTableName := sp.getDisplayTableName()
 			vlog = fmt.Sprintf("(%d) Processing redundant data for table %s", logThreadSeq, displayTableName)
 			global.Wlog.Debug(vlog)
 			FileOpen.SqlType = "delete"
-			md5Slice, err := FileOpen.ConcurrencyWriteFile(del)
+			md5Slice, err := FileOpen.ConcurrencyWriteFile(deleted)
 			if err != nil {
 				return
 			}
-			//md5Slice := FileOperate{File: sp.file, BufSize: 1024 * 4 * 1024, SqlType: "delete"}.ConcurrencyWriteFile(del)
 			for _, deli := range md5Slice {
 				tmpAnDateMap[deli] = "delete"
 			}
@@ -410,14 +420,13 @@ func (sp *SchedulePlan) QueryDataCheckSum(stt, dtt string, md5chan chan<- map[st
 			vlog = fmt.Sprintf("(%d) Redundant data processed for table %s", logThreadSeq, displayTableName)
 			global.Wlog.Debug(vlog)
 		}
-		if len(add) > 0 {
+		if len(added) > 0 {
 			tmpAnDateMap = make(map[string]string)
 			displayTableName := sp.getDisplayTableName()
 			vlog = fmt.Sprintf("(%d) Processing missing data for table %s", logThreadSeq, displayTableName)
 			global.Wlog.Debug(vlog)
-			//md5Slice := FileOperate{File: sp.file, BufSize: 1024 * 4 * 1024, SqlType: "insert", fileName: sp.TmpFileName}.ConcurrencyWriteFile(add)
 			FileOpen.SqlType = "insert"
-			md5Slice, err := FileOpen.ConcurrencyWriteFile(add)
+			md5Slice, err := FileOpen.ConcurrencyWriteFile(added)
 			if err != nil {
 				return
 			}

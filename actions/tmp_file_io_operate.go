@@ -45,9 +45,9 @@ func (f FileOperate) ConcurrencyWriteFile(writeString []string) ([]string, error
 		sumS := hex.EncodeToString(sum[:])
 		md5Slice = append(md5Slice, sumS)
 		if f.SqlType == "sql" {
-			c = fmt.Sprintf("%s \n", i)
+			c = fmt.Sprintf("%s\n", i)
 		} else {
-			c = fmt.Sprintf("%s %s %s \n", sumS, f.SqlType, i)
+			c = fmt.Sprintf("%s %s %s\n", sumS, f.SqlType, i)
 		}
 		mutex.Lock()
 		vlog = fmt.Sprintf("%s Writing data to file %s, content: %v", event, f.fileName, c)
