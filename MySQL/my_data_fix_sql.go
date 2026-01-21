@@ -49,24 +49,31 @@ MySQL 生成insert修复语句
 */
 // escapeSQLString 对SQL字符串进行转义，处理特殊字符
 func escapeSQLString(str string) string {
-	// 需要转义的特殊字符映射
-	replacements := map[string]string{
-		"\\":   "\\\\", // 反斜杠
-		"'":    "\\'",  // 单引号
-		"\"":   "\\\"", // 双引号
-		"\000": "\\0",  // NULL字符
-		"\n":   "\\n",  // 换行符
-		"\r":   "\\r",  // 回车符
-		"\x1a": "\\Z",  // ASCII 26 (CTRL+Z)
+	// 直接使用database/sql的Quote函数，确保正确转义
+	// 或者使用更安全的转义方式
+	var result strings.Builder
+	for i := 0; i < len(str); i++ {
+		c := str[i]
+		switch c {
+		case '\'':
+			result.WriteString("\\'")
+		case '\\':
+			result.WriteString("\\\\")
+		case '"':
+			result.WriteString("\\\"")
+		case '\000':
+			result.WriteString("\\0")
+		case '\n':
+			result.WriteString("\\n")
+		case '\r':
+			result.WriteString("\\r")
+		case '\x1a':
+			result.WriteString("\\Z")
+		default:
+			result.WriteByte(c)
+		}
 	}
-
-	// 应用转义替换
-	result := str
-	for old, new := range replacements {
-		result = strings.ReplaceAll(result, old, new)
-	}
-
-	return result
+	return result.String()
 }
 
 func (my *MysqlDataAbnormalFixStruct) FixInsertSqlExec(db *sql.DB, sourceDrive string, logThreadSeq int64) (string, error) {
