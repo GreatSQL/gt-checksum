@@ -111,6 +111,8 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 			vlog     string
 			noIndexD = make(chan struct{}, sp.concurrency)
 		)
+		// 初始化本地去重map，每次运行时创建一个新的map，避免全局状态问题
+		var localSqlMap = make(map[string]bool)
 		displayTableName := sp.getDisplayTableName()
 		vlog = fmt.Sprintf("(%d) Generating DELETE/INSERT statements for table %s", logThreadSeq, displayTableName)
 		global.Wlog.Debug(vlog)
@@ -218,7 +220,8 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 							}
 							if sqlstr != "" {
 								// 使用sqlstr作为键进行去重，确保同一SQL语句只被处理一次
-								if _, loaded := globalSqlMap.LoadOrStore(sqlstr, true); !loaded {
+								if !localSqlMap[sqlstr] {
+									localSqlMap[sqlstr] = true
 									sqlStrExec <- sqlstr
 								}
 							}
@@ -268,7 +271,8 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 							}
 							if sqlstr != "" {
 								// 使用sqlstr作为键进行去重，确保同一SQL语句只被处理一次
-								if _, loaded := globalSqlMap.LoadOrStore(sqlstr, true); !loaded {
+								if !localSqlMap[sqlstr] {
+									localSqlMap[sqlstr] = true
 									sqlStrExec <- sqlstr
 								}
 							}
