@@ -13,7 +13,7 @@ export CXXFLAGS="-stdlib=libstdc++" CC=/usr/bin/gcc CXX=/usr/bin/g++
 
 vs=`cat ./inputArg/flagHelp.go| grep "app.Version"|awk -F "=" '{print $2}'|sed 's/\"//g'|sed 's/\/\/版本//g'|sed 's/ //g'`
 OracleDrive="instantclient_11_2"
-HASH=73a395b
+HASH="20ed4ae"
 
 # 自动适配CPU架构类型
 if [ ! -z "`which uname > /dev/null 2>&1`" ] ; then
@@ -46,7 +46,7 @@ if [ $? -ne 0 ] ; then
 fi
 
 echo "4. Packaging gt-checksum"
-cp -rpf Oracle/${OracleDrive}.tar.xz gt-checksum README.md CHANGELOG.md gc-sample.conf gt-checksum-manual.md gt-checksum-${vs}-${HASH}-linux-${arch} && \
+cp -rpf Oracle/${OracleDrive}.tar.xz gt-checksum README.md CHANGELOG.md gc-sample.conf gt-checksum-manual.md testcase gt-checksum-${vs}-${HASH}-linux-${arch} && \
 tar cf gt-checksum-${vs}-${HASH}-linux-${arch}.tar gt-checksum-${vs}-${HASH}-linux-${arch} && \
 tar cf gt-checksum-${vs}-${HASH}-linux-${arch}-minimal.tar --exclude=gt-checksum-${vs}-${HASH}-linux-${arch}/${OracleDrive}.tar.xz gt-checksum-${vs}-${HASH}-linux-${arch} && \
 xz -9 -f gt-checksum-${vs}-${HASH}-linux-${arch}.tar && \
