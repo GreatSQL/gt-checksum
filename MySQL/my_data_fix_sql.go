@@ -88,33 +88,83 @@ func (my *MysqlDataAbnormalFixStruct) FixInsertSqlExec(db *sql.DB, sourceDrive s
 	vlog = fmt.Sprintf("(%d) Generating INSERT repair statement for %s.%s (target: %s)", logThreadSeq, my.Schema, my.Table, targetSchema)
 	global.Wlog.Debug(vlog)
 
-	// 检查ColData是否为空，如果为空，尝试从行数据中推断列信息
+	// 检查ColData是否为空，如果为空，尝试从数据库中查询表的列信息
 	if len(my.ColData) == 0 {
-		vlog = fmt.Sprintf("(%d) Warning: No column data available for table %s.%s, attempting to infer from row data",
+		vlog = fmt.Sprintf("(%d) Warning: No column data available for table %s.%s, trying to query from database",
 			logThreadSeq, targetSchema, my.Table)
 		global.Wlog.Warn(vlog)
 
-		// 从行数据中推断列数量
-		rowParts := strings.Split(my.RowData, "/*go actions columnData*/")
-		if len(rowParts) == 0 {
-			return "", fmt.Errorf("no column data available and empty row data for table %s.%s (mapping: %s->%s)",
-				targetSchema, my.Table, my.SourceSchema, my.Schema)
-		}
+		// 从INFORMATION_SCHEMA.COLUMNS中查询表的列信息
+		query := fmt.Sprintf("SELECT COLUMN_NAME AS columnName, ORDINAL_POSITION AS columnSeq, COLUMN_TYPE AS dataType FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = '%s' AND TABLE_NAME = '%s' ORDER BY ORDINAL_POSITION", targetSchema, my.Table)
+		rows, err := db.Query(query)
+		if err != nil {
+			vlog = fmt.Sprintf("(%d) Error: Failed to query column information from database: %v", logThreadSeq, err)
+			global.Wlog.Error(vlog)
+			// 如果查询失败，回退到使用临时列名
+			rowParts := strings.Split(my.RowData, "/*go actions columnData*/")
+			if len(rowParts) == 0 {
+				return "", fmt.Errorf("no column data available and empty row data for table %s.%s (mapping: %s->%s)",
+					targetSchema, my.Table, my.SourceSchema, my.Schema)
+			}
 
-		// 创建临时列数据结构
-		tempColData := make([]map[string]string, len(rowParts))
-		for i := range rowParts {
-			tempColData[i] = map[string]string{
-				"columnName": fmt.Sprintf("col_%d", i+1),
-				"columnSeq":  strconv.Itoa(i + 1),
-				"dataType":   "VARCHAR", // 默认类型
+			// 创建临时列数据结构
+			tempColData := make([]map[string]string, len(rowParts))
+			for i := range rowParts {
+				tempColData[i] = map[string]string{
+					"columnName": fmt.Sprintf("col_%d", i+1),
+					"columnSeq":  strconv.Itoa(i + 1),
+					"dataType":   "VARCHAR", // 默认类型
+				}
+			}
+			my.ColData = tempColData
+		} else {
+			defer rows.Close()
+
+			// 解析查询结果
+			var columns []map[string]string
+			for rows.Next() {
+				var columnName, columnSeqStr, dataType string
+				if err := rows.Scan(&columnName, &columnSeqStr, &dataType); err != nil {
+					vlog = fmt.Sprintf("(%d) Error: Failed to scan column information: %v", logThreadSeq, err)
+					global.Wlog.Error(vlog)
+					continue
+				}
+				columns = append(columns, map[string]string{
+					"columnName": columnName,
+					"columnSeq":  columnSeqStr,
+					"dataType":   dataType,
+				})
+			}
+
+			if len(columns) > 0 {
+				my.ColData = columns
+				vlog = fmt.Sprintf("(%d) Successfully queried column information from database for table %s.%s, found %d columns",
+					logThreadSeq, targetSchema, my.Table, len(columns))
+				global.Wlog.Debug(vlog)
+			} else {
+				vlog = fmt.Sprintf("(%d) Warning: No column information found in database for table %s.%s, using temporary column names",
+					logThreadSeq, targetSchema, my.Table)
+				global.Wlog.Warn(vlog)
+
+				// 如果查询结果为空，回退到使用临时列名
+				rowParts := strings.Split(my.RowData, "/*go actions columnData*/")
+				if len(rowParts) == 0 {
+					return "", fmt.Errorf("no column data available and empty row data for table %s.%s (mapping: %s->%s)",
+						targetSchema, my.Table, my.SourceSchema, my.Schema)
+				}
+
+				// 创建临时列数据结构
+				tempColData := make([]map[string]string, len(rowParts))
+				for i := range rowParts {
+					tempColData[i] = map[string]string{
+						"columnName": fmt.Sprintf("col_%d", i+1),
+						"columnSeq":  strconv.Itoa(i + 1),
+						"dataType":   "VARCHAR", // 默认类型
+					}
+				}
+				my.ColData = tempColData
 			}
 		}
-		my.ColData = tempColData
-
-		vlog = fmt.Sprintf("(%d) Created temporary column structure with %d columns for table %s.%s",
-			logThreadSeq, len(my.ColData), targetSchema, my.Table)
-		global.Wlog.Debug(vlog)
 	}
 
 	//Handle timezone issues with MySQL datetime columns (e.g. 2021-01-23 10:16:29 +0800 CST)
