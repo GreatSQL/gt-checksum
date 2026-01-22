@@ -68,7 +68,9 @@ CREATE TABLE testString(
    f9 SET('aa','bb','cc','dd')
 );
 ALTER TABLE testString ADD INDEX idx_1(f1);
-INSERT INTO testString(f1,f2,f3,f4,f5,f6,f7,f8,f9) VALUES('1','abcde','abc123','abcd.1234','hello gt-checksum','hello ','hello gt-checksum','d','aa,bb');
+INSERT INTO testString(f1,f2,f3,f4,f5,f6,f7,f8,f9) VALUES('1','abcde','abc123','abcd.1234','hello gt-checksum','hello ','hello gt-checksum','a','aa,bb');
+INSERT INTO testString(f1,f2,f3,f4,f5,f6,f7,f8,f9) VALUES('2','fghij','def456','efgh.5678',"hello, i\'m gt-checksum",'hello ','hello gt-checksum','b','cc,dd');
+INSERT INTO testString(f1,f2,f3,f4,f5,f6,f7,f8,f9) VALUES('3','klmno','ghi789','ijkl.9012',concat("a\\\b\\'c",repeat(chr(rand()*102),5)),'hello ','hello gt-checksum','c','cc,dd');
 
 DROP TABLE IF EXISTS testBin;
 CREATE TABLE testBin(
