@@ -116,7 +116,29 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 		displayTableName := sp.getDisplayTableName()
 		vlog = fmt.Sprintf("(%d) Generating DELETE/INSERT statements for table %s", logThreadSeq, displayTableName)
 		global.Wlog.Debug(vlog)
-		colData := sp.tableAllCol[fmt.Sprintf("%s_gtchecksum_%s", sp.schema, sp.table)]
+		// 使用目标端schema获取表列信息，支持表映射
+		colDataKey := fmt.Sprintf("%s_gtchecksum_%s", sp.destSchema, sp.table)
+		colData, exists := sp.tableAllCol[colDataKey]
+		if !exists {
+			vlog = fmt.Sprintf("(%d) Error: No column data found for table %s.%s with key %s", logThreadSeq, sp.destSchema, sp.table, colDataKey)
+			global.Wlog.Error(vlog)
+			close(sqlStrExec)
+			return
+		}
+
+		// 检查DColumnInfo是否为空，如果为空，尝试使用SColumnInfo
+		if len(colData.DColumnInfo) == 0 {
+			vlog = fmt.Sprintf("(%d) Warning: DColumnInfo is empty for table %s.%s, trying to use SColumnInfo instead", logThreadSeq, sp.destSchema, sp.table)
+			global.Wlog.Warn(vlog)
+			if len(colData.SColumnInfo) > 0 {
+				colData.DColumnInfo = colData.SColumnInfo
+			} else {
+				vlog = fmt.Sprintf("(%d) Error: Both DColumnInfo and SColumnInfo are empty for table %s.%s", logThreadSeq, sp.destSchema, sp.table)
+				global.Wlog.Error(vlog)
+				close(sqlStrExec)
+				return
+			}
+		}
 
 		// Get valid column names for index columns
 		var indexColumns []string
@@ -303,8 +325,9 @@ func (sp *SchedulePlan) FixSqlExec(sqlStrExec <-chan string, logThreadSeq int64)
 	displayTableName := sp.getDisplayTableName()
 	vlog = fmt.Sprintf("(%d) Start to generate delete and insert sql statements for table %s.", logThreadSeq, displayTableName)
 	global.Wlog.Debug(vlog)
-	colData := sp.tableAllCol[fmt.Sprintf("%s_gtchecksum_%s", sp.schema, sp.table)]
-	dbf := dbExec.DataAbnormalFixStruct{Schema: sp.schema, Table: sp.table, ColData: colData.DColumnInfo, SourceDevice: sp.ddrive, CaseSensitiveObjectName: sp.caseSensitiveObjectName}
+	// 使用目标端schema获取表列信息，支持表映射
+	colData := sp.tableAllCol[fmt.Sprintf("%s_gtchecksum_%s", sp.destSchema, sp.table)]
+	dbf := dbExec.DataAbnormalFixStruct{Schema: sp.destSchema, Table: sp.table, ColData: colData.DColumnInfo, SourceDevice: sp.ddrive, CaseSensitiveObjectName: sp.caseSensitiveObjectName}
 	dbf.IndexColumnType = "mul"
 	for {
 		select {
@@ -359,8 +382,11 @@ func (sp *SchedulePlan) QueryTableData(beginSeq uint64, chunkSeq uint64, chanrow
 	displayTableName := sp.getDisplayTableName()
 	vlog = fmt.Sprintf("(%d) Starting data checksum for table without index %s", logThreadSeq, displayTableName)
 	global.Wlog.Debug(vlog)
-	noIndexOrderCol := sp.tableAllCol[fmt.Sprintf("%s_gtchecksum_%s", sp.schema, sp.table)]
-	idxc := dbExec.IndexColumnStruct{Drivce: sp.sdrive, Schema: sp.sourceSchema, Table: sp.table, TableColumn: noIndexOrderCol.SColumnInfo, ChanrowCount: chanrowCount}
+	// 获取源端表列信息
+	sourceTableCol := sp.tableAllCol[fmt.Sprintf("%s_gtchecksum_%s", sp.sourceSchema, sp.table)]
+	// 获取目标端表列信息
+	destTableCol := sp.tableAllCol[fmt.Sprintf("%s_gtchecksum_%s", sp.destSchema, sp.table)]
+	idxc := dbExec.IndexColumnStruct{Drivce: sp.sdrive, Schema: sp.sourceSchema, Table: sp.table, TableColumn: sourceTableCol.SColumnInfo, ChanrowCount: chanrowCount}
 	//allColumns := idxc.TableIndexColumn().NoIndexOrderBySingerColumn(noIndexOrderCol.SColumnInfo)
 	sdb := sp.sdbPool.Get(logThreadSeq)
 	stt, err = idxc.TableIndexColumn().NoIndexGeneratingQueryCriteria(sdb, beginSeq, chanrowCount, logThreadSeq)
@@ -368,7 +394,7 @@ func (sp *SchedulePlan) QueryTableData(beginSeq uint64, chunkSeq uint64, chanrow
 	if err != nil {
 		return "", "", err
 	}
-	idxcDest := dbExec.IndexColumnStruct{Drivce: sp.ddrive, Schema: sp.destSchema, Table: sp.table, TableColumn: noIndexOrderCol.DColumnInfo, ChanrowCount: chanrowCount}
+	idxcDest := dbExec.IndexColumnStruct{Drivce: sp.ddrive, Schema: sp.destSchema, Table: sp.table, TableColumn: destTableCol.DColumnInfo, ChanrowCount: chanrowCount}
 	ddb := sp.ddbPool.Get(logThreadSeq)
 	dtt, err = idxcDest.TableIndexColumn().NoIndexGeneratingQueryCriteria(ddb, beginSeq, chanrowCount, logThreadSeq)
 	if err != nil {

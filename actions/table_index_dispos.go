@@ -713,31 +713,31 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 						destData := strings.Split(dtt, "/*go actions rowData*/")
 
 						// 2. 使用优化的Arrcmp实现，只返回真正需要修复的记录
-				// 先清理空记录并去重，但保留数据中的空格（包括尾随空格）
-				cleanSourceData := make([]string, 0, len(sourceData))
-				cleanDestData := make([]string, 0, len(destData))
-				sourceSeen := make(map[string]struct{})
-				destSeen := make(map[string]struct{})
+						// 先清理空记录并去重，但保留数据中的空格（包括尾随空格）
+						cleanSourceData := make([]string, 0, len(sourceData))
+						cleanDestData := make([]string, 0, len(destData))
+						sourceSeen := make(map[string]struct{})
+						destSeen := make(map[string]struct{})
 
-				for _, data := range sourceData {
-					// 只检查是否为空记录，不使用TrimSpace，保留原始数据中的空格
-					if data != "" && data != "/*go actions rowData*/" {
-						if _, exists := sourceSeen[data]; !exists {
-							sourceSeen[data] = struct{}{}
-							cleanSourceData = append(cleanSourceData, data)
+						for _, data := range sourceData {
+							// 只检查是否为空记录，不使用TrimSpace，保留原始数据中的空格
+							if data != "" && data != "/*go actions rowData*/" {
+								if _, exists := sourceSeen[data]; !exists {
+									sourceSeen[data] = struct{}{}
+									cleanSourceData = append(cleanSourceData, data)
+								}
+							}
 						}
-					}
-				}
 
-				for _, data := range destData {
-					// 只检查是否为空记录，不使用TrimSpace，保留原始数据中的空格
-					if data != "" && data != "/*go actions rowData*/" {
-						if _, exists := destSeen[data]; !exists {
-							destSeen[data] = struct{}{}
-							cleanDestData = append(cleanDestData, data)
+						for _, data := range destData {
+							// 只检查是否为空记录，不使用TrimSpace，保留原始数据中的空格
+							if data != "" && data != "/*go actions rowData*/" {
+								if _, exists := destSeen[data]; !exists {
+									destSeen[data] = struct{}{}
+									cleanDestData = append(cleanDestData, data)
+								}
+							}
 						}
-					}
-				}
 
 						// 3. 记录去重前后的数据量
 						vlog = fmt.Sprintf("(%d) Data deduplication - Source: %d->%d, Dest: %d->%d for %s.%s",
@@ -1072,14 +1072,16 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 												var baseSql string
 												if isSinglePrimary {
 													// 单字段主键：WHERE `col` IN (
-													baseSql = fmt.Sprintf("DELETE FROM `%s`.`%s` WHERE `%s` IN (", c1.Schema, c1.Table, primaryCol)
+													// 使用目标schema而非源schema
+													baseSql = fmt.Sprintf("DELETE FROM `%s`.`%s` WHERE `%s` IN (", sp.destSchema, c1.Table, primaryCol)
 												} else {
 													// 多字段联合主键：WHERE (`col1`, `col2`, `col3`) IN (
 													colNames := make([]string, len(primaryCols))
 													for i, col := range primaryCols {
 														colNames[i] = fmt.Sprintf("`%s`", col)
 													}
-													baseSql = fmt.Sprintf("DELETE FROM `%s`.`%s` WHERE (%s) IN (", c1.Schema, c1.Table, strings.Join(colNames, ", "))
+													// 使用目标schema而非源schema
+													baseSql = fmt.Sprintf("DELETE FROM `%s`.`%s` WHERE (%s) IN (", sp.destSchema, c1.Table, strings.Join(colNames, ", "))
 												}
 												baseSqlLen := len(baseSql)
 												closeBracketLen := len(");")
