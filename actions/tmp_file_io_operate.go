@@ -29,7 +29,7 @@ type FileOperate struct {
 }
 
 /*
-	文件并发写入
+文件并发写入
 */
 func (f FileOperate) ConcurrencyWriteFile(writeString []string) ([]string, error) {
 	var (
@@ -45,27 +45,27 @@ func (f FileOperate) ConcurrencyWriteFile(writeString []string) ([]string, error
 		sumS := hex.EncodeToString(sum[:])
 		md5Slice = append(md5Slice, sumS)
 		if f.SqlType == "sql" {
-			c = fmt.Sprintf("%s \n", i)
+			c = fmt.Sprintf("%s\n", i)
 		} else {
-			c = fmt.Sprintf("%s %s %s \n", sumS, f.SqlType, i)
+			c = fmt.Sprintf("%s %s %s\n", sumS, f.SqlType, i)
 		}
 		mutex.Lock()
-		vlog = fmt.Sprintf("() %s Start to write data to file %s, the written content is {%v}", event, f.fileName, c)
+		vlog = fmt.Sprintf("%s Writing data to file %s, content: %v", event, f.fileName, c)
 		global.Wlog.Debug(vlog)
 		wc, err := bufWriter.WriteString(c)
 		bufWriter.Flush()
 		if err != nil {
-			vlog = fmt.Sprintf("() %s File %s failed to write content %s, the error message is {%v}", event, f.fileName, c, err)
+			vlog = fmt.Sprintf("%s Failed to write to file %s, content: %v, error: %v", event, f.fileName, c, err)
 			global.Wlog.Error(vlog)
 			return nil, err
 		}
 		if wc != len(c) {
-			vlog = fmt.Sprintf("() %s The number of written bytes of file %s does not match the number of successful bytes, the number of written bytes is {%v}, and the number of successful bytes is {%v}", event, f.fileName, len(c), wc)
+			vlog = fmt.Sprintf("%s Byte count mismatch in file %s, expected: %v, actual: %v", event, f.fileName, len(c), wc)
 			global.Wlog.Error(vlog)
 			return nil, err
 		}
 		mutex.Unlock()
-		vlog = fmt.Sprintf("() %s The data in file %s is successfully written.", event, f.fileName)
+		vlog = fmt.Sprintf("%s Data successfully written to file %s", event, f.fileName)
 		global.Wlog.Debug(vlog)
 	}
 
@@ -74,7 +74,8 @@ func (f FileOperate) ConcurrencyWriteFile(writeString []string) ([]string, error
 
 func ProcessChunk(chunk []byte, linesPool *sync.Pool, stringPool *sync.Pool, m map[string]string, c chan<- map[string]string) {
 	var (
-		wg2 sync.WaitGroup
+		wg2          sync.WaitGroup
+		processedMD5 sync.Map // 使用sync.Map进行线程安全的去重
 	)
 	logs := stringPool.Get().(string)
 	logs = string(chunk)
@@ -100,8 +101,10 @@ func ProcessChunk(chunk []byte, linesPool *sync.Pool, stringPool *sync.Pool, m m
 				md5Sum := logSlice[0]
 				sqlType := logSlice[1]
 				if v, ok := m[md5Sum]; ok && v == sqlType {
-					//fmt.Println(logSlice[2])
-					c <- map[string]string{logSlice[2]: v}
+					// 使用md5Sum作为键进行去重，确保同一行数据只被处理一次
+					if _, loaded := processedMD5.LoadOrStore(md5Sum, true); !loaded {
+						c <- map[string]string{logSlice[2]: v}
+					}
 				}
 			}
 		}(i*chunkSize, int(math.Min(float64((i+1)*chunkSize), float64(len(logsSlice)))))
@@ -109,11 +112,6 @@ func ProcessChunk(chunk []byte, linesPool *sync.Pool, stringPool *sync.Pool, m m
 	wg2.Wait()
 	logsSlice = nil
 }
-
-//func ProcessStatus(chunk []byte, linesPool *sync.Pool, stringPool *sync.Pool, m string) bool {
-//
-//	return exist
-//}
 
 func (f FileOperate) ConcurrencyReadFile(F map[string]string, c chan map[string]string) error {
 	var err error
@@ -126,10 +124,7 @@ func (f FileOperate) ConcurrencyReadFile(F map[string]string, c chan map[string]
 		lines := ""
 		return lines
 	}}
-	//slicePool := sync.Pool{New: func() interface{} {
-	//	lines := make([]string, 100)
-	//	return lines
-	//}}
+
 	file, _ := os.Open(f.fileName)
 	bufReader := bufio.NewReader(file)
 	var wg sync.WaitGroup //wait group to keep track off all threads
@@ -144,7 +139,7 @@ func (f FileOperate) ConcurrencyReadFile(F map[string]string, c chan map[string]
 				break
 			}
 			if err != nil {
-				fmt.Println("--error--", err)
+				fmt.Println("Error:", err)
 				break
 			}
 			close(c)
@@ -166,7 +161,7 @@ func (f FileOperate) ConcurrencyReadFile(F map[string]string, c chan map[string]
 	return nil
 }
 
-//写文件内容之前需要判断一下文件内容中是否存在，不存在则写入
+// 写文件内容之前需要判断一下文件内容中是否存在，不存在则写入
 func (f FileOperate) ReadWriteFile(F ...interface{}) ([]string, []string) {
 	var err error
 	var exist, noexit []string
@@ -179,10 +174,7 @@ func (f FileOperate) ReadWriteFile(F ...interface{}) ([]string, []string) {
 		lines := ""
 		return lines
 	}}
-	//slicePool := sync.Pool{New: func() interface{} {
-	//	lines := make([]string, 100)
-	//	return lines
-	//}}
+
 	fp, _ := os.Open(f.fileName)
 	bufReader := bufio.NewReader(fp)
 	defer fp.Close()
@@ -198,7 +190,7 @@ func (f FileOperate) ReadWriteFile(F ...interface{}) ([]string, []string) {
 				break
 			}
 			if err != nil {
-				fmt.Println("--error--", err)
+				fmt.Println("Error:", err)
 				break
 			}
 			return exist, noexit
@@ -239,10 +231,10 @@ func (f FileOperate) ReadWriteFile(F ...interface{}) ([]string, []string) {
 						for _, vv := range F {
 							for _, vvi := range vv.([]map[string]string) {
 								if strings.Split(logSlice[0], ",")[0] == vvi["columnName"] {
-									fmt.Println("del--:", fmt.Sprintf("%s,%s)", vvi["columnName"], vvi["count"]))
+									fmt.Println("Removing:", fmt.Sprintf("%s,%s)", vvi["columnName"], vvi["count"]))
 									exist = append(exist, fmt.Sprintf("%s,%s)", vvi["columnName"], vvi["count"]))
 								} else {
-									fmt.Println("add--:", fmt.Sprintf("%s,%s)", vvi["columnName"], vvi["count"]))
+									fmt.Println("Adding:", fmt.Sprintf("%s,%s)", vvi["columnName"], vvi["count"]))
 									noexit = append(noexit, fmt.Sprintf("%s,%s)", vvi["columnName"], vvi["count"]))
 								}
 							}

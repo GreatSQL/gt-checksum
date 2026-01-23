@@ -7,24 +7,29 @@ import (
 	"gt-checksum/global"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 type QueryTable struct {
-	Schema              string
-	Table               string
-	IgnoreTable         string
-	Db                  *sql.DB
-	Datafix             string
-	LowerCaseTableNames string
-	TmpTableFileName    string
-	ColumnName          []string
-	ChanrowCount        int
-	TableColumn         []map[string]string
-	Sqlwhere            string
-	ColData             []map[string]string
-	BeginSeq            string
-	RowDataCh           int64
-	SelectColumn        map[string]string
+	Schema                  string
+	Table                   string
+	IgnoreTable             string
+	Db                      *sql.DB
+	Datafix                 string
+	CaseSensitiveObjectName string
+	TmpTableFileName        string
+	ColumnName              []string
+	ChanrowCount            int
+	TableColumn             []map[string]string
+	Sqlwhere                string
+	ColData                 []map[string]string
+	BeginSeq                string
+	RowDataCh               int64
+	SelectColumn            map[string]string
+	// Caching fields to optimize repeated INFORMATION_SCHEMA queries
+	columnExistsCache   map[string]bool   // Cache for column existence checks
+	allColumnsCache     []string          // Cache for all column names ordered by ORDINAL_POSITION
+	columnDataTypeCache map[string]string // Cache for column name to data type mapping
 }
 
 var (
@@ -32,7 +37,23 @@ var (
 	vlog   string
 	err    error
 	strsql string
-	procP  = func(inout []map[string]interface{}, event string) map[string]string {
+
+	// Global caching for expensive INFORMATION_SCHEMA queries
+	// These caches are shared across all QueryTable instances
+	// cache key format: schema.table.column for column existence
+	// cache key format: schema.table for column lists and data types
+	columnExistsGlobalCache   = make(map[string]bool)
+	allColumnsGlobalCache     = make(map[string][]string)
+	columnDataTypeGlobalCache = make(map[string]string)
+	tableColumnGlobalCache    = make(map[string][]map[string]string)      // Cache for complete table column information (fills TableColumn field)
+	tableAllColumnGlobalCache = make(map[string][]map[string]interface{}) // Cache for TableAllColumn results
+	// Cache for database version information (fills SELECT VERSION() requests)
+	// Cache key format: connection identifier
+	databaseVersionCache = make(map[string]string)
+	// Mutex to protect global caches
+	cacheMutex sync.RWMutex
+
+	procP = func(inout []map[string]interface{}, event string) map[string]string {
 		var tmpa = make(map[string]string)
 		for _, v := range inout {
 			ORDINAL_POSITIO, err1 := strconv.Atoi(fmt.Sprintf("%s", v["ORDINAL_POSITION"]))
@@ -58,17 +79,43 @@ var (
 	}
 	procR = func(createProc []map[string]interface{}, tmpa map[string]string, event string) map[string]string {
 		var tmpb = make(map[string]string)
+
+		// 获取环境属性
+		var sqlMode, charsetClient, collationConn, dbCollation, definer string
+		if len(createProc) > 0 {
+			sqlMode = fmt.Sprintf("%s", createProc[0]["SQL_MODE"])
+			charsetClient = fmt.Sprintf("%s", createProc[0]["CHARACTER_SET_CLIENT"])
+			collationConn = fmt.Sprintf("%s", createProc[0]["COLLATION_CONNECTION"])
+			dbCollation = fmt.Sprintf("%s", createProc[0]["DATABASE_COLLATION"])
+			definer = fmt.Sprintf("%s", createProc[0]["DEFINER"])
+		}
+
 		for _, v := range createProc {
 			ROUTINE_DEFINITION := fmt.Sprintf("%s", v["ROUTINE_DEFINITION"])
 			ROUTINE_NAME := strings.ToUpper(fmt.Sprintf("%s", v["ROUTINE_NAME"]))
-			tmpb["DEFINER"] = fmt.Sprintf("%s", v["DEFINER"])
 			user := strings.Split(fmt.Sprintf("%s", v["DEFINER"]), "@")[0]
 			host := strings.Split(fmt.Sprintf("%s", v["DEFINER"]), "@")[1]
+
+			// 将存储过程的完整定义和属性存储在一个JSON格式的字符串中
 			if event == "Proc" {
-				tmpb[ROUTINE_NAME] = fmt.Sprintf("delimiter $\nCREATE DEFINER='%s'@'%s' PROCEDURE %s(%s) %s$ \ndelimiter ;", user, host, ROUTINE_NAME, tmpa[ROUTINE_NAME], strings.ReplaceAll(ROUTINE_DEFINITION, "\n", ""))
+				// 创建一个包含所有属性的JSON格式字符串，并将其嵌入到存储过程定义中
+				// 使用特殊注释格式 /*GT_CHECKSUM_METADATA:...*/，这样不会影响存储过程的执行
+				metadataComment := fmt.Sprintf(`/*GT_CHECKSUM_METADATA:{"sql_mode":"%s","character_set_client":"%s","collation_connection":"%s","database_collation":"%s","definer":"%s"}*/`,
+					sqlMode, charsetClient, collationConn, dbCollation, definer)
+
+				// 存储完整的存储过程定义，包括环境属性作为注释
+				tmpb[ROUTINE_NAME] = fmt.Sprintf("DELIMITER $\n%s\nCREATE DEFINER='%s'@'%s' PROCEDURE %s(%s) %s$ \nDELIMITER ;",
+					metadataComment, user, host, ROUTINE_NAME, tmpa[ROUTINE_NAME], ROUTINE_DEFINITION)
 			}
+
 			if event == "Func" {
-				tmpb[ROUTINE_NAME] = fmt.Sprintf("delimiter $\nCREATE DEFINER='%s'@'%s' FUNCTION %s(%s) %s$ \ndelimiter ;", user, host, ROUTINE_NAME, tmpa[ROUTINE_NAME], strings.ReplaceAll(ROUTINE_DEFINITION, "\n", ""))
+				// 创建一个包含所有属性的JSON格式字符串，并将其嵌入到函数定义中
+				metadataComment := fmt.Sprintf(`/*GT_CHECKSUM_METADATA:{"sql_mode":"%s","character_set_client":"%s","collation_connection":"%s","database_collation":"%s","definer":"%s"}*/`,
+					sqlMode, charsetClient, collationConn, dbCollation, definer)
+
+				// 存储完整的函数定义，包括环境属性作为注释
+				tmpb[ROUTINE_NAME] = fmt.Sprintf("DELIMITER $\n%s\nCREATE DEFINER='%s'@'%s' FUNCTION %s(%s) %s$ \nDELIMITER ;",
+					metadataComment, user, host, ROUTINE_NAME, tmpa[ROUTINE_NAME], strings.ReplaceAll(ROUTINE_DEFINITION, "\n", ""))
 			}
 		}
 		return tmpb
@@ -80,7 +127,7 @@ var (
 */
 
 /*
-   MySQL 获取对应的库表信息，排除'information_Schema','performance_Schema','sys','mysql'
+MySQL 获取对应的库表信息，排除'information_Schema','performance_Schema','sys','mysql'
 */
 func (my *QueryTable) DatabaseNameList(db *sql.DB, logThreadSeq int64) (map[string]int, error) {
 	var (
@@ -88,9 +135,9 @@ func (my *QueryTable) DatabaseNameList(db *sql.DB, logThreadSeq int64) (map[stri
 		Event = "Q_Schema_Table_List"
 	)
 	excludeSchema := fmt.Sprintf("'information_Schema','performance_Schema','sys','mysql'")
-	vlog = fmt.Sprintf("(%d) [%s] Start to query the metadata of the %s database and obtain library and table information.", logThreadSeq, Event, DBType)
+	strsql = fmt.Sprintf("SELECT TABLE_SCHEMA AS databaseName, TABLE_NAME AS tableName FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA NOT IN (%s);", excludeSchema)
+	vlog = fmt.Sprintf("(%d) [%s] Start to query the metadata of the %s database and obtain library and table information. SQL: {%s}", logThreadSeq, Event, DBType, strsql)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("select TABLE_SCHEMA as databaseName,TABLE_NAME as tableName from information_Schema.TABLES where TABLE_SCHEMA not in (%s);", excludeSchema)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return nil, err
@@ -102,10 +149,7 @@ func (my *QueryTable) DatabaseNameList(db *sql.DB, logThreadSeq int64) (map[stri
 	for i := range tableData {
 		var ga string
 		gd, gt := fmt.Sprintf("%v", tableData[i]["databaseName"]), fmt.Sprintf("%v", tableData[i]["tableName"])
-		if my.LowerCaseTableNames == "no" {
-			gd = strings.ToUpper(gd)
-			gt = strings.ToUpper(gt)
-		}
+		// 保持原始大小写，不进行转换，以便正确匹配数据库中的实际表名
 		ga = fmt.Sprintf("%v/*schema&table*/%v", gd, gt)
 		A[ga]++
 	}
@@ -116,7 +160,7 @@ func (my *QueryTable) DatabaseNameList(db *sql.DB, logThreadSeq int64) (map[stri
 }
 
 /*
-	MySQL 通过查询表的元数据信息获取列名
+MySQL 通过查询表的元数据信息获取列名
 */
 func (my *QueryTable) TableColumnName(db *sql.DB, logThreadSeq int64) ([]map[string]interface{}, error) {
 	var (
@@ -124,8 +168,7 @@ func (my *QueryTable) TableColumnName(db *sql.DB, logThreadSeq int64) ([]map[str
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start querying the metadata information of table %s.%s in the %s database and get all the column names", logThreadSeq, Event, my.Schema, my.Table, DBType)
 	global.Wlog.Debug(vlog)
-	//strsql = fmt.Sprintf("select COLUMN_NAME as columnName from information_Schema.columns where TABLE_Schema='%s' and TABLE_NAME='%s' order by ORDINAL_POSITION;", my.Schema, my.Table)
-	strsql = fmt.Sprintf("select COLUMN_NAME as columnName,COLUMN_TYPE as columnType,IS_NULLABLE as isNull,CHARACTER_SET_NAME as charset,COLLATION_NAME as collationName,COLUMN_COMMENT as columnComment,COLUMN_DEFAULT as columnDefault from information_Schema.columns where TABLE_Schema='%s' and TABLE_NAME='%s' order by ORDINAL_POSITION", my.Schema, my.Table)
+	strsql = fmt.Sprintf("SELECT COLUMN_NAME AS columnName, COLUMN_TYPE AS columnType, IS_NULLABLE AS isNull, CHARACTER_SET_NAME AS charset, COLLATION_NAME AS collationName, COLUMN_COMMENT AS columnComment, COLUMN_DEFAULT AS columnDefault, EXTRA AS extra FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s' ORDER BY ORDINAL_POSITION", my.Schema, my.Table)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		if err != nil {
@@ -143,7 +186,37 @@ func (my *QueryTable) TableColumnName(db *sql.DB, logThreadSeq int64) ([]map[str
 }
 
 /*
-	MySQL 查询数据库版本信息
+MySQL 获取表的注释信息
+*/
+func (my *QueryTable) TableComment(db *sql.DB, logThreadSeq int64) (string, error) {
+	var (
+		Event = "Q_Table_Comment"
+	)
+	vlog = fmt.Sprintf("(%d) [%s] Start to query the comment of table %s.%s in the %s database", logThreadSeq, Event, my.Schema, my.Table, DBType)
+	global.Wlog.Debug(vlog)
+	strsql = fmt.Sprintf("SELECT TABLE_COMMENT AS tableComment FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s';", my.Schema, my.Table)
+	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
+	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
+		return "", err
+	}
+	tableData, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
+	if err != nil {
+		return "", err
+	}
+
+	comment := ""
+	if len(tableData) > 0 {
+		comment = fmt.Sprintf("%s", tableData[0]["tableComment"])
+	}
+
+	vlog = fmt.Sprintf("(%d) [%s] Complete the comment query of table %s.%s in the %s database: %s", logThreadSeq, Event, my.Schema, my.Table, DBType, comment)
+	global.Wlog.Debug(vlog)
+	defer dispos.SqlRows.Close()
+	return comment, nil
+}
+
+/*
+MySQL 查询数据库版本信息
 */
 func (my *QueryTable) DatabaseVersion(db *sql.DB, logThreadSeq int64) (string, error) {
 	var (
@@ -151,14 +224,32 @@ func (my *QueryTable) DatabaseVersion(db *sql.DB, logThreadSeq int64) (string, e
 		rows    *sql.Rows
 		Event   = "Q_M_Versions"
 	)
+
+	// Use database connection address as cache key
+	// This ensures different connections to different MySQL instances get their own cached version
+	cacheKey := fmt.Sprintf("%p", db)
+
+	// Try to get cached version first
+	cacheMutex.RLock()
+	if cachedVersion, ok := databaseVersionCache[cacheKey]; ok {
+		cacheMutex.RUnlock()
+		//kvlog := fmt.Sprintf("(%d) [%s] Using cached version information for database connection %p: %s", logThreadSeq, Event, db, cachedVersion)
+		//kglobal.Wlog.Debug(vlog)
+		return cachedVersion, nil
+	}
+	cacheMutex.RUnlock()
+
+	// Cache miss, execute the query
 	vlog = fmt.Sprintf("(%d) [%s] Start querying the version information of the %s database", logThreadSeq, Event, DBType)
-	strsql = fmt.Sprintf("select version()")
+	strsql = fmt.Sprintf("SELECT VERSION() AS VERSION")
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if rows, err = dispos.DBSQLforExec(strsql); err != nil {
 		if err != nil {
 			return "", err
 		}
 	}
+	defer rows.Close()
+
 	dispos.SqlRows = rows
 	a, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
 	if err != nil {
@@ -168,19 +259,25 @@ func (my *QueryTable) DatabaseVersion(db *sql.DB, logThreadSeq int64) (string, e
 		return "", nil
 	}
 	for _, i := range a {
-		if cc, ok := i["version()"]; ok {
+		if cc, ok := i["VERSION"]; ok {
 			version = fmt.Sprintf("%v", cc)
 			break
 		}
 	}
-	vlog = fmt.Sprintf("(%d) [%s] Complete the version information query of the %s database.", logThreadSeq, Event, DBType)
-	global.Wlog.Debug(vlog)
-	defer rows.Close()
+
+	// Cache the version information for future use
+	cacheMutex.Lock()
+	databaseVersionCache[cacheKey] = version
+	cacheMutex.Unlock()
+
+	//vlog = fmt.Sprintf("(%d) [%s] Complete the version information query of the %s database and cached version: %s", logThreadSeq, Event, DBType, version)
+	//global.Wlog.Debug(vlog)
+
 	return version, nil
 }
 
 /*
-	MySQL 查看当前用户是否有全局变量
+MySQL 查看当前用户是否有全局变量
 */
 func (my *QueryTable) GlobalAccessPri(db *sql.DB, logThreadSeq int64) (bool, error) {
 	var (
@@ -210,7 +307,7 @@ func (my *QueryTable) GlobalAccessPri(db *sql.DB, logThreadSeq int64) (bool, err
 		globalPriS = append(globalPriS, k)
 	}
 	//获取当前匹配的用户
-	strsql = fmt.Sprintf("select current_user() as user;")
+	strsql = fmt.Sprintf("SELECT CURRENT_USER() AS user;")
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if rows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return false, err
@@ -228,7 +325,7 @@ func (my *QueryTable) GlobalAccessPri(db *sql.DB, logThreadSeq int64) (bool, err
 	//查找全局权限 类似于grant all privileges on *.* 或 grant select on *.*
 	vlog = fmt.Sprintf("(%d) [%s] Query the current %s DB global dynamic grants permission, to query it...", logThreadSeq, Event, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("select PRIVILEGE_TYPE as privileges from information_schema.USER_PRIVILEGES where PRIVILEGE_TYPE in('%s') and grantee = \"%s\";", strings.Join(globalPriS, "','"), currentUser)
+	strsql = fmt.Sprintf("SELECT PRIVILEGE_TYPE AS privileges FROM INFORMATION_SCHEMA.USER_PRIVILEGES WHERE PRIVILEGE_TYPE IN('%s') AND GRANTEE=\"%s\";", strings.Join(globalPriS, "','"), currentUser)
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return false, err
 	}
@@ -266,9 +363,9 @@ func (my *QueryTable) GlobalAccessPri(db *sql.DB, logThreadSeq int64) (bool, err
 }
 
 /*
-	MySQL 查询用户是否有表的读写权限
+MySQL 查询用户是否有表的读写权限
 */
-func (my *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, datefix string, logThreadSeq int64) (map[string]int, error) {
+func (my *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, datafix string, logThreadSeq int64) (map[string]int, error) {
 	var (
 		globalPri         = make(map[string]int)
 		newCheckTableList = make(map[string]int)
@@ -281,7 +378,7 @@ func (my *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 
 	//针对要校验的库做去重（库级别的）
 	globalPri["SELECT"] = 0
-	if strings.ToUpper(datefix) == "TABLE" {
+	if strings.ToUpper(datafix) == "TABLE" {
 		globalPri["INSERT"] = 0
 		globalPri["DELETE"] = 0
 		globalPri["ALTER"] = 0
@@ -295,7 +392,7 @@ func (my *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 	//校验库.表由切片改为map
 	for _, AA := range checkTableList {
 		newCheckTableList[AA]++
-		if my.LowerCaseTableNames == "no" {
+		if my.CaseSensitiveObjectName == "no" {
 			newCheckTableList[strings.ToUpper(AA)]++
 		}
 	}
@@ -303,13 +400,13 @@ func (my *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 	for _, aa := range checkTableList {
 		if strings.Contains(aa, ".") {
 			A[strings.Split(aa, ".")[0]]++
-			if my.LowerCaseTableNames == "no" {
+			if my.CaseSensitiveObjectName == "no" {
 				A[strings.ToUpper(strings.Split(aa, ".")[0])]++
 			}
 		}
 	}
 	//获取当前匹配的用户
-	strsql = fmt.Sprintf("select current_user() as user;")
+	strsql = fmt.Sprintf("SELECT CURRENT_USER() AS user;")
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return nil, err
@@ -322,7 +419,7 @@ func (my *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 	//查找全局权限 类似于grant all privileges on *.* 或 grant select on *.*
 	vlog = fmt.Sprintf("(%d) [%s] Query the current %s DB global dynamic grants permission, to query it...", logThreadSeq, Event, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("select PRIVILEGE_TYPE as privileges from information_schema.USER_PRIVILEGES where PRIVILEGE_TYPE in('%s') and grantee = \"%s\";", strings.Join(globalPriS, "','"), currentUser)
+	strsql = fmt.Sprintf("SELECT PRIVILEGE_TYPE AS privileges FROM INFORMATION_SCHEMA.USER_PRIVILEGES WHERE PRIVILEGE_TYPE IN('%s') AND GRANTEE=\"%s\";", strings.Join(globalPriS, "','"), currentUser)
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return nil, err
 	}
@@ -349,7 +446,7 @@ func (my *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 	for AC, _ := range A {
 		var cc []string
 		var intseq int
-		strsql = fmt.Sprintf("select TABLE_SCHEMA as databaseName,PRIVILEGE_TYPE as privileges from information_schema.schema_PRIVILEGES where PRIVILEGE_TYPE in ('%s') and TABLE_SCHEMA = '%s' and grantee = \"%s\";", strings.Join(globalPriS, "','"), AC, currentUser)
+		strsql = fmt.Sprintf("SELECT TABLE_SCHEMA AS databaseName, PRIVILEGE_TYPE AS privileges FROM INFORMATION_SCHEMA.SCHEMA_PRIVILEGES WHERE PRIVILEGE_TYPE IN('%s') AND TABLE_SCHEMA='%s' AND GRANTEE=\"%s\";", strings.Join(globalPriS, "','"), AC, currentUser)
 		if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 			return nil, err
 		}
@@ -387,13 +484,13 @@ func (my *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 	var DM = make(map[string]int)
 	for _, D := range checkTableList {
 		DM[D]++
-		if my.LowerCaseTableNames == "no" {
+		if my.CaseSensitiveObjectName == "no" {
 			DM[strings.ToUpper(D)]++
 		}
 	}
 	for B, _ := range A {
 		//按照每个库，查询table pri权限
-		strsql = fmt.Sprintf("select table_name as tableName,PRIVILEGE_TYPE as privileges from information_schema.table_PRIVILEGES where PRIVILEGE_TYPE in('%s') and TABLE_SCHEMA = '%s' and grantee = \"%s\";", strings.Join(globalPriS, "','"), B, currentUser)
+		strsql = fmt.Sprintf("SELECT TABLE_NAME AS tableName, PRIVILEGE_TYPE AS privileges FROM INFORMATION_SCHEMA.TABLE_PRIVILEGES WHERE PRIVILEGE_TYPE IN('%s') AND TABLE_SCHEMA='%s' AND GRANTEE=\"%s\";", strings.Join(globalPriS, "','"), B, currentUser)
 		if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 			return nil, err
 		}
@@ -410,10 +507,8 @@ func (my *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 		var dd []string
 		for _, C := range tablePri {
 			var E string
+			// 无论CaseSensitiveObjectName设置如何，都保持原始大小写
 			E = fmt.Sprintf("%s.%s", B, C["tableName"])
-			if my.LowerCaseTableNames == "no" {
-				E = strings.ToUpper(fmt.Sprintf("%s.%s", B, C["tableName"]))
-			}
 			if E != N {
 				N = E
 				dd = []string{}
@@ -443,7 +538,7 @@ func (my *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 }
 
 /*
-	MySQL 获取校验表的列信息，包含列名，列序号，列类型
+MySQL 获取校验表的列信息，包含列名，列序号，列类型
 */
 func (my *QueryTable) TableAllColumn(db *sql.DB, logThreadSeq int64) ([]map[string]interface{}, error) {
 	var (
@@ -451,9 +546,23 @@ func (my *QueryTable) TableAllColumn(db *sql.DB, logThreadSeq int64) ([]map[stri
 		//rows   *sql.Rows
 		Event = "Q_Table_Column_Metadata"
 	)
+
+	// Generate cache key in format: schema.table
+	cacheKey := fmt.Sprintf("%s.%s", my.Schema, my.Table)
+
+	// Check if result is already in global cache
+	cacheMutex.RLock()
+	if cachedTableAllColumn, ok := tableAllColumnGlobalCache[cacheKey]; ok {
+		cacheMutex.RUnlock()
+		vlog := fmt.Sprintf("(%d) [%s] Using cached TableAllColumn information for table %s.%s", logThreadSeq, Event, my.Schema, my.Table)
+		global.Wlog.Debug(vlog)
+		return cachedTableAllColumn, nil
+	}
+	cacheMutex.RUnlock()
+
 	vlog = fmt.Sprintf("(%d) [%s] Start to query the metadata of all the columns of table %s.%s in the %s database", logThreadSeq, Event, my.Schema, my.Table, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("select COLUMN_NAME as columnName ,COLUMN_TYPE as dataType,ORDINAL_POSITION as columnSeq,IS_NULLABLE as isNull from information_Schema.columns where table_Schema= '%s' and table_name='%s' order by ORDINAL_POSITION;", my.Schema, my.Table)
+	strsql = fmt.Sprintf("SELECT COLUMN_NAME AS columnName, COLUMN_TYPE AS dataType, ORDINAL_POSITION AS columnSeq, IS_NULLABLE AS isNull, COLUMN_COMMENT AS columnComment FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s' ORDER BY ORDINAL_POSITION;", my.Schema, my.Table)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return nil, err
@@ -463,40 +572,19 @@ func (my *QueryTable) TableAllColumn(db *sql.DB, logThreadSeq int64) ([]map[stri
 		return nil, err
 	}
 
-	//for i := 1; i < 4; i++ {
-	//	rows, err = db.Query(strsql)
-	//	if err != nil {
-	//		blog := fmt.Sprintf("(%d) MySQL DB exec sql fail. sql message is {%s} Error info is {%s}.", logThreadSeq, strsql, err)
-	//		global.Wlog.Error(blog)
-	//		vlog = fmt.Sprintf("(%d) Failed to query the table column source table [%v.%v] for the %v time.", logThreadSeq, my.Schema, my.Table, i)
-	//		global.Wlog.Error(vlog)
-	//		if i == 3 {
-	//			return nil, err
-	//		}
-	//		time.Sleep(5 * time.Second)
-	//	} else {
-	//		break
-	//	}
-	//}
-	//if err != nil {
-	//	blog := fmt.Sprintf("(%d) MySQL DB exec sql fail. sql message is {%s} Error info is {%s}.", logThreadSeq, strsql, err)
-	//	global.Wlog.Error(blog)
-	//	return nil, err
-	//}
-	//if rows == nil {
-	//	return nil, nil
-	//}
+	// Cache the result in global cache for future use
+	cacheMutex.Lock()
+	tableAllColumnGlobalCache[cacheKey] = tableData
+	cacheMutex.Unlock()
 
-	//dispos := dataDispos.DBdataDispos{DBtype: "MySQL", Logseq: logThreadSeq, SqlRows: rows, Event: "tableAllColumn"}
-	//tableData, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
-	vlog = fmt.Sprintf("(%d) [%s] Complete the metadata query of all columns in table %s.%s in the %s database.", logThreadSeq, Event, my.Schema, my.Table, DBType)
+	vlog = fmt.Sprintf("(%d) [%s] Complete the metadata query of all columns in table %s.%s in the %s database. Cached results for future use.", logThreadSeq, Event, my.Schema, my.Table, DBType)
 	global.Wlog.Debug(vlog)
 	defer dispos.SqlRows.Close()
 	return tableData, err
 }
 
 /*
-	MySQL 处理唯一索引索引（包含主键索引）
+MySQL 处理唯一索引索引（包含主键索引）
 */
 func (my *QueryTable) keyChoiceDispos(IndexColumnMap map[string][]string, indexType string) map[string][]string {
 	var (
@@ -511,8 +599,6 @@ func (my *QueryTable) keyChoiceDispos(IndexColumnMap map[string][]string, indexT
 		indexChoisName       string
 	)
 	// ----- 处理唯一索引列，根据选择规则选择一个单列索引，（选择次序：int<--char<--year<--date<-time<-其他）
-	//infoStr := fmt.Sprintf("Greatdbcheck Checks whether table %s.%s has a unique key index", my.Schema, my.Table)
-	//global.Wlog.Debug(infoStr)
 	//先找出唯一联合索引数量最少的
 	for k, i := range IndexColumnMap {
 		if len(i) <= tmpSliceNum {
@@ -573,7 +659,7 @@ func (my *QueryTable) keyChoiceDispos(IndexColumnMap map[string][]string, indexT
 }
 
 /*
-	MySQL 表的索引选择
+MySQL 表的索引选择
 */
 func (my *QueryTable) TableIndexChoice(queryData []map[string]interface{}, logThreadSeq int64) map[string][]string {
 	var (
@@ -622,34 +708,34 @@ func (my *QueryTable) TableIndexChoice(queryData []map[string]interface{}, logTh
 	//global.Wlog.Debug(vlog)
 	//处理主键索引列
 	//判断是否存在主键索引,每个表的索引只有一个
-	//vlog = fmt.Sprintf("(%d) MySQL DB primary key index starts to choose the best.", logThreadSeq)
-	//global.Wlog.Debug(vlog)
+	vlog = fmt.Sprintf("(%d) MySQL DB primary key index starts to choose the best.", logThreadSeq)
+	global.Wlog.Debug(vlog)
 	if len(PriIndexCol) == 1 { //单列主键索引
 		indexChoice["pri_single"] = PriIndexCol
 	} else if len(PriIndexCol) > 1 { //联合主键索引
 		indexChoice["pri_multiseriate"] = PriIndexCol
 	}
-	//vlog = fmt.Sprintf("(%d) MySQL DB unique key index starts to choose the best.", logThreadSeq)
-	//global.Wlog.Debug(vlog)
+	vlog = fmt.Sprintf("(%d) MySQL DB unique key index starts to choose the best.", logThreadSeq)
+	global.Wlog.Debug(vlog)
 	g := my.keyChoiceDispos(nultiseriateIndexColumnMap, "uni")
 	for k, v := range g {
 		if len(v) > 0 {
 			indexChoice[k] = v
 		}
 	}
-	f := my.keyChoiceDispos(multiseriateIndexColumnMap, "mui")
+	f := my.keyChoiceDispos(multiseriateIndexColumnMap, "mul")
 	for k, v := range f {
 		if len(v) > 0 {
 			indexChoice[k] = v
 		}
 	}
-	vlog = fmt.Sprintf("(%s) [%s] Complete the selection of the appropriate index column in the following table %s.%s of the %s database.", logThreadSeq, Event, my.Schema, my.Table, DBType)
+	vlog = fmt.Sprintf("(%d) [%s] Complete the selection of the appropriate index column in the following table %s.%s of the %s database.", logThreadSeq, Event, my.Schema, my.Table, DBType)
 	global.Wlog.Debug(vlog)
 	return indexChoice
 }
 
 /*
-	MySQL 查询触发器信息
+MySQL 查询触发器信息
 */
 func (my *QueryTable) Trigger(db *sql.DB, logThreadSeq int64) (map[string]string, error) {
 	var (
@@ -658,7 +744,7 @@ func (my *QueryTable) Trigger(db *sql.DB, logThreadSeq int64) (map[string]string
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start to query the trigger information under the %s database.", logThreadSeq, Event, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("select TRIGGER_NAME as triggerName,EVENT_OBJECT_TABLE as tableName from INFORMATION_SCHEMA.TRIGGERS where TRIGGER_SCHEMA in ('%s');", my.Schema)
+	strsql = fmt.Sprintf("SELECT TRIGGER_NAME AS triggerName, EVENT_OBJECT_TABLE AS tableName FROM INFORMATION_SCHEMA.TRIGGERS WHERE TRIGGER_SCHEMA IN('%s');", my.Schema)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return nil, err
@@ -668,7 +754,7 @@ func (my *QueryTable) Trigger(db *sql.DB, logThreadSeq int64) (map[string]string
 		return nil, err
 	}
 	for _, v := range triggerName {
-		strsql = fmt.Sprintf("show create trigger %s.%s", my.Schema, v["triggerName"])
+		strsql = fmt.Sprintf("SHOW CREATE TRIGGER %s.%s", my.Schema, v["triggerName"])
 		if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 			return nil, err
 		}
@@ -696,307 +782,357 @@ func (my *QueryTable) Trigger(db *sql.DB, logThreadSeq int64) (map[string]string
 			}
 			tmpb[triggerNa] = fmt.Sprintf("%s %s %s", triggerAction, triggerOn, triggerTRX)
 		}
-		//vlog = fmt.Sprintf("(%d) MySQL db query databases %s Trigger data completion...", logThreadSeq, my.Schema)
-		//global.Wlog.Debug(vlog)
+		vlog = fmt.Sprintf("(%d) MySQL db query databases %s Trigger data completion...", logThreadSeq, my.Schema)
+		global.Wlog.Debug(vlog)
 	}
-	vlog = fmt.Sprintf("(%s) [%s] Complete the trigger information query under the %s database.", logThreadSeq, Event, DBType)
+	vlog = fmt.Sprintf("(%d) [%s] Complete the trigger information query under the %s database.", logThreadSeq, Event, DBType)
 	global.Wlog.Debug(vlog)
 	defer dispos.SqlRows.Close()
 	return tmpb, nil
 }
 
 /*
-	MySQL 存储过程校验
+MySQL 存储过程和函数统一校验（新增）
+- 一次性从 INFORMATION_SCHEMA.PARAMETERS 与 INFORMATION_SCHEMA.ROUTINES 查询
+- 按 ROUTINE_TYPE 将结果分别组装为 PROCEDURE / FUNCTION 的定义文本
+- 返回 routines 与 types 两张表，供上层或兼容包装使用
+*/
+func (my *QueryTable) Routine(db *sql.DB, logThreadSeq int64) (map[string]string, map[string]string, error) {
+	var (
+		routines = make(map[string]string) // name -> body
+		types    = make(map[string]string) // name -> "PROCEDURE"/"FUNCTION"
+		Event    = "Q_Routine"
+	)
+	vlog = fmt.Sprintf("(%d) [%s] Start to query PROCEDURE and FUNCTION information under the %s database.", logThreadSeq, Event, DBType)
+	global.Wlog.Debug(vlog)
+
+	// 1) 查询参数：同时取 PROCEDURE 与 FUNCTION
+	strsql = fmt.Sprintf("SELECT SPECIFIC_SCHEMA, SPECIFIC_NAME, ROUTINE_TYPE, ORDINAL_POSITION, PARAMETER_MODE, PARAMETER_NAME, DTD_IDENTIFIER FROM INFORMATION_SCHEMA.PARAMETERS WHERE SPECIFIC_SCHEMA IN('%s') AND ROUTINE_TYPE IN('PROCEDURE','FUNCTION') ORDER BY SPECIFIC_NAME, ORDINAL_POSITION;", my.Schema)
+	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
+	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
+		return nil, nil, err
+	}
+	inoutAll, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// 拆分参数到 Proc/Func 两组
+	var inoutProc, inoutFunc []map[string]interface{}
+	for _, r := range inoutAll {
+		if strings.EqualFold(fmt.Sprintf("%s", r["ROUTINE_TYPE"]), "PROCEDURE") {
+			inoutProc = append(inoutProc, r)
+		} else if strings.EqualFold(fmt.Sprintf("%s", r["ROUTINE_TYPE"]), "FUNCTION") {
+			inoutFunc = append(inoutFunc, r)
+		}
+	}
+	tmpaProc := procP(inoutProc, "Proc")
+	tmpaFunc := procP(inoutFunc, "Func")
+
+	// 2) 从 ROUTINES 取定义与属性，并带出 ROUTINE_TYPE
+	strsql = fmt.Sprintf("SELECT ROUTINE_NAME, ROUTINE_DEFINITION, DEFINER, SQL_MODE, CHARACTER_SET_CLIENT, COLLATION_CONNECTION, DATABASE_COLLATION, ROUTINE_TYPE FROM INFORMATION_SCHEMA.ROUTINES WHERE ROUTINE_SCHEMA='%s' AND ROUTINE_TYPE IN('PROCEDURE','FUNCTION');", my.Schema)
+	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
+		return nil, nil, err
+	}
+	createAll, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
+	if err != nil {
+		return nil, nil, err
+	}
+	defer dispos.SqlRows.Close()
+
+	// 拆分 ROUTINES 到 Proc/Func 两组，并用现有 procR 生成定义
+	var createProc, createFunc []map[string]interface{}
+	for _, r := range createAll {
+		if strings.EqualFold(fmt.Sprintf("%s", r["ROUTINE_TYPE"]), "PROCEDURE") {
+			createProc = append(createProc, r)
+		} else if strings.EqualFold(fmt.Sprintf("%s", r["ROUTINE_TYPE"]), "FUNCTION") {
+			createFunc = append(createFunc, r)
+		}
+	}
+
+	procMap := procR(createProc, tmpaProc, "Proc")
+	funcMap := procR(createFunc, tmpaFunc, "Func")
+
+	// 合并并记录类型
+	for k, v := range procMap {
+		routines[k] = v
+		types[k] = "PROCEDURE"
+	}
+	for k, v := range funcMap {
+		routines[k] = v
+		types[k] = "FUNCTION"
+	}
+
+	vlog = fmt.Sprintf("(%d) [%s] Complete the PROCEDURE and FUNCTION information query under the %s database.", logThreadSeq, Event, DBType)
+	global.Wlog.Debug(vlog)
+	return routines, types, nil
+}
+
+/*
+MySQL 存储过程校验
+*/
+/*
+Deprecated: use Routine() instead.
+兼容包装：复用 Routine()，仅返回 PROCEDURE。
 */
 func (my *QueryTable) Proc(db *sql.DB, logThreadSeq int64) (map[string]string, error) {
-	var (
-		Event = "Q_Proc"
-	)
-	vlog = fmt.Sprintf("(%d) [%s] Start to query the stored procedure information under the %s database.", logThreadSeq, Event, DBType)
-	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("select SPECIFIC_SCHEMA,SPECIFIC_NAME,ORDINAL_POSITION,PARAMETER_MODE,PARAMETER_NAME,DTD_IDENTIFIER from information_schema.PARAMETERS where SPECIFIC_SCHEMA in ('%s') and ROUTINE_TYPE='PROCEDURE' order by ORDINAL_POSITION;", my.Schema)
-	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
-	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
-		return nil, err
-	}
-	inout, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
+	routines, types, err := my.Routine(db, logThreadSeq)
 	if err != nil {
 		return nil, err
 	}
-	strsql = fmt.Sprintf("select ROUTINE_SCHEMA,ROUTINE_NAME,ROUTINE_DEFINITION,DEFINER from information_schema.ROUTINES where routine_schema in ('%s') and ROUTINE_TYPE='PROCEDURE';", my.Schema)
-	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
-		return nil, err
+	out := make(map[string]string)
+	for name, body := range routines {
+		if strings.EqualFold(types[name], "PROCEDURE") {
+			out[name] = body
+		}
 	}
-	createProc, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
-	if err != nil {
-		return nil, err
-	}
-	vlog = fmt.Sprintf("(%d) [%s] Complete the stored procedure information query under the %s database.", logThreadSeq, Event, DBType)
-	global.Wlog.Debug(vlog)
-	defer dispos.SqlRows.Close()
-	return procR(createProc, procP(inout, "Proc"), "Proc"), nil
+	return out, nil
 }
 
 /*
-	MySQL 存储函数或自定义函数校验
+MySQL 存储函数或自定义函数校验
+*/
+/*
+Deprecated: use Routine() instead.
+兼容包装：复用 Routine()，仅返回 FUNCTION。
 */
 func (my *QueryTable) Func(db *sql.DB, logThreadSeq int64) (map[string]string, error) {
-	var (
-		tmpb  = make(map[string]string)
-		Event = "Q_Proc"
-	)
-	vlog = fmt.Sprintf("(%d) [%s] Start to query the stored Func information under the %s database.", logThreadSeq, Event, DBType)
-	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("select DEFINER,ROUTINE_NAME from information_schema.ROUTINES where routine_schema in ('%s') and ROUTINE_TYPE='FUNCTION';", my.Schema)
-	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
-	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
-		return nil, err
-	}
-	//dispos := dataDispos.DBdataDispos{DBtype: "MySQL", Logseq: logThreadSeq, SqlRows: sqlRows, Event: "Func"}
-	routineName, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
+	routines, types, err := my.Routine(db, logThreadSeq)
 	if err != nil {
 		return nil, err
 	}
-	for _, v := range routineName {
-		strsql = fmt.Sprintf("SHOW CREATE FUNCTION %s.%s;", my.Schema, v["ROUTINE_NAME"])
-		if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
-			return nil, err
-		}
-		createFunc, err1 := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
-		if err1 != nil {
-			return nil, err1
-		}
-		for _, b := range createFunc {
-			d := strings.Join(strings.Fields(strings.ReplaceAll(fmt.Sprintf("%s", b["CREATE_FUNCTION"]), "\n", " ")), " ")
-			if strings.Contains(strings.ToUpper(d), "BEGIN") && strings.Contains(strings.ToUpper(d), "END") {
-				strings.Index(d, "BEGIN")
-			}
-			tmpb[strings.ToUpper(fmt.Sprintf("%s", v["ROUTINE_NAME"]))] = fmt.Sprintf("%s/*proc*/delimiter $\n%s$\ndelimiter ;\n", v["DEFINER"], b["Create Function"])
+	out := make(map[string]string)
+	for name, body := range routines {
+		if strings.EqualFold(types[name], "FUNCTION") {
+			out[name] = body
 		}
 	}
-	defer dispos.SqlRows.Close()
-	vlog = fmt.Sprintf("(%d) [%s] Complete the stored Func information query under the %s database.", logThreadSeq, Event, DBType)
-	global.Wlog.Debug(vlog)
-	return tmpb, nil
+	return out, nil
 }
 
 /*
-	MySQL 外键校验
+MySQL 外键校验
 */
 func (my *QueryTable) Foreign(db *sql.DB, logThreadSeq int64) (map[string]string, error) {
 	var (
-		//sqlStr       string
-		//vlog         string
-		routineNameM = make(map[string]int)
-		tmpb         = make(map[string]string)
-		Event        = "Q_Foreign"
+		tmpb  = make(map[string]string)
+		Event = "Q_Foreign"
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start to query the Foreign information under the %s database.", logThreadSeq, Event, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("select CONSTRAINT_SCHEMA,TABLE_NAME from information_schema.referential_constraints where CONSTRAINT_SCHEMA in ('%s') and TABLE_NAME in ('%s');", my.Schema, my.Table)
-	//vlog = fmt.Sprintf("(%d) MySQL DB query table query Foreign info exec sql is {%s}", logThreadSeq, sqlStr)
-	//global.Wlog.Debug(vlog)
 
-	//sqlRows, err := db.Query(sqlStr)
-	//if err != nil {
-	//	vlog = fmt.Sprintf("(%d) MySQL DB exec sql fail. sql message is {%s} Error info is {%s}.", logThreadSeq, sqlStr, err)
-	//	global.Wlog.Error(vlog)
-	//	return nil, err
-	//}
-	//if sqlRows == nil {
-	//	return nil, nil
-	//}
-	//foreignName, err := rowDataDisposMap(sqlRows, "Foreign", logThreadSeq)
-	//dispos := dataDispos.DBdataDispos{DBtype: "MySQL", Logseq: logThreadSeq, SqlRows: sqlRows, Event: "Foreign"}
+	// 使用INFORMATION_SCHEMA获取完整的外键约束信息
+	// 这个查询会获取外键名称、列名、引用的表和列信息
+	strsql = fmt.Sprintf(`
+		SELECT 
+			rc.CONSTRAINT_NAME,
+			kcu.COLUMN_NAME,
+			rc.CONSTRAINT_SCHEMA AS REFERENCED_TABLE_SCHEMA,
+			rc.REFERENCED_TABLE_NAME,
+			rcu.COLUMN_NAME AS REFERENCED_COLUMN_NAME,
+			rc.DELETE_RULE,
+			rc.UPDATE_RULE
+		FROM 
+			INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS rc
+		JOIN 
+			INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu 
+				ON rc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME 
+				AND rc.CONSTRAINT_SCHEMA = kcu.TABLE_SCHEMA 
+				AND rc.TABLE_NAME = kcu.TABLE_NAME
+		JOIN 
+			INFORMATION_SCHEMA.KEY_COLUMN_USAGE rcu 
+				ON rc.UNIQUE_CONSTRAINT_NAME = rcu.CONSTRAINT_NAME 
+				AND rc.CONSTRAINT_SCHEMA = rcu.TABLE_SCHEMA 
+				AND rc.REFERENCED_TABLE_NAME = rcu.TABLE_NAME
+		WHERE 
+			rc.CONSTRAINT_SCHEMA = '%s' 
+			AND rc.TABLE_NAME = '%s'
+		ORDER BY 
+			rc.CONSTRAINT_NAME, kcu.ORDINAL_POSITION
+	`, my.Schema, my.Table)
+
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
+		vlog = fmt.Sprintf("(%d) [%s] Error executing foreign key query: %v", logThreadSeq, Event, err)
+		global.Wlog.Error(vlog)
 		return nil, err
 	}
-	foreignName, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
-	if err != nil {
-		return nil, err
-	}
-	for _, v := range foreignName {
-		routineNameM[fmt.Sprintf("%s.%s", v["CONSTRAINT_SCHEMA"], v["TABLE_NAME"])]++
-	}
-	for k, _ := range routineNameM {
-		var z string
-		if strings.EqualFold(k, fmt.Sprintf("%s.%s", my.Schema, my.Table)) {
-			z = fmt.Sprintf("%s.%s", my.Schema, my.Table)
-		} else {
-			z = k
-		}
-		strsql = fmt.Sprintf("SHOW CREATE TABLE %s;", k)
-		//vlog = fmt.Sprintf("(%d) MySQL DB query create Foreign table %s.%s info, exec sql is {%s}", logThreadSeq, my.Schema, my.Table, sqlStr)
-		//global.Wlog.Debug(vlog)
-		//sqlRows, err = db.Query(sqlStr)
-		//if err != nil {
-		//	vlog = fmt.Sprintf("(%d) MySQL DB exec sql fail. sql message is {%s} Error info is {%s}.", logThreadSeq, sqlStr, err)
-		//	global.Wlog.Error(vlog)
-		//	tmpb[k] = ""
-		//	return tmpb, err
-		//}
-		//vlog = fmt.Sprintf("(%d) start dispos MySQL DB create table %s.%s create Foreign info.", logThreadSeq, my.Schema, my.Table)
-		//global.Wlog.Debug(vlog)
-		//createForeign, err1 := rowDataDisposMap(sqlRows, "Foreign", logThreadSeq)
-		//dispos = dataDispos.DBdataDispos{DBtype: "MySQL", Logseq: logThreadSeq, SqlRows: sqlRows, Event: "Foreign"}
-		if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
-			return nil, err
-		}
-		createForeign, err1 := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
-		if err1 != nil {
-			return nil, err1
-		}
-		//vlog = fmt.Sprintf("(%d) MySQL db query table %s.%s create Foreign completion.", logThreadSeq, my.Schema, my.Table)
-		//global.Wlog.Debug(vlog)
-		//vlog = fmt.Sprintf("(%d) MySQL db query table %s.%s dispos Foreign data info. to dispos it ...", logThreadSeq, my.Schema, my.Table)
-		//global.Wlog.Debug(vlog)
 
-		for _, b := range createForeign {
-			var p, q, o string
-			d := fmt.Sprintf("%s", b["Create Table"])
-			f := strings.Split(d, "\n")
-			for _, g := range f {
-				if strings.Contains(g, "CONSTRAINT") {
-					p = strings.TrimSpace(g)
-				}
-				if strings.Contains(g, "REFERENCES") {
-					q = strings.TrimSpace(g)
-				}
-			}
-			if strings.Contains(p, "CONSTRAINT") && strings.Contains(p, "REFERENCES") {
-				l := strings.Split(strings.TrimSpace(strings.Split(p, "REFERENCES")[1]), " ")[0]
-				o = strings.ReplaceAll(p, l, fmt.Sprintf("`%s`.%s", strings.Split(k, ".")[0], l))
-			}
-			if strings.HasPrefix(q, "REFERENCES") {
-				o = fmt.Sprintf("%s %s", p, q)
-			}
-			tmpb[z] = strings.ToUpper(strings.ReplaceAll(o, "`", "!"))
-		}
-		//vlog = fmt.Sprintf("(%d) MySQL db query table %s.%s Foreign data completion...", logThreadSeq, my.Schema, my.Table)
-		//global.Wlog.Debug(vlog)
+	foreignKeys, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
+	if err != nil {
+		vlog = fmt.Sprintf("(%d) [%s] Error processing foreign key results: %v", logThreadSeq, Event, err)
+		global.Wlog.Error(vlog)
+		return nil, err
 	}
 	defer dispos.SqlRows.Close()
+
+	// 按约束名称分组外键信息
+	fkMap := make(map[string][]map[string]interface{})
+	for _, fk := range foreignKeys {
+		constraintName := fmt.Sprintf("%s", fk["CONSTRAINT_NAME"])
+		if _, exists := fkMap[constraintName]; !exists {
+			fkMap[constraintName] = []map[string]interface{}{}
+		}
+		fkMap[constraintName] = append(fkMap[constraintName], fk)
+	}
+
+	// 构建完整的外键DDL定义
+	for constraintName, fkInfos := range fkMap {
+		if len(fkInfos) == 0 {
+			continue
+		}
+
+		// 获取第一个外键信息作为基础
+		firstFk := fkInfos[0]
+		referencedSchema := fmt.Sprintf("%s", firstFk["REFERENCED_TABLE_SCHEMA"])
+		referencedTable := fmt.Sprintf("%s", firstFk["REFERENCED_TABLE_NAME"])
+		deleteRule := fmt.Sprintf("%s", firstFk["DELETE_RULE"])
+		updateRule := fmt.Sprintf("%s", firstFk["UPDATE_RULE"])
+
+		// 收集列信息
+		var sourceColumns []string
+		var referencedColumns []string
+		for _, fkInfo := range fkInfos {
+			sourceColumns = append(sourceColumns, fmt.Sprintf("!%s!", fkInfo["COLUMN_NAME"]))
+			referencedColumns = append(referencedColumns, fmt.Sprintf("!%s!", fkInfo["REFERENCED_COLUMN_NAME"]))
+		}
+
+		// 构建外键DDL
+		sourceColumnsStr := strings.Join(sourceColumns, ", ")
+		referencedColumnsStr := strings.Join(referencedColumns, ", ")
+		ddl := fmt.Sprintf("CONSTRAINT !%s! FOREIGN KEY (!%s!) REFERENCES !%s!.!%s! (!%s!)",
+			constraintName, sourceColumnsStr, referencedSchema, referencedTable, referencedColumnsStr)
+
+		// 添加删除和更新规则
+		if deleteRule != "NO ACTION" && deleteRule != "RESTRICT" {
+			ddl += " ON DELETE " + deleteRule
+		}
+		if updateRule != "NO ACTION" && updateRule != "RESTRICT" {
+			ddl += " ON UPDATE " + updateRule
+		}
+
+		// 存储到结果map中，使用大写并将反引号替换为感叹号
+		tableKey := fmt.Sprintf("%s.%s", my.Schema, my.Table)
+		tmpb[tableKey] = strings.ToUpper(ddl)
+
+		vlog = fmt.Sprintf("(%d) [%s] Found foreign key: %s", logThreadSeq, Event, ddl)
+		global.Wlog.Debug(vlog)
+	}
+
 	vlog = fmt.Sprintf("(%d) [%s] Complete the Foreign information query under the %s database.", logThreadSeq, Event, DBType)
 	global.Wlog.Debug(vlog)
 	return tmpb, nil
 }
 
 /*
-	分区表校验
+分区表校验
 */
 func (my *QueryTable) Partitions(db *sql.DB, logThreadSeq int64) (map[string]string, error) {
 	var (
-		routineNameM = make(map[string]int)
-		tmpb         = make(map[string]string)
-		Event        = "Q_Partitions"
+		tmpb  = make(map[string]string)
+		Event = "Q_Partitions"
 	)
-	vlog = fmt.Sprintf("(%d) [%s] Start to query the Partitions information under the %s database.", logThreadSeq, Event, DBType)
+
+	// 正确提取表名，避免表名中包含schema信息
+	actualTableName := my.Table
+	if strings.Contains(actualTableName, ":") {
+		parts := strings.Split(actualTableName, ":")
+		if len(parts) > 0 {
+			actualTableName = parts[0]
+		}
+	}
+
+	vlog = fmt.Sprintf("(%d) [%s] Start to query the Partitions information for table %s.%s under the %s database.", logThreadSeq, Event, my.Schema, actualTableName, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("select TABLE_SCHEMA,TABLE_NAME from information_schema.partitions where table_schema in ('%s') and TABLE_NAME in ('%s') and PARTITION_NAME <> '';", my.Schema, my.Table)
-	//vlog = fmt.Sprintf("(%d) MySQL DB query table query partitions info exec sql is {%s}", logThreadSeq, sqlStr)
-	//global.Wlog.Debug(vlog)
-	//sqlRows, err := db.Query(sqlStr)
-	//if err != nil {
-	//	vlog = fmt.Sprintf("(%d) MySQL DB exec sql fail. sql message is {%s} Error info is {%s}.", logThreadSeq, sqlStr, err)
-	//	global.Wlog.Error(vlog)
-	//	return nil, err
-	//}
-	//if sqlRows == nil {
-	//	return nil, nil
-	//}
-	//vlog = fmt.Sprintf("(%d) start dispos MySQL DB query table %s.%s query Partitions info.", logThreadSeq, my.Schema, my.Table)
-	//global.Wlog.Debug(vlog)
-	//partitionsName, err := rowDataDisposMap(sqlRows, "Partitions", logThreadSeq)
-	//dispos := dataDispos.DBdataDispos{DBtype: "MySQL", Logseq: logThreadSeq, SqlRows: sqlRows, Event: "Partitions"}
+
+	// 直接查询表的分区信息，包括分区名称和详细定义
+	strsql = fmt.Sprintf("SELECT PARTITION_NAME, PARTITION_ORDINAL_POSITION, PARTITION_METHOD, PARTITION_EXPRESSION, PARTITION_DESCRIPTION, TABLE_ROWS FROM INFORMATION_SCHEMA.PARTITIONS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s' AND PARTITION_NAME<>'' ORDER BY PARTITION_ORDINAL_POSITION;", my.Schema, actualTableName)
+	vlog = fmt.Sprintf("(%d) [%s] Executing query on INFORMATION_SCHEMA.PARTITIONS: %s", logThreadSeq, Event, strsql)
+	global.Wlog.Debug(vlog)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return nil, err
 	}
-	partitionsName, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
+	partitionsInfo, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
 	if err != nil {
 		return nil, err
 	}
-	//vlog = fmt.Sprintf("(%d) MySQL DB query table %s.%s query Partitions completion.", logThreadSeq, my.Schema, my.Table)
-	//global.Wlog.Debug(vlog)
 
-	for _, v := range partitionsName {
-		routineNameM[fmt.Sprintf("%s.%s", v["TABLE_SCHEMA"], v["TABLE_NAME"])]++
-	}
-
-	for k, _ := range routineNameM {
-		strsql = fmt.Sprintf("SHOW CREATE TABLE %s;", k)
-		//vlog = fmt.Sprintf("(%d) MySQL DB query create partitions table %s.%s info, exec sql is {%s}", logThreadSeq, my.Schema, my.Table, sqlStr)
-		//global.Wlog.Debug(vlog)
-		//sqlRows, err = db.Query(sqlStr)
-		//if err != nil {
-		//	vlog = fmt.Sprintf("(%d) MySQL DB exec sql fail. sql message is {%s} Error info is {%s}.", logThreadSeq, sqlStr, err)
-		//	global.Wlog.Error(vlog)
-		//	tmpb[k] = ""
-		//	return tmpb, err
-		//}
-		//if sqlRows == nil {
-		//	return nil, nil
-		//}
-		//vlog = fmt.Sprintf("(%d) start dispos MySQL DB create table %s.%s create Partitions info.", logThreadSeq, my.Schema, my.Table)
-		//global.Wlog.Debug(vlog)
-		////createPartitions, err1 := rowDataDisposMap(sqlRows, "Partitions", logThreadSeq)
-		//dispos = dataDispos.DBdataDispos{DBtype: "MySQL", Logseq: logThreadSeq, SqlRows: sqlRows, Event: "Partitions"}
+	// 如果有分区，获取表的创建语句以提取完整的分区定义
+	if len(partitionsInfo) > 0 {
+		strsql = fmt.Sprintf("SHOW CREATE TABLE %s.%s;", my.Schema, actualTableName)
 		if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 			return nil, err
 		}
-		createPartitions, err1 := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
+		createTableInfo, err1 := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
 		if err1 != nil {
 			return nil, err1
 		}
-		//vlog = fmt.Sprintf("(%d) MySQL db query table %s.%s create Partitions completion.", logThreadSeq, my.Schema, my.Table)
-		//global.Wlog.Debug(vlog)
-		//vlog = fmt.Sprintf("(%d) MySQL db query table %s.%s dispos Partitions data info. to dispos it ...", logThreadSeq, my.Schema, my.Table)
-		//global.Wlog.Debug(vlog)
-		for _, b := range createPartitions {
-			var partitionMode, partitionColumn string
-			var zi string
-			if strings.EqualFold(k, fmt.Sprintf("%s.%s", my.Schema, my.Table)) {
-				zi = fmt.Sprintf("%s.%s", my.Schema, my.Table)
-			} else {
-				zi = k
-			}
-			z := strings.Split(fmt.Sprintf("%s", b["Create Table"]), "\n")
-			var a, c []string
+
+		if len(createTableInfo) > 0 {
+			createTableSQL := fmt.Sprintf("%s", createTableInfo[0]["Create Table"])
+			z := strings.Split(createTableSQL, "\n")
+
+			// 提取分区定义信息 - 改进版本，确保捕获完整的分区定义
+			var partitionDefs []string
+			inPartitionSection := false
+
 			for _, bi := range z {
-				if strings.Contains(bi, " PARTITION BY ") {
-					il := strings.Index(bi, "PARTITION")
-					ii := strings.Join(strings.Fields(strings.TrimSpace(strings.ReplaceAll(bi[il:], "PARTITION BY ", ""))), " ")
-					partitionMode, partitionColumn = strings.Split(ii, " ")[0], strings.ReplaceAll(strings.ReplaceAll(strings.Split(ii, " ")[1], "COLUMNS(", "("), "`", "")
-					c = append(c, fmt.Sprintf(" PARTITION BY %s %s", partitionMode, strings.ToUpper(partitionColumn)))
-				}
-				if strings.Contains(bi, "SUBPARTITION BY ") || strings.Contains(bi, "SUBPARTITIONS ") {
-					c = append(c, strings.ToUpper(bi))
-				}
-				if strings.Contains(bi, "PARTITION ") && strings.Contains(bi, "VALUES ") {
-					ii := strings.Index(bi, "ENGINE")
-					il := strings.ReplaceAll(strings.TrimSpace(bi[:ii]), "IN", "")
-					c = append(c, fmt.Sprintf(" %s,", il))
-				}
-				//处理hash分区
-				if strings.Contains(bi, "PARTITIONS ") {
-					var ll string
-					ll = bi
-					if strings.Contains(bi, "*/") {
-						ll = bi[:strings.Index(bi, "*/")]
+				trimmedLine := strings.TrimSpace(bi)
+				upperLine := strings.ToUpper(trimmedLine)
+
+				// 检测分区定义开始 - 支持PARTITION BY和SUBPARTITION BY
+				if strings.Contains(upperLine, "PARTITION BY") || strings.Contains(upperLine, "SUBPARTITION BY") {
+					inPartitionSection = true
+					partitionDefs = append(partitionDefs, upperLine)
+				} else if inPartitionSection {
+					// 收集分区定义部分的所有行，直到遇到结束括号或引擎定义
+					if trimmedLine != "" && !strings.HasPrefix(upperLine, "ENGINE=") && !strings.HasPrefix(upperLine, "DEFAULT CHARSET") {
+						partitionDefs = append(partitionDefs, upperLine)
 					}
-					c = append(c, fmt.Sprintf(" %s", ll))
+					// 分区定义结束 - 确保我们不会提前退出
+					if strings.Contains(upperLine, ");") {
+						inPartitionSection = false
+						break
+					}
 				}
 			}
-			x := fmt.Sprintf("%s %s);", strings.Join(a, ""), strings.Join(c, "")[:len(strings.Join(c, ""))-1])
-			xs := strings.Join(strings.Fields(x), " ")
-			tmpb[zi] = strings.ReplaceAll(xs, "`", "!")
+
+			// 将所有分区定义合并为一个字符串作为表的分区定义
+			// 移除所有空格，使比较更加严格和准确
+			fullPartitionDef := strings.Join(partitionDefs, " ")
+			fullPartitionDef = strings.Join(strings.Fields(fullPartitionDef), " ")
+			fullPartitionDef = strings.ReplaceAll(fullPartitionDef, "`", "!")
+
+			// 增加日志，记录完整的分区定义用于调试
+			vlog = fmt.Sprintf("(%d) [%s] Extracted full partition definition for %s.%s: %s", logThreadSeq, Event, my.Schema, actualTableName, fullPartitionDef)
+			global.Wlog.Debug(vlog)
+
+			// 使用表名作为键，存储完整的分区定义
+			tableKey := fmt.Sprintf("%s.%s", my.Schema, my.Table)
+			tmpb[tableKey] = fullPartitionDef
+
+			// 同时为每个分区单独创建条目，便于比较
+			for _, p := range partitionsInfo {
+				partitionName := fmt.Sprintf("%s", p["PARTITION_NAME"])
+				partitionKey := fmt.Sprintf("%s.%s.%s", my.Schema, my.Table, partitionName)
+				// 存储分区的详细信息，包括所有分区属性
+				partitionDetails := fmt.Sprintf("NAME=%s,ORDINAL=%s,METHOD=%s,EXPRESSION=%s,DESCRIPTION=%s,ROWS=%s",
+					partitionName,
+					p["PARTITION_ORDINAL_POSITION"],
+					p["PARTITION_METHOD"],
+					p["PARTITION_EXPRESSION"],
+					p["PARTITION_DESCRIPTION"],
+					p["TABLE_ROWS"])
+				tmpb[partitionKey] = partitionDetails
+				vlog = fmt.Sprintf("(%d) [%s] Stored partition %s details: %s", logThreadSeq, Event, partitionKey, partitionDetails)
+				global.Wlog.Debug(vlog)
+			}
 		}
-		//vlog = fmt.Sprintf("(%d) MySQL db query table %s.%s partitions data completion...", logThreadSeq, my.Schema, my.Table)
-		//global.Wlog.Debug(vlog)
 	}
+
 	defer dispos.SqlRows.Close()
-	vlog = fmt.Sprintf("(%d) [%s] Complete the Partitions information query under the %s database.", logThreadSeq, Event, DBType)
+	vlog = fmt.Sprintf("(%d) [%s] Complete the Partitions information query for table %s.%s under the %s database. Found %d partitions.", logThreadSeq, Event, my.Schema, actualTableName, DBType, len(partitionsInfo))
 	global.Wlog.Debug(vlog)
 	return tmpb, nil
 }

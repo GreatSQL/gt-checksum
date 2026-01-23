@@ -23,7 +23,7 @@ func NewPool(min int, db []*sql.DB, logThreadSeq int, drive string) *Pool {
 	)
 	defer func() {
 		if err := recover(); err != nil {
-			fmt.Println(err)
+			// Error output removed - use logs instead
 		}
 	}()
 	p := &Pool{
@@ -34,13 +34,13 @@ func NewPool(min int, db []*sql.DB, logThreadSeq int, drive string) *Pool {
 		close:   false,
 		drive:   drive,
 	}
-	vlog = fmt.Sprintf("(%d) Start adding session connections to the %s DB connection pool ...", logThreadSeq, p.drive)
+	vlog = fmt.Sprintf("(%d) Initializing %s DB connection pool...", logThreadSeq, p.drive)
 	Wlog.Debug(vlog)
 	for i := 0; i < min; i++ {
 		p.conns <- db[i]
 		//p.conns <- dbconn
 	}
-	vlog = fmt.Sprintf("(%d) %s DB Connection pool join session connection action completed !!!", logThreadSeq, p.drive)
+	vlog = fmt.Sprintf("(%d) %s DB connection pool initialized successfully", logThreadSeq, p.drive)
 	Wlog.Debug(vlog)
 	vlog = fmt.Sprintf("(%d) The current number of %s DB session connection pools is [%d]", logThreadSeq, p.drive, len(p.conns))
 	Wlog.Debug(vlog)
@@ -51,14 +51,6 @@ type DBConn struct {
 	db       *sql.DB
 	idleTime int // 标记该数据库连接空闲时间
 }
-
-// 新建数据库连接
-//func NewDBConn(dbcon *sql.DB) *DBConn {
-//	return &DBConn{
-//		db:       dbcon,
-//		idleTime: 0,
-//	}
-//}
 
 // 从池中取出连接
 func (p *Pool) Get(logThreadSeq int64) *sql.DB {
@@ -71,8 +63,8 @@ func (p *Pool) Get(logThreadSeq int64) *sql.DB {
 			fmt.Println(err)
 		}
 	}()
-	vlog = fmt.Sprintf("(%d) Get a session connection from the %s DB session connection pool ...", logThreadSeq, p.drive)
-	Wlog.Debug(vlog)
+	//vlog = fmt.Sprintf("(%d) Get a session connection from the %s DB session connection pool ...", logThreadSeq, p.drive)
+	//Wlog.Debug(vlog)
 	if p.close {
 		close(p.conns)
 		return nil
@@ -87,23 +79,23 @@ func (p *Pool) Get(logThreadSeq int64) *sql.DB {
 		d = <-p.conns // 若池中没有可取的连接，则等待其他请求返回连接至池中再取
 	}
 	p.numConn++
-	vlog = fmt.Sprintf("(%d) Obtain a connection successfully, the current %s DB connection pool status, the number of applied connections is [%d], and the remaining number is [%d].", logThreadSeq, p.drive, p.minConn-len(p.conns), len(p.conns))
-	Wlog.Debug(vlog)
+	//vlog = fmt.Sprintf("(%d) Obtain a connection successfully, the current %s DB connection pool status, the number of applied connections is [%d], and the remaining number is [%d].", logThreadSeq, p.drive, p.minConn-len(p.conns), len(p.conns))
+	//Wlog.Debug(vlog)
 	return d
 }
 
 // 将连接返回池中
 func (p *Pool) Put(d *sql.DB, logThreadSeq int64) {
-	var (
-		vlog string
-	)
+	//var (
+	//	vlog string
+	//)
 	defer func() {
 		if err := recover(); err != nil {
 			fmt.Println(err)
 		}
 	}()
-	vlog = fmt.Sprintf("(%d) Put a session connection into the %s DB session connection pool ...", logThreadSeq, p.drive)
-	Wlog.Debug(vlog)
+	//vlog = fmt.Sprintf("(%d) Put a session connection into the %s DB session connection pool ...", logThreadSeq, p.drive)
+	//Wlog.Debug(vlog)
 	if p.close {
 		return
 	}
@@ -111,8 +103,8 @@ func (p *Pool) Put(d *sql.DB, logThreadSeq int64) {
 	defer p.mu.Unlock()
 	p.conns <- d
 	p.numConn--
-	vlog = fmt.Sprintf("(%d) The connection is put in successfully, the %s DB current connection pool status, the number of applied connections is [%d], and the remaining number is [%d].", logThreadSeq, p.drive, p.minConn-len(p.conns), len(p.conns))
-	Wlog.Debug(vlog)
+	//vlog = fmt.Sprintf("(%d) The connection is put in successfully, the %s DB current connection pool status, the number of applied connections is [%d], and the remaining number is [%d].", logThreadSeq, p.drive, p.minConn-len(p.conns), len(p.conns))
+	//Wlog.Debug(vlog)
 }
 
 // 关闭池

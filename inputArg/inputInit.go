@@ -2,19 +2,20 @@ package inputArg
 
 import (
 	"fmt"
-	"gopkg.in/ini.v1"
 	"gt-checksum/global"
 	"gt-checksum/go-log/log"
 	"os"
 	"runtime"
 	"strings"
+	"time"
+
+	"gopkg.in/ini.v1"
 )
 
 type FirstLevel struct {
 	DSNs   *ini.Section
 	Schema *ini.Section
 	Rules  *ini.Section
-	Struct *ini.Section
 	Logs   *ini.Section
 	Repair *ini.Section
 }
@@ -27,24 +28,20 @@ type DSNsS struct {
 	DestJdbc  string
 }
 type SchemaS struct {
-	Tables              string
-	IgnoreTables        string
-	CheckNoIndexTable   string
-	LowerCaseTableNames string
+	Tables                  string
+	IgnoreTables            string
+	CheckNoIndexTable       string
+	CaseSensitiveObjectName string
 }
 type RulesS struct {
-	ParallelThds int
-	ChanRowCount int
-	QueueSize    int
-	CheckMode    string
-	Ratio        int
-	CheckObject  string
+	ParallelThds   int
+	ChanRowCount   int
+	QueueSize      int
+	CheckObject    string
+	MemoryLimit    int
+	IsRoutineCheck bool // 标记是否同时检查存储过程和函数
 }
-type StructS struct {
-	ScheckMod     string
-	ScheckOrder   string
-	ScheckFixRule string
-}
+
 type LogS struct {
 	LogFile  string
 	LogLevel string
@@ -59,7 +56,6 @@ type SecondaryLevel struct {
 	DsnsV   DSNsS
 	SchemaV SchemaS
 	RulesV  RulesS
-	StructV StructS
 	LogV    LogS
 	RepairV RepairS
 }
@@ -72,7 +68,6 @@ type ConfigParameter struct {
 	SecondaryL          SecondaryLevel
 	ConfFine            *ini.File
 	ConnPoolV           ConnPool
-	ParametersSwitch    bool
 	Config              string //配置文件信息
 	LogThreadSeq        int64
 	NoIndexTableTmpFile string
@@ -82,7 +77,14 @@ var rc ConfigParameter
 
 func init() {
 	rc.cliHelp()
-	fmt.Println("-- gt-checksum init configuration files -- ")
+	fmt.Println("Initializing gt-checksum")
+	fmt.Println("Reading configuration files")
+	if rc.Config == "" {
+		if _, err := os.Stat("gc.conf"); err == nil {
+			rc.Config = "gc.conf"
+			fmt.Println("Automatically loading configuration file 'gc.conf' from current directory")
+		}
+	}
 	if rc.Config != "" {
 		if !strings.Contains(rc.Config, "/") {
 			sysType := runtime.GOOS
@@ -92,16 +94,41 @@ func init() {
 				rc.Config = fmt.Sprintf(".\\%s", rc.Config)
 			}
 		}
-		rc.getConfig()
+		rc.GetConfig()
 	}
 	//初始化日志文件
-	fmt.Println("-- gt-checksum init log files -- ")
-	global.Wlog = log.NewWlog(rc.SecondaryL.LogV.LogFile, rc.SecondaryL.LogV.LogLevel)
-	fmt.Println("-- gt-checksum init check parameter --")
+	fmt.Println("Opening log files")
+	// 处理日期时间格式
+	logFile := rc.SecondaryL.LogV.LogFile
+	if strings.Contains(logFile, "%") {
+		logFile = replaceDateTimeFormat(logFile)
+	}
+	global.Wlog = log.NewWlog(logFile, rc.SecondaryL.LogV.LogLevel)
+	fmt.Println("Checking configuration options")
 	rc.checkPar()
 }
 
 func ConfigInit(logThreadSeq int64) *ConfigParameter {
 	rc.LogThreadSeq = logThreadSeq
+	return &rc
+}
+
+// replaceDateTimeFormat 替换日期时间格式符为实际值
+func replaceDateTimeFormat(filename string) string {
+	now := time.Now()
+	result := strings.ReplaceAll(filename, "%Y", now.Format("2006"))
+	result = strings.ReplaceAll(result, "%m", now.Format("01"))
+	result = strings.ReplaceAll(result, "%d", now.Format("02"))
+	result = strings.ReplaceAll(result, "%H", now.Format("15"))
+	result = strings.ReplaceAll(result, "%M", now.Format("04"))
+	result = strings.ReplaceAll(result, "%S", now.Format("05"))
+	result = strings.ReplaceAll(result, "%s", fmt.Sprintf("%d", now.Unix()))
+	result = strings.ReplaceAll(result, "%F", now.Format("2006-01-02"))
+	result = strings.ReplaceAll(result, "%T", now.Format("15:04:05"))
+	return result
+}
+
+// GetGlobalConfig 返回全局配置的引用
+func GetGlobalConfig() *ConfigParameter {
 	return &rc
 }
