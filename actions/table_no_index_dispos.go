@@ -189,124 +189,149 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 					}
 				} else {
 					// 不要在循环外声明rowData和sqlType变量，避免变量覆盖
-					for ki, vi := range v {
-						// 在循环内声明变量，避免变量覆盖问题
-						rowData := ki
-						sqlType := vi
-						//noIndexD <- struct{}{}
-						pods.DIFFS = "yes"
-						dbf.IndexType = "mul"
-						//go func() {
-						//	defer func() {
-						//		<-noIndexD
-						//	}()
-						ddb := sp.ddbPool.Get(logThreadSeq)
-						if sqlType == "delete" {
-							displayTableName := sp.getDisplayTableName()
-							vlog = fmt.Sprintf("(%d) Generating DELETE repair statements for table %s", logThreadSeq, displayTableName)
-							global.Wlog.Debug(vlog)
-							dbf.RowData = rowData
+																// 统计相同记录的数量
+																rowCountMap := make(map[string]int)
+																for ki, vi := range v {
+																	if vi == "delete" {
+																		rowCountMap[ki]++
+																	}
+																}
 
-							// Ensure IndexColumn is not empty
-							if len(dbf.IndexColumn) == 0 {
-								vlog = fmt.Sprintf("(%d) Warning: Table %s has no index columns, trying to use all columns as conditions", logThreadSeq, displayTableName)
-								global.Wlog.Warn(vlog)
+																// 处理删除记录
+																for rowData, count := range rowCountMap {
+																	pods.DIFFS = "yes"
+																	dbf.IndexType = "mul"
+																	ddb := sp.ddbPool.Get(logThreadSeq)
+																	displayTableName := sp.getDisplayTableName()
+																	vlog = fmt.Sprintf("(%d) Generating DELETE repair statements for table %s", logThreadSeq, displayTableName)
+																	global.Wlog.Debug(vlog)
+																	dbf.RowData = rowData
 
-								// Get all column names from table structure
-								for _, colInfo := range colData.DColumnInfo {
-									if colName, ok := colInfo["columnName"]; ok {
-										dbf.IndexColumn = append(dbf.IndexColumn, colName)
-									} else if colName, ok := colInfo["COLUMN_NAME"]; ok {
-										// Try using uppercase key name
-										dbf.IndexColumn = append(dbf.IndexColumn, colName)
-									}
-								}
+																	// Ensure IndexColumn is not empty
+																	if len(dbf.IndexColumn) == 0 {
+																		vlog = fmt.Sprintf("(%d) Warning: Table %s has no index columns, trying to use all columns as conditions", logThreadSeq, displayTableName)
+																		global.Wlog.Warn(vlog)
 
-								// If still no column names, log error and use default column
-								if len(dbf.IndexColumn) == 0 {
-									vlog = fmt.Sprintf("(%d) Error: Unable to get column names from table structure, will use default column", logThreadSeq, displayTableName)
-									global.Wlog.Error(vlog)
-									// Add a default column to avoid subsequent processing failure
-									dbf.IndexColumn = []string{"id"}
-									// Ensure RowData is not empty
-									if dbf.RowData == "" {
-										dbf.RowData = "id=0"
-									}
-								}
-							}
+																		// Get all column names from table structure
+																		for _, colInfo := range colData.DColumnInfo {
+																			if colName, ok := colInfo["columnName"]; ok {
+																				dbf.IndexColumn = append(dbf.IndexColumn, colName)
+																			} else if colName, ok := colInfo["COLUMN_NAME"]; ok {
+																				// Try using uppercase key name
+																				dbf.IndexColumn = append(dbf.IndexColumn, colName)
+																			}
+																		}
 
-							sqlstr, err := dbf.DataAbnormalFix().FixDeleteSqlExec(ddb, sp.ddrive, logThreadSeq)
-							if err != nil {
-								vlog = fmt.Sprintf("(%d) Failed to generate DELETE statement: %v", logThreadSeq, err)
-								global.Wlog.Error(vlog)
-								return
-							}
-							if sqlstr != "" {
-								// 使用sqlstr作为键进行去重，确保同一SQL语句只被处理一次
-								if !localSqlMap[sqlstr] {
-									localSqlMap[sqlstr] = true
-									sqlStrExec <- sqlstr
-								}
-							}
-							displayTableName = sp.getDisplayTableName()
-							vlog = fmt.Sprintf("(%d) DELETE repair statements generated for table %s", logThreadSeq, displayTableName)
-							global.Wlog.Debug(vlog)
-						}
-						if sqlType == "insert" {
-							displayTableName := sp.getDisplayTableName()
-							vlog = fmt.Sprintf("(%d) Generating INSERT repair statements for table %s", logThreadSeq, displayTableName)
-							global.Wlog.Debug(vlog)
-							dbf.RowData = rowData
+																		// If still no column names, log error and use default column
+																		if len(dbf.IndexColumn) == 0 {
+																			vlog = fmt.Sprintf("(%d) Error: Unable to get column names from table structure, will use default column", logThreadSeq, displayTableName)
+																			global.Wlog.Error(vlog)
+																			// Add a default column to avoid subsequent processing failure
+																			dbf.IndexColumn = []string{"id"}
+																			// Ensure RowData is not empty
+																			if dbf.RowData == "" {
+																				dbf.RowData = "id=0"
+																			}
+																		}
+																	}
 
-							// 确保IndexColumn不为空
-							if len(dbf.IndexColumn) == 0 {
-								vlog = fmt.Sprintf("(%d) Warn：table %s has no index column, try to using all columns", logThreadSeq, displayTableName)
-								global.Wlog.Warn(vlog)
+																	sqlstr, err := dbf.DataAbnormalFix().FixDeleteSqlExec(ddb, sp.ddrive, logThreadSeq)
+																	if err != nil {
+																		vlog = fmt.Sprintf("(%d) Failed to generate DELETE statement: %v", logThreadSeq, err)
+																		global.Wlog.Error(vlog)
+																		sp.ddbPool.Put(ddb, logThreadSeq)
+																		continue
+																	}
 
-								// 从表结构中获取所有列名
-								for _, colInfo := range colData.DColumnInfo {
-									if colName, ok := colInfo["columnName"]; ok {
-										dbf.IndexColumn = append(dbf.IndexColumn, colName)
-									} else if colName, ok := colInfo["COLUMN_NAME"]; ok {
-										// 尝试使用大写键名
-										dbf.IndexColumn = append(dbf.IndexColumn, colName)
-									}
-								}
+																	// 修改SQL语句，将LIMIT 1改为LIMIT count
+																	if strings.Contains(sqlstr, "LIMIT 1") {
+																		sqlstr = strings.Replace(sqlstr, "LIMIT 1", fmt.Sprintf("LIMIT %d", count), 1)
+																	}
 
-								// 如果仍然没有列名，记录错误并使用默认列
-								if len(dbf.IndexColumn) == 0 {
-									vlog = fmt.Sprintf("(%d) Error：can not obtain columns from table structure, will use default column", logThreadSeq, displayTableName)
-									global.Wlog.Error(vlog)
-									// 添加一个默认列，避免后续处理失败
-									dbf.IndexColumn = []string{"id"}
-									// 确保RowData不为空
-									if dbf.RowData == "" {
-										dbf.RowData = "id=0"
-									}
-								}
-							}
+																	if sqlstr != "" {
+																		// 使用修改后的SQL作为去重键
+																		if !localSqlMap[sqlstr] {
+																			localSqlMap[sqlstr] = true
+																			sqlStrExec <- sqlstr
+																		}
+																	}
+																	sp.ddbPool.Put(ddb, logThreadSeq)
+																	displayTableName = sp.getDisplayTableName()
+																	vlog = fmt.Sprintf("(%d) DELETE repair statements generated for table %s", logThreadSeq, displayTableName)
+																	global.Wlog.Debug(vlog)
+																}
 
-							sqlstr, err := dbf.DataAbnormalFix().FixInsertSqlExec(ddb, sp.ddrive, logThreadSeq)
-							if err != nil {
-								vlog = fmt.Sprintf("(%d) Failed to generate INSERT statement: %v", logThreadSeq, err)
-								global.Wlog.Error(vlog)
-								return
-							}
-							if sqlstr != "" {
-								// 使用sqlstr作为键进行去重，确保同一SQL语句只被处理一次
-								if !localSqlMap[sqlstr] {
-									localSqlMap[sqlstr] = true
-									sqlStrExec <- sqlstr
-								}
-							}
-							displayTableName = sp.getDisplayTableName()
-							vlog = fmt.Sprintf("(%d) INSERT repair statements generated for table %s", logThreadSeq, displayTableName)
-							global.Wlog.Debug(vlog)
-						}
-						sp.ddbPool.Put(ddb, logThreadSeq)
-						//}()
-					}
-				}
+																// 处理插入记录
+																for ki, vi := range v {
+																	if vi == "insert" {
+																		pods.DIFFS = "yes"
+																	dbf.IndexType = "mul"
+																	ddb := sp.ddbPool.Get(logThreadSeq)
+																	displayTableName := sp.getDisplayTableName()
+																	vlog = fmt.Sprintf("(%d) Generating INSERT repair statements for table %s", logThreadSeq, displayTableName)
+																	global.Wlog.Debug(vlog)
+																	dbf.RowData = ki
+
+																	// 确保IndexColumn不为空
+																	if len(dbf.IndexColumn) == 0 {
+																		vlog = fmt.Sprintf("(%d) Warn：table %s has no index column, try to using all columns", logThreadSeq, displayTableName)
+																		global.Wlog.Warn(vlog)
+
+																		// 从表结构中获取所有列名
+																		for _, colInfo := range colData.DColumnInfo {
+																			if colName, ok := colInfo["columnName"]; ok {
+																				dbf.IndexColumn = append(dbf.IndexColumn, colName)
+																			} else if colName, ok := colInfo["COLUMN_NAME"]; ok {
+																				// 尝试使用大写键名
+																				dbf.IndexColumn = append(dbf.IndexColumn, colName)
+																			}
+																		}
+
+																		// 如果仍然没有列名，记录错误并使用默认列
+																		if len(dbf.IndexColumn) == 0 {
+																			vlog = fmt.Sprintf("(%d) Error：can not obtain columns from table structure, will use default column", logThreadSeq, displayTableName)
+																			global.Wlog.Error(vlog)
+																			// 添加一个默认列，避免后续处理失败
+																			dbf.IndexColumn = []string{"id"}
+																			// 确保RowData不为空
+																			if dbf.RowData == "" {
+																				dbf.RowData = "id=0"
+																			}
+																		}
+																	}
+
+																	sqlstr, err := dbf.DataAbnormalFix().FixInsertSqlExec(ddb, sp.ddrive, logThreadSeq)
+																	if err != nil {
+																		vlog = fmt.Sprintf("(%d) Failed to generate INSERT statement: %v", logThreadSeq, err)
+																		global.Wlog.Error(vlog)
+																		sp.ddbPool.Put(ddb, logThreadSeq)
+																		continue
+																	}
+
+																	if sqlstr != "" {
+																		// 使用sqlstr作为键进行去重，确保同一SQL语句只被处理一次
+																		if !localSqlMap[sqlstr] {
+																			localSqlMap[sqlstr] = true
+																			sqlStrExec <- sqlstr
+																		}
+																	}
+																	sp.ddbPool.Put(ddb, logThreadSeq)
+																	displayTableName = sp.getDisplayTableName()
+																	vlog = fmt.Sprintf("(%d) INSERT repair statements generated for table %s", logThreadSeq, displayTableName)
+																	global.Wlog.Debug(vlog)
+																}
+																}
+																// 处理其他类型的记录
+																for ki, vi := range v {
+																	if vi != "delete" && vi != "insert" {
+																		pods.DIFFS = "yes"
+																	dbf.IndexType = "mul"
+																	ddb := sp.ddbPool.Get(logThreadSeq)
+																	dbf.RowData = ki
+																	sp.ddbPool.Put(ddb, logThreadSeq)
+																}
+																}
+															}
 			}
 		}
 	}()

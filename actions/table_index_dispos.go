@@ -112,20 +112,6 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 				// 修复：在通道关闭前，检查是否还有未处理的边界数据需要查询
 				// 这确保了当总数据量正好是chunkSize的整数倍时，最后一条记录不会被遗漏
 				global.Wlog.Debug("DEBUG_CHANNEL_CLOSE: level=%d, e='%s', e!=''=%v\n", level, e, e != "")
-				// 移除level==0限制，确保所有层级都执行边界检查
-				if e != "" {
-					var whereExist string
-					if where != "" {
-						whereExist = fmt.Sprintf("%v and ", where)
-					}
-
-					// 生成包含剩余数据的WHERE条件，确保包含最大边界
-					sqlwhere := fmt.Sprintf("%v `%v` >= '%v' ", whereExist, sp.columnName[level], e)
-					sqlWhere <- sqlwhere
-
-					vlog = fmt.Sprintf("(%d) Added final WHERE condition to ensure all data is covered: %s", logThreadSeq, sqlwhere)
-					global.Wlog.Debug(vlog)
-				}
 
 				if level == 0 {
 					close(sqlWhere)
@@ -829,29 +815,21 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 						destData := strings.Split(dtt, "/*go actions rowData*/")
 
 						// 2. 使用优化的Arrcmp实现，只返回真正需要修复的记录
-						// 先清理空记录并去重，但保留数据中的空格（包括尾随空格）
+						// 先清理空记录，保留重复记录（不进行去重）
 						cleanSourceData := make([]string, 0, len(sourceData))
 						cleanDestData := make([]string, 0, len(destData))
-						sourceSeen := make(map[string]struct{})
-						destSeen := make(map[string]struct{})
 
 						for _, data := range sourceData {
 							// 只检查是否为空记录，不使用TrimSpace，保留原始数据中的空格
 							if data != "" && data != "/*go actions rowData*/" {
-								if _, exists := sourceSeen[data]; !exists {
-									sourceSeen[data] = struct{}{}
-									cleanSourceData = append(cleanSourceData, data)
-								}
+								cleanSourceData = append(cleanSourceData, data)
 							}
 						}
 
 						for _, data := range destData {
 							// 只检查是否为空记录，不使用TrimSpace，保留原始数据中的空格
 							if data != "" && data != "/*go actions rowData*/" {
-								if _, exists := destSeen[data]; !exists {
-									destSeen[data] = struct{}{}
-									cleanDestData = append(cleanDestData, data)
-								}
+								cleanDestData = append(cleanDestData, data)
 							}
 						}
 
@@ -1085,7 +1063,8 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 
 									// 对于MySQL，合并DELETE语句
 									if sp.ddrive == "mysql" {
-										if len(dbf.IndexColumn) > 0 {
+										// 只有当IndexType为pri或uni时，才使用主键合并逻辑
+										if len(dbf.IndexColumn) > 0 && (dbf.IndexType == "pri" || dbf.IndexType == "uni") {
 
 											// 收集所有DELETE语句的主键值，并进行去重
 											var primaryValues []string
@@ -1324,16 +1303,26 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 												}
 											}
 										} else {
-											// 对于无主键，回退到单独执行，使用完整的WHERE条件
+											// 对于无主键或普通索引（mul），统计相同记录的数量，生成带正确LIMIT的DELETE语句
+											rowCountMap := make(map[string]int)
 											for _, i := range batchDel {
-												dbf.RowData = i
+												rowCountMap[i]++
+											}
+
+											for rowData, count := range rowCountMap {
+												dbf.RowData = rowData
 												sqlstr, err := dbf.DataAbnormalFix().FixDeleteSqlExec(ddb, sp.ddrive, logThreadSeq)
 												if err != nil {
 													sp.getErr(fmt.Sprintf("\ndest: checksum table %s.%s generate DELETE sql error.", c1.Schema, c1.Table), err)
 													continue
 												}
 
-												// 使用完整SQL作为去重键
+												// 修改SQL语句，将LIMIT 1改为LIMIT count
+												if strings.Contains(sqlstr, "LIMIT 1") {
+													sqlstr = strings.Replace(sqlstr, "LIMIT 1", fmt.Sprintf("LIMIT %d", count), 1)
+												}
+
+												// 使用修改后的SQL作为去重键
 												deleteMutex.Lock()
 												_, exists := deletePrimaryKeys[sqlstr]
 												deleteMutex.Unlock()
@@ -1486,34 +1475,11 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 										if err != nil {
 											sp.getErr(fmt.Sprintf("dest: checksum table %s.%s generate INSERT sql error.", c1.Schema, c1.Table), err)
 										} else if sqlstr != "" {
-											// 生成INSERT语句的唯一标识符用于去重
-											// 提取VALUES部分作为唯一标识
+											// 提取VALUES部分用于解析主键值
 											valuesStart := strings.Index(sqlstr, "VALUES(")
 											valuesEnd := strings.LastIndex(sqlstr, ");")
-											var insertKey string
-											if valuesStart > 0 && valuesEnd > valuesStart+7 {
-												insertKey = sqlstr[valuesStart+7 : valuesEnd]
-											} else {
-												// 如果解析失败，使用完整SQL作为key
-												insertKey = sqlstr
-											}
 
-											// 检查是否已经处理过这条INSERT记录（需要加锁保护并发访问）
-											insertMutex.Lock()
-											if _, exists := processedInserts[insertKey]; exists {
-												insertMutex.Unlock()
-												duplicateCount++
-												if duplicateCount <= 5 {
-													insertPreview := insertKey
-													if len(insertKey) > 50 {
-														insertPreview = insertKey[:50]
-													}
-													global.Wlog.Debug("DEBUG_DUPLICATE_INSERT_%d: Skipping duplicate INSERT: %s\n",
-														logThreadSeq, insertPreview)
-												}
-												continue
-											}
-
+											// 不进行去重检查，因为我们需要生成多条INSERT语句来匹配源端的重复记录数量
 											// 提取主键值并记录到insertedPrimaryKeys中
 											if len(dbf.IndexColumn) > 0 {
 												// 解析INSERT语句中的主键值
@@ -1537,9 +1503,8 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 												}
 											}
 
-											// 标记为已处理
-											processedInserts[insertKey] = struct{}{}
-											insertMutex.Unlock()
+											// 不标记为已处理，因为我们需要允许重复的INSERT语句
+											// processedInserts[insertKey] = struct{}{}
 											insertCount++
 
 											// 记录生成的SQL语句

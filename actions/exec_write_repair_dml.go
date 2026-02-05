@@ -221,16 +221,22 @@ func (rs repairSqlStruct) SqlFile(sfile *os.File, sql []string, logThreadSeq int
 			}
 		}
 	} else {
-		// 先对SQL语句进行去重，保留原始顺序
+		// 不对INSERT语句进行去重，保留所有需要的记录
 		var uniqueSqls []string
 		for _, s := range sql {
 			trimmedSql := strings.TrimSpace(s)
 			if trimmedSql == "" {
 				continue
 			}
-			// 使用全局writtenSqlMap进行去重，确保跨调用去重
-			if _, loaded := writtenSqlMap.LoadOrStore(trimmedSql, true); !loaded {
+			// 对于INSERT语句，不进行去重，确保所有需要的记录都被插入
+			// 对于其他类型的语句，仍然进行去重
+			if strings.HasPrefix(strings.ToUpper(trimmedSql), "INSERT INTO") {
 				uniqueSqls = append(uniqueSqls, s)
+			} else {
+				// 使用全局writtenSqlMap进行去重，确保跨调用去重
+				if _, loaded := writtenSqlMap.LoadOrStore(trimmedSql, true); !loaded {
+					uniqueSqls = append(uniqueSqls, s)
+				}
 			}
 		}
 

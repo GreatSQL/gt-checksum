@@ -57,38 +57,64 @@ func (csts CheckSumTypeStruct) Arrcmap(src, dest []string) []string {
 数据校验并输出差异性数据
 */
 func (csts CheckSumTypeStruct) Arrcmp(src []string, dest []string) ([]string, []string) { //对比数据
-	// 创建源端和目标端数据的映射，使用原始值作为键
-	srcMap := make(map[string]struct{})  // 源端数据映射
-	destMap := make(map[string]struct{}) // 目标端数据映射
+	// 创建源端和目标端数据的计数映射，记录每个值出现的次数
+	srcCount := make(map[string]int)  // 源端数据计数
+	destCount := make(map[string]int) // 目标端数据计数
 
-	// 填充源端数据映射
+	// 填充源端数据计数
 	for _, v := range src {
 		if v != "" {
-			srcMap[v] = struct{}{}
+			srcCount[v]++
 		}
 	}
 
-	// 填充目标端数据映射
+	// 填充目标端数据计数
 	for _, v := range dest {
 		if v != "" {
-			destMap[v] = struct{}{}
+			destCount[v]++
 		}
 	}
 
 	// 计算差异
 	var added, deleted []string
 
-	// added: 源端有但目标端没有的数据（需要从源端读取并插入到目标端）
-	for v := range srcMap {
-		if _, exists := destMap[v]; !exists {
-			added = append(added, v) // 使用原始值，保留尾部空格
+	// 处理需要添加的记录（考虑重复次数）
+	for v, srcNum := range srcCount {
+		destNum, exists := destCount[v]
+		if !exists || srcNum > destNum {
+			// 需要添加的数量是源端数量减去目标端数量
+			addCount := srcNum - destNum
+			if exists {
+				// 目标端存在但数量不足，需要补充
+				for i := 0; i < addCount; i++ {
+					added = append(added, v) // 使用原始值，保留尾部空格
+				}
+			} else {
+				// 目标端不存在，需要添加所有源端记录
+				for i := 0; i < srcNum; i++ {
+					added = append(added, v) // 使用原始值，保留尾部空格
+				}
+			}
 		}
 	}
 
-	// deleted: 目标端有但源端没有的数据（需要从目标端删除）
-	for v := range destMap {
-		if _, exists := srcMap[v]; !exists {
-			deleted = append(deleted, v) // 使用原始值，保留尾部空格
+	// 处理需要删除的记录（考虑重复次数）
+	for v, destNum := range destCount {
+		srcNum, exists := srcCount[v]
+		if !exists || destNum > srcNum {
+			// 需要删除的数量是目标端数量减去源端数量
+			deleteCount := destNum - srcNum
+			if exists {
+				// 源端存在但数量较少，需要删除多余的
+				for i := 0; i < deleteCount; i++ {
+					deleted = append(deleted, v) // 使用原始值，保留尾部空格
+				}
+			} else {
+				// 源端不存在，需要删除所有目标端记录
+				for i := 0; i < destNum; i++ {
+					deleted = append(deleted, v) // 使用原始值，保留尾部空格
+				}
+			}
 		}
 	}
 
