@@ -47,10 +47,11 @@ type LogS struct {
 	LogLevel string
 }
 type RepairS struct {
-	Datafix     string
-	FixTrxNum   int
-	FixFileDir  string
-	FixFileFINE *os.File
+	Datafix         string
+	FixTrxNum       int
+	FixFileDir      string
+	FixFileFINE     *os.File
+	FixFilePerTable string
 }
 type SecondaryLevel struct {
 	DsnsV   DSNsS
