@@ -323,7 +323,7 @@ func main() {
 	var otherFiles []string
 
 	for _, file := range sqlFiles {
-		if strings.Contains(file, "-DELETE.sql") {
+		if strings.Contains(file, "-DELETE") {
 			deleteFiles = append(deleteFiles, file)
 		} else {
 			otherFiles = append(otherFiles, file)

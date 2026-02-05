@@ -1616,20 +1616,52 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 						// 当总数大于fixTrxNum时，分别生成DELETE和INSERT文件
 						// 处理DELETE语句
 						if len(deleteSqls) > 0 {
-							// 生成DELETE语句文件
-							deleteFileName := fmt.Sprintf("%s/%s-DELETE.sql", sp.datafixSql, sp.table)
-							var err error
-							tableSfile, err = os.OpenFile(deleteFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-							if err != nil {
-								sp.getErr(fmt.Sprintf("Failed to open DELETE fix file %s", deleteFileName), err)
+							if sp.fixTrxNum > 0 {
+								// 计算需要的文件数量
+								totalFiles := (len(deleteSqls) + sp.fixTrxNum - 1) / sp.fixTrxNum
+								for i := 0; i < totalFiles; i++ {
+									// 计算当前批次的起始和结束索引
+									start := i * sp.fixTrxNum
+									end := start + sp.fixTrxNum
+									if end > len(deleteSqls) {
+										end = len(deleteSqls)
+									}
+									// 获取当前批次的SQL语句
+									batchSqls := deleteSqls[start:end]
+									// 创建批次文件
+									deleteFileName := fmt.Sprintf("%s/%s-DELETE-%d.sql", sp.datafixSql, sp.table, i+1)
+									var err error
+									tableSfile, err = os.OpenFile(deleteFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+									if err != nil {
+										sp.getErr(fmt.Sprintf("Failed to open DELETE fix file %s", deleteFileName), err)
+										continue
+									}
+									vlog = fmt.Sprintf("(%d) Opened DELETE fix file %s", logThreadSeq, deleteFileName)
+									global.Wlog.Debug(vlog)
+									// 处理当前批次
+									processBatch(batchSqls, sp.datafixType, tableSfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
+									// 关闭当前文件
+									if tableSfile != nil {
+										tableSfile.Close()
+										tableSfile = nil
+									}
+								}
 							} else {
-								vlog = fmt.Sprintf("(%d) Opened DELETE fix file %s", logThreadSeq, deleteFileName)
-								global.Wlog.Debug(vlog)
-								processBatch(deleteSqls, sp.datafixType, tableSfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
-								// 关闭文件
-								if tableSfile != nil {
-									tableSfile.Close()
-									tableSfile = nil
+								// 当fixTrxNum <= 0时，使用单个文件
+								deleteFileName := fmt.Sprintf("%s/%s-DELETE.sql", sp.datafixSql, sp.table)
+								var err error
+								tableSfile, err = os.OpenFile(deleteFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+								if err != nil {
+									sp.getErr(fmt.Sprintf("Failed to open DELETE fix file %s", deleteFileName), err)
+								} else {
+									vlog = fmt.Sprintf("(%d) Opened DELETE fix file %s", logThreadSeq, deleteFileName)
+									global.Wlog.Debug(vlog)
+									processBatch(deleteSqls, sp.datafixType, tableSfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
+									// 关闭文件
+									if tableSfile != nil {
+										tableSfile.Close()
+										tableSfile = nil
+									}
 								}
 							}
 						}
