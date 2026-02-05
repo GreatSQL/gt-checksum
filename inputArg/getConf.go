@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/ini.v1"
 )
@@ -257,12 +258,34 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 	}
 
 	if rc.SecondaryL.RepairV.Datafix == "file" {
-		fixFileNameValue := getLastConfigValue("fixFileName")
-		if fixFileNameValue != "" {
-			rc.SecondaryL.RepairV.FixFileName = fixFileNameValue
+		fixFileDirValue := getLastConfigValue("fixFileDir")
+		if fixFileDirValue != "" {
+			rc.SecondaryL.RepairV.FixFileDir = fixFileDirValue
 		} else {
-			rc.SecondaryL.RepairV.FixFileName = "./gt-checksum-datafix.sql"
-			fmt.Println("Using default value './gt-checksum-datafix.sql' for option fixFileName")
+			// 使用默认值：fixsql-当前时间戳
+			timestamp := time.Now().Format("20060102150405")
+			rc.SecondaryL.RepairV.FixFileDir = fmt.Sprintf("fixsql-%s", timestamp)
+			fmt.Printf("Using default value '%s' for option fixFileDir\n", rc.SecondaryL.RepairV.FixFileDir)
+		}
+
+		// 检查目录是否存在
+		if _, err := os.Stat(rc.SecondaryL.RepairV.FixFileDir); err == nil {
+			// 目录已存在，检查是否为空
+			files, err := os.ReadDir(rc.SecondaryL.RepairV.FixFileDir)
+			if err == nil && len(files) > 0 {
+				fmt.Printf("Error: Directory '%s' already exists and is not empty\n", rc.SecondaryL.RepairV.FixFileDir)
+				os.Exit(0)
+			}
+		} else if os.IsNotExist(err) {
+			// 目录不存在，创建目录
+			if err := os.MkdirAll(rc.SecondaryL.RepairV.FixFileDir, 0755); err != nil {
+				fmt.Printf("Error: Failed to create directory '%s': %v\n", rc.SecondaryL.RepairV.FixFileDir, err)
+				os.Exit(0)
+			}
+		} else {
+			// 其他错误
+			fmt.Printf("Error: Failed to check directory '%s': %v\n", rc.SecondaryL.RepairV.FixFileDir, err)
+			os.Exit(0)
 		}
 	}
 }

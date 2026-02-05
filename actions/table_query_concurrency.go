@@ -242,7 +242,7 @@ func CheckTableQuerySchedule(sdb, ddb *global.Pool, tableIndexColumnMap map[stri
 		tableIndexColumnMap:     tableIndexColumnMap,
 		tableAllCol:             tableAllCol,
 		datafixType:             m.SecondaryL.RepairV.Datafix,
-		datafixSql:              m.SecondaryL.RepairV.FixFileName,
+		datafixSql:              m.SecondaryL.RepairV.FixFileDir,
 		sdrive:                  m.SecondaryL.DsnsV.SrcDrive,
 		ddrive:                  m.SecondaryL.DsnsV.DestDrive,
 		mqQueueDepth:            m.SecondaryL.RulesV.QueueSize,
