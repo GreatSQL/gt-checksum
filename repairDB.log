@@ -1,0 +1,11 @@
+2026/02/04 15:22:13 Configuration information:
+2026/02/04 15:22:13   DstDSN: mysql|checksum:checksum@tcp(127.0.0.1:3406)/information_schema?charset=utf8mb4
+2026/02/04 15:22:13   ParallelThds: 2
+2026/02/04 15:22:13   FixFileDir: fixsql
+2026/02/04 15:22:13   LogFile: repairDB.log
+2026/02/04 15:22:13 Found 0 DELETE files, 1 other SQL files
+2026/02/04 15:22:13 Starting parallel execution of other SQL files, concurrency: 2
+2026/02/04 15:22:13 Starting to execute SQL file: fixsql/t6.sql
+2026/02/04 15:22:13 Successfully executed SQL file fixsql/t6.sql, time taken: 998.804µs
+2026/02/04 15:22:13 Other SQL files execution completed
+2026/02/04 15:22:13 All SQL files execution completed, total time taken: 1.51624ms
