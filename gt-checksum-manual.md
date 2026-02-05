@@ -124,7 +124,7 @@ sbtest  F1              Function        no      no
 ...
 ```
 
-虽然在 DIFFS 列中提示部分存储函数存在差异，但却都无法生成修复SQL，需要DBA介入判断后进行修复。
+虽然在 Diffs 列中提示部分存储函数存在差异，但却都无法生成修复SQL，需要DBA介入判断后进行修复。
 
 ## 配置参数详解
 
@@ -190,6 +190,119 @@ $ go build -o gt-checksum gt-checksum.go
 ```bash
 $ chmod +x gt-checksum
 $ mv gt-checksum /usr/local/bin
+```
+
+## repairDB自动修复工具使用说明
+
+### 工具简介
+
+**repairDB** 工具用于执行SQL修复文件，支持批量执行SQL文件并自动处理事务。
+
+### 编译方法
+
+**repairDB** 工具采用Go语言开发，您可以下载源码编译生成二进制文件。
+
+编译环境要求使用golang 1.17及以上版本，请先行配置好Go编译环境。
+
+请参考下面方法下载源码并进行编译：
+
+```bash
+$ git clone https://gitee.com/GreatSQL/gt-checksum.git
+$ cd gt-checksum
+$ go build -o repairDB repairDB.go
+```
+
+编译完成后，将编译好的二进制文件拷贝到系统PATH路径下，即可使用：
+
+```bash
+$ chmod +x repairDB
+$ mv repairDB /usr/local/bin
+```
+
+### 使用方法
+
+**repairDB** 支持两种使用方式：
+
+#### 1. 直接指定目录执行
+
+执行 `./repairDB fixsql` 表示从 `fixsql` 目录中读取SQL文件执行修复，而不读取 `gc.conf` 中的 fixFileDir 参数。
+
+示例：
+
+```bash
+$ ./repairDB ./myfixsql
+```
+
+#### 2. 使用配置文件执行
+
+执行 `./repairDB` 则先读取 `gc.conf` 中的配置参数 `fixFileDir`，如果该参数有相应的配置值，则从该参数值中读取SQL文件修复；如果没有相应的参数值，则报错退出。
+
+示例：
+
+```bash
+$ ./repairDB
+```
+
+### 配置文件参数说明
+
+**repairDB** 工具使用的配置文件与 **gt-checksum** 工具相同，主要关注以下几个参数：
+
+| 参数名 | 类型 | 默认值 | 说明 |
+|-------|------|-------|------|
+| dstDSN | string | 无 | 目标数据库连接字符串，格式为 `mysql|user:password@tcp(host:port)/db?params` |
+| parallelThds | int | 4 | 并行执行SQL文件的线程数 |
+| fixFileDir | string | ./fixsql | 存放修复SQL文件的目录 |
+
+### 执行流程
+
+1. 读取配置文件或命令行参数（命令行参数只能指定fixsql所在目录，不支持指定其他参数）；
+2. 连接目标数据库（dstDSN对应的数据库实例）；
+3. 扫描指定目录下的所有 `.sql` 文件；
+4. 优先执行包含 `-DELETE.sql` 的文件；
+5. 然后执行其他SQL文件；
+6. 每个SQL文件在一个独立的事务中执行；；
+7. 执行完成后输出执行结果。
+
+### 注意事项
+
+1. **数据库权限**：执行 **repairDB** 工具的数据库账户需要具备执行SQL文件中包含的SQL语句的权限。
+
+2. **SQL文件格式**：SQL文件可以包含多行SQL命令，工具会自动按分号分割并逐个执行。
+
+3. **事务管理**：每个SQL文件在一个独立的事务中执行，确保所有语句要么全部成功，要么全部回滚。
+
+4. **执行顺序**：工具会优先执行删除操作的SQL文件（x-DELETE.sql文件），然后执行其他操作的SQL文件，确保数据一致性。
+
+5. **错误处理**：如果执行过程中遇到错误，工具会停止执行并输出错误信息。
+
+6. **目录存在性**：工具会检查指定的 `fixFileDir` 目录是否存在，如果不存在则报错退出。
+
+### 示例输出
+程序执行过程中的输出会记录到repairDB.log文件中，示例如下：
+```bash
+$ ./repairDB ./myfixsql && cat ./repairDB.log
+
+2026/01/29 10:00:00 Configuration information:
+2026/01/29 10:00:00   DstDSN: mysql|checksum:Checksum@3306@tcp(127.0.0.1:3306)/sbtest?charset=utf8mb4
+2026/01/29 10:00:00   ParallelThds: 4
+2026/01/29 10:00:00   FixFileDir: ./myfixsql
+2026/01/29 10:00:00   LogFile: repairDB.log
+2026/01/29 10:00:00 Found 2 DELETE files, 3 other SQL files
+2026/01/29 10:00:00 Starting to execute DELETE files
+2026/01/29 10:00:00 Starting to execute SQL file: ./myfixsql/t1-DELETE.sql
+2026/01/29 10:00:00 Successfully executed SQL file ./myfixsql/t1-DELETE.sql, time taken: 10ms
+2026/01/29 10:00:00 Starting to execute SQL file: ./myfixsql/t2-DELETE.sql
+2026/01/29 10:00:00 Successfully executed SQL file ./myfixsql/t2-DELETE.sql, time taken: 8ms
+2026/01/29 10:00:00 DELETE files execution completed
+2026/01/29 10:00:00 Starting parallel execution of other SQL files, concurrency: 4
+2026/01/29 10:00:00 Starting to execute SQL file: ./myfixsql/t1-INSERT.sql
+2026/01/29 10:00:00 Starting to execute SQL file: ./myfixsql/t2-INSERT.sql
+2026/01/29 10:00:00 Starting to execute SQL file: ./myfixsql/t3-INSERT.sql
+2026/01/29 10:00:00 Successfully executed SQL file ./myfixsql/t1-INSERT.sql, time taken: 12ms
+2026/01/29 10:00:00 Successfully executed SQL file ./myfixsql/t2-INSERT.sql, time taken: 10ms
+2026/01/29 10:00:00 Successfully executed SQL file ./myfixsql/t3-INSERT.sql, time taken: 9ms
+2026/01/29 10:00:00 Other SQL files execution completed
+2026/01/29 10:00:00 All SQL files execution completed
 ```
 
 ## 已知缺陷/问题

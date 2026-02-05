@@ -2,6 +2,8 @@
 - 配置文件中去掉"[DSNs],[Schema]"等一级标签
 - 配置文件中存在重复配置参数时，只读取最后一条
 - 修改fixFileName名修改为fixFileDir，用于自定义修复SQL文件存放目录；该目录名以"fixsql-时间戳"，会自动创建；并且当该目录不为空时会报错退出
+- 新增参数fixFilePerTable，设置为ON时，针对每个表生成独立的SQL文件，并且按照fixTrxNum切分成多个子文件，便于并行修复；默认值为OFF，即所有修复SQL语句都合并到一个文件中
+- 新增repairDB程序，读取gc.conf配置参数，读取fixFileDir目录下所有.sql文件，完成并行修复数据库；也可以自行指定修复SQL文件目录，例如 repairDB ./my-fixsql-dir
 - Bugs fixed
   - 修复了ignoreTables参数无效问题
 
