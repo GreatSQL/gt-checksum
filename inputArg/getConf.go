@@ -2,6 +2,8 @@ package inputArg
 
 import (
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
 
 	"gopkg.in/ini.v1"
@@ -12,84 +14,71 @@ func (rc *ConfigParameter) LevelParameterCheck() {
 	var (
 		err error
 	)
-	if rc.FirstL.DSNs, err = rc.ConfFine.GetSection("DSNs"); rc.FirstL.DSNs == nil && err != nil {
-		rc.getErr("Failed to set [DSNs] options", err)
-	}
-	if rc.FirstL.Schema, err = rc.ConfFine.GetSection("Schema"); rc.FirstL.Schema == nil && err != nil {
-		rc.getErr("Failed to set [Schema] options", err)
-	}
+
+	// 直接使用默认section，不再处理具体的section标签
+	defaultSection := rc.ConfFine.Section("")
+
 	//Source Destination connection 获取jdbc连接信息
 	for _, i := range []string{"srcDSN", "dstDSN"} {
-		if _, err = rc.FirstL.DSNs.GetKey(i); err != nil {
-			rc.getErr(fmt.Sprintf("Failed to set option %s", i), err)
-		}
-	}
-	//Schema 获取校验库表信息
-	for _, i := range []string{"tables"} {
-		if _, err = rc.FirstL.Schema.GetKey(i); err != nil {
+		if _, err = defaultSection.GetKey(i); err != nil {
 			rc.getErr(fmt.Sprintf("Failed to set option %s", i), err)
 		}
 	}
 
-	if rc.FirstL.Logs, err = rc.ConfFine.GetSection("Logs"); rc.FirstL.Logs == nil && err != nil {
-		fmt.Println("Using default values for [Logs] options")
-	}
-	if rc.FirstL.Rules, err = rc.ConfFine.GetSection("Rules"); rc.FirstL.Rules == nil && err != nil {
-		fmt.Println("Using default values for [Rules] options")
-	}
-	if rc.FirstL.Repair, err = rc.ConfFine.GetSection("Repair"); rc.FirstL.Repair == nil && err != nil {
-		fmt.Println("Using default values for [Repair] options")
-	}
-	// 已删除对[Struct]区间参数的读取
 	//Schema 获取校验库表信息
-	for _, i := range []string{"checkNoIndexTable", "caseSensitiveObjectName"} {
-		if _, err = rc.FirstL.Schema.GetKey(i); err != nil {
-			fmt.Println(fmt.Sprintf("Using default value for option %s", i))
+	for _, i := range []string{"tables"} {
+		if _, err = defaultSection.GetKey(i); err != nil {
+			rc.getErr(fmt.Sprintf("Failed to set option %s", i), err)
 		}
 	}
-	//Logs 二级参数信息
-	if rc.FirstL.Logs != nil {
-		for _, i := range []string{"logFile", "logLevel"} {
-			if _, err = rc.FirstL.Logs.GetKey(i); err != nil {
-				fmt.Printf("Failed to set option %s, using default value\n", i)
-			}
-		}
-	}
-	//Rules 二级参数检测
-	if rc.FirstL.Rules != nil {
-		for _, i := range []string{"parallelThds", "queueSize", "checkObject", "chunkSize", "memoryLimit"} {
-			if _, err = rc.FirstL.Rules.GetKey(i); err != nil {
-				fmt.Printf("Failed to set option %s, using default value\n", i)
-			}
-		}
-	}
-	// 已删除Struct二级参数检测
-	//Repair 二级参数校验
-	if rc.FirstL.Repair != nil {
-		for _, i := range []string{"datafix", "fixTrxNum", "fixFileName"} {
-			if _, err = rc.FirstL.Repair.GetKey(i); err != nil {
-				fmt.Printf("Failed to set option %s, using default value\n", i)
-			}
-		}
-	}
+
+	// 其他参数为可选，使用默认值
 }
 
 /*
 二级参数值获取校验
 */
 func (rc *ConfigParameter) secondaryLevelParameterCheck() {
-	var (
-		err error
-	)
+	// 直接使用默认section，不再处理具体的section标签
+	defaultSection := rc.ConfFine.Section("")
+
+	// 通用函数：从配置文件中读取指定参数的最后一个值
+	getLastConfigValue := func(paramName string) string {
+		if content, err := os.ReadFile(rc.Config); err == nil {
+			lines := strings.Split(string(content), "\n")
+			var value string
+			for _, line := range lines {
+				// 忽略注释和空行
+				line = strings.TrimSpace(line)
+				if line == "" || strings.HasPrefix(line, ";") {
+					continue
+				}
+				// 检查是否是目标参数
+				prefix := paramName + "="
+				if strings.HasPrefix(line, prefix) {
+					// 提取值
+					value = strings.TrimSpace(strings.TrimPrefix(line, prefix))
+				}
+			}
+			return value
+		}
+		// 如果读取文件失败，回退到原来的方法
+		key := defaultSection.Key(paramName)
+		return strings.TrimSpace(key.String())
+	}
+
 	//Source Destination connection 获取jdbc连接信息
-	rc.SecondaryL.DsnsV.SrcDSN = rc.FirstL.DSNs.Key("srcDSN").String() // 将结果转为string
+	srcDSNValue := getLastConfigValue("srcDSN")
+	rc.SecondaryL.DsnsV.SrcDSN = srcDSNValue
 	if strings.Contains(rc.SecondaryL.DsnsV.SrcDSN, "|") {
 		rc.SecondaryL.DsnsV.SrcDrive = strings.Split(rc.SecondaryL.DsnsV.SrcDSN, "|")[0]
 		rc.SecondaryL.DsnsV.SrcJdbc = strings.Split(rc.SecondaryL.DsnsV.SrcDSN, "|")[1]
 	} else {
 		rc.SecondaryL.DsnsV.SrcJdbc = rc.SecondaryL.DsnsV.SrcDSN
 	}
-	rc.SecondaryL.DsnsV.DstDSN = rc.FirstL.DSNs.Key("dstDSN").String()
+
+	dstDSNValue := getLastConfigValue("dstDSN")
+	rc.SecondaryL.DsnsV.DstDSN = dstDSNValue
 	if strings.Contains(rc.SecondaryL.DsnsV.DstDSN, "|") {
 		rc.SecondaryL.DsnsV.DestDrive = strings.Split(rc.SecondaryL.DsnsV.DstDSN, "|")[0]
 		rc.SecondaryL.DsnsV.DestJdbc = strings.Split(rc.SecondaryL.DsnsV.DstDSN, "|")[1]
@@ -98,34 +87,54 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 	}
 
 	//校验库表设置
-	rc.SecondaryL.SchemaV.Tables = strings.TrimSpace(rc.FirstL.Schema.Key("tables").String())
-	rc.SecondaryL.SchemaV.IgnoreTables = strings.TrimSpace(rc.FirstL.Schema.Key("ignoreTables").String())
-	if rc.SecondaryL.SchemaV.IgnoreTables == "" {
+	tablesValue := getLastConfigValue("tables")
+	if tablesValue != "" {
+		rc.SecondaryL.SchemaV.Tables = tablesValue
+	}
+
+	ignoreTablesValue := getLastConfigValue("ignoreTables")
+	if ignoreTablesValue != "" {
+		rc.SecondaryL.SchemaV.IgnoreTables = ignoreTablesValue
+	} else {
 		rc.SecondaryL.SchemaV.IgnoreTables = "nil"
 	}
 
-	rc.SecondaryL.SchemaV.CaseSensitiveObjectName = rc.FirstL.Schema.Key("caseSensitiveObjectName").In("no", []string{"yes", "no"})
-	rc.SecondaryL.SchemaV.CheckNoIndexTable = rc.FirstL.Schema.Key("checkNoIndexTable").In("no", []string{"yes", "no"})
+	caseSensitiveObjectNameValue := getLastConfigValue("caseSensitiveObjectName")
+	if caseSensitiveObjectNameValue != "" {
+		rc.SecondaryL.SchemaV.CaseSensitiveObjectName = caseSensitiveObjectNameValue
+	} else {
+		rc.SecondaryL.SchemaV.CaseSensitiveObjectName = "no"
+	}
+
+	checkNoIndexTableValue := getLastConfigValue("checkNoIndexTable")
+	if checkNoIndexTableValue != "" {
+		rc.SecondaryL.SchemaV.CheckNoIndexTable = checkNoIndexTableValue
+	} else {
+		rc.SecondaryL.SchemaV.CheckNoIndexTable = "no"
+	}
 
 	//Logs 获取相关参数
-	if rc.FirstL.Logs != nil {
-		rc.SecondaryL.LogV.LogFile = rc.FirstL.Logs.Key("logFile").String()
-		if rc.SecondaryL.LogV.LogFile == "" {
-			rc.SecondaryL.LogV.LogFile = "./gt-checksum.log"
-			fmt.Println("Using default value './gt-checksum.log' for option LogFile")
-		}
+	logFileValue := getLastConfigValue("logFile")
+	if logFileValue != "" {
+		rc.SecondaryL.LogV.LogFile = logFileValue
 	} else {
 		rc.SecondaryL.LogV.LogFile = "./gt-checksum.log"
 		fmt.Println("Using default value './gt-checksum.log' for option LogFile")
 	}
-	if rc.FirstL.Logs != nil {
-		rc.SecondaryL.LogV.LogLevel = rc.FirstL.Logs.Key("logLevel").In("info", []string{"debug", "info", "warn", "error"})
+
+	logLevelValue := getLastConfigValue("logLevel")
+	if logLevelValue != "" {
+		rc.SecondaryL.LogV.LogLevel = logLevelValue
 	} else {
 		rc.SecondaryL.LogV.LogLevel = "info"
 	}
 
-	if rc.FirstL.Rules != nil {
-		if rc.SecondaryL.RulesV.ParallelThds, err = rc.FirstL.Rules.Key("parallelThds").Int(); err != nil {
+	//Rules 获取相关参数
+	parallelThdsValue := getLastConfigValue("parallelThds")
+	if parallelThdsValue != "" {
+		if val, err := strconv.Atoi(parallelThdsValue); err == nil {
+			rc.SecondaryL.RulesV.ParallelThds = val
+		} else {
 			fmt.Println("Using default value '10' for option parallelThds")
 			rc.SecondaryL.RulesV.ParallelThds = 10
 		}
@@ -133,8 +142,12 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 		fmt.Println("Using default value '10' for option parallelThds")
 		rc.SecondaryL.RulesV.ParallelThds = 10
 	}
-	if rc.FirstL.Rules != nil {
-		if rc.SecondaryL.RulesV.ChanRowCount, err = rc.FirstL.Rules.Key("chunkSize").Int(); err != nil {
+
+	chunkSizeValue := getLastConfigValue("chunkSize")
+	if chunkSizeValue != "" {
+		if val, err := strconv.Atoi(chunkSizeValue); err == nil {
+			rc.SecondaryL.RulesV.ChanRowCount = val
+		} else {
 			fmt.Println("Using default value '1000' for option chunkSize")
 			rc.SecondaryL.RulesV.ChanRowCount = 1000
 		}
@@ -142,8 +155,12 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 		fmt.Println("Using default value '1000' for option chunkSize")
 		rc.SecondaryL.RulesV.ChanRowCount = 1000
 	}
-	if rc.FirstL.Rules != nil {
-		if rc.SecondaryL.RulesV.QueueSize, err = rc.FirstL.Rules.Key("queueSize").Int(); err != nil {
+
+	queueSizeValue := getLastConfigValue("queueSize")
+	if queueSizeValue != "" {
+		if val, err := strconv.Atoi(queueSizeValue); err == nil {
+			rc.SecondaryL.RulesV.QueueSize = val
+		} else {
 			fmt.Println("Using default value '100' for option queueSize")
 			rc.SecondaryL.RulesV.QueueSize = 1000
 		}
@@ -152,30 +169,33 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 		rc.SecondaryL.RulesV.QueueSize = 1000
 	}
 
-	if rc.FirstL.Rules != nil {
-		// 获取用户设置的原始值
-		userSetCheckObject := rc.FirstL.Rules.Key("checkObject").String()
-
+	checkObjectValue := getLastConfigValue("checkObject")
+	if checkObjectValue != "" {
 		// 检查是否使用了已废弃的func或proc选项
-		if userSetCheckObject == "func" || userSetCheckObject == "proc" {
+		if checkObjectValue == "func" || checkObjectValue == "proc" {
 			// 将其强制改为默认的data，并发出info级别的提示
-			fmt.Printf("Warning: checkObject value '%s' is deprecated. Using default value 'data' instead. Consider using 'routine' for checking stored procedures and functions.\n", userSetCheckObject)
+			fmt.Printf("Warning: checkObject value '%s' is deprecated. Using default value 'data' instead. Consider using 'routine' for checking stored procedures and functions.\n", checkObjectValue)
 			rc.SecondaryL.RulesV.CheckObject = "data"
-			// 在这里不记录日志，因为日志系统可能还没有完全初始化
-			// 我们会在checkPar函数中再次记录这个信息
 		} else {
-			// 获取验证后的值（如果无效则使用默认值"data"）
-			// 注意：index, partitions, foreign 已被合并到 struct 中，func和proc已被废弃
-			rc.SecondaryL.RulesV.CheckObject = rc.FirstL.Rules.Key("checkObject").In("data", []string{"data", "struct", "trigger", "routine"})
-
-			// 如果用户设置了值但与验证后的值不同，说明使用了默认值
-			if userSetCheckObject != "" && userSetCheckObject != rc.SecondaryL.RulesV.CheckObject {
+			// 验证值是否有效
+			validValues := []string{"data", "struct", "trigger", "routine"}
+			valid := false
+			for _, v := range validValues {
+				if checkObjectValue == v {
+					valid = true
+					break
+				}
+			}
+			if valid {
+				rc.SecondaryL.RulesV.CheckObject = checkObjectValue
+			} else {
 				// 检查是否使用了已合并到struct的选项
-				if userSetCheckObject == "index" || userSetCheckObject == "partitions" || userSetCheckObject == "foreign" {
-					fmt.Printf("Note: checkObject value '%s' has been merged into 'struct'. Using 'struct' instead.\n", userSetCheckObject)
+				if checkObjectValue == "index" || checkObjectValue == "partitions" || checkObjectValue == "foreign" {
+					fmt.Printf("Note: checkObject value '%s' has been merged into 'struct'. Using 'struct' instead.\n", checkObjectValue)
 					rc.SecondaryL.RulesV.CheckObject = "struct"
 				} else {
-					fmt.Printf("Warning: Invalid checkObject value '%s', using default value 'data' instead\n", userSetCheckObject)
+					fmt.Printf("Warning: Invalid checkObject value '%s', using default value 'data' instead\n", checkObjectValue)
+					rc.SecondaryL.RulesV.CheckObject = "data"
 				}
 			}
 		}
@@ -185,14 +205,16 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 			// 在内部记录这是一个组合检查（同时检查proc和func）
 			rc.SecondaryL.RulesV.IsRoutineCheck = true
 		}
-
-		// 删除对checkMode和ratio参数的解析，始终使用rows模式（全量校验）
 	} else {
 		fmt.Println("Using default value 'data' for option checkObject")
 		rc.SecondaryL.RulesV.CheckObject = "data"
 	}
-	if rc.FirstL.Rules != nil {
-		if rc.SecondaryL.RulesV.MemoryLimit, err = rc.FirstL.Rules.Key("memoryLimit").Int(); err != nil {
+
+	memoryLimitValue := getLastConfigValue("memoryLimit")
+	if memoryLimitValue != "" {
+		if val, err := strconv.Atoi(memoryLimitValue); err == nil {
+			rc.SecondaryL.RulesV.MemoryLimit = val
+		} else {
 			fmt.Println("Using default value '1024' for option memoryLimit")
 			rc.SecondaryL.RulesV.MemoryLimit = 1024
 		}
@@ -201,8 +223,12 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 		rc.SecondaryL.RulesV.MemoryLimit = 1024
 	}
 
-	if rc.FirstL.Repair != nil {
-		if rc.SecondaryL.RepairV.FixTrxNum, err = rc.FirstL.Repair.Key("fixTrxNum").Int(); err != nil {
+	//Repair 获取相关参数
+	fixTrxNumValue := getLastConfigValue("fixTrxNum")
+	if fixTrxNumValue != "" {
+		if val, err := strconv.Atoi(fixTrxNumValue); err == nil {
+			rc.SecondaryL.RepairV.FixTrxNum = val
+		} else {
 			fmt.Println("Using default value '1000' for option fixTrxNum")
 			rc.SecondaryL.RepairV.FixTrxNum = 1000
 		}
@@ -210,22 +236,33 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 		fmt.Println("Using default value '1000' for option fixTrxNum")
 		rc.SecondaryL.RepairV.FixTrxNum = 1000
 	}
-	if rc.FirstL.Repair != nil {
-		rc.SecondaryL.RepairV.Datafix = rc.FirstL.Repair.Key("datafix").In("file", []string{"file", "table"})
+
+	datafixValue := getLastConfigValue("datafix")
+	if datafixValue != "" {
+		validValues := []string{"file", "table"}
+		valid := false
+		for _, v := range validValues {
+			if datafixValue == v {
+				valid = true
+				break
+			}
+		}
+		if valid {
+			rc.SecondaryL.RepairV.Datafix = datafixValue
+		} else {
+			rc.SecondaryL.RepairV.Datafix = "file"
+		}
 	} else {
 		rc.SecondaryL.RepairV.Datafix = "file"
 	}
+
 	if rc.SecondaryL.RepairV.Datafix == "file" {
-		if rc.FirstL.Repair != nil {
-			if _, err = rc.FirstL.Repair.GetKey("fixFileName"); err != nil {
-				fmt.Println("Using default value './gt-checksum-datafix.sql' for option fixFileName")
-				rc.SecondaryL.RepairV.FixFileName = "./gt-checksum-datafix.sql"
-			} else {
-				rc.SecondaryL.RepairV.FixFileName = rc.FirstL.Repair.Key("fixFileName").String()
-			}
+		fixFileNameValue := getLastConfigValue("fixFileName")
+		if fixFileNameValue != "" {
+			rc.SecondaryL.RepairV.FixFileName = fixFileNameValue
 		} else {
-			fmt.Println("Using default value './gt-checksum-datafix.sql' for option fixFileName")
 			rc.SecondaryL.RepairV.FixFileName = "./gt-checksum-datafix.sql"
+			fmt.Println("Using default value './gt-checksum-datafix.sql' for option fixFileName")
 		}
 	}
 }
@@ -237,9 +274,31 @@ func (rc *ConfigParameter) GetConfig() {
 	var (
 		err error
 	)
+
+	// 检查配置文件是否包含section标签（如[DSNs], [Schema]等）
+	if content, err := os.ReadFile(rc.Config); err == nil {
+		lines := strings.Split(string(content), "\n")
+		var sections []string
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+				sections = append(sections, line)
+			}
+		}
+		if len(sections) > 0 {
+			fmt.Println("Error: Found unrecognized configuration sections:", strings.Join(sections, ", "))
+			fmt.Println("Please remove these sections and set parameters directly without section tags.")
+			os.Exit(0)
+		}
+	}
+
 	//读取配置文件信息
 	//处理配置文件中的特殊字符
-	rc.ConfFine, err = ini.LoadSources(ini.LoadOptions{IgnoreInlineComment: true}, rc.Config)
+	rc.ConfFine, err = ini.LoadSources(ini.LoadOptions{
+		IgnoreInlineComment:    true,
+		AllowNonUniqueSections: true,
+		AllowShadows:           true,
+	}, rc.Config)
 	if err != nil {
 		rc.getErr("configuration file error.", err)
 	}

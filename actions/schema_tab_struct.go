@@ -1246,11 +1246,10 @@ func (stcls *schemaTable) FuzzyMatchingDispos(dbCheckNameList map[string]int, Ft
 							global.Wlog.Debug(vlog)
 						}
 					} else { // 处理schema.table
-						if strings.EqualFold(dbTableName, table) {
-							f[fmt.Sprintf("%s.%s", dbSchema, dbTableName)]++
-							vlog = fmt.Sprintf("Added exact table match: %s.%s", dbSchema, dbTableName)
-							global.Wlog.Debug(vlog)
-						}
+						// 对于精确表名匹配，直接添加到结果中，不依赖于dbCheckNameList
+						f[fmt.Sprintf("%s.%s", dbSchema, table)]++
+						vlog = fmt.Sprintf("Added exact table match: %s.%s", dbSchema, table)
+						global.Wlog.Debug(vlog)
 					}
 				}
 			}
@@ -1450,10 +1449,21 @@ func (stcls *schemaTable) SchemaTableFilter(logThreadSeq1, logThreadSeq2 int64) 
 			if strings.HasSuffix(pattern, ".*") {
 				srcDB := strings.TrimSuffix(pattern, ".*")
 
+				// 处理忽略表
+				ignoreSchema := stcls.FuzzyMatchingDispos(dbCheckNameList, stcls.ignoreTable, logThreadSeq1)
+
 				// 获取该库中的所有表
 				for dbName, _ := range dbCheckNameList {
 					if strings.HasPrefix(dbName, srcDB+"/*schema&table*/") {
 						tableName := strings.TrimPrefix(dbName, srcDB+"/*schema&table*/")
+
+						// 检查该表是否在忽略列表中
+						tableKey := fmt.Sprintf("%s.%s", srcDB, tableName)
+						if _, ignored := ignoreSchema[tableKey]; ignored {
+							vlog = fmt.Sprintf("Ignoring table: %s.%s", srcDB, tableName)
+							global.Wlog.Debug(vlog)
+							continue
+						}
 
 						// 创建表映射（源端和目标端相同）
 						mapping := TableMapping{
@@ -1474,6 +1484,17 @@ func (stcls *schemaTable) SchemaTableFilter(logThreadSeq1, logThreadSeq2 int64) 
 				if len(parts) == 2 {
 					srcDB := parts[0]
 					srcTable := parts[1]
+
+					// 处理忽略表
+					ignoreSchema := stcls.FuzzyMatchingDispos(dbCheckNameList, stcls.ignoreTable, logThreadSeq1)
+
+					// 检查该表是否在忽略列表中
+					tableKey := fmt.Sprintf("%s.%s", srcDB, srcTable)
+					if _, ignored := ignoreSchema[tableKey]; ignored {
+						vlog = fmt.Sprintf("Ignoring table: %s.%s", srcDB, srcTable)
+						global.Wlog.Debug(vlog)
+						continue
+					}
 
 					// 创建表映射（源端和目标端相同）
 					mapping := TableMapping{
