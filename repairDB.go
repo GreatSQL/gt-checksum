@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
@@ -35,7 +34,7 @@ var (
 // Parse config file
 func parseConfig(confFile string) error {
 	// Read config file content
-	content, err := ioutil.ReadFile(confFile)
+	content, err := os.ReadFile(confFile)
 	if err != nil {
 		return fmt.Errorf("Failed to read config file: %v", err)
 	}
@@ -99,7 +98,7 @@ func parseDSN(dsn string) string {
 // Execute SQL file
 func executeSQLFile(db *sql.DB, sqlFile string) error {
 	// Read SQL file content
-	content, err := ioutil.ReadFile(sqlFile)
+	content, err := os.ReadFile(sqlFile)
 	if err != nil {
 		return fmt.Errorf("Failed to read SQL file: %v", err)
 	}
@@ -166,6 +165,7 @@ func parallelExecuteSQLFiles(files []string, dsn string) {
 			// Record start time
 			startTime := time.Now()
 			log.Printf("Starting to execute SQL file: %s\n", sqlFile)
+			fmt.Printf("Starting to execute SQL file: %s\n", sqlFile)
 
 			// Execute SQL file
 			err := executeSQLFile(db, sqlFile)
@@ -173,6 +173,7 @@ func parallelExecuteSQLFiles(files []string, dsn string) {
 				log.Printf("Failed to execute SQL file %s: %v\n", sqlFile, err)
 			} else {
 				log.Printf("Successfully executed SQL file %s, time taken: %v\n", sqlFile, time.Since(startTime))
+				fmt.Printf("Successfully executed SQL file %s, time taken: %v\n", sqlFile, time.Since(startTime))
 			}
 		}(file)
 	}
@@ -245,7 +246,7 @@ func main() {
 	}
 
 	// Quick check if fixFileDir directory is empty
-	entries, err := ioutil.ReadDir(config.FixFileDir)
+	entries, err := os.ReadDir(config.FixFileDir)
 	if err != nil {
 		log.Printf("Failed to read directory: %v\n", err)
 		fmt.Println("repairDB execution failed")
@@ -335,26 +336,38 @@ func main() {
 
 	// Print file information
 	log.Printf("Found %d DELETE files, %d other SQL files\n", len(deleteFiles), len(otherFiles))
+	fmt.Printf("Found %d DELETE files, %d other SQL files\n", len(deleteFiles), len(otherFiles))
 
 	// Initialize semaphore
 	sem = make(chan struct{}, config.ParallelThds)
 
+	// Start timing
+	startTime := time.Now()
+
 	// Execute DELETE files
 	if len(deleteFiles) > 0 {
-		log.Printf("Starting to execute DELETE files\n")
+		log.Printf("Starting parallel execution of DELETE files, concurrency: %d\n", config.ParallelThds)
+		fmt.Printf("Starting parallel execution of DELETE files, concurrency: %d\n", config.ParallelThds)
 		dsn := parseDSN(config.DstDSN)
 		parallelExecuteSQLFiles(deleteFiles, dsn)
 		log.Printf("DELETE files execution completed\n")
+		fmt.Printf("DELETE files execution completed\n")
 	}
 
 	// Execute other SQL files
 	if len(otherFiles) > 0 {
 		log.Printf("Starting parallel execution of other SQL files, concurrency: %d\n", config.ParallelThds)
+		fmt.Printf("Starting parallel execution of other SQL files, concurrency: %d\n", config.ParallelThds)
 		dsn := parseDSN(config.DstDSN)
 		parallelExecuteSQLFiles(otherFiles, dsn)
 		log.Printf("Other SQL files execution completed\n")
+		fmt.Printf("Other SQL files execution completed\n")
 	}
 
-	log.Printf("All SQL files execution completed\n")
+	// Calculate total time
+	totalTime := time.Since(startTime)
+
+	log.Printf("All SQL files execution completed, total time taken: %v\n", totalTime)
+	fmt.Printf("All SQL files execution completed, total time taken: %v\n", totalTime)
 	fmt.Println("repairDB executed successfully")
 }
