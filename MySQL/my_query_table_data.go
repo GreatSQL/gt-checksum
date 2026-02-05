@@ -306,7 +306,7 @@ func (my QueryTable) FloatTypeQueryDispos(db *sql.DB, where string, logThreadSeq
 		return "", err
 	}
 	var C = make(map[string]string)
-	whereExist = fmt.Sprintf("where %v", where)
+	whereExist = where
 	for _, i := range strings.Split(where, "and") {
 		if strings.Contains(i, " = ") {
 			C[strings.ToUpper(strings.TrimSpace(strings.Split(i, " = ")[0]))] = strings.TrimSpace(strings.Split(i, " = ")[1])
@@ -317,11 +317,11 @@ func (my QueryTable) FloatTypeQueryDispos(db *sql.DB, where string, logThreadSeq
 			if strings.Contains(fmt.Sprintf("%v", i["dataType"]), "float") {
 				D := strings.Split(fmt.Sprintf("%v", i["dataType"]), ",")
 				Place := D[1][:strings.Index(D[1], ")")]
-				whereExist = fmt.Sprintf("where %s ", strings.ReplaceAll(where, fmt.Sprintf("%v = %v", i["columnName"], V), fmt.Sprintf("format(%v,%v) = format(%v,%v)", i["columnName"], Place, V, Place)))
+				whereExist = strings.ReplaceAll(where, fmt.Sprintf("%v = %v", i["columnName"], V), fmt.Sprintf("format(%v,%v) = format(%v,%v)", i["columnName"], Place, V, Place))
 			}
 		}
 	}
-	return whereExist, nil
+	return fmt.Sprintf("WHERE %s ", whereExist), nil
 }
 
 /*
@@ -353,14 +353,15 @@ func (my QueryTable) TmpTableColumnGroupDataDispos(db *sql.DB, where string, col
 	if err != nil {
 		return nil, err
 	}
-	whereExist = where
+	whereExist = ""
 	if where != "" {
-		whereExist = fmt.Sprintf("WHERE %s ", where)
 		if strings.Contains(version, "5.7") {
 			whereExist, err = my.FloatTypeQueryDispos(db, where, logThreadSeq)
 			if err != nil {
 				return nil, err
 			}
+		} else {
+			whereExist = fmt.Sprintf("WHERE %s ", where)
 		}
 	}
 	// 修复：对于复合主键，查询所有唯一值，而不是分组后的值

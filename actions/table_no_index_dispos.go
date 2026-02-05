@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"gt-checksum/dbExec"
 	"gt-checksum/global"
+	"gt-checksum/inputArg"
 	"strings"
 	"sync"
 	"time"
@@ -644,8 +645,54 @@ func (sp *SchedulePlan) getExactRowCount(dbPool *global.Pool, schema, table stri
 	}
 
 	var count int64
-	query := fmt.Sprintf("SELECT COUNT(*) FROM `%s`.`%s`", targetSchema, table)
-	vlog := fmt.Sprintf("(%d) Executing row count query: %s", logThreadSeq, query)
+	var query string
+	var vlog string
+
+	// 获取全局配置中的sqlWhere条件
+	globalConfig := inputArg.GetGlobalConfig()
+	if globalConfig != nil && globalConfig.SecondaryL.SchemaV.SqlWhere != "" {
+		// 检查表中是否存在WHERE条件中引用的所有列
+		// 提取WHERE条件中的所有列名
+		columns := extractColumnsFromWhere(globalConfig.SecondaryL.SchemaV.SqlWhere)
+		if len(columns) > 0 {
+			// 检查每个列是否在表中存在
+			allColumnsExist := true
+			for _, column := range columns {
+				// 构建查询检查列是否存在
+				checkQuery := fmt.Sprintf("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = '%s' AND table_name = '%s' AND column_name = '%s'", targetSchema, table, column)
+				var count int
+				err := db.QueryRow(checkQuery).Scan(&count)
+				if err != nil {
+					vlog = fmt.Sprintf("(%d) Failed to check if column %s exists in table %s.%s: %v", logThreadSeq, column, targetSchema, table, err)
+					global.Wlog.Error(vlog)
+					allColumnsExist = false
+					break
+				}
+				if count == 0 {
+					vlog = fmt.Sprintf("(%d) Column %s does not exist in table %s.%s", logThreadSeq, column, targetSchema, table)
+					global.Wlog.Warn(vlog)
+					allColumnsExist = false
+					break
+				}
+			}
+			if !allColumnsExist {
+				// 表中不存在WHERE条件中引用的列，跳过该表
+				vlog = fmt.Sprintf("(%d) Skipping table %s.%s: columns referenced in WHERE condition do not exist", logThreadSeq, targetSchema, table)
+				global.Wlog.Warn(vlog)
+				// 只对源数据库的表添加跳过记录，避免映射关系中的目标表重复添加
+				if dbPool == sp.sdbPool {
+					global.AddSkippedTable(targetSchema, table, "data", "columns referenced in WHERE condition do not exist")
+				}
+				return 0
+			}
+		}
+
+		query = fmt.Sprintf("SELECT COUNT(*) FROM `%s`.`%s` WHERE %s", targetSchema, table, globalConfig.SecondaryL.SchemaV.SqlWhere)
+	} else {
+		query = fmt.Sprintf("SELECT COUNT(*) FROM `%s`.`%s`", targetSchema, table)
+	}
+
+	vlog = fmt.Sprintf("(%d) Executing row count query: %s", logThreadSeq, query)
 	global.Wlog.Debug(vlog)
 
 	err := db.QueryRow(query).Scan(&count)
