@@ -1,0 +1,33 @@
+stages:
+  - build
+
+variables:
+  GIT_SUBMODULE_STRATEGY: recursive
+
+gt-checksum_build_x86:
+  stage: build
+  retry: 2
+  only:
+    - v1.2.2
+  tags:
+    - golangci-x86
+  script:
+    - /bin/bash build.sh
+  artifacts:
+    paths:
+      - release/
+    expire_in: 7 days
+
+gt-checksum_build_arm:
+  stage: build
+  retry: 2
+  only:
+    - v1.2.2
+  tags:
+    - golangci-arm
+  script:
+    - /bin/bash build.sh
+  artifacts:
+    paths:
+      - release/
+    expire_in: 7 days
