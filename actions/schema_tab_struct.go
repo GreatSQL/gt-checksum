@@ -1485,28 +1485,86 @@ func (stcls *schemaTable) SchemaTableFilter(logThreadSeq1, logThreadSeq2 int64) 
 					srcDB := parts[0]
 					srcTable := parts[1]
 
-					// 处理忽略表
-					ignoreSchema := stcls.FuzzyMatchingDispos(dbCheckNameList, stcls.ignoreTable, logThreadSeq1)
+					// 检查表名是否包含通配符
+					if strings.Contains(srcTable, "%") {
+						// 处理表名通配符
+						for dbName, _ := range dbCheckNameList {
+							if strings.HasPrefix(dbName, srcDB+"/*schema&table*/") {
+								tableName := strings.TrimPrefix(dbName, srcDB+"/*schema&table*/")
 
-					// 检查该表是否在忽略列表中
-					tableKey := fmt.Sprintf("%s.%s", srcDB, srcTable)
-					if _, ignored := ignoreSchema[tableKey]; ignored {
-						vlog = fmt.Sprintf("Ignoring table: %s.%s", srcDB, srcTable)
+								// 检查表名是否匹配通配符模式
+								match := false
+								if strings.HasPrefix(srcTable, "%") && strings.HasSuffix(srcTable, "%") {
+									// 处理 %table% 模式
+									tmpTable := strings.ReplaceAll(srcTable, "%", "")
+									if strings.Contains(tableName, tmpTable) {
+										match = true
+									}
+								} else if strings.HasPrefix(srcTable, "%") {
+									// 处理 %table 模式
+									tmpTable := strings.ReplaceAll(srcTable, "%", "")
+									if strings.HasSuffix(tableName, tmpTable) {
+										match = true
+									}
+								} else if strings.HasSuffix(srcTable, "%") {
+									// 处理 table% 模式
+									tmpTable := strings.ReplaceAll(srcTable, "%", "")
+									if strings.HasPrefix(tableName, tmpTable) {
+										match = true
+									}
+								}
+
+								if match {
+									// 处理忽略表
+									ignoreSchema := stcls.FuzzyMatchingDispos(dbCheckNameList, stcls.ignoreTable, logThreadSeq1)
+
+									// 检查该表是否在忽略列表中
+									tableKey := fmt.Sprintf("%s.%s", srcDB, tableName)
+									if _, ignored := ignoreSchema[tableKey]; ignored {
+										vlog = fmt.Sprintf("Ignoring table: %s.%s", srcDB, tableName)
+										global.Wlog.Debug(vlog)
+										continue
+									}
+
+									// 创建表映射（源端和目标端相同）
+									mapping := TableMapping{
+										SourceSchema: srcDB,
+										SourceTable:  tableName,
+										DestSchema:   srcDB,
+										DestTable:    tableName,
+									}
+									tableMappings = append(tableMappings, mapping)
+
+									vlog = fmt.Sprintf("Added wildcard matching entry: %s.%s", srcDB, tableName)
+									global.Wlog.Debug(vlog)
+								}
+							}
+						}
+					} else {
+						// 处理精确表名
+						// 处理忽略表
+						ignoreSchema := stcls.FuzzyMatchingDispos(dbCheckNameList, stcls.ignoreTable, logThreadSeq1)
+
+						// 检查该表是否在忽略列表中
+						tableKey := fmt.Sprintf("%s.%s", srcDB, srcTable)
+						if _, ignored := ignoreSchema[tableKey]; ignored {
+							vlog = fmt.Sprintf("Ignoring table: %s.%s", srcDB, srcTable)
+							global.Wlog.Debug(vlog)
+							continue
+						}
+
+						// 创建表映射（源端和目标端相同）
+						mapping := TableMapping{
+							SourceSchema: srcDB,
+							SourceTable:  srcTable,
+							DestSchema:   srcDB,
+							DestTable:    srcTable,
+						}
+						tableMappings = append(tableMappings, mapping)
+
+						vlog = fmt.Sprintf("Added direct non-mapping entry: %s.%s", srcDB, srcTable)
 						global.Wlog.Debug(vlog)
-						continue
 					}
-
-					// 创建表映射（源端和目标端相同）
-					mapping := TableMapping{
-						SourceSchema: srcDB,
-						SourceTable:  srcTable,
-						DestSchema:   srcDB,
-						DestTable:    srcTable,
-					}
-					tableMappings = append(tableMappings, mapping)
-
-					vlog = fmt.Sprintf("Added direct non-mapping entry: %s.%s", srcDB, srcTable)
-					global.Wlog.Debug(vlog)
 				}
 			}
 		}
