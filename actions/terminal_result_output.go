@@ -82,6 +82,35 @@ func getSchemaMappings() map[string]string {
 		}
 	}
 
+	// 添加默认的映射关系，处理db1.*:db2.*格式
+	// 从配置文件中解析映射关系
+	globalConfig := inputArg.GetGlobalConfig()
+	if globalConfig != nil && globalConfig.SecondaryL.SchemaV.Tables != "" {
+		for _, pattern := range strings.Split(globalConfig.SecondaryL.SchemaV.Tables, ",") {
+			if strings.Contains(pattern, ":") {
+				mapping := strings.SplitN(pattern, ":", 2)
+				if len(mapping) == 2 {
+					srcPattern := mapping[0]
+					dstPattern := mapping[1]
+
+					// 处理包含通配符的格式，如 db1.*:db2.* 或 db1.tt%:db2.tt%
+					if strings.Contains(srcPattern, ".") && strings.Contains(dstPattern, ".") {
+						srcParts := strings.Split(srcPattern, ".")
+						dstParts := strings.Split(dstPattern, ".")
+
+						if len(srcParts) >= 1 && len(dstParts) >= 1 {
+							srcDB := srcParts[0]
+							dstDB := dstParts[0]
+
+							// 添加到映射表中
+							schemaMap[srcDB] = dstDB
+						}
+					}
+				}
+			}
+		}
+	}
+
 	return schemaMap
 }
 
@@ -101,9 +130,74 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 		}
 	}
 
-	// 只添加那些真正被跳过且尚未处理的表
+	// 创建一个映射来跟踪跳过的表，避免重复添加
+	skippedTableMap := make(map[string]bool)
 	for _, skipped := range skippedTables {
-		if (skipped.CheckObject == "data" || skipped.CheckObject == "struct") && !processedTables[skipped.Schema+"."+skipped.Table] {
+		skippedTableMap[skipped.Schema+"."+skipped.Table] = true
+	}
+
+	// 创建一个映射来跟踪要添加的跳过表，避免重复添加
+	toAddSkippedTables := make([]global.SkippedTable, 0)
+
+	// 过滤跳过的表，只添加那些不是映射关系中的目标表的表
+	for _, skipped := range skippedTables {
+		if skipped.CheckObject == "data" || skipped.CheckObject == "struct" {
+			// 检查是否是映射关系中的目标表
+			isTargetTable := false
+
+			// 检查是否存在映射关系
+			if m.SecondaryL.SchemaV.Tables != "" {
+				for _, pattern := range strings.Split(m.SecondaryL.SchemaV.Tables, ",") {
+					if strings.Contains(pattern, ":") {
+						mapping := strings.SplitN(pattern, ":", 2)
+						if len(mapping) == 2 {
+							srcPattern := mapping[0]
+							dstPattern := mapping[1]
+
+							// 检查是否是映射关系
+							// 提取源和目标的schema
+							var srcSchema, dstSchema string
+							if strings.Contains(srcPattern, ".") {
+								srcParts := strings.Split(srcPattern, ".")
+								if len(srcParts) > 0 {
+									srcSchema = srcParts[0]
+								}
+							}
+							if strings.Contains(dstPattern, ".") {
+								dstParts := strings.Split(dstPattern, ".")
+								if len(dstParts) > 0 {
+									dstSchema = dstParts[0]
+								}
+							}
+
+							// 检查是否是目标表
+							if skipped.Schema == dstSchema {
+								// 检查是否存在对应的源表
+								if sourceTableKey := srcSchema + "." + skipped.Table; processedTables[sourceTableKey] || skippedTableMap[sourceTableKey] {
+									// 已经处理过对应的源表，跳过目标表
+									isTargetTable = true
+									break
+								}
+							}
+						}
+					}
+				}
+			}
+
+			// 只有当该表不是映射关系中的目标表时，才添加到结果中
+			if !isTargetTable {
+				toAddSkippedTables = append(toAddSkippedTables, skipped)
+			}
+		}
+	}
+
+	// 添加过滤后的跳过表到measuredDataPods中
+	for _, skipped := range toAddSkippedTables {
+		// 构建表的唯一标识
+		tableKey := skipped.Schema + "." + skipped.Table
+
+		// 检查是否已经处理过该表
+		if !processedTables[tableKey] {
 			pod := Pod{
 				Schema:      skipped.Schema,
 				Table:       skipped.Table,
@@ -111,7 +205,7 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 				DIFFS:       "yes",
 			}
 			measuredDataPods = append(measuredDataPods, pod)
-			processedTables[skipped.Schema+"."+skipped.Table] = true
+			processedTables[tableKey] = true
 		}
 	}
 
@@ -686,7 +780,7 @@ func (bar *Bar) NewOption(start, total int64, taskUnit string) {
 	if bar.graph == "" {
 		bar.graph = "█"
 	}
-	
+
 	// 如果总数为0，设置为未初始化状态，避免显示异常
 	if bar.total <= 0 {
 		bar.percent = 0
@@ -698,7 +792,7 @@ func (bar *Bar) NewOption(start, total int64, taskUnit string) {
 		progressBars := int(float64(bar.percent) * 50 / 100)
 		bar.rate = strings.Repeat(bar.graph, progressBars) //初始化进度条位置
 	}
-	
+
 	bar.lastUpdate = 0      // 初始化最后更新时间
 	bar.lastForceUpdate = 0 // 初始化强制更新时间
 }
@@ -742,7 +836,7 @@ func (bar *Bar) Play(cur int64) {
 		bar.cur = cur
 		return
 	}
-	
+
 	bar.cur = cur
 	bar.percent = bar.getPercent()
 
@@ -795,7 +889,7 @@ func (bar *Bar) Finish() {
 	if bar.total <= 0 {
 		return
 	}
-	
+
 	// 强制设置进度为100%并补全进度条
 	bar.cur = bar.total
 	bar.percent = 100

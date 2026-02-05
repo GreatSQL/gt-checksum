@@ -10,6 +10,7 @@ import (
 	"gt-checksum/utils"
 	"math/rand"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -278,6 +279,7 @@ func (sp *SchedulePlan) indexColumnDispos(sqlWhere chanString, selectColumn map[
 	var (
 		vlog         string
 		logThreadSeq int64
+		where        string
 	)
 	time.Sleep(time.Nanosecond * 2)
 	rand.Seed(time.Now().UnixNano())
@@ -285,14 +287,128 @@ func (sp *SchedulePlan) indexColumnDispos(sqlWhere chanString, selectColumn map[
 	vlog = fmt.Sprintf("(%d) Generating query sequence for table %s.%s", logThreadSeq, sp.schema, sp.table)
 	global.Wlog.Info(vlog)
 
+	// 获取全局配置中的sqlWhere条件
+	globalConfig := inputArg.GetGlobalConfig()
+	if globalConfig != nil && globalConfig.SecondaryL.SchemaV.SqlWhere != "" {
+		where = globalConfig.SecondaryL.SchemaV.SqlWhere
+		vlog = fmt.Sprintf("(%d) Using sqlWhere condition: %s", logThreadSeq, globalConfig.SecondaryL.SchemaV.SqlWhere)
+		global.Wlog.Info(vlog)
+
+		// 检查表中是否存在WHERE条件中引用的所有列
+		sdb := sp.sdbPool.Get(logThreadSeq)
+		if !sp.checkColumnsExistInWhere(sdb, sp.sourceSchema, sp.table, where, logThreadSeq) {
+			// 表中不存在WHERE条件中引用的列，跳过该表
+			sp.sdbPool.Put(sdb, logThreadSeq)
+			vlog = fmt.Sprintf("(%d) Skipping table %s.%s: columns referenced in WHERE condition do not exist", logThreadSeq, sp.sourceSchema, sp.table)
+			global.Wlog.Warn(vlog)
+			// 只对源数据库的表添加跳过记录，避免映射关系中的目标表重复添加
+			global.AddSkippedTable(sp.sourceSchema, sp.table, "data", "columns referenced in WHERE condition do not exist")
+			close(sqlWhere)
+			return
+		}
+		sp.sdbPool.Put(sdb, logThreadSeq)
+	}
+
 	//查询表索引列数据并且生成查询的where条件
 	sdb := sp.sdbPool.Get(logThreadSeq)
 	ddb := sp.ddbPool.Get(logThreadSeq)
-	sp.recursiveIndexColumn(sqlWhere, sdb, ddb, 0, sp.chanrowCount, "", selectColumn, logThreadSeq)
+	sp.recursiveIndexColumn(sqlWhere, sdb, ddb, 0, sp.chanrowCount, where, selectColumn, logThreadSeq)
 	sp.sdbPool.Put(sdb, logThreadSeq)
 	sp.ddbPool.Put(ddb, logThreadSeq)
 	vlog = fmt.Sprintf("(%d) Query sequence generated for table %s.%s", logThreadSeq, sp.schema, sp.table)
 	global.Wlog.Info(vlog)
+}
+
+/*
+检查WHERE条件中引用的所有列是否在表中存在
+*/
+func (sp *SchedulePlan) checkColumnsExistInWhere(db *sql.DB, schema, table, where string, logThreadSeq int64) bool {
+	// 提取WHERE条件中的所有列名
+	columns := extractColumnsFromWhere(where)
+	if len(columns) == 0 {
+		// 没有引用任何列，认为检查通过
+		return true
+	}
+
+	// 检查每个列是否在表中存在
+	for _, column := range columns {
+		// 构建查询检查列是否存在
+		query := fmt.Sprintf("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = '%s' AND table_name = '%s' AND column_name = '%s'", schema, table, column)
+		var count int
+		err := db.QueryRow(query).Scan(&count)
+		if err != nil {
+			vlog := fmt.Sprintf("(%d) Failed to check if column %s exists in table %s.%s: %v", logThreadSeq, column, schema, table, err)
+			global.Wlog.Error(vlog)
+			return false
+		}
+		if count == 0 {
+			vlog := fmt.Sprintf("(%d) Column %s does not exist in table %s.%s", logThreadSeq, column, schema, table)
+			global.Wlog.Warn(vlog)
+			return false
+		}
+	}
+
+	return true
+}
+
+/*
+从WHERE条件中提取所有列名
+*/
+func extractColumnsFromWhere(where string) []string {
+	// 改进的列名提取逻辑
+	var columns []string
+
+	// 简化版本：只处理常见的操作符左侧的列名
+	// 支持的操作符：=, !=, <, >, <=, >=, LIKE, IN, BETWEEN
+	// 匹配模式：标识符 + 可选空格 + 操作符
+	operatorPatterns := []string{
+		"=", "!=", "<", ">", "<=", ">=", "LIKE", "IN", "BETWEEN",
+	}
+
+	for _, op := range operatorPatterns {
+		// 构建正则表达式：匹配标识符（列名）后跟操作符
+		pattern := fmt.Sprintf(`\b([a-zA-Z_][a-zA-Z0-9_]*)\s*%s`, regexp.QuoteMeta(op))
+		re := regexp.MustCompile(pattern)
+		matches := re.FindAllStringSubmatch(where, -1)
+		for _, match := range matches {
+			if len(match) > 1 {
+				columns = append(columns, match[1])
+			}
+		}
+	}
+
+	// 过滤掉可能的关键字
+	keywords := map[string]bool{
+		"AND": true, "OR": true, "NOT": true, "IN": true, "LIKE": true, "BETWEEN": true,
+		"IS": true, "NULL": true, "TRUE": true, "FALSE": true,
+		"SELECT": true, "FROM": true, "WHERE": true, "GROUP": true, "ORDER": true, "LIMIT": true,
+	}
+
+	// 去重并过滤关键字和纯数字
+	seen := make(map[string]bool)
+	var result []string
+	for _, column := range columns {
+		// 过滤纯数字（值）
+		isNumber := true
+		for _, char := range column {
+			if !('0' <= char && char <= '9') {
+				isNumber = false
+				break
+			}
+		}
+		if isNumber {
+			continue
+		}
+
+		// 过滤关键字
+		lowerColumn := strings.ToUpper(column)
+		if !keywords[lowerColumn] && !seen[column] {
+			result = append(result, column)
+			seen[column] = true
+		}
+	}
+
+	return result
 }
 
 /*
@@ -1494,7 +1610,7 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 				var finalSqls []string
 				finalSqls = append(finalSqls, deleteSqls...)
 				finalSqls = append(finalSqls, insertSqls...)
-				
+
 				// 确定使用哪个文件写入
 				if sp.fixFilePerTable == "ON" && sp.datafixType == "file" {
 					// 分离DELETE和INSERT语句
@@ -1508,10 +1624,10 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 							insertSqls = append(insertSqls, sql)
 						}
 					}
-					
+
 					// 计算DELETE和INSERT语句的总数
 					totalSqls := len(deleteSqls) + len(insertSqls)
-					
+
 					if sp.fixTrxNum > 0 && totalSqls <= sp.fixTrxNum {
 						// 当总数小于等于fixTrxNum时，生成一个不含序号的独立文件
 						tableFileName := fmt.Sprintf("%s/%s.sql", sp.datafixSql, sp.table)
@@ -1550,7 +1666,7 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 								}
 							}
 						}
-						
+
 						// 处理INSERT语句
 						if len(insertSqls) > 0 {
 							if sp.fixTrxNum > 0 {
@@ -1613,7 +1729,7 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 				// 有差异时标记DIFFS为yes
 				sp.pods.DIFFS = "yes"
 			}
-			
+
 			// 无论是否有差异，都添加到结果中
 			measuredDataPods = append(measuredDataPods, *sp.pods)
 			isFinished = true

@@ -32,6 +32,7 @@ type SchemaS struct {
 	IgnoreTables            string
 	CheckNoIndexTable       string
 	CaseSensitiveObjectName string
+	SqlWhere                string
 }
 type RulesS struct {
 	ParallelThds   int

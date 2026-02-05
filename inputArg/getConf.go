@@ -114,6 +114,32 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 		rc.SecondaryL.SchemaV.CheckNoIndexTable = "no"
 	}
 
+	//SqlWhere 获取WHERE条件
+	sqlWhereValue := getLastConfigValue("sqlWhere")
+	if sqlWhereValue != "" {
+		// 验证参数值是否用单引号或双引号括起来
+		if !strings.HasPrefix(sqlWhereValue, "'") && !strings.HasPrefix(sqlWhereValue, "\"") {
+			fmt.Println("Error: sqlWhere parameter value must be enclosed in single or double quotes")
+			os.Exit(1)
+		}
+		if !strings.HasSuffix(sqlWhereValue, "'") && !strings.HasSuffix(sqlWhereValue, "\"") {
+			fmt.Println("Error: sqlWhere parameter value must be enclosed in single or double quotes")
+			os.Exit(1)
+		}
+
+		// 移除引号
+		sqlWhereValue = strings.Trim(sqlWhereValue, "'\"")
+
+		// 验证参数值中是否包含分号或多条语句
+		if strings.Contains(sqlWhereValue, ";") {
+			fmt.Println("Error: sqlWhere parameter value cannot contain semicolons or multiple statements")
+			os.Exit(1)
+		}
+
+		// 存储验证后的参数值
+		rc.SecondaryL.SchemaV.SqlWhere = sqlWhereValue
+	}
+
 	//Logs 获取相关参数
 	logFileValue := getLastConfigValue("logFile")
 	if logFileValue != "" {
