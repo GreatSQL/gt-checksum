@@ -1476,7 +1476,8 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 		// 关键修复：分别存储DELETE和INSERT语句，确保最终顺序
 		deleteSqls []string
 		insertSqls []string
-		isFinished bool // 标记是否已完成接收
+		isFinished bool     // 标记是否已完成接收
+		tableSfile *os.File // 每个表的独立文件
 	)
 
 	// 修复：清空全局writtenSqlMap，确保只针对当前表去重，避免跨表影响
@@ -1493,13 +1494,37 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 				var finalSqls []string
 				finalSqls = append(finalSqls, deleteSqls...)
 				finalSqls = append(finalSqls, insertSqls...)
-				processBatch(finalSqls, sp.datafixType, sp.sfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
+				
+				// 确定使用哪个文件写入
+				var targetFile *os.File
+				if sp.fixFilePerTable == "ON" && sp.datafixType == "file" {
+					// 只有在有SQL语句时才打开表独立文件
+					tableFileName := fmt.Sprintf("%s/%s.sql", sp.datafixSql, sp.table)
+					var err error
+					tableSfile, err = os.OpenFile(tableFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+					if err != nil {
+						sp.getErr(fmt.Sprintf("Failed to open table-specific fix file %s", tableFileName), err)
+					}
+					vlog = fmt.Sprintf("(%d) Opened table-specific fix file %s", logThreadSeq, tableFileName)
+					global.Wlog.Debug(vlog)
+					targetFile = tableSfile
+				} else {
+					targetFile = sp.sfile
+				}
+				
+				processBatch(finalSqls, sp.datafixType, targetFile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
 				vlog = fmt.Sprintf("(%d) Repair statements generated for %s.%s: DELETE=%d, INSERT=%d",
 					logThreadSeq, sp.schema, sp.table, len(deleteSqls), len(insertSqls))
 				global.Wlog.Debug(vlog)
 				// 有差异时标记DIFFS为yes
 				sp.pods.DIFFS = "yes"
 			}
+			
+			// 关闭表独立文件
+			if tableSfile != nil {
+				tableSfile.Close()
+			}
+			
 			// 无论是否有差异，都添加到结果中
 			measuredDataPods = append(measuredDataPods, *sp.pods)
 			isFinished = true

@@ -257,6 +257,26 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 		rc.SecondaryL.RepairV.Datafix = "file"
 	}
 
+	// Get fixFilePerTable parameter
+	fixFilePerTableValue := getLastConfigValue("fixFilePerTable")
+	if fixFilePerTableValue != "" {
+		validValues := []string{"ON", "OFF"}
+		valid := false
+		for _, v := range validValues {
+			if fixFilePerTableValue == v {
+				valid = true
+				break
+			}
+		}
+		if valid {
+			rc.SecondaryL.RepairV.FixFilePerTable = fixFilePerTableValue
+		} else {
+			rc.SecondaryL.RepairV.FixFilePerTable = "OFF"
+		}
+	} else {
+		rc.SecondaryL.RepairV.FixFilePerTable = "OFF"
+	}
+
 	if rc.SecondaryL.RepairV.Datafix == "file" {
 		fixFileDirValue := getLastConfigValue("fixFileDir")
 		if fixFileDirValue != "" {

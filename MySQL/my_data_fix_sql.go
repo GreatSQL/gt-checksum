@@ -1492,50 +1492,59 @@ func GenerateTriggerFixSQL(sourceSchema, destSchema, name, sourceDef string) []s
 
 // CheckAndCleanupEmptyFixFile 检查是否有修复SQL被写入，如果没有则删除空的datafix.sql文件
 func CheckAndCleanupEmptyFixFile(fixFileDir string) error {
-	// 构建datafix.sql文件路径
-	datafixFilePath := fmt.Sprintf("%s/datafix.sql", fixFileDir)
-	
-	// 检查文件是否存在
-	if _, err := os.Stat(datafixFilePath); err != nil {
-		// 文件不存在，不需要处理
+	// 检查目录是否存在
+	if _, err := os.Stat(fixFileDir); err != nil {
+		// 目录不存在，不需要处理
 		return nil
 	}
 	
-	// 读取文件内容
-	content, err := os.ReadFile(datafixFilePath)
+	// 遍历目录中的所有.sql文件
+	files, err := os.ReadDir(fixFileDir)
 	if err != nil {
-		return fmt.Errorf("failed to read fix SQL file: %v", err)
+		return fmt.Errorf("failed to read fix file directory: %v", err)
 	}
 	
-	// 检查文件内容是否为空或只包含SET语句
-	trimmedContent := strings.TrimSpace(string(content))
-	if trimmedContent == "" {
-		// 文件为空，删除它
-		if err := os.Remove(datafixFilePath); err != nil {
-			return fmt.Errorf("failed to remove empty fix SQL file: %v", err)
-		}
-		return nil
-	}
-	
-	// 检查文件是否只包含SET语句和事务控制语句
-	lines := strings.Split(trimmedContent, "\n")
-	hasActualFixSql := false
-	
-	for _, line := range lines {
-		trimmedLine := strings.TrimSpace(line)
-		if trimmedLine == "" || strings.HasPrefix(trimmedLine, "SET ") || trimmedLine == "BEGIN;" || trimmedLine == "COMMIT;" {
-			// 跳过空行、SET语句和事务控制语句
-			continue
-		}
-		// 找到实际的修复SQL语句
-		hasActualFixSql = true
-		break
-	}
-	
-	if !hasActualFixSql {
-		// 文件只包含SET语句和事务控制语句，删除它
-		if err := os.Remove(datafixFilePath); err != nil {
-			return fmt.Errorf("failed to remove empty fix SQL file: %v", err)
+	for _, file := range files {
+		if !file.IsDir() && strings.HasSuffix(file.Name(), ".sql") {
+			filePath := fmt.Sprintf("%s/%s", fixFileDir, file.Name())
+			
+			// 读取文件内容
+			content, err := os.ReadFile(filePath)
+			if err != nil {
+				return fmt.Errorf("failed to read fix SQL file %s: %v", file.Name(), err)
+			}
+			
+			// 检查文件内容是否为空或只包含SET语句
+			trimmedContent := strings.TrimSpace(string(content))
+			if trimmedContent == "" {
+				// 文件为空，删除它
+				if err := os.Remove(filePath); err != nil {
+					return fmt.Errorf("failed to remove empty fix SQL file %s: %v", file.Name(), err)
+				}
+				continue
+			}
+			
+			// 检查文件是否只包含SET语句和事务控制语句
+			lines := strings.Split(trimmedContent, "\n")
+			hasActualFixSql := false
+			
+			for _, line := range lines {
+				trimmedLine := strings.TrimSpace(line)
+				if trimmedLine == "" || strings.HasPrefix(trimmedLine, "SET ") || trimmedLine == "BEGIN;" || trimmedLine == "COMMIT;" {
+					// 跳过空行、SET语句和事务控制语句
+					continue
+				}
+				// 找到实际的修复SQL语句
+				hasActualFixSql = true
+				break
+			}
+			
+			if !hasActualFixSql {
+				// 文件只包含SET语句和事务控制语句，删除它
+				if err := os.Remove(filePath); err != nil {
+					return fmt.Errorf("failed to remove empty fix SQL file %s: %v", file.Name(), err)
+				}
+			}
 		}
 	}
 	

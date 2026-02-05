@@ -41,6 +41,7 @@ type SchedulePlan struct {
 	tableMappings             map[string]string // 表映射关系
 	bar                       *Bar              // 进度条
 	forceFullTableCheck       bool              // 是否强制进行全表检查
+	fixFilePerTable           string            // 是否每个表一个独立的修复文件
 }
 
 // getDisplayTableName 返回表的显示名称，包含映射关系信息
@@ -254,5 +255,6 @@ func CheckTableQuerySchedule(sdb, ddb *global.Pool, tableIndexColumnMap map[stri
 		fixTrxNum:               m.SecondaryL.RepairV.FixTrxNum,
 		djdbc:                   m.SecondaryL.DsnsV.DestJdbc,
 		tableMappings:           tableMappings,
+		fixFilePerTable:         m.SecondaryL.RepairV.FixFilePerTable,
 	}
 }
