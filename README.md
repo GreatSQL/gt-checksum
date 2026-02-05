@@ -100,6 +100,20 @@ Total execution time: 0.11s
 
 > 开始执行数据校验前，要先在源和目标数据库创建相应的专属账号并授权。详情参考：[**gt-checksum 手册**](./gt-checksum-manual.md#数据库授权)。
 
+查看运行目录下是否生成修复SQL文件目录，例如：fixsql-20260129154514
+
+执行 repairDB 工具进行数据修复并查看执行结果：
+
+```bash
+$ ./repairDB ./fixsql-20260129154514 && cat ./repairDB.log
+
+...
+2026/01/29 15:45:22 Successfully executed SQL file ... time taken: 605.002µs
+2026/01/29 15:45:22 Other SQL files execution completed
+2026/01/29 15:45:22 All SQL files execution completed
+```
+这就表示完成修复，可以再次执行数据校验，确认数据一致性。
+
 ## 手册
 
 [gt-checksum 手册](./gt-checksum-manual.md)
