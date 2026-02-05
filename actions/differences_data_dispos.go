@@ -1,0 +1,124 @@
+package actions
+
+import (
+	"fmt"
+	"sort"
+	"strings"
+	"sync"
+)
+
+// 解析binlog event生成回滚的sql语句
+var rollbackSQL = func(sl []string) []string {
+	var newDelS []string
+	for _, i := range sl {
+		if strings.HasPrefix(i, "INSERT") {
+			ii := strings.Replace(strings.Replace(i, "INSERT INTO", "DELETE FROM", 1), "VALUES", "WHERE", 1)
+			newDelS = append(newDelS, ii)
+		}
+		if strings.HasPrefix(i, "UPDATE") {
+			schemaTable := strings.TrimSpace(strings.Split(strings.Split(i, "WHERE")[0], "UPDATE")[1])
+			e := strings.Split(strings.Split(i, "WHERE")[1], "/*columnModify*/")
+			oldrow := strings.Replace(e[0], "(", "", 1)
+			newrow := strings.Replace(e[1], ");", "", 1)
+			// 确保schema和table都有反引号
+	schemaTableWithQuotes := strings.ReplaceAll(strings.ReplaceAll(schemaTable, ".", ".`"), "`,", ".`")
+	if !strings.HasPrefix(schemaTableWithQuotes, "`") && strings.Contains(schemaTableWithQuotes, ".") {
+		parts := strings.Split(schemaTableWithQuotes, ".")
+		schemaTableWithQuotes = fmt.Sprintf("`%s`.%s", parts[0], parts[1])
+	}
+	delSql := fmt.Sprintf("DELETE FROM %s WHERE %s;", schemaTableWithQuotes, newrow)
+			addSql := fmt.Sprintf("INSERT INTO %s VALUES (%s);", schemaTable, oldrow)
+			newDelS = append(newDelS, delSql, addSql)
+		}
+		if strings.HasPrefix(i, "DELETE") {
+			ii := strings.Replace(strings.Replace(i, "DELETE FROM", "INSERT INTO", 1), "WHERE", "VALUES", 1)
+			newDelS = append(newDelS, ii)
+		}
+	}
+	return newDelS
+}
+
+// 解析binlog event生成正序的sql语句
+var positiveSequenceSQL = func(sl []string) []string {
+	var newDelS []string
+	for _, i := range sl {
+		if i != "" && strings.HasPrefix(i, "INSERT INTO") {
+			newDelS = append(newDelS, i)
+		}
+		if i != "" && strings.HasPrefix(i, "DELETE") {
+			newDelS = append(newDelS, i)
+		}
+		if i != "" && strings.HasPrefix(i, "UPDATE") {
+			schemaTable := strings.TrimSpace(strings.Split(strings.Split(i, "WHERE")[0], "UPDATE")[1])
+			e := strings.Split(i, "/*columnModify*/")
+			delSql := fmt.Sprintf("DELETE FROM %s);", strings.Replace(e[0], "UPDATE ", "", 1))
+			newDelS = append(newDelS, delSql)
+			addSql := fmt.Sprintf("INSERT INTO %s VALUES (%s", schemaTable, e[1])
+			newDelS = append(newDelS, addSql)
+		}
+	}
+	return newDelS
+}
+
+/*
+针对全量、增量数据的差异做处理，生成add和delete
+*/
+func DifferencesDataDispos(SourceItemAbnormalDataChan chan SourceItemAbnormalDataStruct, addChan chan string, delChan chan string) {
+	for {
+		select {
+		case aa := <-SourceItemAbnormalDataChan:
+			addS, delS := CheckSum().Arrcmp(aa.sourceSqlGather, aa.destSqlGather)
+			if len(addS) == 0 && len(delS) > 0 {
+				sort.Slice(delS, func(i, j int) bool {
+					return delS[i] > delS[j]
+				})
+				dels := rollbackSQL(delS)
+				fmt.Println(dels)
+			} else if len(addS) > 0 && len(delS) > 0 { //针对目标端需要删除的事务进行回滚，针对事务生成回滚sql
+				//此处需要将多余参数按照事务的方式进行倒叙
+				sort.Slice(delS, func(i, j int) bool {
+					return delS[i] > delS[j]
+				})
+				dels := rollbackSQL(delS)
+				fmt.Println(dels)
+				adds := positiveSequenceSQL(addS)
+				fmt.Println(adds)
+
+			} else if len(addS) > 0 && len(delS) == 0 {
+				fmt.Println("--1--", addS)
+				adds := positiveSequenceSQL(addS)
+				fmt.Println(adds)
+			}
+		}
+	}
+}
+
+/*
+针对差异数据，生成修复语句，并根据修复方式进行处理,通过对字符串做hash值，使用sync.Map进行并发安全的去重
+*/
+func DataFixSql(addChan chan string, delChan chan string) {
+	var (
+		delHashMap = sync.Map{} // 使用sync.Map确保并发安全
+		addHashMap = sync.Map{} // 使用sync.Map确保并发安全
+	)
+
+	for {
+		select {
+		case del := <-delChan:
+			delStr := CheckSum().CheckSha1(del)
+			// 使用sync.Map的Store方法安全地存储
+			delHashMap.LoadOrStore(delStr, del)
+			// 同时使用全局SQL去重Map，确保与其他去重机制一致
+			globalSqlMap.LoadOrStore(del, true)
+		case add := <-addChan:
+			addStr := CheckSum().CheckSha1(add)
+			// 检查是否在delete集合中存在
+			if _, loaded := delHashMap.Load(addStr); !loaded {
+				// 使用sync.Map的Store方法安全地存储
+				addHashMap.LoadOrStore(addStr, add)
+				// 同时使用全局SQL去重Map，确保与其他去重机制一致
+				globalSqlMap.LoadOrStore(add, true)
+			}
+		}
+	}
+}
