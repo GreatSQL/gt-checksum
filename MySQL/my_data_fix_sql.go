@@ -553,7 +553,7 @@ func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive s
 			CurrentDatabaseCache[dbPointer] = targetSchema
 			databaseCacheMutex.Unlock()
 		}
-		deleteSql = fmt.Sprintf("DELETE FROM `%s`.`%s` WHERE %s;", targetSchema, my.Table, deleteSqlWhere)
+		deleteSql = fmt.Sprintf("DELETE FROM `%s`.`%s` WHERE %s LIMIT 1;", targetSchema, my.Table, deleteSqlWhere)
 	} else {
 		return "", fmt.Errorf("failed to generate DELETE statement for table %s.%s: no valid conditions", targetSchema, my.Table)
 	}
