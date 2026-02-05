@@ -49,7 +49,7 @@ type LogS struct {
 type RepairS struct {
 	Datafix     string
 	FixTrxNum   int
-	FixFileName string
+	FixFileDir  string
 	FixFileFINE *os.File
 }
 type SecondaryLevel struct {

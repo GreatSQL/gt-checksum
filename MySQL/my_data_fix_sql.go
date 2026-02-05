@@ -1150,8 +1150,10 @@ func (my *MysqlDataAbnormalFixStruct) FixTableCharsetSqlGenerate(charset, collat
 }
 
 // WriteFixIfNeeded writes fix SQLs to file when datafix is "file"
-func WriteFixIfNeeded(datafix, fixFileName string, sqls []string, logThreadSeq int64) error {
-	if strings.EqualFold(datafix, "file") && len(sqls) > 0 && strings.TrimSpace(fixFileName) != "" {
+func WriteFixIfNeeded(datafix, fixFileDir string, sqls []string, logThreadSeq int64) error {
+	if strings.EqualFold(datafix, "file") && len(sqls) > 0 && strings.TrimSpace(fixFileDir) != "" {
+		// 在指定目录下创建datafix.sql文件
+		fixFileName := fmt.Sprintf("%s/datafix.sql", fixFileDir)
 		return writeFixSQLToFile(fixFileName, sqls, logThreadSeq)
 	}
 	return nil
@@ -1159,6 +1161,9 @@ func WriteFixIfNeeded(datafix, fixFileName string, sqls []string, logThreadSeq i
 
 // 包级变量，用于存储已写入文件的SQL语句，实现跨函数调用的去重
 var writtenSqlMap sync.Map
+
+// 包级变量，用于跟踪是否有修复SQL被写入
+var hasFixSqlWritten bool
 
 // WriteFixIfNeededFile writes fix SQLs to an opened *os.File when datafix is "file"
 // dstDSN 参数用于获取字符集设置
@@ -1226,6 +1231,8 @@ func WriteFixIfNeededFile(datafix string, sfile *os.File, sqls []string, logThre
 		if _, err := w.WriteString(ss + "\n"); err != nil {
 			return err
 		}
+		// 设置标志，表示有修复SQL被写入
+		hasFixSqlWritten = true
 	}
 	if err := w.Flush(); err != nil {
 		return err
@@ -1481,6 +1488,58 @@ func GenerateTriggerFixSQL(sourceSchema, destSchema, name, sourceDef string) []s
 	processedDef := processTriggerSchemaNames(sourceDef, sourceSchema, destSchema)
 
 	return []string{drop, strings.TrimSpace(processedDef)}
+}
+
+// CheckAndCleanupEmptyFixFile 检查是否有修复SQL被写入，如果没有则删除空的datafix.sql文件
+func CheckAndCleanupEmptyFixFile(fixFileDir string) error {
+	// 构建datafix.sql文件路径
+	datafixFilePath := fmt.Sprintf("%s/datafix.sql", fixFileDir)
+	
+	// 检查文件是否存在
+	if _, err := os.Stat(datafixFilePath); err != nil {
+		// 文件不存在，不需要处理
+		return nil
+	}
+	
+	// 读取文件内容
+	content, err := os.ReadFile(datafixFilePath)
+	if err != nil {
+		return fmt.Errorf("failed to read fix SQL file: %v", err)
+	}
+	
+	// 检查文件内容是否为空或只包含SET语句
+	trimmedContent := strings.TrimSpace(string(content))
+	if trimmedContent == "" {
+		// 文件为空，删除它
+		if err := os.Remove(datafixFilePath); err != nil {
+			return fmt.Errorf("failed to remove empty fix SQL file: %v", err)
+		}
+		return nil
+	}
+	
+	// 检查文件是否只包含SET语句和事务控制语句
+	lines := strings.Split(trimmedContent, "\n")
+	hasActualFixSql := false
+	
+	for _, line := range lines {
+		trimmedLine := strings.TrimSpace(line)
+		if trimmedLine == "" || strings.HasPrefix(trimmedLine, "SET ") || trimmedLine == "BEGIN;" || trimmedLine == "COMMIT;" {
+			// 跳过空行、SET语句和事务控制语句
+			continue
+		}
+		// 找到实际的修复SQL语句
+		hasActualFixSql = true
+		break
+	}
+	
+	if !hasActualFixSql {
+		// 文件只包含SET语句和事务控制语句，删除它
+		if err := os.Remove(datafixFilePath); err != nil {
+			return fmt.Errorf("failed to remove empty fix SQL file: %v", err)
+		}
+	}
+	
+	return nil
 }
 
 // processRoutineSchemaNames 处理存储过程和函数定义中的schema名称替换

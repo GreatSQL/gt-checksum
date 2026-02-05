@@ -1,6 +1,7 @@
 ## 1.2.4
 - 配置文件中去掉"[DSNs],[Schema]"等一级标签
 - 配置文件中存在重复配置参数时，只读取最后一条
+- 修改fixFileName名修改为fixFileDir，用于自定义修复SQL文件存放目录；该目录名以"fixsql-时间戳"，会自动创建；并且当该目录不为空时会报错退出
 - Bugs fixed
   - 修复了ignoreTables参数无效问题
 

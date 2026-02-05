@@ -40,11 +40,11 @@ var jdbcDispos = func(jdbc string) (string, string) {
 
 func (rc *ConfigParameter) cliHelp() {
 	app := cli.NewApp()
-	app.Name = "gt-checksum"                                             //应用名称
-	app.Usage = "opensource database checksum and sync tool by GreatSQL" //应用功能说明
-	app.Author = "GreatSQL"                                              //作者
-	app.Email = "GreatSQL <greatsql@greatdb.com>"                        //邮箱
-	app.Version = "1.2.3"
+	app.Name = "gt-checksum"                                                   //应用名称
+	app.Usage = "opensource MySQL database checksum and sync tool by GreatSQL" //应用功能说明
+	app.Author = "GreatSQL"                                                    //作者
+	app.Email = "GreatSQL <greatsql@greatdb.com>"                              //邮箱
+	app.Version = "1.2.4"
 	app.Flags = []cli.Flag{
 		cli.StringFlag{
 			Name:        "c,f",                                                        //命令名称
@@ -60,7 +60,7 @@ func (rc *ConfigParameter) cliHelp() {
 				os.Exit(0)
 			} else {
 				rc.Config = "gc.conf"
-				fmt.Println("\ngt-checksum: Automatically loading configuration file 'gc.conf' from current directory.")
+				fmt.Println("\ngt-checksum: reading 'gc.conf' from current directory.")
 			}
 		}
 	}
