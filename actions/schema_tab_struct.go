@@ -1430,17 +1430,67 @@ func (stcls *schemaTable) SchemaTableFilter(logThreadSeq1, logThreadSeq2 int64) 
 						dstDB := dstParts[0]
 						dstTable := dstParts[1]
 
-						// 创建表映射
-						mapping := TableMapping{
-							SourceSchema: srcDB,
-							SourceTable:  srcTable,
-							DestSchema:   dstDB,
-							DestTable:    dstTable,
-						}
-						tableMappings = append(tableMappings, mapping)
+						// 检查表名是否包含通配符
+						if strings.Contains(srcTable, "%") || strings.Contains(dstTable, "%") {
+							// 处理带通配符的表名映射
+							for dbName, _ := range dbCheckNameList {
+								if strings.HasPrefix(dbName, srcDB+"/*schema&table*/") {
+									tableName := strings.TrimPrefix(dbName, srcDB+"/*schema&table*/")
 
-						vlog = fmt.Sprintf("Added direct mapping: %s.%s -> %s.%s", srcDB, srcTable, dstDB, dstTable)
-						global.Wlog.Debug(vlog)
+									// 检查表名是否匹配源端通配符模式
+									matchSrc := false
+									if strings.HasPrefix(srcTable, "%") && strings.HasSuffix(srcTable, "%") {
+										// 处理 %table% 模式
+										tmpTable := strings.ReplaceAll(srcTable, "%", "")
+										if strings.Contains(tableName, tmpTable) {
+											matchSrc = true
+										}
+									} else if strings.HasPrefix(srcTable, "%") {
+										// 处理 %table 模式
+										tmpTable := strings.ReplaceAll(srcTable, "%", "")
+										if strings.HasSuffix(tableName, tmpTable) {
+											matchSrc = true
+										}
+									} else if strings.HasSuffix(srcTable, "%") {
+										// 处理 table% 模式
+										tmpTable := strings.ReplaceAll(srcTable, "%", "")
+										if strings.HasPrefix(tableName, tmpTable) {
+											matchSrc = true
+										}
+									}
+
+									if matchSrc {
+										// 生成目标端表名
+										destTableName := tableName
+
+										// 创建表映射
+										mapping := TableMapping{
+											SourceSchema: srcDB,
+											SourceTable:  tableName,
+											DestSchema:   dstDB,
+											DestTable:    destTableName,
+										}
+										tableMappings = append(tableMappings, mapping)
+
+										vlog = fmt.Sprintf("Added wildcard mapping: %s.%s -> %s.%s", srcDB, tableName, dstDB, destTableName)
+										global.Wlog.Debug(vlog)
+									}
+								}
+							}
+						} else {
+							// 处理精确表名映射
+							// 创建表映射
+							mapping := TableMapping{
+								SourceSchema: srcDB,
+								SourceTable:  srcTable,
+								DestSchema:   dstDB,
+								DestTable:    dstTable,
+							}
+							tableMappings = append(tableMappings, mapping)
+
+							vlog = fmt.Sprintf("Added direct mapping: %s.%s -> %s.%s", srcDB, srcTable, dstDB, dstTable)
+							global.Wlog.Debug(vlog)
+						}
 					}
 				}
 			}

@@ -6,6 +6,7 @@
 - 新增repairDB程序，读取gc.conf配置参数，读取fixFileDir目录下所有.sql文件，完成并行修复数据库；也可以自行指定修复SQL文件目录，例如 repairDB ./my-fixsql-dir
 - Bugs fixed
   - 修复了ignoreTables参数无效问题
+  - 修复了tables参数不支持%通配符问题，重新支持包括库名映射场景下的%通配符用法，例如"db1.t%:db2.t%"
 
 ## 1.2.3
 - 增加内存使用量限制，且当内存使用量超过该值时，会自动调低parallelThds,queueSize,chunkSize这几个影响性能的参数，并进行GC操作
