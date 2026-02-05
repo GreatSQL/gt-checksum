@@ -281,6 +281,7 @@ $ ./repairDB
 程序执行过程中的输出会记录到repairDB.log文件中，示例如下：
 ```bash
 $ ./repairDB ./myfixsql && cat ./repairDB.log
+repairDB executed successfully
 
 2026/01/29 10:00:00 Configuration information:
 2026/01/29 10:00:00   DstDSN: mysql|checksum:Checksum@3306@tcp(127.0.0.1:3306)/sbtest?charset=utf8mb4
@@ -307,7 +308,7 @@ $ ./repairDB ./myfixsql && cat ./repairDB.log
 
 ## 已知缺陷/问题
 
-截止最新的v1.2.3版本，已知存在以下几个约束/问题。
+截止最新的v1.2.4版本，已知存在以下几个约束/问题。
 
 - 为了安全起见，当设置checkObject=data之外的其他值时，即便同时设置datafix=table，也不会直接在线完成修复，需要改成datafix=file，生成fix SQL后再由DBA手动完成。
 

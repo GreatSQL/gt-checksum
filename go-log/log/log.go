@@ -137,21 +137,24 @@ func Warnln(args ...interface{}) {
 }
 
 func NewWlog(logfile, logLevel string) *Logger {
-	//var logFile string
-	//if runtime.GOOS == "windows"{
-	//	logFile = fmt.Sprintf("%s\\%s",logpath,logfile)
-	//}
-	//if runtime.GOOS == "linux"{
-	//	logFile = fmt.Sprintf("%s/%s",logpath,logfile)
-	//}
-	_, err := os.Open(logfile)
-	if err != nil && os.IsNotExist(err) {
-		_, err = os.OpenFile(logfile, os.O_WRONLY|os.O_CREATE, 0666)
-		if err != nil {
-			fmt.Println(err)
+	// 检查 logfile 是否存在且不为空
+	if _, err := os.Stat(logfile); err == nil {
+		// 文件存在，检查是否为空
+		fileInfo, err := os.Stat(logfile)
+		if err == nil && fileInfo.Size() > 0 {
+			// 文件不为空，将其重命名为 logfile-old
+			oldLogFile := logfile + "-old"
+			// 如果旧文件已经存在，删除它
+			if _, err := os.Stat(oldLogFile); err == nil {
+				os.Remove(oldLogFile)
+			}
+			// 重命名当前文件
+			os.Rename(logfile, oldLogFile)
 		}
 	}
-	fp, err := os.OpenFile(logfile, os.O_RDWR|os.O_APPEND, 0666)
+
+	// 创建或打开新的 logfile
+	fp, err := os.OpenFile(logfile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0666)
 	if err != nil {
 		fmt.Println("open log file or create log file fail. Errof info: ", err)
 		os.Exit(1)

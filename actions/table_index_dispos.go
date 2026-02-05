@@ -1498,8 +1498,10 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 													}
 													// 构建唯一主键标识
 													primaryKey := fmt.Sprintf("%s.%s.%s", c1.Schema, c1.Table, strings.Join(keyList, ","))
-													// 记录到insertedPrimaryKeys中
-													insertedPrimaryKeys[primaryKey] = struct{}{}
+													// 记录到insertedPrimaryKeys中，加锁保护并发访问
+												insertMutex.Lock()
+												insertedPrimaryKeys[primaryKey] = struct{}{}
+												insertMutex.Unlock()
 												}
 											}
 
