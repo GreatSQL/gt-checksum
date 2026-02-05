@@ -198,7 +198,9 @@ func main() {
 		// Parse config file to get DstDSN and other parameters
 		err := parseConfig(*confFile)
 		if err != nil {
-			log.Fatalf("Failed to parse config file: %v\n", err)
+			log.Printf("Failed to parse config file: %v\n", err)
+			fmt.Println("repairDB execution failed")
+			os.Exit(1)
 		}
 		// Override fixFileDir with command line argument
 		config.FixFileDir = specifiedFixFileDir
@@ -206,18 +208,24 @@ func main() {
 		// Parse config file
 		err := parseConfig(*confFile)
 		if err != nil {
-			log.Fatalf("Failed to parse config file: %v\n", err)
+			log.Printf("Failed to parse config file: %v\n", err)
+			fmt.Println("repairDB execution failed")
+			os.Exit(1)
 		}
 		// Check if fixFileDir is set in config file
 		if config.FixFileDir == "" {
-			log.Fatalf("No fixFileDir specified in command line or config file\n")
+			log.Printf("No fixFileDir specified in command line or config file\n")
+			fmt.Println("repairDB execution failed")
+			os.Exit(1)
 		}
 	}
 
 	// Configure log file
 	logFile, err := os.OpenFile(config.LogFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
-		log.Fatalf("Failed to create log file: %v\n", err)
+		log.Printf("Failed to create log file: %v\n", err)
+		fmt.Println("repairDB execution failed")
+		os.Exit(1)
 	}
 	defer logFile.Close()
 	log.SetOutput(logFile)
@@ -231,7 +239,22 @@ func main() {
 
 	// Check if fixFileDir directory exists
 	if _, err := os.Stat(config.FixFileDir); os.IsNotExist(err) {
-		log.Fatalf("fixFileDir directory does not exist: %s\n", config.FixFileDir)
+		log.Printf("fixFileDir directory does not exist: %s\n", config.FixFileDir)
+		fmt.Println("repairDB execution failed")
+		os.Exit(1)
+	}
+
+	// Quick check if fixFileDir directory is empty
+	entries, err := ioutil.ReadDir(config.FixFileDir)
+	if err != nil {
+		log.Printf("Failed to read directory: %v\n", err)
+		fmt.Println("repairDB execution failed")
+		os.Exit(1)
+	}
+	if len(entries) == 0 {
+		log.Printf("fixFileDir directory is empty, exiting\n")
+		fmt.Println("repairDB executed successfully")
+		return
 	}
 
 	// Traverse fixFileDir directory to find all .sql files
@@ -246,12 +269,16 @@ func main() {
 		return nil
 	})
 	if err != nil {
-		log.Fatalf("Failed to traverse directory: %v\n", err)
+		log.Printf("Failed to traverse directory: %v\n", err)
+		fmt.Println("repairDB execution failed")
+		os.Exit(1)
 	}
 
 	// Check if there are any SQL files
 	if len(sqlFiles) == 0 {
-		log.Fatalf("No .sql files found in fixFileDir directory\n")
+		log.Printf("No .sql files found in fixFileDir directory\n")
+		fmt.Println("repairDB executed successfully")
+		return
 	}
 
 	// Check if there is only one datafix.sql file
@@ -264,20 +291,26 @@ func main() {
 		// Create database connection
 		db, err := sql.Open("mysql", dsn)
 		if err != nil {
-			log.Fatalf("Failed to create database connection: %v\n", err)
+			log.Printf("Failed to create database connection: %v\n", err)
+			fmt.Println("repairDB execution failed")
+			os.Exit(1)
 		}
 		defer db.Close()
 
 		// Test database connection
 		err = db.Ping()
 		if err != nil {
-			log.Fatalf("Database connection failed: %v\n", err)
+			log.Printf("Database connection failed: %v\n", err)
+			fmt.Println("repairDB execution failed")
+			os.Exit(1)
 		}
 
 		// Execute SQL file
 		err = executeSQLFile(db, sqlFiles[0])
 		if err != nil {
-			log.Fatalf("Failed to execute datafix.sql file: %v\n", err)
+			log.Printf("Failed to execute datafix.sql file: %v\n", err)
+			fmt.Println("repairDB execution failed")
+			os.Exit(1)
 		}
 
 		log.Printf("Successfully executed datafix.sql file\n")
@@ -323,4 +356,5 @@ func main() {
 	}
 
 	log.Printf("All SQL files execution completed\n")
+	fmt.Println("repairDB executed successfully")
 }
