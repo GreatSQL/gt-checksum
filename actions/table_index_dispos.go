@@ -1496,33 +1496,122 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 				finalSqls = append(finalSqls, insertSqls...)
 				
 				// 确定使用哪个文件写入
-				var targetFile *os.File
 				if sp.fixFilePerTable == "ON" && sp.datafixType == "file" {
-					// 只有在有SQL语句时才打开表独立文件
-					tableFileName := fmt.Sprintf("%s/%s.sql", sp.datafixSql, sp.table)
-					var err error
-					tableSfile, err = os.OpenFile(tableFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-					if err != nil {
-						sp.getErr(fmt.Sprintf("Failed to open table-specific fix file %s", tableFileName), err)
+					// 分离DELETE和INSERT语句
+					var deleteSqls []string
+					var insertSqls []string
+					for _, sql := range finalSqls {
+						sqlTrim := strings.TrimSpace(strings.ToUpper(sql))
+						if strings.HasPrefix(sqlTrim, "DELETE") {
+							deleteSqls = append(deleteSqls, sql)
+						} else if strings.HasPrefix(sqlTrim, "INSERT") {
+							insertSqls = append(insertSqls, sql)
+						}
 					}
-					vlog = fmt.Sprintf("(%d) Opened table-specific fix file %s", logThreadSeq, tableFileName)
-					global.Wlog.Debug(vlog)
-					targetFile = tableSfile
+					
+					// 计算DELETE和INSERT语句的总数
+					totalSqls := len(deleteSqls) + len(insertSqls)
+					
+					if sp.fixTrxNum > 0 && totalSqls <= sp.fixTrxNum {
+						// 当总数小于等于fixTrxNum时，生成一个不含序号的独立文件
+						tableFileName := fmt.Sprintf("%s/%s.sql", sp.datafixSql, sp.table)
+						var err error
+						tableSfile, err = os.OpenFile(tableFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+						if err != nil {
+							sp.getErr(fmt.Sprintf("Failed to open fix file %s", tableFileName), err)
+						} else {
+							vlog = fmt.Sprintf("(%d) Opened fix file %s", logThreadSeq, tableFileName)
+							global.Wlog.Debug(vlog)
+							processBatch(finalSqls, sp.datafixType, tableSfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
+							// 关闭文件
+							if tableSfile != nil {
+								tableSfile.Close()
+								tableSfile = nil
+							}
+						}
+					} else {
+						// 当总数大于fixTrxNum时，分别生成DELETE和INSERT文件
+						// 处理DELETE语句
+						if len(deleteSqls) > 0 {
+							// 生成DELETE语句文件
+							deleteFileName := fmt.Sprintf("%s/%s-DELETE.sql", sp.datafixSql, sp.table)
+							var err error
+							tableSfile, err = os.OpenFile(deleteFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+							if err != nil {
+								sp.getErr(fmt.Sprintf("Failed to open DELETE fix file %s", deleteFileName), err)
+							} else {
+								vlog = fmt.Sprintf("(%d) Opened DELETE fix file %s", logThreadSeq, deleteFileName)
+								global.Wlog.Debug(vlog)
+								processBatch(deleteSqls, sp.datafixType, tableSfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
+								// 关闭文件
+								if tableSfile != nil {
+									tableSfile.Close()
+									tableSfile = nil
+								}
+							}
+						}
+						
+						// 处理INSERT语句
+						if len(insertSqls) > 0 {
+							if sp.fixTrxNum > 0 {
+								// 计算需要的文件数量
+								totalFiles := (len(insertSqls) + sp.fixTrxNum - 1) / sp.fixTrxNum
+								for i := 0; i < totalFiles; i++ {
+									// 计算当前批次的起始和结束索引
+									start := i * sp.fixTrxNum
+									end := start + sp.fixTrxNum
+									if end > len(insertSqls) {
+										end = len(insertSqls)
+									}
+									// 获取当前批次的SQL语句
+									batchSqls := insertSqls[start:end]
+									// 创建批次文件
+									insertFileName := fmt.Sprintf("%s/%s-%d.sql", sp.datafixSql, sp.table, i+1)
+									var err error
+									tableSfile, err = os.OpenFile(insertFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+									if err != nil {
+										sp.getErr(fmt.Sprintf("Failed to open INSERT fix file %s", insertFileName), err)
+										continue
+									}
+									vlog = fmt.Sprintf("(%d) Opened INSERT fix file %s", logThreadSeq, insertFileName)
+									global.Wlog.Debug(vlog)
+									// 处理当前批次
+									processBatch(batchSqls, sp.datafixType, tableSfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
+									// 关闭当前文件
+									if tableSfile != nil {
+										tableSfile.Close()
+										tableSfile = nil
+									}
+								}
+							} else {
+								// 当fixTrxNum <= 0时，使用单个文件
+								insertFileName := fmt.Sprintf("%s/%s.sql", sp.datafixSql, sp.table)
+								var err error
+								tableSfile, err = os.OpenFile(insertFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+								if err != nil {
+									sp.getErr(fmt.Sprintf("Failed to open INSERT fix file %s", insertFileName), err)
+								} else {
+									vlog = fmt.Sprintf("(%d) Opened INSERT fix file %s", logThreadSeq, insertFileName)
+									global.Wlog.Debug(vlog)
+									processBatch(insertSqls, sp.datafixType, tableSfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
+									// 关闭文件
+									if tableSfile != nil {
+										tableSfile.Close()
+										tableSfile = nil
+									}
+								}
+							}
+						}
+					}
 				} else {
-					targetFile = sp.sfile
+					// 当fixFilePerTable=OFF时，使用单个文件
+					processBatch(finalSqls, sp.datafixType, sp.sfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
 				}
-				
-				processBatch(finalSqls, sp.datafixType, targetFile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
 				vlog = fmt.Sprintf("(%d) Repair statements generated for %s.%s: DELETE=%d, INSERT=%d",
 					logThreadSeq, sp.schema, sp.table, len(deleteSqls), len(insertSqls))
 				global.Wlog.Debug(vlog)
 				// 有差异时标记DIFFS为yes
 				sp.pods.DIFFS = "yes"
-			}
-			
-			// 关闭表独立文件
-			if tableSfile != nil {
-				tableSfile.Close()
 			}
 			
 			// 无论是否有差异，都添加到结果中
