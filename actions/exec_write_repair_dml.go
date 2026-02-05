@@ -183,7 +183,7 @@ func (rs repairSqlStruct) SqlFile(sfile *os.File, sql []string, logThreadSeq int
 		// 从rs.JDBC（即dstDSN）中获取charset值
 		charset := global.ExtractCharsetFromDSN(rs.JDBC)
 
-		// 添加必要的前置语句
+		// 添加必要的前置语句（所有文件都添加）
 		preSqls := []string{
 			fmt.Sprintf("SET NAMES %s;", charset),
 			"SET FOREIGN_KEY_CHECKS=0;",
@@ -191,11 +191,9 @@ func (rs repairSqlStruct) SqlFile(sfile *os.File, sql []string, logThreadSeq int
 		}
 
 		for _, preSql := range preSqls {
-			// 使用全局writtenSqlMap进行去重
-			if _, loaded := writtenSqlMap.LoadOrStore(strings.TrimSpace(preSql), true); !loaded {
-				if _, err := sfile.WriteString(preSql + "\n"); err != nil {
-					return err
-				}
+			// 不使用全局去重，确保每个文件都有SET语句
+			if _, err := sfile.WriteString(preSql + "\n"); err != nil {
+				return err
 			}
 		}
 
