@@ -54,11 +54,14 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 				if line == "" || strings.HasPrefix(line, ";") {
 					continue
 				}
-				// 检查是否是目标参数
-				prefix := paramName + "="
-				if strings.HasPrefix(line, prefix) {
-					// 提取值
-					value = strings.TrimSpace(strings.TrimPrefix(line, prefix))
+				// 检查是否是目标参数，支持参数名和值之间有空格的情况
+				if strings.HasPrefix(line, paramName) {
+					// 找到等号的位置
+					equalIndex := strings.Index(line, "=")
+					if equalIndex != -1 {
+						// 提取等号后面的值，并去除前后空格
+						value = strings.TrimSpace(line[equalIndex+1:])
+					}
 				}
 			}
 			return value
@@ -75,6 +78,7 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 		rc.SecondaryL.DsnsV.SrcDrive = strings.Split(rc.SecondaryL.DsnsV.SrcDSN, "|")[0]
 		rc.SecondaryL.DsnsV.SrcJdbc = strings.Split(rc.SecondaryL.DsnsV.SrcDSN, "|")[1]
 	} else {
+		rc.SecondaryL.DsnsV.SrcDrive = "mysql" // 默认使用mysql驱动
 		rc.SecondaryL.DsnsV.SrcJdbc = rc.SecondaryL.DsnsV.SrcDSN
 	}
 
@@ -84,6 +88,7 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 		rc.SecondaryL.DsnsV.DestDrive = strings.Split(rc.SecondaryL.DsnsV.DstDSN, "|")[0]
 		rc.SecondaryL.DsnsV.DestJdbc = strings.Split(rc.SecondaryL.DsnsV.DstDSN, "|")[1]
 	} else {
+		rc.SecondaryL.DsnsV.DestDrive = "mysql" // 默认使用mysql驱动
 		rc.SecondaryL.DsnsV.DestJdbc = rc.SecondaryL.DsnsV.DstDSN
 	}
 
