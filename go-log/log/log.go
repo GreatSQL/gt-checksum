@@ -3,6 +3,7 @@ package log
 import (
 	"fmt"
 	"os"
+	"time"
 )
 
 var logger = NewDefault(newStdHandler())
@@ -142,8 +143,9 @@ func NewWlog(logfile, logLevel string) *Logger {
 		// 文件存在，检查是否为空
 		fileInfo, err := os.Stat(logfile)
 		if err == nil && fileInfo.Size() > 0 {
-			// 文件不为空，将其重命名为 logfile-old
-			oldLogFile := logfile + "-old"
+			// 文件不为空，将其重命名为 logfile-时间戳
+			timestamp := time.Now().Format("20060102150405")
+			oldLogFile := logfile + "-" + timestamp
 			// 如果旧文件已经存在，删除它
 			if _, err := os.Stat(oldLogFile); err == nil {
 				os.Remove(oldLogFile)
