@@ -1,2 +1,8 @@
 gc.conf
 repairDB.sh
+TODO
+gt-checksum
+gt-checksum.log
+fixsql
+repairDB
+repairDB.log
