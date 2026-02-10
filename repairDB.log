@@ -1,11 +1,43 @@
-2026/02/04 15:22:13 Configuration information:
-2026/02/04 15:22:13   DstDSN: mysql|checksum:checksum@tcp(127.0.0.1:3406)/information_schema?charset=utf8mb4
-2026/02/04 15:22:13   ParallelThds: 2
-2026/02/04 15:22:13   FixFileDir: fixsql
-2026/02/04 15:22:13   LogFile: repairDB.log
-2026/02/04 15:22:13 Found 0 DELETE files, 1 other SQL files
-2026/02/04 15:22:13 Starting parallel execution of other SQL files, concurrency: 2
-2026/02/04 15:22:13 Starting to execute SQL file: fixsql/t6.sql
-2026/02/04 15:22:13 Successfully executed SQL file fixsql/t6.sql, time taken: 998.804µs
-2026/02/04 15:22:13 Other SQL files execution completed
-2026/02/04 15:22:13 All SQL files execution completed, total time taken: 1.51624ms
+2026/02/10 10:34:42 Configuration information:
+2026/02/10 10:34:42   DstDSN: mysql|checksum:checksum@tcp(192.168.5.160:3406)/information_schema?charset=utf8mb4
+2026/02/10 10:34:42   ParallelThds: 2
+2026/02/10 10:34:42   FixFileDir: fixsql-20260210103306
+2026/02/10 10:34:42   LogFile: repairDB.log
+2026/02/10 10:34:42 Found 8 DELETE files, 8 other SQL files
+2026/02/10 10:34:42 Starting parallel execution of DELETE files, concurrency: 2
+2026/02/10 10:34:42 Starting to execute SQL file: fixsql-20260210103306/tt2-DELETE-2.sql
+2026/02/10 10:34:42 Starting to execute SQL file: fixsql-20260210103306/tt2-DELETE-1.sql
+2026/02/10 10:34:43 Successfully executed SQL file fixsql-20260210103306/tt2-DELETE-1.sql, time taken: 1.237550292s
+2026/02/10 10:34:43 Starting to execute SQL file: fixsql-20260210103306/tt2-DELETE-3.sql
+2026/02/10 10:34:43 Successfully executed SQL file fixsql-20260210103306/tt2-DELETE-2.sql, time taken: 1.358866667s
+2026/02/10 10:34:43 Starting to execute SQL file: fixsql-20260210103306/tt4-DELETE-1.sql
+2026/02/10 10:34:44 Successfully executed SQL file fixsql-20260210103306/tt2-DELETE-3.sql, time taken: 990.340167ms
+2026/02/10 10:34:44 Starting to execute SQL file: fixsql-20260210103306/tt4-DELETE-2.sql
+2026/02/10 10:34:44 Successfully executed SQL file fixsql-20260210103306/tt4-DELETE-1.sql, time taken: 905.714209ms
+2026/02/10 10:34:44 Starting to execute SQL file: fixsql-20260210103306/tt4-DELETE-3.sql
+2026/02/10 10:34:45 Successfully executed SQL file fixsql-20260210103306/tt4-DELETE-2.sql, time taken: 877.352458ms
+2026/02/10 10:34:45 Starting to execute SQL file: fixsql-20260210103306/tt4-DELETE-4.sql
+2026/02/10 10:34:45 Successfully executed SQL file fixsql-20260210103306/tt4-DELETE-3.sql, time taken: 973.233125ms
+2026/02/10 10:34:45 Starting to execute SQL file: fixsql-20260210103306/tt4-DELETE-5.sql
+2026/02/10 10:34:46 Successfully executed SQL file fixsql-20260210103306/tt4-DELETE-4.sql, time taken: 980.371708ms
+2026/02/10 10:34:46 Successfully executed SQL file fixsql-20260210103306/tt4-DELETE-5.sql, time taken: 893.216583ms
+2026/02/10 10:34:46 DELETE files execution completed
+2026/02/10 10:34:46 Starting parallel execution of other SQL files, concurrency: 2
+2026/02/10 10:34:46 Starting to execute SQL file: fixsql-20260210103306/tt2-2.sql
+2026/02/10 10:34:46 Starting to execute SQL file: fixsql-20260210103306/tt2-1.sql
+2026/02/10 10:34:47 Successfully executed SQL file fixsql-20260210103306/tt2-1.sql, time taken: 1.377405125s
+2026/02/10 10:34:47 Starting to execute SQL file: fixsql-20260210103306/tt2-3.sql
+2026/02/10 10:34:47 Successfully executed SQL file fixsql-20260210103306/tt2-2.sql, time taken: 1.438182916s
+2026/02/10 10:34:47 Starting to execute SQL file: fixsql-20260210103306/tt4-1.sql
+2026/02/10 10:34:49 Successfully executed SQL file fixsql-20260210103306/tt2-3.sql, time taken: 1.743938209s
+2026/02/10 10:34:49 Starting to execute SQL file: fixsql-20260210103306/tt4-2.sql
+2026/02/10 10:34:49 Successfully executed SQL file fixsql-20260210103306/tt4-1.sql, time taken: 1.862694s
+2026/02/10 10:34:49 Starting to execute SQL file: fixsql-20260210103306/tt4-3.sql
+2026/02/10 10:34:51 Successfully executed SQL file fixsql-20260210103306/tt4-2.sql, time taken: 2.099780166s
+2026/02/10 10:34:51 Starting to execute SQL file: fixsql-20260210103306/tt4-4.sql
+2026/02/10 10:34:51 Successfully executed SQL file fixsql-20260210103306/tt4-3.sql, time taken: 2.284029209s
+2026/02/10 10:34:51 Starting to execute SQL file: fixsql-20260210103306/tt4-5.sql
+2026/02/10 10:34:53 Successfully executed SQL file fixsql-20260210103306/tt4-4.sql, time taken: 2.426354833s
+2026/02/10 10:34:54 Successfully executed SQL file fixsql-20260210103306/tt4-5.sql, time taken: 2.29863075s
+2026/02/10 10:34:54 Other SQL files execution completed
+2026/02/10 10:34:54 All SQL files execution completed, total time taken: 12.094408208s

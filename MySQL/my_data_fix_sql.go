@@ -553,7 +553,27 @@ func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive s
 			CurrentDatabaseCache[dbPointer] = targetSchema
 			databaseCacheMutex.Unlock()
 		}
-		deleteSql = fmt.Sprintf("DELETE FROM `%s`.`%s` WHERE %s LIMIT 1;", targetSchema, my.Table, deleteSqlWhere)
+
+		// 统计目标端中与当前条件匹配的记录数量，以确定合适的LIMIT值
+		countQuery := fmt.Sprintf("SELECT COUNT(*) FROM `%s`.`%s` WHERE %s", targetSchema, my.Table, deleteSqlWhere)
+		var matchCount int
+		if err := db.QueryRow(countQuery).Scan(&matchCount); err != nil {
+			// 如果统计失败，默认使用LIMIT 1
+			vlog = fmt.Sprintf("(%d) Failed to count matching records: %v, using LIMIT 1", logThreadSeq, err)
+			global.Wlog.Warn(vlog)
+			matchCount = 1
+		}
+
+		// 根据实际匹配数量设置LIMIT值
+		limit := 1
+		// 对于唯一索引中的NULL值，不应该删除所有匹配记录，只删除多余的部分
+		// 在MySQL中，唯一索引允许多个NULL值，因为NULL不等于NULL
+		// 但是对于没有唯一索引的表，即使有NULL值，也应该删除所有匹配的记录
+		if matchCount > 1 && (my.IndexType != "pri" && my.IndexType != "uni" || !strings.Contains(deleteSqlWhere, "IS NULL")) {
+			limit = matchCount
+		}
+
+		deleteSql = fmt.Sprintf("DELETE FROM `%s`.`%s` WHERE %s LIMIT %d;", targetSchema, my.Table, deleteSqlWhere, limit)
 	} else {
 		return "", fmt.Errorf("failed to generate DELETE statement for table %s.%s: no valid conditions", targetSchema, my.Table)
 	}

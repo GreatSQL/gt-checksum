@@ -15,29 +15,22 @@ import (
 var globalSqlMap sync.Map
 
 /*
-Perform MD5 verification on different data rows and remove duplicate values
+Perform MD5 verification on different data rows without removing duplicate values
 */
 func (sp *SchedulePlan) AbDataMd5Unique(md5Chan <-chan map[string]string, logThreadSeq int64) chan map[string]string {
-	var A = make(chan map[string]string, 1)
-	var tmpAnDateMap = make(map[string]string)
+	var A = make(chan map[string]string, sp.mqQueueDepth)
 	var md5Mutex sync.Mutex // 添加互斥锁保护并发访问
 	go func() {
 		for {
 			select {
 			case i, ok1 := <-md5Chan:
 				if !ok1 {
-					A <- tmpAnDateMap
 					close(A)
 					return
 				} else {
 					md5Mutex.Lock() // 加锁保护map操作
-					for k, v := range i {
-						if l, ok := tmpAnDateMap[k]; ok && v != l {
-							delete(tmpAnDateMap, k)
-						} else {
-							tmpAnDateMap[k] = v
-						}
-					}
+					// 直接发送数据，不要去重，因为可能有多个相同的MD5值但不同的行数据
+					A <- i
 					md5Mutex.Unlock() // 解锁
 				}
 			}
@@ -113,8 +106,7 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 			vlog     string
 			noIndexD = make(chan struct{}, sp.concurrency)
 		)
-		// 初始化本地去重map，每次运行时创建一个新的map，避免全局状态问题
-		var localSqlMap = make(map[string]bool)
+		// 不需要本地去重map，因为可能有多个相同的SQL语句对应不同的行数据
 		displayTableName := sp.getDisplayTableName()
 		vlog = fmt.Sprintf("(%d) Generating DELETE/INSERT statements for table %s", logThreadSeq, displayTableName)
 		global.Wlog.Debug(vlog)
@@ -190,76 +182,62 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 					}
 				} else {
 					// 不要在循环外声明rowData和sqlType变量，避免变量覆盖
-					// 统计相同记录的数量
-					rowCountMap := make(map[string]int)
+					// 处理删除记录
 					for ki, vi := range v {
 						if vi == "delete" {
-							rowCountMap[ki]++
-						}
-					}
+							pods.DIFFS = "yes"
+							dbf.IndexType = "mul"
+							ddb := sp.ddbPool.Get(logThreadSeq)
+							displayTableName := sp.getDisplayTableName()
+							vlog = fmt.Sprintf("(%d) Generating DELETE repair statements for table %s", logThreadSeq, displayTableName)
+							global.Wlog.Debug(vlog)
+							dbf.RowData = ki
 
-					// 处理删除记录
-					for rowData, count := range rowCountMap {
-						pods.DIFFS = "yes"
-						dbf.IndexType = "mul"
-						ddb := sp.ddbPool.Get(logThreadSeq)
-						displayTableName := sp.getDisplayTableName()
-						vlog = fmt.Sprintf("(%d) Generating DELETE repair statements for table %s", logThreadSeq, displayTableName)
-						global.Wlog.Debug(vlog)
-						dbf.RowData = rowData
-
-						// Ensure IndexColumn is not empty
-						if len(dbf.IndexColumn) == 0 {
-							vlog = fmt.Sprintf("(%d) Warning: Table %s has no index columns, trying to use all columns as conditions", logThreadSeq, displayTableName)
-							global.Wlog.Warn(vlog)
-
-							// Get all column names from table structure
-							for _, colInfo := range colData.DColumnInfo {
-								if colName, ok := colInfo["columnName"]; ok {
-									dbf.IndexColumn = append(dbf.IndexColumn, colName)
-								} else if colName, ok := colInfo["COLUMN_NAME"]; ok {
-									// Try using uppercase key name
-									dbf.IndexColumn = append(dbf.IndexColumn, colName)
-								}
-							}
-
-							// If still no column names, log error and use default column
+							// Ensure IndexColumn is not empty
 							if len(dbf.IndexColumn) == 0 {
-								vlog = fmt.Sprintf("(%d) Error: Unable to get column names from table structure, will use default column", logThreadSeq, displayTableName)
-								global.Wlog.Error(vlog)
-								// Add a default column to avoid subsequent processing failure
-								dbf.IndexColumn = []string{"id"}
-								// Ensure RowData is not empty
-								if dbf.RowData == "" {
-									dbf.RowData = "id=0"
+								vlog = fmt.Sprintf("(%d) Warning: Table %s has no index columns, trying to use all columns as conditions", logThreadSeq, displayTableName)
+								global.Wlog.Warn(vlog)
+
+								// Get all column names from table structure
+								for _, colInfo := range colData.DColumnInfo {
+									if colName, ok := colInfo["columnName"]; ok {
+										dbf.IndexColumn = append(dbf.IndexColumn, colName)
+									} else if colName, ok := colInfo["COLUMN_NAME"]; ok {
+										// Try using uppercase key name
+										dbf.IndexColumn = append(dbf.IndexColumn, colName)
+									}
+								}
+
+								// If still no column names, log error and use default column
+								if len(dbf.IndexColumn) == 0 {
+									vlog = fmt.Sprintf("(%d) Error: Unable to get column names from table structure, will use default column", logThreadSeq, displayTableName)
+									global.Wlog.Error(vlog)
+									// Add a default column to avoid subsequent processing failure
+									dbf.IndexColumn = []string{"id"}
+									// Ensure RowData is not empty
+									if dbf.RowData == "" {
+										dbf.RowData = "id=0"
+									}
 								}
 							}
-						}
 
-						sqlstr, err := dbf.DataAbnormalFix().FixDeleteSqlExec(ddb, sp.ddrive, logThreadSeq)
-						if err != nil {
-							vlog = fmt.Sprintf("(%d) Failed to generate DELETE statement: %v", logThreadSeq, err)
-							global.Wlog.Error(vlog)
-							sp.ddbPool.Put(ddb, logThreadSeq)
-							continue
-						}
+							sqlstr, err := dbf.DataAbnormalFix().FixDeleteSqlExec(ddb, sp.ddrive, logThreadSeq)
+							if err != nil {
+								vlog = fmt.Sprintf("(%d) Failed to generate DELETE statement: %v", logThreadSeq, err)
+								global.Wlog.Error(vlog)
+								sp.ddbPool.Put(ddb, logThreadSeq)
+								continue
+							}
 
-						// 修改SQL语句，将LIMIT 1改为LIMIT count
-						if strings.Contains(sqlstr, "LIMIT 1") {
-							sqlstr = strings.Replace(sqlstr, "LIMIT 1", fmt.Sprintf("LIMIT %d", count), 1)
-						}
-
-						if sqlstr != "" {
-							// 使用修改后的SQL作为去重键
-							if !localSqlMap[sqlstr] {
-								localSqlMap[sqlstr] = true
+							if sqlstr != "" {
+								// 不要使用去重逻辑，因为可能有多个相同的SQL语句对应不同的行数据
 								sqlStrExec <- sqlstr
 							}
+							sp.ddbPool.Put(ddb, logThreadSeq)
+							displayTableName = sp.getDisplayTableName()
+							vlog = fmt.Sprintf("(%d) DELETE repair statements generated for table %s", logThreadSeq, displayTableName)
+							global.Wlog.Debug(vlog)
 						}
-						sp.ddbPool.Put(ddb, logThreadSeq)
-						displayTableName = sp.getDisplayTableName()
-						vlog = fmt.Sprintf("(%d) DELETE repair statements generated for table %s", logThreadSeq, displayTableName)
-						global.Wlog.Debug(vlog)
 					}
 
 					// 处理插入记录
@@ -310,11 +288,8 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 							}
 
 							if sqlstr != "" {
-								// 使用sqlstr作为键进行去重，确保同一SQL语句只被处理一次
-								if !localSqlMap[sqlstr] {
-									localSqlMap[sqlstr] = true
-									sqlStrExec <- sqlstr
-								}
+								// 不要使用去重逻辑，因为可能有多个相同的SQL语句对应不同的行数据
+								sqlStrExec <- sqlstr
 							}
 							sp.ddbPool.Put(ddb, logThreadSeq)
 							displayTableName = sp.getDisplayTableName()
@@ -480,9 +455,8 @@ Perform MD5 verification on query strings, process differences if strings don't 
 */
 func (sp *SchedulePlan) QueryDataCheckSum(stt, dtt string, md5chan chan<- map[string]string, FileOpen FileOperate, chunkSeq uint64, logThreadSeq int64) {
 	var (
-		vlog         string
-		aa           = &CheckSumTypeStruct{}
-		tmpAnDateMap = make(map[string]string)
+		vlog string
+		aa   = &CheckSumTypeStruct{}
 	)
 	displayTableName := sp.getDisplayTableName()
 	vlog = fmt.Sprintf("(%d) Verifying data blocks for table without index %s", logThreadSeq, displayTableName)
@@ -494,46 +468,31 @@ func (sp *SchedulePlan) QueryDataCheckSum(stt, dtt string, md5chan chan<- map[st
 		// 注意：Arrcmp函数的第一个参数是源端数据，第二个参数是目标端数据
 		// added是源端有但目标端没有的数据，需要插入到目标端
 		// deleted是目标端有但源端没有的数据，需要从目标端删除
-		// 注意：Arrcmp函数的第一个参数是源端数据，第二个参数是目标端数据
-		// added是源端有但目标端没有的数据，需要插入到目标端
-		// deleted是目标端有但源端没有的数据，需要从目标端删除
-		// Arrcmp函数的第一个参数是源端数据，第二个参数是目标端数据
-		// 返回值：
-		// - added: 源端有但目标端没有的数据，需要插入到目标端
-		// - deleted: 目标端有但源端没有的数据，需要从目标端删除
 		added, deleted := aa.Arrcmp(strings.Split(stt, "/*go actions rowData*/"), strings.Split(dtt, "/*go actions rowData*/"))
 		if len(deleted) > 0 {
-			tmpAnDateMap = make(map[string]string)
 			displayTableName := sp.getDisplayTableName()
 			vlog = fmt.Sprintf("(%d) Processing redundant data for table %s", logThreadSeq, displayTableName)
 			global.Wlog.Debug(vlog)
-			FileOpen.SqlType = "delete"
-			md5Slice, err := FileOpen.ConcurrencyWriteFile(deleted)
-			if err != nil {
-				return
+			// 直接将删除记录发送到通道中，不需要写入文件
+			for _, deli := range deleted {
+				if deli != "" {
+					md5chan <- map[string]string{deli: "delete"}
+				}
 			}
-			for _, deli := range md5Slice {
-				tmpAnDateMap[deli] = "delete"
-			}
-			md5chan <- tmpAnDateMap
 			displayTableName = sp.getDisplayTableName()
 			vlog = fmt.Sprintf("(%d) Redundant data processed for table %s", logThreadSeq, displayTableName)
 			global.Wlog.Debug(vlog)
 		}
 		if len(added) > 0 {
-			tmpAnDateMap = make(map[string]string)
 			displayTableName := sp.getDisplayTableName()
 			vlog = fmt.Sprintf("(%d) Processing missing data for table %s", logThreadSeq, displayTableName)
 			global.Wlog.Debug(vlog)
-			FileOpen.SqlType = "insert"
-			md5Slice, err := FileOpen.ConcurrencyWriteFile(added)
-			if err != nil {
-				return
+			// 直接将添加记录发送到通道中，不需要写入文件
+			for _, addi := range added {
+				if addi != "" {
+					md5chan <- map[string]string{addi: "insert"}
+				}
 			}
-			for _, addi := range md5Slice {
-				tmpAnDateMap[addi] = "insert"
-			}
-			md5chan <- tmpAnDateMap
 			displayTableName = sp.getDisplayTableName()
 			vlog = fmt.Sprintf("(%d) Missing data processed for table %s", logThreadSeq, displayTableName)
 			global.Wlog.Debug(vlog)
@@ -547,7 +506,7 @@ func (sp *SchedulePlan) QueryDataCheckSum(stt, dtt string, md5chan chan<- map[st
 // Read temporary files for tables without indexes and return difference data
 func (sp *SchedulePlan) noIndexTableAbdataRead(uniqMD5C chan map[string]string, logThreadSeq int64) chan map[string]string {
 	var dataFixC = make(chan map[string]string, sp.mqQueueDepth)
-	//Detect temporary files and read according to certain conditions
+	// 直接将接收到的数据发送到dataFixC通道中，不需要从文件中读取
 	go func() {
 		for {
 			select {
@@ -556,7 +515,8 @@ func (sp *SchedulePlan) noIndexTableAbdataRead(uniqMD5C chan map[string]string, 
 					close(dataFixC)
 					return
 				} else {
-					FileOperate{BufSize: 1024, fileName: sp.TmpFileName}.ConcurrencyReadFile(ic, dataFixC)
+					// 直接发送数据，不要去重，因为可能有多个相同的MD5值但不同的行数据
+					dataFixC <- ic
 				}
 			}
 		}

@@ -74,8 +74,7 @@ func (f FileOperate) ConcurrencyWriteFile(writeString []string) ([]string, error
 
 func ProcessChunk(chunk []byte, linesPool *sync.Pool, stringPool *sync.Pool, m map[string]string, c chan<- map[string]string) {
 	var (
-		wg2          sync.WaitGroup
-		processedMD5 sync.Map // 使用sync.Map进行线程安全的去重
+		wg2 sync.WaitGroup
 	)
 	logs := stringPool.Get().(string)
 	logs = string(chunk)
@@ -98,11 +97,18 @@ func ProcessChunk(chunk []byte, linesPool *sync.Pool, stringPool *sync.Pool, m m
 					continue
 				}
 				logSlice := strings.SplitN(text, " ", 3)
-				md5Sum := logSlice[0]
+				if len(logSlice) < 3 {
+					continue
+				}
 				sqlType := logSlice[1]
-				if v, ok := m[md5Sum]; ok && v == sqlType {
-					// 使用md5Sum作为键进行去重，确保同一行数据只被处理一次
-					if _, loaded := processedMD5.LoadOrStore(md5Sum, true); !loaded {
+				// 如果m为nil，处理所有记录，不进行筛选
+				// 这样可以确保所有重复的记录都被处理
+				if m == nil {
+					c <- map[string]string{logSlice[2]: sqlType}
+				} else {
+					// 否则，只处理当前map中包含的记录
+					md5Sum := logSlice[0]
+					if v, ok := m[md5Sum]; ok && v == sqlType {
 						c <- map[string]string{logSlice[2]: v}
 					}
 				}
@@ -152,7 +158,6 @@ func (f FileOperate) ConcurrencyReadFile(F map[string]string, c chan map[string]
 		wg.Add(1)
 		go func() {
 			//process each chunk concurrently
-			//start -> log start time, end -> log end time
 			ProcessChunk(buf, &linesPool, &stringPool, F, c)
 			wg.Done()
 		}()
