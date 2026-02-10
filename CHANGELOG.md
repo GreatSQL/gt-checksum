@@ -6,7 +6,7 @@
 - 新增repairDB程序，读取gc.conf配置参数，读取fixFileDir目录下所有.sql文件，完成并行修复数据库；也可以自行指定修复SQL文件目录，例如 repairDB ./my-fixsql-dir
 - 新增sqlWhere参数，用于定义校验数据时的WHERE条件，对于大表中只有小部分数据不一致的场景校验效率有极大提升；默认值为空字符串""，表示不添加WHERE子句条件，校验所有数据行
 - 支持没有任何索引（包括隐藏逐渐my_row_id）的表数据校验和修复
-- 程序运行时，检查 logFile 文件是否为空，如果不为空则将其重命名为 logFile-old，例如 gt-checksum.log 重命名为 gt-checksum.log-old
+- 程序运行时，检查 logFile 文件是否为空，如果不为空则将其重命名为 logFile-时间戳，例如 gt-checksum.log 重命名为 gt-checksum.log-20230801100000
 - Bugs fixed
   - 修复了ignoreTables参数无效问题
   - 修复了tables参数不支持%通配符问题，重新支持包括库名映射场景下的%通配符用法，例如"db1.t%:db2.t%"
