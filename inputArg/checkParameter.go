@@ -175,6 +175,7 @@ func (rc *ConfigParameter) checkPar() {
 			}
 		}
 	}
+	// 处理tables参数中的空格
 	var cc []string
 	for _, i := range strings.Split(rc.SecondaryL.SchemaV.Tables, ",") {
 		cc = append(cc, strings.TrimSpace(i))
@@ -183,6 +184,17 @@ func (rc *ConfigParameter) checkPar() {
 	if strings.HasSuffix(rc.SecondaryL.SchemaV.Tables, ",") {
 		rc.SecondaryL.SchemaV.Tables = rc.SecondaryL.SchemaV.Tables[:len(rc.SecondaryL.SchemaV.Tables)-1]
 	}
+
+	// 处理ignoreTables参数中的空格
+	var ic []string
+	for _, i := range strings.Split(rc.SecondaryL.SchemaV.IgnoreTables, ",") {
+		ic = append(ic, strings.TrimSpace(i))
+	}
+	rc.SecondaryL.SchemaV.IgnoreTables = strings.Join(ic, ",")
+	if strings.HasSuffix(rc.SecondaryL.SchemaV.IgnoreTables, ",") {
+		rc.SecondaryL.SchemaV.IgnoreTables = rc.SecondaryL.SchemaV.IgnoreTables[:len(rc.SecondaryL.SchemaV.IgnoreTables)-1]
+	}
+
 	// 无论CaseSensitiveObjectName设置如何，都保持表名的原始大小写
 	rc.SecondaryL.SchemaV.Tables = strings.TrimSpace(rc.SecondaryL.SchemaV.Tables)
 	rc.SecondaryL.SchemaV.IgnoreTables = strings.TrimSpace(rc.SecondaryL.SchemaV.IgnoreTables)

@@ -54,11 +54,13 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 				if line == "" || strings.HasPrefix(line, ";") {
 					continue
 				}
-				// 检查是否是目标参数，支持参数名和值之间有空格的情况
-				if strings.HasPrefix(line, paramName) {
-					// 找到等号的位置
-					equalIndex := strings.Index(line, "=")
-					if equalIndex != -1 {
+				// 找到第一个等号的位置，分割参数名和值
+				equalIndex := strings.Index(line, "=")
+				if equalIndex != -1 {
+					// 提取参数名部分并去除前后空格
+					extractedParamName := strings.TrimSpace(line[:equalIndex])
+					// 检查是否是目标参数
+					if extractedParamName == paramName {
 						// 提取等号后面的值，并去除前后空格
 						value = strings.TrimSpace(line[equalIndex+1:])
 					}
