@@ -1,5 +1,30 @@
 -- Oracle Test Case Script for gt-checksum
 
+-- Create user and grant privileges (must be done before setting schema)
+BEGIN
+    EXECUTE IMMEDIATE 'CREATE USER gt_checksum IDENTIFIED BY gt_checksum';
+EXCEPTION
+    WHEN OTHERS THEN
+        NULL;
+END;
+/
+
+BEGIN
+    EXECUTE IMMEDIATE 'GRANT CREATE SESSION, CREATE TABLE, CREATE TRIGGER, CREATE PROCEDURE, CREATE FUNCTION TO gt_checksum';
+EXCEPTION
+    WHEN OTHERS THEN
+        NULL;
+END;
+/
+
+BEGIN
+    EXECUTE IMMEDIATE 'ALTER USER gt_checksum QUOTA UNLIMITED ON USERS';
+EXCEPTION
+    WHEN OTHERS THEN
+        NULL;
+END;
+/
+
 -- Connect as gt_checksum user
 ALTER SESSION SET CURRENT_SCHEMA = gt_checksum;
 
@@ -180,22 +205,7 @@ EXCEPTION
 END;
 /
 
--- Create user and grant privileges (if needed)
-BEGIN
-    EXECUTE IMMEDIATE 'CREATE USER gt_checksum IDENTIFIED BY gt_checksum';
-EXCEPTION
-    WHEN OTHERS THEN
-        NULL;
-END;
-/
 
-BEGIN
-    EXECUTE IMMEDIATE 'GRANT CREATE SESSION, CREATE TABLE, CREATE TRIGGER, CREATE PROCEDURE, CREATE FUNCTION TO gt_checksum';
-EXCEPTION
-    WHEN OTHERS THEN
-        NULL;
-END;
-/
 
 -- Test basic data types
 CREATE TABLE testInt(
@@ -381,8 +391,8 @@ CREATE TABLE range_hash_Partition_Table (
     id NUMBER,
     purchased DATE,
     DATA VARCHAR2(20),
-    purchase_year AS (EXTRACT(YEAR FROM purchased)) VIRTUAL,
-    purchase_day_of_year AS (TO_CHAR(purchased, 'DDD')) VIRTUAL
+    purchase_year NUMBER,
+    purchase_day_of_year VARCHAR2(3)
 )
 PARTITION BY RANGE(purchase_year)
     SUBPARTITION BY HASH(purchase_day_of_year)
