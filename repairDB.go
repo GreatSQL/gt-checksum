@@ -109,8 +109,8 @@ func executeSQLFile(db *sql.DB, sqlFile string) error {
 		return fmt.Errorf("Failed to start transaction: %v", err)
 	}
 
-	// Split SQL statements by semicolon
-	statements := strings.Split(string(content), ";")
+	// Split SQL statements by semicolon, considering string literals
+	statements := splitSQLStatements(string(content))
 
 	// Execute each statement individually
 	for _, stmt := range statements {
@@ -134,6 +134,56 @@ func executeSQLFile(db *sql.DB, sqlFile string) error {
 	}
 
 	return nil
+}
+
+// splitSQLStatements splits SQL statements by semicolon, considering string literals
+func splitSQLStatements(content string) []string {
+	var statements []string
+	var currentStmt strings.Builder
+	inSingleQuote := false
+	inDoubleQuote := false
+	escaped := false
+
+	for _, c := range content {
+		if escaped {
+			currentStmt.WriteRune(c)
+			escaped = false
+			continue
+		}
+
+		switch c {
+		case '\\':
+			escaped = true
+			currentStmt.WriteRune(c)
+		case '\'':
+			if !inDoubleQuote {
+				inSingleQuote = !inSingleQuote
+			}
+			currentStmt.WriteRune(c)
+		case '"':
+			if !inSingleQuote {
+				inDoubleQuote = !inDoubleQuote
+			}
+			currentStmt.WriteRune(c)
+		case ';':
+			if !inSingleQuote && !inDoubleQuote {
+				statements = append(statements, currentStmt.String())
+				currentStmt.Reset()
+			} else {
+				currentStmt.WriteRune(c)
+			}
+		default:
+			currentStmt.WriteRune(c)
+		}
+	}
+
+	// Add the last statement if it's not empty
+	lastStmt := strings.TrimSpace(currentStmt.String())
+	if lastStmt != "" {
+		statements = append(statements, lastStmt)
+	}
+
+	return statements
 }
 
 // Execute SQL files in parallel
@@ -367,7 +417,12 @@ func main() {
 	// Calculate total time
 	totalTime := time.Since(startTime)
 
-	log.Printf("All SQL files execution completed, total time taken: %v\n", totalTime)
-	fmt.Printf("All SQL files execution completed, total time taken: %v\n", totalTime)
+	// Format total time to match the required format (e.g., 9m43.936s)
+	minutes := int(totalTime.Minutes())
+	seconds := totalTime.Seconds() - float64(minutes*60)
+	formattedTime := fmt.Sprintf("%dm%.3fs", minutes, seconds)
+
+	log.Printf("All SQL files execution completed, total time taken: %s\n", formattedTime)
+	fmt.Printf("All SQL files execution completed, total time taken: %s\n", formattedTime)
 	fmt.Println("repairDB executed successfully")
 }
