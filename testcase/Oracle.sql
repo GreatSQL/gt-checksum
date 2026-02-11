@@ -1,5 +1,7 @@
 -- Oracle Test Case Script for gt-checksum
--- Reference: MySQL.sql adapted for Oracle syntax
+
+-- Connect as gt_checksum user
+ALTER SESSION SET CURRENT_SCHEMA = gt_checksum;
 
 -- Drop existing objects
 BEGIN
@@ -19,7 +21,7 @@ END;
 /
 
 BEGIN
-    EXECUTE IMMEDIATE 'DROP FUNCTION FUN_getAgeStr';
+    EXECUTE IMMEDIATE 'DROP FUNCTION getAgeStr';
 EXCEPTION
     WHEN OTHERS THEN
         NULL;
@@ -51,7 +53,7 @@ END;
 /
 
 BEGIN
-    EXECUTE IMMEDIATE 'DROP TABLE "PCMS"."tb_emp6"';
+    EXECUTE IMMEDIATE 'DROP TABLE tb_emp6';
 EXCEPTION
     WHEN OTHERS THEN
         NULL;
@@ -59,7 +61,7 @@ END;
 /
 
 BEGIN
-    EXECUTE IMMEDIATE 'DROP TABLE "PCMS"."tb_dept1"';
+    EXECUTE IMMEDIATE 'DROP TABLE tb_dept1';
 EXCEPTION
     WHEN OTHERS THEN
         NULL;
@@ -67,7 +69,7 @@ END;
 /
 
 BEGIN
-    EXECUTE IMMEDIATE 'DROP TABLE "PCMS"."info"';
+    EXECUTE IMMEDIATE 'DROP TABLE CUSTOMER';
 EXCEPTION
     WHEN OTHERS THEN
         NULL;
@@ -75,15 +77,7 @@ END;
 /
 
 BEGIN
-    EXECUTE IMMEDIATE 'DROP TABLE "PCMS"."CUSTOMER"';
-EXCEPTION
-    WHEN OTHERS THEN
-        NULL;
-END;
-/
-
-BEGIN
-    EXECUTE IMMEDIATE 'DROP TABLE "PCMS"."CUSTOMER1"';
+    EXECUTE IMMEDIATE 'DROP TABLE CUSTOMER1';
 EXCEPTION
     WHEN OTHERS THEN
         NULL;
@@ -186,6 +180,23 @@ EXCEPTION
 END;
 /
 
+-- Create user and grant privileges (if needed)
+BEGIN
+    EXECUTE IMMEDIATE 'CREATE USER gt_checksum IDENTIFIED BY gt_checksum';
+EXCEPTION
+    WHEN OTHERS THEN
+        NULL;
+END;
+/
+
+BEGIN
+    EXECUTE IMMEDIATE 'GRANT CREATE SESSION, CREATE TABLE, CREATE TRIGGER, CREATE PROCEDURE, CREATE FUNCTION TO gt_checksum';
+EXCEPTION
+    WHEN OTHERS THEN
+        NULL;
+END;
+/
+
 -- Test basic data types
 CREATE TABLE testInt(
     f1 NUMBER(3),
@@ -216,9 +227,6 @@ CREATE TABLE testBit(
 CREATE INDEX idx_testBit_1 ON testBit(f1);
 INSERT INTO testBit VALUES(1,31,65);
 
--- Note: Oracle doesn't have BIT type, use NUMBER instead
-SELECT f1, f2, f3 FROM testBit;
-
 CREATE TABLE testTime(
     f1 NUMBER(4),
     f2 NUMBER(4),
@@ -242,7 +250,9 @@ CREATE TABLE testString(
     f9 VARCHAR2(50)
 );
 CREATE INDEX idx_testString_1 ON testString(f1);
-INSERT INTO testString(f1,f2,f3,f4,f5,f6,f7,f8,f9) VALUES('1','abcde','abc123','product_data_batch_001','database_transaction_log_20220712','checksum_validation_report','d','aa,bb');
+INSERT INTO testString(f1,f2,f3,f4,f5,f6,f7,f8,f9) VALUES('1','abcde','abc123','abcd.1234','hello gt-checksum','hello ','hello gt-checksum','a','aa,bb');
+INSERT INTO testString(f1,f2,f3,f4,f5,f6,f7,f8,f9) VALUES('2','fghij','def456','efgh.5678','hello, i''m gt-checksum','hello ','hello gt-checksum','b','cc,dd');
+INSERT INTO testString(f1,f2,f3,f4,f5,f6,f7,f8,f9) VALUES('3','klmno','ghi789','ijkl.9012','a\b''c','hello ','hello gt-checksum','c','cc,dd');
 
 CREATE TABLE testBin(
     f1 RAW(1),
@@ -254,7 +264,16 @@ CREATE TABLE testBin(
     f7 BLOB
 );
 CREATE INDEX idx_testBin_1 ON testBin(f1);
-INSERT INTO testBin(f1,f2,f3,f4,f5,f6,f7) VALUES('61','616263','6162642e31323334','01010101','9023123123','database_checksum_data','validation_result_data');
+INSERT INTO testBin(f1,f2,f3,f4,f5,f6,f7) 
+VALUES(
+    HEXTORAW('61'), 
+    HEXTORAW('616263'), 
+    HEXTORAW('6162642e31323334'),
+    HEXTORAW('01010101'),
+    UTL_RAW.CAST_TO_RAW('9023123123'),
+    UTL_RAW.CAST_TO_RAW('hello gt-checksum'),
+    UTL_RAW.CAST_TO_RAW('hello gt-checksum')
+);
 
 -- Test triggers with account table
 CREATE TABLE account (
@@ -302,15 +321,12 @@ END;
 
 -- Test trigger functionality
 INSERT INTO account VALUES (150,33.32);
-SELECT * FROM tmp_account WHERE acct_num=150;
 
 INSERT INTO account VALUES(200,13.23);
 UPDATE account SET acct_num = 201 WHERE amount = 13.23;
-SELECT * FROM tmp_account;
 
 INSERT INTO account VALUES(300,14.23);
 DELETE FROM account WHERE acct_num = 300;
-SELECT * FROM tmp_account;
 
 -- Test partition tables
 CREATE TABLE range_Partition_Table(
@@ -318,12 +334,12 @@ CREATE TABLE range_Partition_Table(
     NAME VARCHAR2(20),
     ID NUMBER
 ) PARTITION BY RANGE(range_key_column)(
-    PARTITION PART_202007 VALUES LESS THAN (TO_DATE('2020-07-01 00:00:00','YYYY-MM-DD HH24:MI:SS')),
-    PARTITION PART_202008 VALUES LESS THAN (TO_DATE('2020-08-01 00:00:00','YYYY-MM-DD HH24:MI:SS')),
-    PARTITION PART_202009 VALUES LESS THAN (TO_DATE('2020-09-01 00:00:00','YYYY-MM-DD HH24:MI:SS'))
+    PARTITION PART_202007 VALUES LESS THAN (TO_DATE('2020-07-01','YYYY-MM-DD')),
+    PARTITION PART_202008 VALUES LESS THAN (TO_DATE('2020-08-01','YYYY-MM-DD')),
+    PARTITION PART_202009 VALUES LESS THAN (TO_DATE('2020-09-01','YYYY-MM-DD'))
 );
 
-CREATE TABLE "PCMS"."CUSTOMER"(
+CREATE TABLE CUSTOMER(
     CUSTOMER_ID NUMBER NOT NULL PRIMARY KEY,
     FIRST_NAME  VARCHAR2(30) NOT NULL,
     LAST_NAME   VARCHAR2(30) NOT NULL,
@@ -335,16 +351,16 @@ CREATE TABLE "PCMS"."CUSTOMER"(
     PARTITION CUS_PART2 VALUES LESS THAN (200000)
 );
 
-CREATE TABLE "PCMS"."CUSTOMER1"(
-    CUSTOMER_ID VARCHAR2(30) NOT NULL,
+CREATE TABLE CUSTOMER1(
+    CUSTOMER_ID NUMBER NOT NULL,
     FIRST_NAME  VARCHAR2(30) NOT NULL,
     LAST_NAME   VARCHAR2(30) NOT NULL,
     PHONE       VARCHAR2(15) NOT NULL,
     EMAIL       VARCHAR2(80),
     STATUS      CHAR(1)
-) PARTITION BY LIST (CUSTOMER_ID)(
-    PARTITION CUS_PART1 VALUES LESS THAN ('100000'),
-    PARTITION CUS_PART2 VALUES LESS THAN ('200000')
+) PARTITION BY RANGE (CUSTOMER_ID)(
+    PARTITION CUS_PART1 VALUES LESS THAN (100000),
+    PARTITION CUS_PART2 VALUES LESS THAN (200000)
 );
 
 CREATE TABLE list_Partition_Table(
@@ -356,84 +372,60 @@ CREATE TABLE list_Partition_Table(
 );
 
 CREATE TABLE hash_Partition_Table(
-    hash_key_column VARCHAR2(30),
+    hash_key_column NUMBER(30),
     DATA VARCHAR2(20)
-) PARTITION BY HASH(hash_key_column)(
-    PARTITION PART_0001,
-    PARTITION PART_0002,
-    PARTITION PART_0003,
-    PARTITION PART_0004
-);
+) PARTITION BY HASH(hash_key_column)
+PARTITIONS 4;
 
-CREATE TABLE range_hash_Partition_Table(
-    range_column_key DATE,
-    hash_column_key NUMBER,
-    DATA VARCHAR2(20)
-) PARTITION BY RANGE(range_column_key)
-    SUBPARTITION BY HASH(hash_column_key) SUBPARTITIONS 2(
-        PARTITION PART_1990 VALUES LESS THAN (TO_DATE('1990-01-01','YYYY-MM-DD')),
-        PARTITION PART_2000 VALUES LESS THAN (TO_DATE('2000-01-01','YYYY-MM-DD')),
-        PARTITION PART_MAXVALUE VALUES LESS THAN (MAXVALUE)
+CREATE TABLE range_hash_Partition_Table (
+    id NUMBER,
+    purchased DATE,
+    DATA VARCHAR2(20),
+    purchase_year AS (EXTRACT(YEAR FROM purchased)) VIRTUAL,
+    purchase_day_of_year AS (TO_CHAR(purchased, 'DDD')) VIRTUAL
+)
+PARTITION BY RANGE(purchase_year)
+    SUBPARTITION BY HASH(purchase_day_of_year)
+    SUBPARTITIONS 2 (
+        PARTITION p0 VALUES LESS THAN (1990),
+        PARTITION p1 VALUES LESS THAN (2000),
+        PARTITION p2 VALUES LESS THAN (MAXVALUE)
 );
 
 -- Test foreign key constraints
-CREATE TABLE "PCMS"."tb_dept1" (
-    "ID" NUMBER(11) NOT NULL,
-    "NAME" VARCHAR2(22) NOT NULL,
-    "LOCATION" VARCHAR2(50),
-    PRIMARY KEY ("ID")
+CREATE TABLE tb_dept1 (
+    id NUMBER(11) PRIMARY KEY,
+    name VARCHAR2(22) NOT NULL,
+    location VARCHAR2(50)
 );
 
-CREATE TABLE "PCMS"."tb_emp6" (
-    "id" NUMBER(11,0) NOT NULL,
-    "name" VARCHAR2(25 BYTE),
-    "deptId" NUMBER(11,0),
-    "salary" FLOAT(126),
-    PRIMARY KEY ("id")
+CREATE TABLE tb_emp6(
+    id NUMBER(11) PRIMARY KEY,
+    name VARCHAR2(25),
+    deptId NUMBER(11),
+    salary FLOAT,
+    CONSTRAINT fk_emp_dept1
+    FOREIGN KEY(deptId) REFERENCES tb_dept1(id)
 );
-ALTER TABLE "PCMS"."tb_emp6" ADD CONSTRAINT "fk_emp_dept1" FOREIGN KEY ("deptId") REFERENCES "PCMS"."tb_dept1" ("ID");
 
 -- Test stored procedures and functions
-CREATE OR REPLACE FUNCTION FUN_getAgeStr(age IN NUMBER)
+CREATE OR REPLACE FUNCTION getAgeStr(age IN NUMBER)
 RETURN VARCHAR2 IS
     results VARCHAR2(20);
 BEGIN
     IF age <= 14 THEN
-        results := '儿童';
+        results := 'Children';
     ELSIF age <= 24 THEN
-        results := '青少年';
+        results := 'Teenagers';
     ELSIF age <= 44 THEN
-        results := '青年';
+        results := 'Youth';
     ELSIF age <= 59 THEN
-        results := '中年';
+        results := 'Middle Age';
     ELSE
-        results := '老年';
+        results := 'Elderly';
     END IF;
     RETURN results;
-END;
-/
-
--- Create info table for testing
-CREATE TABLE "PCMS"."info" (
-    "ID" NUMBER NOT NULL,
-    "AGE" NUMBER NOT NULL,
-    "ADDRESS" VARCHAR2(50) NOT NULL,
-    "SALARY" NUMBER(10,2) NOT NULL,
-    PRIMARY KEY ("ID")
-);
-
-INSERT INTO "PCMS"."info"(ID,AGE,ADDRESS,SALARY) VALUES(1,32,'Beijing Financial District',2000.00);
-INSERT INTO "PCMS"."info"(ID,AGE,ADDRESS,SALARY) VALUES(2,25,'Shanghai Pudong New Area',1500.00);
-INSERT INTO "PCMS"."info"(ID,AGE,ADDRESS,SALARY) VALUES(3,23,'Hangzhou West Lake District',2000.00);
-INSERT INTO "PCMS"."info"(ID,AGE,ADDRESS,SALARY) VALUES(4,25,'Henan Zhengzhou High-tech Zone',6500.00);
-INSERT INTO "PCMS"."info"(ID,AGE,ADDRESS,SALARY) VALUES(5,27,'Hunan Changsha Economic Zone',8500.00);
-INSERT INTO "PCMS"."info"(ID,AGE,ADDRESS,SALARY) VALUES(6,22,'Hunan Xiangtan Industrial Park',4500.00);
-INSERT INTO "PCMS"."info"(ID,AGE,ADDRESS,SALARY) VALUES(7,24,'Hebei Shijiazhuang Development Zone',10000.00);
-
-CREATE OR REPLACE PROCEDURE countproc(sid IN NUMBER, num OUT NUMBER) IS
-BEGIN
-    SELECT COUNT(*) INTO num FROM "PCMS"."info" WHERE salary > 5000;
-END;
+END getAgeStr;
 /
 
 -- Test additional triggers
@@ -454,29 +446,17 @@ END;
 
 -- Test indexes with complex structure
 CREATE TABLE IndexT(
-    "id" NUMBER(11) NOT NULL,
-    "tenantry_id" NUMBER(20) NOT NULL,
-    "code" VARCHAR2(64) NOT NULL,
-    "goods_name" VARCHAR2(50) NOT NULL,
-    "props_name" VARCHAR2(100) NOT NULL,
-    "price" NUMBER(10,2) NOT NULL,
-    "price_url" VARCHAR2(1000) NOT NULL,
-    "create_time" TIMESTAMP NOT NULL,
-    "modify_time" TIMESTAMP DEFAULT NULL,
-    "deleted" NUMBER(1) NOT NULL DEFAULT 0,
-    PRIMARY KEY ("id")
+    id NUMBER(11) NOT NULL,
+    tenantry_id NUMBER(20) NOT NULL,
+    code VARCHAR2(64) NOT NULL,
+    goods_name VARCHAR2(50) NOT NULL,
+    props_name VARCHAR2(100) NOT NULL,
+    price NUMBER(10,2) NOT NULL,
+    price_url VARCHAR2(1000) NOT NULL,
+    create_time TIMESTAMP NOT NULL,
+    modify_time TIMESTAMP DEFAULT NULL,
+    deleted NUMBER(1) default 0 NOT NULL,
+    PRIMARY KEY (id)
 );
-CREATE INDEX "idx_IndexT_2" ON IndexT("tenantry_id","code");
-CREATE INDEX "idx_IndexT_3" ON IndexT("code","tenantry_id");
-
--- Add comments to the IndexT table
-COMMENT ON TABLE IndexT IS 'Product information table';
-COMMENT ON COLUMN IndexT.tenantry_id IS 'Product ID';
-COMMENT ON COLUMN IndexT.code IS 'Product SKU number';
-COMMENT ON COLUMN IndexT.goods_name IS 'Product name';
-COMMENT ON COLUMN IndexT.props_name IS 'Product attributes string format: p1:v1;p2:v2';
-COMMENT ON COLUMN IndexT.price IS 'Product pricing';
-COMMENT ON COLUMN IndexT.price_url IS 'Product main image URL';
-COMMENT ON COLUMN IndexT.create_time IS 'Product creation time';
-COMMENT ON COLUMN IndexT.modify_time IS 'Product last modification time';
-COMMENT ON COLUMN IndexT.deleted IS 'Logical deletion flag';
+CREATE INDEX idx_IndexT_2 ON IndexT(tenantry_id,code);
+CREATE INDEX idx_IndexT_3 ON IndexT(code,tenantry_id);

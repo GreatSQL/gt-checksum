@@ -18,7 +18,7 @@ CREATE TABLE testInt(
     f6 INT UNSIGNED,
     f7 BIGINT
 );
-ALTER TABLE testInt ADD INDEX idx_1(f1);
+ALTER TABLE testInt ADD INDEX idx_testInt_1(f1);
 INSERT INTO testInt(f1,f2,f3,f4,f5,f6,f7) VALUES(1,2,3,4,5,6,7);
 
 DROP TABLE IF EXISTS testFloat;
@@ -28,7 +28,7 @@ CREATE TABLE testFloat(
   f3 DOUBLE,
   f4 DOUBLE(5,3)
 );
-ALTER TABLE testFloat ADD INDEX idx_1(f1);
+ALTER TABLE testFloat ADD INDEX idx_testFloat_1(f1);
 INSERT INTO testFloat(f1,f2,f3,f4) VALUES(123.45,123.45,123.45,12.456);
 
 DROP TABLE IF EXISTS testBit;
@@ -37,11 +37,8 @@ CREATE TABLE testBit(
     f2 BIT(5),
     f3 BIT(64)
 );
-ALTER TABLE testBit ADD INDEX idx_1(f1);
+ALTER TABLE testBit ADD INDEX idx_testBit_1(f1);
 INSERT INTO testBit VALUES(1,31,65);
-
--- from bin,oct,hex bin转换为二进制，oct8进制，hex16进制
-SELECT * FROM testBit;
 
 DROP TABLE IF EXISTS testTime;
 CREATE TABLE testTime(
@@ -52,7 +49,7 @@ CREATE TABLE testTime(
      f5 DATETIME,
      f6 TIMESTAMP
 );
-ALTER TABLE testTime ADD INDEX idx_1(f1);
+ALTER TABLE testTime ADD INDEX idx_testTime_1(f1);
 INSERT INTO testTime(f1,f2,f3,f4,f5,f6) VALUES('2022',2022,'2022-07-12','2 12:30:29','2022-07-12 14:53:00','2022-07-12 14:54:00');
 
 DROP TABLE IF EXISTS testString;
@@ -67,7 +64,7 @@ CREATE TABLE testString(
    f8 ENUM('a','b','c','d'),
    f9 SET('aa','bb','cc','dd')
 );
-ALTER TABLE testString ADD INDEX idx_1(f1);
+ALTER TABLE testString ADD INDEX idx_testString_1(f1);
 INSERT INTO testString(f1,f2,f3,f4,f5,f6,f7,f8,f9) VALUES('1','abcde','abc123','abcd.1234','hello gt-checksum','hello ','hello gt-checksum','a','aa,bb');
 INSERT INTO testString(f1,f2,f3,f4,f5,f6,f7,f8,f9) VALUES('2','fghij','def456','efgh.5678',"hello, i\'m gt-checksum",'hello ','hello gt-checksum','b','cc,dd');
 INSERT INTO testString(f1,f2,f3,f4,f5,f6,f7,f8,f9) VALUES('3','klmno','ghi789','ijkl.9012',concat("a\\\b\\'c",repeat(chr(rand()*102),5)),'hello ','hello gt-checksum','c','cc,dd');
@@ -82,7 +79,7 @@ CREATE TABLE testBin(
     f6 MEDIUMBLOB,
     f7 LONGBLOB
 );
-ALTER TABLE testBin ADD INDEX idx_1(f1);
+ALTER TABLE testBin ADD INDEX idx_testBin_1(f1);
 INSERT INTO testBin(f1,f2,f3,f4,f5,f6,f7) VALUES('a','abc','abcd.1234','01010101','0x9023123123','hello gt-checksum','hello gt-checksum');
 
 -- 测试触发器的处理
@@ -131,15 +128,12 @@ END ||
 DELIMITER ;
 
 INSERT INTO account VALUES (150,33.32);
-SELECT * FROM tmp_account WHERE acct_num=150;
 
 INSERT INTO account VALUES(200,13.23);
 UPDATE account SET acct_num = 201 WHERE amount = 13.23;
-SELECT * FROM tmp_account;
 
 INSERT INTO account VALUES(300,14.23);
 DELETE FROM account WHERE acct_num = 300;
-SELECT * FROM tmp_account;
 
 -- 测试分区
 DROP TABLE IF EXISTS range_Partition_Table;
@@ -168,15 +162,15 @@ CREATE TABLE gt_checksum.CUSTOMER(
 
 DROP TABLE IF EXISTS gt_checksum.CUSTOMER1;
 CREATE TABLE gt_checksum.CUSTOMER1(
-    CUSTOMER_ID VARCHAR(30) NOT NULL,
+    CUSTOMER_ID BIGINT NOT NULL,
     FIRST_NAME  VARCHAR(30) NOT NULL,
     LAST_NAME   VARCHAR(30) NOT NULL,
     PHONE       VARCHAR(15) NOT NULL,
     EMAIL       VARCHAR(80),
     STATUS      CHAR(1)
 ) PARTITION BY RANGE COLUMNS (CUSTOMER_ID)(
-    PARTITION CUS_PART1 VALUES LESS THAN ('100000'),
-    PARTITION CUS_PART2 VALUES LESS THAN ('200000')
+    PARTITION CUS_PART1 VALUES LESS THAN (100000),
+    PARTITION CUS_PART2 VALUES LESS THAN (200000)
 );
 
 DROP TABLE IF EXISTS list_Partition_Table;
@@ -233,15 +227,15 @@ NO SQL
 BEGIN
 	DECLARE results VARCHAR(20);
 	IF age<=14 then
-		set results = '儿童';
+		set results = 'Children';
 	ELSEIF age <=24 THEN
-		set results = '青少年';
+		set results = 'Teenagers';
 	ELSEIF age <=44 THEN
-		set results = '青年';
+		set results = 'Youth';
 	ELSEIF age <=59 THEN
-		set results = '中年';
+		set results = 'Middle Age';
 ELSE
-		SET results = '老年';
+		SET results = 'Elderly';
 END IF;
 RETURN results;
 END ||
@@ -268,16 +262,16 @@ DELIMITER ;
 DROP TABLE IF EXISTS IndexT;
 CREATE TABLE IndexT(
     `id` INT(11) NOT NULL,
-    `tenantry_id` BIGINT(20) NOT NULL COMMENT '商品id',
-    `code` VARCHAR(64) NOT NULL COMMENT '商品编码（货号）',
-    `goods_name` VARCHAR(50) NOT NULL COMMENT '商品名称',
-    `props_name` VARCHAR(100) NOT NULL COMMENT '商品名称描述字符串，格式：p1:v1;p2:v2，例如：品牌:盈讯;型号:F908',
-    `price` DECIMAL(10,2) NOT NULL COMMENT '商品定价',
-    `price_url` VARCHAR(1000) NOT NULL COMMENT '商品主图片地址',
-    `create_time` DATETIME NOT NULL COMMENT '商品创建时间',
-    `modify_time` DATETIME DEFAULT NULL COMMENT '商品最近修改时间',
-    `deleted` TINYINT(1) NOT NULL DEFAULT '0' COMMENT '标记逻辑删除',
+    `tenantry_id` BIGINT(20) NOT NULL,
+    `code` VARCHAR(64) NOT NULL,
+    `goods_name` VARCHAR(50) NOT NULL,
+    `props_name` VARCHAR(100) NOT NULL,
+    `price` DECIMAL(10,2) NOT NULL,
+    `price_url` VARCHAR(1000) NOT NULL,
+    `create_time` DATETIME NOT NULL,
+    `modify_time` DATETIME DEFAULT NULL,
+    `deleted` TINYINT(1) NOT NULL DEFAULT '0',
     PRIMARY KEY (`id`),
     KEY `idx_2` (`tenantry_id`,`code`),
     KEY `idx_3` (`code`,`tenantry_id`)
-) ENGINE=InnoDB COMMENT='商品信息表';
+) ENGINE=InnoDB;
