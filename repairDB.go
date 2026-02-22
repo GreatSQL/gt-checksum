@@ -6,7 +6,9 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -186,7 +188,25 @@ func splitSQLStatements(content string) []string {
 	return statements
 }
 
-// Execute SQL files in parallel
+// Maximum number of retry attempts for deadlocked SQL files
+const maxDeadlockRetries = 3
+
+// isDeadlockError checks if an error is a MySQL deadlock error (Error 1213)
+func isDeadlockError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "Error 1213") ||
+		strings.Contains(err.Error(), "Deadlock found when trying to get lock")
+}
+
+// deadlockResult holds the result of executing a SQL file that may have deadlocked
+type deadlockResult struct {
+	file string
+	err  error
+}
+
+// Execute SQL files in parallel with deadlock retry support
 func parallelExecuteSQLFiles(files []string, dsn string) {
 	// Create database connection pool
 	db, err := sql.Open("mysql", dsn)
@@ -203,33 +223,145 @@ func parallelExecuteSQLFiles(files []string, dsn string) {
 		return
 	}
 
-	// Execute files
-	for _, file := range files {
-		wg.Add(1)
-		sem <- struct{}{} // Acquire semaphore
+	// Execute files and collect deadlocked ones for retry
+	pendingFiles := files
+	retryRound := 0
 
-		go func(sqlFile string) {
-			defer wg.Done()
-			defer func() { <-sem }() // Release semaphore
+	for len(pendingFiles) > 0 {
+		if retryRound > 0 {
+			// Exponential backoff: 2s, 4s, 8s, ...
+			backoff := time.Duration(1<<uint(retryRound)) * time.Second
+			log.Printf("Deadlock retry round %d: waiting %v before retrying %d file(s)\n",
+				retryRound, backoff, len(pendingFiles))
+			fmt.Printf("Deadlock retry round %d: waiting %v before retrying %d file(s)\n",
+				retryRound, backoff, len(pendingFiles))
+			time.Sleep(backoff)
+		}
 
-			// Record start time
-			startTime := time.Now()
-			log.Printf("Starting to execute SQL file: %s\n", sqlFile)
-			fmt.Printf("Starting to execute SQL file: %s\n", sqlFile)
-
-			// Execute SQL file
-			err := executeSQLFile(db, sqlFile)
-			if err != nil {
-				log.Printf("Failed to execute SQL file %s: %v\n", sqlFile, err)
-			} else {
-				log.Printf("Successfully executed SQL file %s, time taken: %v\n", sqlFile, time.Since(startTime))
-				fmt.Printf("Successfully executed SQL file %s, time taken: %v\n", sqlFile, time.Since(startTime))
+		if retryRound > maxDeadlockRetries {
+			// Max retries exceeded — report and stop
+			log.Printf("ERROR: Max deadlock retry limit (%d) exceeded. The following %d file(s) still failed:\n",
+				maxDeadlockRetries, len(pendingFiles))
+			fmt.Printf("ERROR: Max deadlock retry limit (%d) exceeded. The following %d file(s) still failed:\n",
+				maxDeadlockRetries, len(pendingFiles))
+			for _, f := range pendingFiles {
+				log.Printf("  DEADLOCK_UNRESOLVED: %s\n", f)
+				fmt.Printf("  DEADLOCK_UNRESOLVED: %s\n", f)
 			}
-		}(file)
-	}
+			log.Printf("Please manually execute these SQL files after resolving lock contention.\n")
+			fmt.Printf("Please manually execute these SQL files after resolving lock contention.\n")
+			return
+		}
 
-	// Wait for all goroutines to complete
-	wg.Wait()
+		// Channel to collect deadlock results
+		resultChan := make(chan deadlockResult, len(pendingFiles))
+
+		// Execute current batch
+		for _, file := range pendingFiles {
+			wg.Add(1)
+			sem <- struct{}{} // Acquire semaphore
+
+			go func(sqlFile string) {
+				defer wg.Done()
+				defer func() { <-sem }() // Release semaphore
+
+				// Record start time
+				startTime := time.Now()
+				if retryRound == 0 {
+					log.Printf("Starting to execute SQL file: %s\n", sqlFile)
+					fmt.Printf("Starting to execute SQL file: %s\n", sqlFile)
+				} else {
+					log.Printf("Retrying SQL file (round %d): %s\n", retryRound, sqlFile)
+					fmt.Printf("Retrying SQL file (round %d): %s\n", retryRound, sqlFile)
+				}
+
+				// Execute SQL file
+				err := executeSQLFile(db, sqlFile)
+				if err != nil {
+					if isDeadlockError(err) {
+						log.Printf("DEADLOCK detected in SQL file %s (retry round %d): %v\n", sqlFile, retryRound, err)
+						fmt.Printf("DEADLOCK detected in SQL file %s, will retry\n", sqlFile)
+						resultChan <- deadlockResult{file: sqlFile, err: err}
+					} else {
+						log.Printf("Failed to execute SQL file %s: %v\n", sqlFile, err)
+						fmt.Printf("Failed to execute SQL file %s: %v\n", sqlFile, err)
+					}
+				} else {
+					elapsed := time.Since(startTime)
+					if retryRound > 0 {
+						log.Printf("Successfully executed SQL file %s on retry round %d, time taken: %v\n", sqlFile, retryRound, elapsed)
+						fmt.Printf("Successfully executed SQL file %s on retry round %d, time taken: %v\n", sqlFile, retryRound, elapsed)
+					} else {
+						log.Printf("Successfully executed SQL file %s, time taken: %v\n", sqlFile, elapsed)
+						fmt.Printf("Successfully executed SQL file %s, time taken: %v\n", sqlFile, elapsed)
+					}
+				}
+			}(file)
+		}
+
+		// Wait for all goroutines in this round to complete
+		wg.Wait()
+		close(resultChan)
+
+		// Collect deadlocked files for next retry round
+		var deadlockedFiles []string
+		for result := range resultChan {
+			deadlockedFiles = append(deadlockedFiles, result.file)
+		}
+
+		if len(deadlockedFiles) > 0 {
+			// Sort deadlocked files for consistent retry order
+			sortSQLFilesByNumericSuffix(deadlockedFiles)
+			log.Printf("Round %d completed: %d file(s) deadlocked, will retry\n", retryRound, len(deadlockedFiles))
+		}
+
+		pendingFiles = deadlockedFiles
+		retryRound++
+	}
+}
+
+// numericSuffixRegex extracts the trailing number from a filename before .sql extension
+// e.g., "table-99.sql" → "99", "lineitem-DELETE-101.sql" → "101"
+var numericSuffixRegex = regexp.MustCompile(`-(\d+)\.sql$`)
+
+// extractNumericSuffix extracts the trailing numeric suffix from a SQL filename.
+// Returns the number and true if found, or 0 and false if no numeric suffix.
+func extractNumericSuffix(filename string) (int, bool) {
+	base := filepath.Base(filename)
+	matches := numericSuffixRegex.FindStringSubmatch(base)
+	if len(matches) >= 2 {
+		num, err := strconv.Atoi(matches[1])
+		if err == nil {
+			return num, true
+		}
+	}
+	return 0, false
+}
+
+// sortSQLFilesByNumericSuffix sorts SQL file paths by the numeric suffix in their filenames.
+// Files with numeric suffixes (e.g., "a-99.sql", "a-101.sql") are sorted numerically.
+// Files without numeric suffixes are sorted lexicographically and placed after numbered files.
+func sortSQLFilesByNumericSuffix(files []string) {
+	sort.SliceStable(files, func(i, j int) bool {
+		numI, hasI := extractNumericSuffix(files[i])
+		numJ, hasJ := extractNumericSuffix(files[j])
+
+		if hasI && hasJ {
+			if numI != numJ {
+				return numI < numJ
+			}
+			// Same number — sort by full path as tiebreaker
+			return files[i] < files[j]
+		}
+		if hasI && !hasJ {
+			return true // numbered files first
+		}
+		if !hasI && hasJ {
+			return false
+		}
+		// Neither has a number — lexicographic
+		return files[i] < files[j]
+	})
 }
 
 // Main function
@@ -380,13 +512,28 @@ func main() {
 		}
 	}
 
-	// Sort files
-	sort.Strings(deleteFiles)
-	sort.Strings(otherFiles)
+	// Sort files by numeric suffix to ensure correct execution order
+	// e.g., a-99.sql before a-101.sql (not lexicographic order)
+	sortSQLFilesByNumericSuffix(deleteFiles)
+	sortSQLFilesByNumericSuffix(otherFiles)
 
 	// Print file information
 	log.Printf("Found %d DELETE files, %d other SQL files\n", len(deleteFiles), len(otherFiles))
 	fmt.Printf("Found %d DELETE files, %d other SQL files\n", len(deleteFiles), len(otherFiles))
+
+	// Log sorted file order for debugging
+	if len(deleteFiles) > 0 {
+		log.Printf("DELETE files execution order:")
+		for i, f := range deleteFiles {
+			log.Printf("  [%d] %s", i+1, f)
+		}
+	}
+	if len(otherFiles) > 0 {
+		log.Printf("Other SQL files execution order:")
+		for i, f := range otherFiles {
+			log.Printf("  [%d] %s", i+1, f)
+		}
+	}
 
 	// Initialize semaphore
 	sem = make(chan struct{}, config.ParallelThds)

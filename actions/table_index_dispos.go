@@ -2075,7 +2075,7 @@ func (sp *SchedulePlan) queryTableDataSeparate(sourceSelectSql chanMap, destSele
 				//sourceQueryEnd := time.Now().UnixMilli()
 				sp.sdbPool.Put(sdb, logThreadSeq)
 				if err != nil {
-					global.Wlog.Info("QUERY_ERROR: source query failed for seq=%d, sql=%s, err=%v", currentSeq, sourceSql[sp.sdrive], err)
+					global.Wlog.Info(fmt.Sprintf("QUERY_ERROR: source query failed for seq=%d, sql=%s, err=%v", currentSeq, sourceSql[sp.sdrive], err))
 					return
 				}
 
@@ -2095,7 +2095,7 @@ func (sp *SchedulePlan) queryTableDataSeparate(sourceSelectSql chanMap, destSele
 				//destQueryEnd := time.Now().UnixMilli()
 				sp.ddbPool.Put(ddb, logThreadSeq)
 				if err != nil {
-					global.Wlog.Info("QUERY_ERROR: dest query failed for seq=%d, sql=%s, err=%v", currentSeq, destSql[sp.ddrive], err)
+					global.Wlog.Info(fmt.Sprintf("QUERY_ERROR: dest query failed for seq=%d, sql=%s, err=%v", currentSeq, destSql[sp.ddrive], err))
 					return
 				}
 
