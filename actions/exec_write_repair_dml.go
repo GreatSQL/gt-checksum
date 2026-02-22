@@ -78,6 +78,7 @@ func (rs repairSqlStruct) execRepairSql(sqlstr []string, dbType string, logThrea
 			fmt.Sprintf("SET NAMES %s;", charset),
 			"SET FOREIGN_KEY_CHECKS=0;",
 			"SET UNIQUE_CHECKS=0;",
+			"SET INNODB_LOCK_WAIT_TIMEOUT=1073741824;",
 		}
 
 		for _, preSql := range preSqls {
@@ -188,6 +189,7 @@ func (rs repairSqlStruct) SqlFile(sfile *os.File, sql []string, logThreadSeq int
 			fmt.Sprintf("SET NAMES %s;", charset),
 			"SET FOREIGN_KEY_CHECKS=0;",
 			"SET UNIQUE_CHECKS=0;",
+			"SET INNODB_LOCK_WAIT_TIMEOUT=1073741824;",
 		}
 
 		for _, preSql := range preSqls {

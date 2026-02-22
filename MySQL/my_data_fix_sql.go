@@ -1226,6 +1226,7 @@ func WriteFixIfNeededFile(datafix string, sfile *os.File, sqls []string, logThre
 			fmt.Sprintf("SET NAMES %s;", charset),
 			"SET FOREIGN_KEY_CHECKS=0;",
 			"SET UNIQUE_CHECKS=0;",
+			"SET INNODB_LOCK_WAIT_TIMEOUT=1073741824;",
 			"SET sql_generate_invisible_primary_key=0;",
 			"SET sql_require_primary_key=0;",
 		}
@@ -1517,23 +1518,23 @@ func CheckAndCleanupEmptyFixFile(fixFileDir string) error {
 		// 目录不存在，不需要处理
 		return nil
 	}
-	
+
 	// 遍历目录中的所有.sql文件
 	files, err := os.ReadDir(fixFileDir)
 	if err != nil {
 		return fmt.Errorf("failed to read fix file directory: %v", err)
 	}
-	
+
 	for _, file := range files {
 		if !file.IsDir() && strings.HasSuffix(file.Name(), ".sql") {
 			filePath := fmt.Sprintf("%s/%s", fixFileDir, file.Name())
-			
+
 			// 读取文件内容
 			content, err := os.ReadFile(filePath)
 			if err != nil {
 				return fmt.Errorf("failed to read fix SQL file %s: %v", file.Name(), err)
 			}
-			
+
 			// 检查文件内容是否为空或只包含SET语句
 			trimmedContent := strings.TrimSpace(string(content))
 			if trimmedContent == "" {
@@ -1543,11 +1544,11 @@ func CheckAndCleanupEmptyFixFile(fixFileDir string) error {
 				}
 				continue
 			}
-			
+
 			// 检查文件是否只包含SET语句和事务控制语句
 			lines := strings.Split(trimmedContent, "\n")
 			hasActualFixSql := false
-			
+
 			for _, line := range lines {
 				trimmedLine := strings.TrimSpace(line)
 				if trimmedLine == "" || strings.HasPrefix(trimmedLine, "SET ") || trimmedLine == "BEGIN;" || trimmedLine == "COMMIT;" {
@@ -1558,7 +1559,7 @@ func CheckAndCleanupEmptyFixFile(fixFileDir string) error {
 				hasActualFixSql = true
 				break
 			}
-			
+
 			if !hasActualFixSql {
 				// 文件只包含SET语句和事务控制语句，删除它
 				if err := os.Remove(filePath); err != nil {
@@ -1567,7 +1568,7 @@ func CheckAndCleanupEmptyFixFile(fixFileDir string) error {
 			}
 		}
 	}
-	
+
 	return nil
 }
 
