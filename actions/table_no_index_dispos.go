@@ -155,7 +155,7 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 
 			// If still no column names, log warning and use default value
 			if len(indexColumns) == 0 {
-				vlog = fmt.Sprintf("(%d) Warning: Unable to get column names from table structure, will use default column", logThreadSeq, displayTableName)
+				vlog = fmt.Sprintf("(%d) Warning: Unable to get column names from table structure %s, will use default column", logThreadSeq, displayTableName)
 				global.Wlog.Warn(vlog)
 				// Add a default column to avoid subsequent processing failure
 				indexColumns = []string{"id"}
@@ -210,7 +210,7 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 
 								// If still no column names, log error and use default column
 								if len(dbf.IndexColumn) == 0 {
-									vlog = fmt.Sprintf("(%d) Error: Unable to get column names from table structure, will use default column", logThreadSeq, displayTableName)
+									vlog = fmt.Sprintf("(%d) Error: Unable to get column names from table structure %s, will use default column", logThreadSeq, displayTableName)
 									global.Wlog.Error(vlog)
 									// Add a default column to avoid subsequent processing failure
 									dbf.IndexColumn = []string{"id"}
@@ -268,7 +268,7 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 
 								// 如果仍然没有列名，记录错误并使用默认列
 								if len(dbf.IndexColumn) == 0 {
-									vlog = fmt.Sprintf("(%d) Error：can not obtain columns from table structure, will use default column", logThreadSeq, displayTableName)
+									vlog = fmt.Sprintf("(%d) Error：can not obtain columns from table structure %s, will use default column", logThreadSeq, displayTableName)
 									global.Wlog.Error(vlog)
 									// 添加一个默认列，避免后续处理失败
 									dbf.IndexColumn = []string{"id"}
