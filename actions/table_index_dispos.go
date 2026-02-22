@@ -1490,16 +1490,32 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 														}
 													}
 													if allFound {
-														primaryKey := fmt.Sprintf("%s.%s.%s", c1.Schema, c1.Table, strings.Join(keyList, ","))
-														insertMutex.Lock()
-														_, alreadyInserted := insertedPrimaryKeys[primaryKey]
-														if !alreadyInserted {
-															insertedPrimaryKeys[primaryKey] = struct{}{}
+														// 关键修复：如果主键列中包含NULL值，跳过去重检查
+														// 在MySQL中 NULL != NULL，UNIQUE KEY允许多个NULL值
+														hasNullKey := false
+														for _, kv := range keyList {
+															kvParts := strings.SplitN(kv, ":", 2)
+															if len(kvParts) == 2 {
+																val := strings.TrimSpace(kvParts[1])
+																if val == "" || val == "<nil>" || strings.EqualFold(val, "NULL") {
+																	hasNullKey = true
+																	break
+																}
+															}
 														}
-														insertMutex.Unlock()
-														if alreadyInserted {
-															isDuplicate = true
-														}
+														// NULL行不参与去重(MySQL中NULL!=NULL)，仅对非NULL行进行去重
+														if !hasNullKey {
+															primaryKey := fmt.Sprintf("%s.%s.%s", c1.Schema, c1.Table, strings.Join(keyList, ","))
+															insertMutex.Lock()
+															_, alreadyInserted := insertedPrimaryKeys[primaryKey]
+															if !alreadyInserted {
+																insertedPrimaryKeys[primaryKey] = struct{}{}
+															}
+															insertMutex.Unlock()
+															if alreadyInserted {
+																isDuplicate = true
+															}
+														} // end if !hasNullKey
 													}
 												}
 											}
