@@ -364,6 +364,78 @@ func sortSQLFilesByNumericSuffix(files []string) {
 	})
 }
 
+// fileRangeRegex captures the prefix and number from filenames like "fixsql/lineitem-DELETE-101.sql"
+// Group 1 = prefix (e.g., "fixsql/lineitem-DELETE-"), Group 2 = number (e.g., "101")
+var fileRangeRegex = regexp.MustCompile(`^(.*-)(\d+)(\.sql)$`)
+
+// formatFileRanges groups SQL files by their prefix pattern and returns compact range expressions.
+// e.g., ["fixsql/lineitem-1.sql", "fixsql/lineitem-2.sql", ..., "fixsql/lineitem-706.sql"]
+// → ["fixsql/lineitem-(1-706).sql"]
+func formatFileRanges(files []string) []string {
+	if len(files) == 0 {
+		return nil
+	}
+
+	// Group files by prefix, tracking min/max number for each prefix
+	type rangeInfo struct {
+		prefix string
+		suffix string // ".sql"
+		minNum int
+		maxNum int
+		count  int
+		order  int // preserve first-seen order
+	}
+
+	groups := make(map[string]*rangeInfo)
+	var groupOrder []string // to preserve order
+	var ungrouped []string
+
+	for _, f := range files {
+		matches := fileRangeRegex.FindStringSubmatch(f)
+		if matches == nil {
+			ungrouped = append(ungrouped, f)
+			continue
+		}
+		prefix := matches[1]
+		num, _ := strconv.Atoi(matches[2])
+		ext := matches[3]
+
+		if g, ok := groups[prefix]; ok {
+			if num < g.minNum {
+				g.minNum = num
+			}
+			if num > g.maxNum {
+				g.maxNum = num
+			}
+			g.count++
+		} else {
+			groups[prefix] = &rangeInfo{
+				prefix: prefix,
+				suffix: ext,
+				minNum: num,
+				maxNum: num,
+				count:  1,
+				order:  len(groupOrder),
+			}
+			groupOrder = append(groupOrder, prefix)
+		}
+	}
+
+	var result []string
+	for _, prefix := range groupOrder {
+		g := groups[prefix]
+		if g.count == 1 {
+			// Single file — no range needed
+			result = append(result, fmt.Sprintf("%s%d%s", g.prefix, g.minNum, g.suffix))
+		} else {
+			result = append(result, fmt.Sprintf("%s(%d-%d)%s", g.prefix, g.minNum, g.maxNum, g.suffix))
+		}
+	}
+	// Append any files that didn't match the pattern
+	result = append(result, ungrouped...)
+	return result
+}
+
 // Main function
 func main() {
 	// Parse command line arguments
@@ -521,17 +593,17 @@ func main() {
 	log.Printf("Found %d DELETE files, %d other SQL files\n", len(deleteFiles), len(otherFiles))
 	fmt.Printf("Found %d DELETE files, %d other SQL files\n", len(deleteFiles), len(otherFiles))
 
-	// Log sorted file order for debugging
+	// Log sorted file order in compact range format
 	if len(deleteFiles) > 0 {
 		log.Printf("DELETE files execution order:")
-		for i, f := range deleteFiles {
-			log.Printf("  [%d] %s", i+1, f)
+		for _, line := range formatFileRanges(deleteFiles) {
+			log.Printf("  %s", line)
 		}
 	}
 	if len(otherFiles) > 0 {
 		log.Printf("Other SQL files execution order:")
-		for i, f := range otherFiles {
-			log.Printf("  [%d] %s", i+1, f)
+		for _, line := range formatFileRanges(otherFiles) {
+			log.Printf("  %s", line)
 		}
 	}
 
