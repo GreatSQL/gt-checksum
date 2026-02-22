@@ -323,7 +323,6 @@ func (sp *SchedulePlan) FixSqlExec(sqlStrExec <-chan string, logThreadSeq int64)
 		sqlSlice   []string
 		noIndexD   = make(chan struct{}, sp.concurrency)
 		increSeq   int
-		tableSfile *os.File
 	)
 	displayTableName := sp.getDisplayTableName()
 	vlog = fmt.Sprintf("(%d) Start to generate delete and insert sql statements for table %s.", logThreadSeq, displayTableName)
@@ -343,18 +342,14 @@ func (sp *SchedulePlan) FixSqlExec(sqlStrExec <-chan string, logThreadSeq int64)
 							// 生成表级别的修复文件
 							tableFileName := fmt.Sprintf("%s/%s.sql", sp.datafixSql, sp.table)
 							var err error
-							tableSfile, err = os.OpenFile(tableFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+							localFile, err := os.OpenFile(tableFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 							if err != nil {
 								sp.getErr(fmt.Sprintf("Failed to open fix file %s", tableFileName), err)
 							} else {
 								vlog = fmt.Sprintf("(%d) Opened fix file %s", logThreadSeq, tableFileName)
 								global.Wlog.Debug(vlog)
-								ApplyDataFix(sqlSlice, sp.datafixType, tableSfile, sp.ddrive, sp.djdbc, logThreadSeq)
-								// 关闭文件
-								if tableSfile != nil {
-									tableSfile.Close()
-									tableSfile = nil
-								}
+								ApplyDataFix(sqlSlice, sp.datafixType, localFile, sp.ddrive, sp.djdbc, logThreadSeq)
+								localFile.Close()
 							}
 						} else {
 							// 当fixFilePerTable=OFF时，使用单个文件
@@ -387,19 +382,18 @@ func (sp *SchedulePlan) FixSqlExec(sqlStrExec <-chan string, logThreadSeq int64)
 						if sp.fixFilePerTable == "ON" && sp.datafixType == "file" {
 							// 生成表级别的修复文件
 							tableFileName := fmt.Sprintf("%s/%s.sql", sp.datafixSql, sp.table)
-							var err error
-							tableSfile, err = os.OpenFile(tableFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+							// 关键修复：使用局部变量而非共享的tableSfile，避免并发竞争
+							// 多个goroutine并发时，共享tableSfile会导致竞争条件:
+							// goroutine A打开文件赋值tableSfile -> goroutine B覆盖tableSfile
+							// -> goroutine A关闭tableSfile(实际关闭了B的文件) -> B写入失败
+							localFile, err := os.OpenFile(tableFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 							if err != nil {
 								sp.getErr(fmt.Sprintf("Failed to open fix file %s", tableFileName), err)
 							} else {
 								vlog = fmt.Sprintf("(%d) Opened fix file %s", logThreadSeq, tableFileName)
 								global.Wlog.Debug(vlog)
-								ApplyDataFix(a, sp.datafixType, tableSfile, sp.ddrive, sp.djdbc, logThreadSeq)
-								// 关闭文件
-								if tableSfile != nil {
-									tableSfile.Close()
-									tableSfile = nil
-								}
+								ApplyDataFix(a, sp.datafixType, localFile, sp.ddrive, sp.djdbc, logThreadSeq)
+								localFile.Close()
 							}
 						} else {
 							// 当fixFilePerTable=OFF时，使用单个文件
