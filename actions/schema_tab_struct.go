@@ -672,7 +672,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 						Schema:      destSchema,
 						Table:       stcls.table,
 						CheckObject: "struct",
-						DIFFS:       "yes",
+						DIFFS:       "DDL-yes",
 						Datafix:     stcls.datafix,
 					}
 					stcls.appendPod(pod)
@@ -680,6 +680,16 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 					vlog = fmt.Sprintf("(%d) %s Structure mismatch %s.%s -> %s.%s - Extra: %v, Missing: %v",
 						logThreadSeq, event, sourceSchema, stcls.table, destSchema, stcls.table, addColumn, delColumn)
 					global.Wlog.Error(vlog)
+					// 创建表结构检查记录，确保DDL不一致的表在报告中正确显示Diffs=yes
+					pod := Pod{
+						Schema:      sourceSchema,
+						Table:       stcls.table,
+						CheckObject: "data",
+						DIFFS:       "DDL-yes",
+						Datafix:     stcls.datafix,
+						Rows:        fmt.Sprintf("DDL mismatch: Extra=%v, Missing=%v", addColumn, delColumn),
+					}
+					stcls.appendPod(pod)
 				}
 				abnormalTableList = append(abnormalTableList, fmt.Sprintf("%s.%s", destSchema, stcls.table))
 			}

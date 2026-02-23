@@ -8,6 +8,9 @@
 - 支持没有任何索引（包括隐藏逐渐my_row_id）的表数据校验和修复
 - 程序运行时，检查 logFile 文件是否为空，如果不为空则将其重命名为 logFile-时间戳，例如 gt-checksum.log 重命名为 gt-checksum.log-20230801100000
 - 支持读取gc.conf配置文件时,忽略配置参数中的多余空格
+- 新增DDL不一致检测功能：当源端与目标端DDL定义不一致时，校验报告的Diffs列显示为"DDL-yes"，准确区分DDL差异和数据差异
+- 支持MySQL 8.0 GIPK（自动生成的不可见主键my_row_id）场景下的DDL差异识别
+- 新增索引列目标端存在性验证，当索引列（如my_row_id）在目标端不存在时，提前标记DDL不一致并跳过无意义的数据比较
 - Bugs fixed
   - 修复了ignoreTables参数无效问题
   - 修复了tables参数不支持%通配符问题，重新支持包括库名映射场景下的%通配符用法，例如"db1.t%:db2.t%"
