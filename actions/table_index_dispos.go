@@ -1857,6 +1857,46 @@ func (sp SchedulePlan) doIndexDataCheck() {
 		Datafix:     sp.datafixType,
 		MappingInfo: mappingInfo,
 	}
+
+	// 关键检查：验证索引列在目标端是否存在
+	// MySQL 8.0 GIPK (Generated Invisible Primary Key) 可能仅存在于源端
+	// 如果索引列在目标端不存在，数据比较将会失败，需要提前标记DDL不一致
+	ddbCheck := sp.ddbPool.Get(logThreadSeq)
+	for _, colName := range sp.columnName {
+		if colName == "" {
+			continue
+		}
+		checkSQL := fmt.Sprintf("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = '%s' AND table_name = '%s' AND column_name = '%s'",
+			sp.destSchema, sp.table, colName)
+		var colCount int
+		err := ddbCheck.QueryRow(checkSQL).Scan(&colCount)
+		if err != nil || colCount == 0 {
+			sp.ddbPool.Put(ddbCheck, logThreadSeq)
+			vlog := fmt.Sprintf("[doIndexDataCheck] Index column '%s' does not exist in target table %s.%s (possible GIPK/INVISIBLE column mismatch). Setting Diffs=yes.",
+				colName, sp.destSchema, sp.table)
+			global.Wlog.Warn(vlog)
+			fmt.Printf("\n[WARNING] Index column '%s' exists in source %s.%s but NOT in target %s.%s (DDL mismatch)\n",
+				colName, sp.sourceSchema, sp.table, sp.destSchema, sp.table)
+
+			// 获取行数用于报告
+			idxc = dbExec.IndexColumnStruct{Schema: sp.sourceSchema, Table: sp.table, Drivce: sp.sdrive}
+			sdb := sp.sdbPool.Get(logThreadSeq)
+			srcRows, _ := idxc.TableIndexColumn().TableRows(sdb, int64(logThreadSeq))
+			sp.sdbPool.Put(sdb, logThreadSeq)
+
+			idxcDest := dbExec.IndexColumnStruct{Schema: sp.destSchema, Table: sp.table, Drivce: sp.ddrive}
+			ddb := sp.ddbPool.Get(logThreadSeq)
+			destRows, _ := idxcDest.TableIndexColumn().TableRows(ddb, int64(logThreadSeq))
+			sp.ddbPool.Put(ddb, logThreadSeq)
+
+			sp.pods.DIFFS = "DDL-yes"
+			sp.pods.Rows = fmt.Sprintf("%d,%d", srcRows, destRows)
+			measuredDataPods = append(measuredDataPods, *sp.pods)
+			return
+		}
+	}
+	sp.ddbPool.Put(ddbCheck, logThreadSeq)
+
 	// 确保使用正确的源表和目标表的Schema
 	idxc = dbExec.IndexColumnStruct{Schema: sp.sourceSchema, Table: sp.table, Drivce: sp.sdrive}
 	sdb := sp.sdbPool.Get(logThreadSeq)

@@ -237,8 +237,10 @@ func (my *QueryTable) checkColumnExists(db *sql.DB, columnName string, logThread
 		count int
 	)
 
-	// Generate cache key in format: schema.table.column
-	cacheKey := fmt.Sprintf("%s.%s.%s", my.Schema, my.Table, columnName)
+	// Generate cache key in format: dbPtr.schema.table.column
+	// 关键修复：包含db指针地址以区分源端和目标端
+	// 当源端与目标端的schema.table相同时，防止缓存串用
+	cacheKey := fmt.Sprintf("%p.%s.%s.%s", db, my.Schema, my.Table, columnName)
 
 	// Check if result is already in global cache
 	cacheMutex.RLock()

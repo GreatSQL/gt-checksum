@@ -80,6 +80,7 @@ type DifferencesDataStruct struct {
 func (sp *SchedulePlan) Schedulingtasks() {
 	rand.Seed(time.Now().UnixNano())
 
+	totalTables := len(sp.tableIndexColumnMap)
 	for k, v := range sp.tableIndexColumnMap {
 		//是否校验无索引表
 		if sp.checkNoIndexTable == "no" && len(v) == 0 {
@@ -157,6 +158,32 @@ func (sp *SchedulePlan) Schedulingtasks() {
 		vlog = fmt.Sprintf("Key parsed - Source: %s.%s, Target: %s.%s, Index: %s",
 			sourceSchema, sourceTable, destSchema, destTable, indexType)
 		global.Wlog.Debug(vlog)
+
+		// DDL一致性检查：校验源端与目标端表结构是否一致
+		sourceColKey := fmt.Sprintf("%s_gtchecksum_%s", sourceSchema, sourceTable)
+		destColKey := fmt.Sprintf("%s_gtchecksum_%s", destSchema, destTable)
+		if sourceColInfo, ok1 := sp.tableAllCol[sourceColKey]; ok1 {
+			if destColInfo, ok2 := sp.tableAllCol[destColKey]; ok2 {
+				if mismatch := checkDDLConsistency(sourceColInfo.SColumnInfo, destColInfo.DColumnInfo, sourceSchema, sourceTable, destSchema, destTable); mismatch != "" {
+					// DDL不一致，记录详细报告
+					fmt.Printf("\n[WARNING] DDL mismatch detected for table %s.%s vs %s.%s, skipping checksum:\n%s\n",
+						sourceSchema, sourceTable, destSchema, destTable, mismatch)
+					global.Wlog.Error(fmt.Sprintf("DDL mismatch detected for table %s.%s vs %s.%s: %s",
+						sourceSchema, sourceTable, destSchema, destTable, mismatch))
+					global.AddSkippedTable(sourceSchema, sourceTable, "data", "DDL mismatch: "+mismatch)
+
+					// 如果仅有一个表需要校验，则报错退出
+					if totalTables == 1 {
+						fmt.Printf("\n[ERROR] Only one table to check and DDL mismatch found. Exiting.\n")
+						fmt.Printf("Source: %s.%s, Target: %s.%s\n", sourceSchema, sourceTable, destSchema, destTable)
+						fmt.Printf("Detail: %s\n", mismatch)
+						global.Wlog.Error(fmt.Sprintf("Only one table to check (%s.%s) and DDL mismatch found, exiting", sourceSchema, sourceTable))
+						os.Exit(1)
+					}
+					continue
+				}
+			}
+		}
 
 		if len(v) == 0 { //校验无索引表
 			spCopy.chanrowCount = spCopy.chunkSize
@@ -257,4 +284,77 @@ func CheckTableQuerySchedule(sdb, ddb *global.Pool, tableIndexColumnMap map[stri
 		tableMappings:           tableMappings,
 		fixFilePerTable:         m.SecondaryL.RepairV.FixFilePerTable,
 	}
+}
+
+// checkDDLConsistency 检查源端与目标端表的DDL定义是否一致
+// 返回空字符串表示一致，返回非空字符串为详细的不一致报告
+func checkDDLConsistency(sourceColumns, destColumns []map[string]string, sourceSchema, sourceTable, destSchema, destTable string) string {
+	// 构建源端列名集合
+	sourceColMap := make(map[string]string) // columnName -> dataType
+	for _, col := range sourceColumns {
+		name := ""
+		if v, ok := col["columnName"]; ok {
+			name = v
+		} else if v, ok := col["COLUMN_NAME"]; ok {
+			name = v
+		}
+		dataType := ""
+		if v, ok := col["dataType"]; ok {
+			dataType = v
+		} else if v, ok := col["DATA_TYPE"]; ok {
+			dataType = v
+		}
+		if name != "" {
+			sourceColMap[name] = dataType
+		}
+	}
+
+	// 构建目标端列名集合
+	destColMap := make(map[string]string)
+	for _, col := range destColumns {
+		name := ""
+		if v, ok := col["columnName"]; ok {
+			name = v
+		} else if v, ok := col["COLUMN_NAME"]; ok {
+			name = v
+		}
+		dataType := ""
+		if v, ok := col["dataType"]; ok {
+			dataType = v
+		} else if v, ok := col["DATA_TYPE"]; ok {
+			dataType = v
+		}
+		if name != "" {
+			destColMap[name] = dataType
+		}
+	}
+
+	var mismatches []string
+
+	// 检查源端有但目标端没有的列
+	for name, srcType := range sourceColMap {
+		if _, exists := destColMap[name]; !exists {
+			mismatches = append(mismatches, fmt.Sprintf("  Column '%s' (%s) exists in source %s.%s but NOT in target %s.%s",
+				name, srcType, sourceSchema, sourceTable, destSchema, destTable))
+		}
+	}
+
+	// 检查目标端有但源端没有的列
+	for name, destType := range destColMap {
+		if _, exists := sourceColMap[name]; !exists {
+			mismatches = append(mismatches, fmt.Sprintf("  Column '%s' (%s) exists in target %s.%s but NOT in source %s.%s",
+				name, destType, destSchema, destTable, sourceSchema, sourceTable))
+		}
+	}
+
+	// 检查列数量是否一致
+	if len(sourceColMap) != len(destColMap) {
+		mismatches = append(mismatches, fmt.Sprintf("  Column count mismatch: source %s.%s has %d columns, target %s.%s has %d columns",
+			sourceSchema, sourceTable, len(sourceColMap), destSchema, destTable, len(destColMap)))
+	}
+
+	if len(mismatches) > 0 {
+		return strings.Join(mismatches, "\n")
+	}
+	return ""
 }

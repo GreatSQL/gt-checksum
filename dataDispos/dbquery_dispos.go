@@ -214,24 +214,24 @@ func (dbpos *DBdataDispos) DataChanDispos() chan map[string]interface{} {
 			dbpos.SqlRows.Scan(valuePtrs...)
 			entry := make(map[string]interface{})
 			for i, col := range columns {
-			var v interface{}
-			val := values[i]
-			b, ok := val.([]byte)
-			if ok {
-				// 保留原始字符串，包括尾部空格，用于准确的数据比较
-				v = string(b)
-			} else {
-				v = val
+				var v interface{}
+				val := values[i]
+				b, ok := val.([]byte)
+				if ok {
+					// 保留原始字符串，包括尾部空格，用于准确的数据比较
+					v = string(b)
+				} else {
+					v = val
+				}
+				if v == nil {
+					v = "<nil>"
+				}
+				if v == "" {
+					v = "<entry>"
+				}
+				entry[col] = v
 			}
-			if v == nil {
-				v = "<nil>"
-			}
-			if v == "" {
-				v = "<entry>"
-			}
-			entry[col] = v
-		}
-		chanEntry <- dbpos.RowsdataNullDispos(entry)
+			chanEntry <- dbpos.RowsdataNullDispos(entry)
 		}
 		close(chanEntry)
 		dbpos.SqlRows.Close()
@@ -319,7 +319,7 @@ func (dbpos *DBdataDispos) DataRowsDispos(tableData []string) ([]string, error) 
 			b, ok := val.([]byte)
 			if ok {
 				// 保留原始字符串，但确保不会重复添加空格
-							v = string(b)
+				v = string(b)
 			} else {
 				v = val
 			}
@@ -354,7 +354,7 @@ func (dbpos *DBdataDispos) DBSQLforExec(strsql string) (*sql.Rows, error) {
 		rows *sql.Rows
 		vlog string
 	)
-	
+
 	// 检查是否是查询表行数的SQL，如果是且表不存在，记录跳过的表
 	if strings.Contains(strsql, "SELECT COUNT(*) AS tableRows FROM") && dbpos.Schema != "" && dbpos.Table != "" {
 		// 检查表是否存在
@@ -369,7 +369,7 @@ func (dbpos *DBdataDispos) DBSQLforExec(strsql string) (*sql.Rows, error) {
 			return nil, fmt.Errorf("table %s.%s does not exist", dbpos.Schema, dbpos.Table)
 		}
 	}
-	
+
 	for i := 1; i < 4; i++ {
 		rows, err = dbpos.DB.Query(strsql)
 		if err != nil {
@@ -380,6 +380,16 @@ func (dbpos *DBdataDispos) DBSQLforExec(strsql string) (*sql.Rows, error) {
 				vlog = fmt.Sprintf("(%d) [%s] Table %s.%s does not exist, skipping", dbpos.LogThreadSeq, dbpos.Event, dbpos.Schema, dbpos.Table)
 				global.Wlog.Warn(vlog)
 				return nil, fmt.Errorf("table %s.%s does not exist", dbpos.Schema, dbpos.Table)
+			}
+			// 特殊处理列不存在的错误(Error 1054)，不进行重试
+			// 源端与目标端DDL不一致时会出现此错误
+			if strings.Contains(errMsg, "Error 1054") || strings.Contains(errMsg, "Unknown column") {
+				if dbpos.Schema != "" && dbpos.Table != "" {
+					global.AddSkippedTable(dbpos.Schema, dbpos.Table, "data", "DDL mismatch: "+errMsg)
+				}
+				vlog = fmt.Sprintf("(%d) [%s] DDL mismatch detected for %s.%s: %s", dbpos.LogThreadSeq, dbpos.Event, dbpos.Schema, dbpos.Table, errMsg)
+				global.Wlog.Error(vlog)
+				return nil, fmt.Errorf("DDL mismatch for %s.%s: %s", dbpos.Schema, dbpos.Table, errMsg)
 			}
 			switch i {
 			case 1:
