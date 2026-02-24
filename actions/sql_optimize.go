@@ -173,3 +173,107 @@ func parseWhereConditions(where string) ([]string, []string, bool) {
 
 	return cols, vals, true
 }
+
+// OptimizeInsertSqls 优化 INSERT 语句，将相同表的多条 INSERT 语句合并为单条 VALUES 多组数据的格式
+// 注意：根据MySQL唯一索引特性，NULL值记录不应被去重，因为NULL != NULL
+func OptimizeInsertSqls(sqls []string, maxSqlSize int, fixTrxNum int) []string {
+	if len(sqls) <= 1 {
+		return sqls
+	}
+
+	var optimizedSqls []string
+
+	type insertGroup struct {
+		schema  string
+		table   string
+		columns string
+		values  []string
+	}
+
+	var groupKeys []string
+	groups := make(map[string]*insertGroup)
+
+	for _, sql := range sqls {
+		sqlTrim := strings.TrimSpace(sql)
+
+		schema, table, columns, values, ok := parseInsertStatement(sqlTrim)
+		if !ok {
+			optimizedSqls = append(optimizedSqls, sql)
+			continue
+		}
+
+		key := fmt.Sprintf("%s.%s|%s", schema, table, columns)
+		if _, exists := groups[key]; !exists {
+			groups[key] = &insertGroup{
+				schema:  schema,
+				table:   table,
+				columns: columns,
+				values:  []string{},
+			}
+			groupKeys = append(groupKeys, key)
+		}
+
+		// 不进行去重处理，保留所有原始记录
+		// 根据MySQL唯一索引特性，NULL值记录不应被去重，因为NULL != NULL
+		groups[key].values = append(groups[key].values, values)
+	}
+
+	for _, key := range groupKeys {
+		group := groups[key]
+		if len(group.values) == 0 {
+			continue
+		}
+
+		baseSql := fmt.Sprintf("INSERT INTO `%s`.`%s`(%s) VALUES ", group.schema, group.table, group.columns)
+		baseLength := len(baseSql)
+
+		var currentBatchValues []string
+		currentLength := baseLength
+
+		for _, val := range group.values {
+			valLen := len(val)
+			if len(currentBatchValues) > 0 {
+				valLen += 2
+			}
+
+			if len(currentBatchValues) >= fixTrxNum || (currentLength+valLen+2) > maxSqlSize {
+				if len(currentBatchValues) > 0 {
+					optimizedSqls = append(optimizedSqls, fmt.Sprintf("%s%s;", baseSql, strings.Join(currentBatchValues, ", ")))
+				}
+				currentBatchValues = []string{fmt.Sprintf("(%s)", val)}
+				currentLength = baseLength + len(val) + 2
+			} else {
+				currentBatchValues = append(currentBatchValues, fmt.Sprintf("(%s)", val))
+				currentLength += valLen
+			}
+		}
+
+		if len(currentBatchValues) > 0 {
+			optimizedSqls = append(optimizedSqls, fmt.Sprintf("%s%s;", baseSql, strings.Join(currentBatchValues, ", ")))
+		}
+	}
+
+	return optimizedSqls
+}
+
+// parseInsertStatement 解析 INSERT 语句，提取 schema、table、columns 和 values
+func parseInsertStatement(sql string) (schema, table, columns, values string, ok bool) {
+	sql = strings.TrimSpace(sql)
+	if !strings.HasPrefix(strings.ToUpper(sql), "INSERT INTO") {
+		return "", "", "", "", false
+	}
+
+	insertIntoPattern := regexp.MustCompile(`(?i)^INSERT\s+INTO\s+\x60([^\x60]+)\x60\.\x60([^\x60]+)\x60\s*\(([^)]+)\)\s+VALUES\s*\((.+)\);$`)
+	matches := insertIntoPattern.FindStringSubmatch(sql)
+	if len(matches) == 5 {
+		return matches[1], matches[2], matches[3], matches[4], true
+	}
+
+	insertIntoPatternNoCols := regexp.MustCompile(`(?i)^INSERT\s+INTO\s+\x60([^\x60]+)\x60\.\x60([^\x60]+)\x60\s+VALUES\s*\((.+)\);$`)
+	matchesNoCols := insertIntoPatternNoCols.FindStringSubmatch(sql)
+	if len(matchesNoCols) == 4 {
+		return matchesNoCols[1], matchesNoCols[2], "", matchesNoCols[3], true
+	}
+
+	return "", "", "", "", false
+}

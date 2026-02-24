@@ -304,6 +304,35 @@ func ApplyDataFixWithTrxNum(fixSql []string, datafixType string, sfile *os.File,
 			FixTrxNum: fixTrxNum,
 		}
 	)
+
+	// 优化INSERT语句：合并相同表的多条INSERT为单条VALUES多组数据格式
+	if len(fixSql) > 1 {
+		var deleteSqls []string
+		var insertSqls []string
+
+		for _, sql := range fixSql {
+			sqlTrim := strings.TrimSpace(strings.ToUpper(sql))
+			if strings.HasPrefix(sqlTrim, "DELETE") {
+				deleteSqls = append(deleteSqls, sql)
+			} else if strings.HasPrefix(sqlTrim, "INSERT") {
+				insertSqls = append(insertSqls, sql)
+			}
+		}
+
+		// 对INSERT语句进行合并优化
+		if len(insertSqls) > 1 {
+			maxSqlSize := 1024 * 1024 // 1MB
+			optFixTrxNum := fixTrxNum
+			if optFixTrxNum <= 0 {
+				optFixTrxNum = 1000 // 默认值
+			}
+			insertSqls = OptimizeInsertSqls(insertSqls, maxSqlSize, optFixTrxNum)
+		}
+
+		// 重新组合SQL语句
+		fixSql = append(deleteSqls, insertSqls...)
+	}
+
 	// 修复：当datafixType为"yes"时，将修复SQL写入文件
 	if datafixType == "yes" || datafixType == "file" {
 		if err = repairdml.SqlFile(sfile, fixSql, logThreadSeq); err != nil {

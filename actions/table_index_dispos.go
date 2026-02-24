@@ -1798,14 +1798,20 @@ func processBatch(sqls []string, datafixType string, sfile *os.File, ddrive stri
 		}
 	}
 
+	maxSqlSize := 1024 * 1024 // 1MB
+	optFixTrxNum := fixTrxNum
+	if optFixTrxNum <= 0 {
+		optFixTrxNum = 1000 // 默认值，防止由于未配置导致单条SQL过大
+	}
+
 	if isUniqueKey {
 		// 优化 DELETE 语句，合并具有单列或多列等值条件的 DELETE (主键、唯一键)
-		maxSqlSize := 1024 * 1024 // 1MB
-		optFixTrxNum := fixTrxNum
-		if optFixTrxNum <= 0 {
-			optFixTrxNum = 1000 // 默认值，防止由于未配置导致单条SQL过大
-		}
 		deleteSqls = OptimizeDeleteSqls(deleteSqls, maxSqlSize, optFixTrxNum)
+	}
+
+	// 优化 INSERT 语句，合并相同表的多条 INSERT 为单条 VALUES 多组数据格式
+	if len(insertSqls) > 1 {
+		insertSqls = OptimizeInsertSqls(insertSqls, maxSqlSize, optFixTrxNum)
 	}
 
 	// 构建最终的有序SQL列表
