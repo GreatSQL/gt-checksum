@@ -573,7 +573,17 @@ func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive s
 			limit = matchCount
 		}
 
-		deleteSql = fmt.Sprintf("DELETE FROM `%s`.`%s` WHERE %s LIMIT %d;", targetSchema, my.Table, deleteSqlWhere, limit)
+		// 判断是否是主键、唯一键或隐藏主键 my_row_id
+		isUniqueKey := my.IndexType == "pri" || my.IndexType == "uni" || (len(my.IndexColumn) == 1 && my.IndexColumn[0] == "my_row_id")
+
+		// 修复：对于唯一索引中的 NULL 值，因为唯一索引允许多个 NULL 值，
+		// 所以即使是唯一字段，在删除包含 NULL 的记录时也必须加上 LIMIT N 约束，
+		// 以免错误地删除目标端所有该字段为 NULL 的其他记录
+		if isUniqueKey && !strings.Contains(deleteSqlWhere, "IS NULL") {
+			deleteSql = fmt.Sprintf("DELETE FROM `%s`.`%s` WHERE %s;", targetSchema, my.Table, deleteSqlWhere)
+		} else {
+			deleteSql = fmt.Sprintf("DELETE FROM `%s`.`%s` WHERE %s LIMIT %d;", targetSchema, my.Table, deleteSqlWhere, limit)
+		}
 	} else {
 		return "", fmt.Errorf("failed to generate DELETE statement for table %s.%s: no valid conditions", targetSchema, my.Table)
 	}
