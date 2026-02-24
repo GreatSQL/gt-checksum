@@ -50,6 +50,9 @@ type LogS struct {
 type RepairS struct {
 	Datafix         string
 	FixTrxNum       int
+	FixTrxSize      int
+	InsertSqlSize   int
+	DeleteSqlSize   int
 	FixFileDir      string
 	FixFileFINE     *os.File
 	FixFilePerTable string
@@ -71,6 +74,9 @@ type ConfigParameter struct {
 	ConfFine            *ini.File
 	ConnPoolV           ConnPool
 	Config              string //配置文件信息
+	CliFixTrxSize       int
+	CliInsertSqlSize    int
+	CliDeleteSqlSize    int
 	LogThreadSeq        int64
 	NoIndexTableTmpFile string
 }

@@ -31,6 +31,9 @@ type SchedulePlan struct {
 	file                      *os.File
 	TmpFileName               string
 	fixTrxNum                 int
+	fixTrxSize                int
+	insertSqlSize             int
+	deleteSqlSize             int
 	chanrowCount, concurrency int //单次并发一次校验的行数
 	TmpTablePath              string
 	smtype                    string //是源端还是目标端
@@ -280,6 +283,9 @@ func CheckTableQuerySchedule(sdb, ddb *global.Pool, tableIndexColumnMap map[stri
 		TmpFileName:             m.NoIndexTableTmpFile,
 		caseSensitiveObjectName: m.SecondaryL.SchemaV.CaseSensitiveObjectName,
 		fixTrxNum:               m.SecondaryL.RepairV.FixTrxNum,
+		fixTrxSize:              m.SecondaryL.RepairV.FixTrxSize,
+		insertSqlSize:           m.SecondaryL.RepairV.InsertSqlSize * 1024,
+		deleteSqlSize:           m.SecondaryL.RepairV.DeleteSqlSize * 1024,
 		djdbc:                   m.SecondaryL.DsnsV.DestJdbc,
 		tableMappings:           tableMappings,
 		fixFilePerTable:         m.SecondaryL.RepairV.FixFilePerTable,
