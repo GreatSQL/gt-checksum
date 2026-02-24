@@ -1610,6 +1610,9 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 					// 计算DELETE和INSERT语句的总数
 					totalSqls := len(deleteSqls) + len(insertSqls)
 
+					// 判断当前表是否使用了主键或唯一键进行校验
+					isUniqueKey := strings.HasPrefix(sp.indexColumnType, "pri_") || strings.HasPrefix(sp.indexColumnType, "uni_")
+
 					if sp.fixTrxNum > 0 && totalSqls <= sp.fixTrxNum {
 						// 当总数小于等于fixTrxNum时，生成一个不含序号的独立文件
 						tableFileName := fmt.Sprintf("%s/%s.sql", sp.datafixSql, sp.table)
@@ -1620,7 +1623,7 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 						} else {
 							vlog = fmt.Sprintf("(%d) Opened fix file %s", logThreadSeq, tableFileName)
 							global.Wlog.Debug(vlog)
-							processBatch(finalSqls, sp.datafixType, tableSfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
+							processBatch(finalSqls, sp.datafixType, tableSfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum, isUniqueKey)
 							// 关闭文件
 							if tableSfile != nil {
 								tableSfile.Close()
@@ -1654,7 +1657,7 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 									vlog = fmt.Sprintf("(%d) Opened DELETE fix file %s", logThreadSeq, deleteFileName)
 									global.Wlog.Debug(vlog)
 									// 处理当前批次
-									processBatch(batchSqls, sp.datafixType, tableSfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
+									processBatch(batchSqls, sp.datafixType, tableSfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum, isUniqueKey)
 									// 关闭当前文件
 									if tableSfile != nil {
 										tableSfile.Close()
@@ -1671,7 +1674,7 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 								} else {
 									vlog = fmt.Sprintf("(%d) Opened DELETE fix file %s", logThreadSeq, deleteFileName)
 									global.Wlog.Debug(vlog)
-									processBatch(deleteSqls, sp.datafixType, tableSfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
+									processBatch(deleteSqls, sp.datafixType, tableSfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum, isUniqueKey)
 									// 关闭文件
 									if tableSfile != nil {
 										tableSfile.Close()
@@ -1706,7 +1709,7 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 									vlog = fmt.Sprintf("(%d) Opened INSERT fix file %s", logThreadSeq, insertFileName)
 									global.Wlog.Debug(vlog)
 									// 处理当前批次
-									processBatch(batchSqls, sp.datafixType, tableSfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
+									processBatch(batchSqls, sp.datafixType, tableSfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum, isUniqueKey)
 									// 关闭当前文件
 									if tableSfile != nil {
 										tableSfile.Close()
@@ -1723,7 +1726,7 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 								} else {
 									vlog = fmt.Sprintf("(%d) Opened INSERT fix file %s", logThreadSeq, insertFileName)
 									global.Wlog.Debug(vlog)
-									processBatch(insertSqls, sp.datafixType, tableSfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
+									processBatch(insertSqls, sp.datafixType, tableSfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum, isUniqueKey)
 									// 关闭文件
 									if tableSfile != nil {
 										tableSfile.Close()
@@ -1734,8 +1737,9 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 						}
 					}
 				} else {
+					isUniqueKey := strings.HasPrefix(sp.indexColumnType, "pri_") || strings.HasPrefix(sp.indexColumnType, "uni_")
 					// 当fixFilePerTable=OFF时，使用单个文件
-					processBatch(finalSqls, sp.datafixType, sp.sfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
+					processBatch(finalSqls, sp.datafixType, sp.sfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum, isUniqueKey)
 				}
 				vlog = fmt.Sprintf("(%d) Repair statements generated for %s.%s: DELETE=%d, INSERT=%d",
 					logThreadSeq, sp.schema, sp.table, len(deleteSqls), len(insertSqls))
@@ -1777,7 +1781,7 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 }
 
 // processBatch 批量处理SQL语句，根据类型排序后写入文件
-func processBatch(sqls []string, datafixType string, sfile *os.File, ddrive string, djdbc string, logThreadSeq int64, fixTrxNum int) {
+func processBatch(sqls []string, datafixType string, sfile *os.File, ddrive string, djdbc string, logThreadSeq int64, fixTrxNum int, isUniqueKey bool) {
 	if len(sqls) == 0 {
 		return
 	}
@@ -1792,6 +1796,16 @@ func processBatch(sqls []string, datafixType string, sfile *os.File, ddrive stri
 		} else if strings.HasPrefix(sqlTrim, "INSERT") {
 			insertSqls = append(insertSqls, sql)
 		}
+	}
+
+	if isUniqueKey {
+		// 优化 DELETE 语句，合并具有单列或多列等值条件的 DELETE (主键、唯一键)
+		maxSqlSize := 1024 * 1024 // 1MB
+		optFixTrxNum := fixTrxNum
+		if optFixTrxNum <= 0 {
+			optFixTrxNum = 1000 // 默认值，防止由于未配置导致单条SQL过大
+		}
+		deleteSqls = OptimizeDeleteSqls(deleteSqls, maxSqlSize, optFixTrxNum)
 	}
 
 	// 构建最终的有序SQL列表

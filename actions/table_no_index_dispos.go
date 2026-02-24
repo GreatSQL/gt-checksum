@@ -319,10 +319,10 @@ Perform MD5 verification on different data rows and remove duplicate values
 */
 func (sp *SchedulePlan) FixSqlExec(sqlStrExec <-chan string, logThreadSeq int64) {
 	var (
-		vlog       string
-		sqlSlice   []string
-		noIndexD   = make(chan struct{}, sp.concurrency)
-		increSeq   int
+		vlog     string
+		sqlSlice []string
+		noIndexD = make(chan struct{}, sp.concurrency)
+		increSeq int
 	)
 	displayTableName := sp.getDisplayTableName()
 	vlog = fmt.Sprintf("(%d) Start to generate delete and insert sql statements for table %s.", logThreadSeq, displayTableName)
@@ -378,26 +378,23 @@ func (sp *SchedulePlan) FixSqlExec(sqlStrExec <-chan string, logThreadSeq int64)
 						defer func() {
 							<-noIndexD
 						}()
+
 						// 检查是否设置了fixFilePerTable=ON
 						if sp.fixFilePerTable == "ON" && sp.datafixType == "file" {
 							// 生成表级别的修复文件
 							tableFileName := fmt.Sprintf("%s/%s.sql", sp.datafixSql, sp.table)
-							// 关键修复：使用局部变量而非共享的tableSfile，避免并发竞争
-							// 多个goroutine并发时，共享tableSfile会导致竞争条件:
-							// goroutine A打开文件赋值tableSfile -> goroutine B覆盖tableSfile
-							// -> goroutine A关闭tableSfile(实际关闭了B的文件) -> B写入失败
 							localFile, err := os.OpenFile(tableFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 							if err != nil {
 								sp.getErr(fmt.Sprintf("Failed to open fix file %s", tableFileName), err)
 							} else {
 								vlog = fmt.Sprintf("(%d) Opened fix file %s", logThreadSeq, tableFileName)
 								global.Wlog.Debug(vlog)
-								ApplyDataFix(a, sp.datafixType, localFile, sp.ddrive, sp.djdbc, logThreadSeq)
+								ApplyDataFix(sqlSlice1, sp.datafixType, localFile, sp.ddrive, sp.djdbc, logThreadSeq)
 								localFile.Close()
 							}
 						} else {
 							// 当fixFilePerTable=OFF时，使用单个文件
-							ApplyDataFix(a, sp.datafixType, sp.sfile, sp.ddrive, sp.djdbc, logThreadSeq)
+							ApplyDataFix(sqlSlice1, sp.datafixType, sp.sfile, sp.ddrive, sp.djdbc, logThreadSeq)
 						}
 						displayTableName := sp.getDisplayTableName()
 						vlog = fmt.Sprintf("(%d) The delete repair sql statements of table %s are generated.", logThreadSeq, displayTableName)
