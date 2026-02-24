@@ -288,6 +288,24 @@ func (rc *ConfigParameter) checkPar() {
 		global.Wlog.Error(vlog)
 		os.Exit(1)
 	}
+	if rc.SecondaryL.RepairV.FixTrxSize < 1 {
+		fmt.Println(fmt.Sprintf("gt-checksum: fixTrxSize must be greater than 0. Check %s or set logLevel=debug for details", rc.SecondaryL.LogV.LogFile))
+		vlog = fmt.Sprintf("(%d) [%s] option \"fixTrxSize\" must be greater than 0.", rc.LogThreadSeq, Event)
+		global.Wlog.Error(vlog)
+		os.Exit(1)
+	}
+	if rc.SecondaryL.RepairV.InsertSqlSize < 1 {
+		fmt.Println(fmt.Sprintf("gt-checksum: insertSqlSize must be greater than 0. Check %s or set logLevel=debug for details", rc.SecondaryL.LogV.LogFile))
+		vlog = fmt.Sprintf("(%d) [%s] option \"insertSqlSize\" must be greater than 0.", rc.LogThreadSeq, Event)
+		global.Wlog.Error(vlog)
+		os.Exit(1)
+	}
+	if rc.SecondaryL.RepairV.DeleteSqlSize < 1 {
+		fmt.Println(fmt.Sprintf("gt-checksum: deleteSqlSize must be greater than 0. Check %s or set logLevel=debug for details", rc.SecondaryL.LogV.LogFile))
+		vlog = fmt.Sprintf("(%d) [%s] option \"deleteSqlSize\" must be greater than 0.", rc.LogThreadSeq, Event)
+		global.Wlog.Error(vlog)
+		os.Exit(1)
+	}
 
 	vlog = fmt.Sprintf("(%d) [%s] data fix is allowed if configured.", rc.LogThreadSeq, Event)
 	global.Wlog.Debug(vlog)

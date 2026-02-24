@@ -10,6 +10,7 @@ import (
 	"gt-checksum/utils"
 	"math/rand"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -1029,8 +1030,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 								global.Wlog.Debug("DEBUG_SQL_ORDER_%d: Processing %d DELETE statements first for %s.%s\n",
 									logThreadSeq, len(del), c1.Schema, c1.Table)
 
-								// 定义SQL长度限制 (1MB)
-								const maxSqlSize = 1024 * 1024
+								deleteSqlSize := sp.deleteSqlSize
 
 								// 分组处理DELETE语句，每fixTrxNum条合并一次
 								for batchStart := 0; batchStart < len(del); batchStart += sp.fixTrxNum {
@@ -1184,7 +1184,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 													}
 
 													// 检查添加当前值是否会超过长度限制
-													if currentLength+separatorLen+valueLen+closeBracketLen > maxSqlSize {
+													if currentLength+separatorLen+valueLen+closeBracketLen > deleteSqlSize {
 														// 如果当前已经有值，先生成并发送当前的合并SQL
 														if len(currentValues) > 0 {
 															mergedSql := fmt.Sprintf("%s%s);", baseSql, strings.Join(currentValues, ", "))
@@ -1436,9 +1436,6 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 								global.Wlog.Debug("DEBUG_SQL_ORDER_%d: Processing %d INSERT statements after DELETE for %s.%s\n",
 									logThreadSeq, len(add), c1.Schema, c1.Table)
 
-								// 定义SQL长度限制 (1MB)
-								const maxSqlSize = 1024 * 1024
-
 								// 分组处理INSERT语句，每fixTrxNum条合并一次
 								for batchStart := 0; batchStart < len(add); batchStart += sp.fixTrxNum {
 									batchEnd := batchStart + sp.fixTrxNum
@@ -1571,11 +1568,8 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 		vlog        string
 		deleteCount int
 		insertCount int
-		// 关键修复：分别存储DELETE和INSERT语句，确保最终顺序
-		deleteSqls []string
-		insertSqls []string
-		isFinished bool     // 标记是否已完成接收
-		tableSfile *os.File // 每个表的独立文件
+		deleteSqls  []string
+		insertSqls  []string
 	)
 
 	// 修复：清空全局writtenSqlMap，确保只针对当前表去重，避免跨表影响
@@ -1584,211 +1578,187 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 	vlog = fmt.Sprintf("(%d) Applying repair statements to target table %s.%s", logThreadSeq, sp.schema, sp.table)
 	global.Wlog.Info(vlog)
 
-	// 启动一个goroutine来收集和处理所有SQL语句
-	go func() {
-		defer func() {
-			// 处理所有收集到的DELETE和INSERT语句
-			if len(deleteSqls) > 0 || len(insertSqls) > 0 {
-				var finalSqls []string
-				finalSqls = append(finalSqls, deleteSqls...)
-				finalSqls = append(finalSqls, insertSqls...)
+	for {
+		v, ok := <-fixSQL
+		if !ok {
+			break
+		}
+		sp.pods.DIFFS = "yes"
+		sqlTrim := strings.TrimSpace(strings.ToUpper(v))
+		if strings.HasPrefix(sqlTrim, "DELETE") {
+			deleteSqls = append(deleteSqls, v)
+			deleteCount++
+		} else if strings.HasPrefix(sqlTrim, "INSERT") {
+			insertSqls = append(insertSqls, v)
+			insertCount++
+		}
+	}
 
-				// 确定使用哪个文件写入
-				if sp.fixFilePerTable == "ON" && sp.datafixType == "file" {
-					// 分离DELETE和INSERT语句
-					var deleteSqls []string
-					var insertSqls []string
-					for _, sql := range finalSqls {
-						sqlTrim := strings.TrimSpace(strings.ToUpper(sql))
-						if strings.HasPrefix(sqlTrim, "DELETE") {
-							deleteSqls = append(deleteSqls, sql)
-						} else if strings.HasPrefix(sqlTrim, "INSERT") {
-							insertSqls = append(insertSqls, sql)
-						}
-					}
+	if len(deleteSqls) > 0 || len(insertSqls) > 0 {
+		maxFileSizeBytes := int64(sp.fixTrxSize) * 1024 * 1024
+		maxStmtPerFile := sp.fixTrxNum
+		if maxFileSizeBytes <= 0 {
+			maxFileSizeBytes = 4 * 1024 * 1024
+		}
 
-					// 计算DELETE和INSERT语句的总数
-					totalSqls := len(deleteSqls) + len(insertSqls)
+		isUniqueKey := strings.HasPrefix(sp.indexColumnType, "pri_") || strings.HasPrefix(sp.indexColumnType, "uni_")
+		optimizedDelete := optimizeSqlStatements(deleteSqls, sp.fixTrxNum, isUniqueKey, sp.deleteSqlSize, sp.insertSqlSize)
+		optimizedInsert := optimizeSqlStatements(insertSqls, sp.fixTrxNum, false, sp.deleteSqlSize, sp.insertSqlSize)
+		var combinedSqls []string
+		combinedSqls = append(combinedSqls, optimizedDelete...)
+		combinedSqls = append(combinedSqls, optimizedInsert...)
 
-					// 判断当前表是否使用了主键或唯一键进行校验
-					isUniqueKey := strings.HasPrefix(sp.indexColumnType, "pri_") || strings.HasPrefix(sp.indexColumnType, "uni_")
-
-					if sp.fixTrxNum > 0 && totalSqls <= sp.fixTrxNum {
-						// 当总数小于等于fixTrxNum时，生成一个不含序号的独立文件
-						tableFileName := fmt.Sprintf("%s/%s.sql", sp.datafixSql, sp.table)
-						var err error
-						tableSfile, err = os.OpenFile(tableFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-						if err != nil {
-							sp.getErr(fmt.Sprintf("Failed to open fix file %s", tableFileName), err)
-						} else {
-							vlog = fmt.Sprintf("(%d) Opened fix file %s", logThreadSeq, tableFileName)
-							global.Wlog.Debug(vlog)
-							processBatch(finalSqls, sp.datafixType, tableSfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum, isUniqueKey)
-							// 关闭文件
-							if tableSfile != nil {
-								tableSfile.Close()
-								tableSfile = nil
-							}
-						}
-					} else {
-						// 当总数大于fixTrxNum时，分别生成DELETE和INSERT文件
-						// 处理DELETE语句
-						if len(deleteSqls) > 0 {
-							if sp.fixTrxNum > 0 {
-								// 计算需要的文件数量
-								totalFiles := (len(deleteSqls) + sp.fixTrxNum - 1) / sp.fixTrxNum
-								for i := 0; i < totalFiles; i++ {
-									// 计算当前批次的起始和结束索引
-									start := i * sp.fixTrxNum
-									end := start + sp.fixTrxNum
-									if end > len(deleteSqls) {
-										end = len(deleteSqls)
-									}
-									// 获取当前批次的SQL语句
-									batchSqls := deleteSqls[start:end]
-									// 创建批次文件
-									deleteFileName := fmt.Sprintf("%s/%s-DELETE-%d.sql", sp.datafixSql, sp.table, i+1)
-									var err error
-									tableSfile, err = os.OpenFile(deleteFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-									if err != nil {
-										sp.getErr(fmt.Sprintf("Failed to open DELETE fix file %s", deleteFileName), err)
-										continue
-									}
-									vlog = fmt.Sprintf("(%d) Opened DELETE fix file %s", logThreadSeq, deleteFileName)
-									global.Wlog.Debug(vlog)
-									// 处理当前批次
-									processBatch(batchSqls, sp.datafixType, tableSfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum, isUniqueKey)
-									// 关闭当前文件
-									if tableSfile != nil {
-										tableSfile.Close()
-										tableSfile = nil
-									}
-								}
-							} else {
-								// 当fixTrxNum <= 0时，使用单个文件
-								deleteFileName := fmt.Sprintf("%s/%s-DELETE.sql", sp.datafixSql, sp.table)
-								var err error
-								tableSfile, err = os.OpenFile(deleteFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-								if err != nil {
-									sp.getErr(fmt.Sprintf("Failed to open DELETE fix file %s", deleteFileName), err)
-								} else {
-									vlog = fmt.Sprintf("(%d) Opened DELETE fix file %s", logThreadSeq, deleteFileName)
-									global.Wlog.Debug(vlog)
-									processBatch(deleteSqls, sp.datafixType, tableSfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum, isUniqueKey)
-									// 关闭文件
-									if tableSfile != nil {
-										tableSfile.Close()
-										tableSfile = nil
-									}
-								}
-							}
-						}
-
-						// 处理INSERT语句
-						if len(insertSqls) > 0 {
-							if sp.fixTrxNum > 0 {
-								// 计算需要的文件数量
-								totalFiles := (len(insertSqls) + sp.fixTrxNum - 1) / sp.fixTrxNum
-								for i := 0; i < totalFiles; i++ {
-									// 计算当前批次的起始和结束索引
-									start := i * sp.fixTrxNum
-									end := start + sp.fixTrxNum
-									if end > len(insertSqls) {
-										end = len(insertSqls)
-									}
-									// 获取当前批次的SQL语句
-									batchSqls := insertSqls[start:end]
-									// 创建批次文件
-									insertFileName := fmt.Sprintf("%s/%s-%d.sql", sp.datafixSql, sp.table, i+1)
-									var err error
-									tableSfile, err = os.OpenFile(insertFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-									if err != nil {
-										sp.getErr(fmt.Sprintf("Failed to open INSERT fix file %s", insertFileName), err)
-										continue
-									}
-									vlog = fmt.Sprintf("(%d) Opened INSERT fix file %s", logThreadSeq, insertFileName)
-									global.Wlog.Debug(vlog)
-									// 处理当前批次
-									processBatch(batchSqls, sp.datafixType, tableSfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum, isUniqueKey)
-									// 关闭当前文件
-									if tableSfile != nil {
-										tableSfile.Close()
-										tableSfile = nil
-									}
-								}
-							} else {
-								// 当fixTrxNum <= 0时，使用单个文件
-								insertFileName := fmt.Sprintf("%s/%s.sql", sp.datafixSql, sp.table)
-								var err error
-								tableSfile, err = os.OpenFile(insertFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-								if err != nil {
-									sp.getErr(fmt.Sprintf("Failed to open INSERT fix file %s", insertFileName), err)
-								} else {
-									vlog = fmt.Sprintf("(%d) Opened INSERT fix file %s", logThreadSeq, insertFileName)
-									global.Wlog.Debug(vlog)
-									processBatch(insertSqls, sp.datafixType, tableSfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum, isUniqueKey)
-									// 关闭文件
-									if tableSfile != nil {
-										tableSfile.Close()
-										tableSfile = nil
-									}
-								}
-							}
-						}
-					}
-				} else {
-					isUniqueKey := strings.HasPrefix(sp.indexColumnType, "pri_") || strings.HasPrefix(sp.indexColumnType, "uni_")
-					// 当fixFilePerTable=OFF时，使用单个文件
-					processBatch(finalSqls, sp.datafixType, sp.sfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum, isUniqueKey)
+		// fixFilePerTable=ON: 按表文件切分，遵循条数和大小双约束，先到先切分
+		if sp.fixFilePerTable == "ON" && sp.datafixType == "file" {
+			if fitSqlChunk(combinedSqls, maxStmtPerFile, maxFileSizeBytes) {
+				tableFileName := fmt.Sprintf("%s/%s.sql", sp.datafixSql, sp.table)
+				tableSfile, err := os.OpenFile(tableFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+				if err != nil {
+					sp.getErr(fmt.Sprintf("Failed to open fix file %s", tableFileName), err)
 				}
-				vlog = fmt.Sprintf("(%d) Repair statements generated for %s.%s: DELETE=%d, INSERT=%d",
-					logThreadSeq, sp.schema, sp.table, len(deleteSqls), len(insertSqls))
-				global.Wlog.Debug(vlog)
-				// 有差异时标记DIFFS为yes
-				sp.pods.DIFFS = "yes"
+				writeOptimizedSqlChunk(combinedSqls, sp.datafixType, tableSfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
+				tableSfile.Close()
+			} else {
+				deleteChunks := splitSqlByConstraints(optimizedDelete, maxStmtPerFile, maxFileSizeBytes)
+				insertChunks := splitSqlByConstraints(optimizedInsert, maxStmtPerFile, maxFileSizeBytes)
+
+				for idx, chunk := range deleteChunks {
+					if len(chunk) == 0 {
+						continue
+					}
+					deleteFileName := fmt.Sprintf("%s/%s-DELETE-%d.sql", sp.datafixSql, sp.table, idx+1)
+					tableSfile, err := os.OpenFile(deleteFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+					if err != nil {
+						sp.getErr(fmt.Sprintf("Failed to open DELETE fix file %s", deleteFileName), err)
+					}
+					writeOptimizedSqlChunk(chunk, sp.datafixType, tableSfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
+					tableSfile.Close()
+				}
+
+				for idx, chunk := range insertChunks {
+					if len(chunk) == 0 {
+						continue
+					}
+					insertFileName := fmt.Sprintf("%s/%s-%d.sql", sp.datafixSql, sp.table, idx+1)
+					tableSfile, err := os.OpenFile(insertFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+					if err != nil {
+						sp.getErr(fmt.Sprintf("Failed to open INSERT fix file %s", insertFileName), err)
+					}
+					writeOptimizedSqlChunk(chunk, sp.datafixType, tableSfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
+					tableSfile.Close()
+				}
 			}
-
-			// 无论是否有差异，都添加到结果中
-			measuredDataPods = append(measuredDataPods, *sp.pods)
-			isFinished = true
-		}()
-
-		for {
-			v, ok := <-fixSQL
-			if !ok {
-				return
-			}
-			sp.pods.DIFFS = "yes"
-
-			// 按SQL类型分别存储，确保最终顺序
-			sqlTrim := strings.TrimSpace(strings.ToUpper(v))
-			if strings.HasPrefix(sqlTrim, "DELETE") {
-				deleteSqls = append(deleteSqls, v)
-				deleteCount++
-				//global.Wlog.Debug("DEBUG_BUFFER_DELETE_%d: Buffered DELETE statement #%d for %s.%s\n", logThreadSeq, deleteCount, sp.schema, sp.table)
-			} else if strings.HasPrefix(sqlTrim, "INSERT") {
-				insertSqls = append(insertSqls, v)
-				insertCount++
-				//global.Wlog.Debug("DEBUG_BUFFER_INSERT_%d: Buffered INSERT statement #%d for %s.%s\n", logThreadSeq, insertCount, sp.schema, sp.table)
+		} else {
+			// fixFilePerTable=OFF: 保持兼容，写入datafix.sql；超过阈值后滚动到datafix-N.sql
+			if sp.datafixType != "file" && sp.datafixType != "yes" {
+				processBatch(combinedSqls, sp.datafixType, sp.sfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum, isUniqueKey, sp.deleteSqlSize, sp.insertSqlSize)
+			} else {
+				chunks := splitSqlByConstraints(combinedSqls, maxStmtPerFile, maxFileSizeBytes)
+				baseFilePath := ""
+				if sp.sfile != nil {
+					baseFilePath = sp.sfile.Name()
+				}
+				for idx, chunk := range chunks {
+					if len(chunk) == 0 {
+						continue
+					}
+					if idx == 0 && sp.sfile != nil {
+						writeOptimizedSqlChunk(chunk, sp.datafixType, sp.sfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
+						continue
+					}
+					if baseFilePath == "" {
+						baseFilePath = fmt.Sprintf("%s/datafix.sql", sp.datafixSql)
+					}
+					ext := filepath.Ext(baseFilePath)
+					if ext == "" {
+						ext = ".sql"
+					}
+					baseName := strings.TrimSuffix(baseFilePath, ext)
+					rollFile := fmt.Sprintf("%s-%d%s", baseName, idx+1, ext)
+					tableSfile, err := os.OpenFile(rollFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+					if err != nil {
+						sp.getErr(fmt.Sprintf("Failed to open rollover fix file %s", rollFile), err)
+					}
+					writeOptimizedSqlChunk(chunk, sp.datafixType, tableSfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
+					tableSfile.Close()
+				}
 			}
 		}
-	}()
 
-	// 等待处理完成
-	for !isFinished {
-		time.Sleep(time.Millisecond * 10)
+		vlog = fmt.Sprintf("(%d) Repair statements generated for %s.%s: DELETE=%d, INSERT=%d",
+			logThreadSeq, sp.schema, sp.table, len(deleteSqls), len(insertSqls))
+		global.Wlog.Debug(vlog)
+		sp.pods.DIFFS = "yes"
 	}
+
+	// 无论是否有差异，都添加到结果中
+	measuredDataPods = append(measuredDataPods, *sp.pods)
 }
 
-// processBatch 批量处理SQL语句，根据类型排序后写入文件
-func processBatch(sqls []string, datafixType string, sfile *os.File, ddrive string, djdbc string, logThreadSeq int64, fixTrxNum int, isUniqueKey bool) {
-	if len(sqls) == 0 {
-		return
+func estimateSqlBytes(sqls []string) int64 {
+	var total int64
+	for _, sql := range sqls {
+		total += int64(len(sql) + 1)
 	}
-	// 按SQL类型排序：所有DELETE在前，INSERT在后
+	return total
+}
+
+func fitSqlChunk(sqls []string, maxStmtPerFile int, maxFileSizeBytes int64) bool {
+	if len(sqls) == 0 {
+		return true
+	}
+	if maxStmtPerFile > 0 && len(sqls) > maxStmtPerFile {
+		return false
+	}
+	if maxFileSizeBytes > 0 && estimateSqlBytes(sqls) > maxFileSizeBytes {
+		return false
+	}
+	return true
+}
+
+func splitSqlByConstraints(sqls []string, maxStmtPerFile int, maxFileSizeBytes int64) [][]string {
+	if len(sqls) == 0 {
+		return nil
+	}
+	if maxStmtPerFile <= 0 {
+		maxStmtPerFile = len(sqls)
+	}
+	if maxFileSizeBytes <= 0 {
+		maxFileSizeBytes = 4 * 1024 * 1024
+	}
+
+	var (
+		result    [][]string
+		current   []string
+		currBytes int64
+	)
+	for _, sql := range sqls {
+		sqlBytes := int64(len(sql) + 1)
+		if len(current) > 0 && (len(current) >= maxStmtPerFile || currBytes+sqlBytes > maxFileSizeBytes) {
+			result = append(result, current)
+			current = nil
+			currBytes = 0
+		}
+		current = append(current, sql)
+		currBytes += sqlBytes
+		if len(current) >= maxStmtPerFile || currBytes >= maxFileSizeBytes {
+			result = append(result, current)
+			current = nil
+			currBytes = 0
+		}
+	}
+	if len(current) > 0 {
+		result = append(result, current)
+	}
+	return result
+}
+
+func optimizeSqlStatements(sqls []string, fixTrxNum int, isUniqueKey bool, deleteSqlSize int, insertSqlSize int) []string {
+	if len(sqls) == 0 {
+		return nil
+	}
 	var deleteSqls []string
 	var insertSqls []string
-
 	for _, sql := range sqls {
 		sqlTrim := strings.TrimSpace(strings.ToUpper(sql))
 		if strings.HasPrefix(sqlTrim, "DELETE") {
@@ -1798,31 +1768,39 @@ func processBatch(sqls []string, datafixType string, sfile *os.File, ddrive stri
 		}
 	}
 
-	maxSqlSize := 1024 * 1024 // 1MB
 	optFixTrxNum := fixTrxNum
 	if optFixTrxNum <= 0 {
-		optFixTrxNum = 1000 // 默认值，防止由于未配置导致单条SQL过大
+		optFixTrxNum = 1000
 	}
-
-	if isUniqueKey {
-		// 优化 DELETE 语句，合并具有单列或多列等值条件的 DELETE (主键、唯一键)
-		deleteSqls = OptimizeDeleteSqls(deleteSqls, maxSqlSize, optFixTrxNum)
+	if isUniqueKey && len(deleteSqls) > 0 {
+		deleteSqls = OptimizeDeleteSqls(deleteSqls, deleteSqlSize, optFixTrxNum)
 	}
-
-	// 优化 INSERT 语句，合并相同表的多条 INSERT 为单条 VALUES 多组数据格式
 	if len(insertSqls) > 1 {
-		insertSqls = OptimizeInsertSqls(insertSqls, maxSqlSize, optFixTrxNum)
+		insertSqls = OptimizeInsertSqls(insertSqls, insertSqlSize, optFixTrxNum)
 	}
 
-	// 构建最终的有序SQL列表
 	var finalSqls []string
 	finalSqls = append(finalSqls, deleteSqls...)
 	finalSqls = append(finalSqls, insertSqls...)
+	return finalSqls
+}
 
-	// 写入文件
-	ApplyDataFixWithTrxNum(finalSqls, datafixType, sfile, ddrive, djdbc, logThreadSeq, fixTrxNum)
+func writeOptimizedSqlChunk(sqls []string, datafixType string, sfile *os.File, ddrive string, djdbc string, logThreadSeq int64, fixTrxNum int) {
+	if len(sqls) == 0 {
+		return
+	}
+	ApplyDataFixWithTrxNum(sqls, datafixType, sfile, ddrive, djdbc, logThreadSeq, fixTrxNum)
+}
+
+// processBatch 批量处理SQL语句，根据类型排序后写入文件
+func processBatch(sqls []string, datafixType string, sfile *os.File, ddrive string, djdbc string, logThreadSeq int64, fixTrxNum int, isUniqueKey bool, deleteSqlSize int, insertSqlSize int) {
+	if len(sqls) == 0 {
+		return
+	}
+	finalSqls := optimizeSqlStatements(sqls, fixTrxNum, isUniqueKey, deleteSqlSize, insertSqlSize)
+	writeOptimizedSqlChunk(finalSqls, datafixType, sfile, ddrive, djdbc, logThreadSeq, fixTrxNum)
 	global.Wlog.Debug("DEBUG_BATCH_WRITE_%d: Wrote %d SQL statements to file, DELETE=%d, INSERT=%d\n",
-		logThreadSeq, len(finalSqls), len(deleteSqls), len(insertSqls))
+		logThreadSeq, len(finalSqls), len(sqls), len(finalSqls))
 }
 
 // 辅助函数

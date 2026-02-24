@@ -271,6 +271,60 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 		rc.SecondaryL.RepairV.FixTrxNum = 1000
 	}
 
+	fixTrxSizeValue := getLastConfigValue("fixTrxSize")
+	if fixTrxSizeValue != "" {
+		if val, err := strconv.Atoi(fixTrxSizeValue); err == nil {
+			rc.SecondaryL.RepairV.FixTrxSize = val
+		} else {
+			fmt.Println("Using default value '4' for option fixTrxSize")
+			rc.SecondaryL.RepairV.FixTrxSize = 4
+		}
+	} else {
+		fmt.Println("Using default value '4' for option fixTrxSize")
+		rc.SecondaryL.RepairV.FixTrxSize = 4
+	}
+
+	// CLI system parameter override has higher priority than config file.
+	if rc.CliFixTrxSize > 0 {
+		rc.SecondaryL.RepairV.FixTrxSize = rc.CliFixTrxSize
+		fmt.Printf("Using system parameter fixTrxSize=%dMB\n", rc.CliFixTrxSize)
+	}
+
+	insertSqlSizeValue := getLastConfigValue("insertSqlSize")
+	if insertSqlSizeValue != "" {
+		if val, err := strconv.Atoi(insertSqlSizeValue); err == nil {
+			rc.SecondaryL.RepairV.InsertSqlSize = val
+		} else {
+			fmt.Println("Using default value '1024' for option insertSqlSize")
+			rc.SecondaryL.RepairV.InsertSqlSize = 1024
+		}
+	} else {
+		fmt.Println("Using default value '1024' for option insertSqlSize")
+		rc.SecondaryL.RepairV.InsertSqlSize = 1024
+	}
+
+	deleteSqlSizeValue := getLastConfigValue("deleteSqlSize")
+	if deleteSqlSizeValue != "" {
+		if val, err := strconv.Atoi(deleteSqlSizeValue); err == nil {
+			rc.SecondaryL.RepairV.DeleteSqlSize = val
+		} else {
+			fmt.Println("Using default value '16' for option deleteSqlSize")
+			rc.SecondaryL.RepairV.DeleteSqlSize = 16
+		}
+	} else {
+		fmt.Println("Using default value '16' for option deleteSqlSize")
+		rc.SecondaryL.RepairV.DeleteSqlSize = 16
+	}
+
+	if rc.CliInsertSqlSize > 0 {
+		rc.SecondaryL.RepairV.InsertSqlSize = rc.CliInsertSqlSize
+		fmt.Printf("Using system parameter insertSqlSize=%dKB\n", rc.CliInsertSqlSize)
+	}
+	if rc.CliDeleteSqlSize > 0 {
+		rc.SecondaryL.RepairV.DeleteSqlSize = rc.CliDeleteSqlSize
+		fmt.Printf("Using system parameter deleteSqlSize=%dKB\n", rc.CliDeleteSqlSize)
+	}
+
 	datafixValue := getLastConfigValue("datafix")
 	if datafixValue != "" {
 		validValues := []string{"file", "table"}

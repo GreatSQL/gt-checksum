@@ -52,6 +52,24 @@ func (rc *ConfigParameter) cliHelp() {
 			Value:       "",                                                           //默认值
 			Destination: &rc.Config,                                                   //赋值
 		},
+		cli.IntFlag{
+			Name:        "fixTrxSize",
+			Usage:       "Override fixTrxSize (MB) from system parameter, e.g. --fixTrxSize 8",
+			Value:       0,
+			Destination: &rc.CliFixTrxSize,
+		},
+		cli.IntFlag{
+			Name:        "insertSqlSize",
+			Usage:       "Override insertSqlSize (KB) from system parameter, e.g. --insertSqlSize 1024",
+			Value:       0,
+			Destination: &rc.CliInsertSqlSize,
+		},
+		cli.IntFlag{
+			Name:        "deleteSqlSize",
+			Usage:       "Override deleteSqlSize (KB) from system parameter, e.g. --deleteSqlSize 16",
+			Value:       0,
+			Destination: &rc.CliDeleteSqlSize,
+		},
 	}
 	app.Action = func(c *cli.Context) { //应用执行函数
 		if rc.Config == "" {

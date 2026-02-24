@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"gt-checksum/global"
+	"gt-checksum/inputArg"
 	"os"
 	"strings"
 	"sync"
@@ -319,14 +320,15 @@ func ApplyDataFixWithTrxNum(fixSql []string, datafixType string, sfile *os.File,
 			}
 		}
 
+		insertSqlSize := inputArg.GetGlobalConfig().SecondaryL.RepairV.InsertSqlSize * 1024
+
 		// 对INSERT语句进行合并优化
 		if len(insertSqls) > 1 {
-			maxSqlSize := 1024 * 1024 // 1MB
 			optFixTrxNum := fixTrxNum
 			if optFixTrxNum <= 0 {
 				optFixTrxNum = 1000 // 默认值
 			}
-			insertSqls = OptimizeInsertSqls(insertSqls, maxSqlSize, optFixTrxNum)
+			insertSqls = OptimizeInsertSqls(insertSqls, insertSqlSize, optFixTrxNum)
 		}
 
 		// 重新组合SQL语句
