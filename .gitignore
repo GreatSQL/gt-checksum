@@ -6,3 +6,7 @@ gt-checksum.log
 fixsql
 repairDB
 repairDB.log
+docs
+fixsql*
+.vscode
+.trae
