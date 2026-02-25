@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -11,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"database/sql"
@@ -206,8 +208,203 @@ type deadlockResult struct {
 	err  error
 }
 
+var deleteFileNameRegex = regexp.MustCompile(`^.+-DELETE-.+\.sql$`)
+var numberedSQLFileRegex = regexp.MustCompile(`^(.+?-)(\d+)(\.sql)$`)
+
+func isDeleteStageFile(path string) bool {
+	return deleteFileNameRegex.MatchString(filepath.Base(path))
+}
+
+func uniqueFiles(files []string) []string {
+	seen := make(map[string]struct{}, len(files))
+	result := make([]string, 0, len(files))
+	for _, f := range files {
+		if _, ok := seen[f]; ok {
+			continue
+		}
+		seen[f] = struct{}{}
+		result = append(result, f)
+	}
+	return result
+}
+
+func shuffleSQLFiles(files []string) {
+	if len(files) <= 1 {
+		return
+	}
+	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+	rng.Shuffle(len(files), func(i, j int) {
+		files[i], files[j] = files[j], files[i]
+	})
+}
+
+type rangeSegment struct {
+	start int
+	end   int
+}
+
+func splitConsecutiveRanges(numbers []int) []rangeSegment {
+	if len(numbers) == 0 {
+		return nil
+	}
+	sort.Ints(numbers)
+	uniq := make([]int, 0, len(numbers))
+	prev := numbers[0] - 1
+	for _, n := range numbers {
+		if n != prev {
+			uniq = append(uniq, n)
+		}
+		prev = n
+	}
+	if len(uniq) == 0 {
+		return nil
+	}
+	var segments []rangeSegment
+	start := uniq[0]
+	last := uniq[0]
+	for i := 1; i < len(uniq); i++ {
+		if uniq[i] == last+1 {
+			last = uniq[i]
+			continue
+		}
+		segments = append(segments, rangeSegment{start: start, end: last})
+		start = uniq[i]
+		last = uniq[i]
+	}
+	segments = append(segments, rangeSegment{start: start, end: last})
+	return segments
+}
+
+func normalizePlanPath(file, fixFileDir string) string {
+	rel, err := filepath.Rel(fixFileDir, file)
+	if err == nil && !strings.HasPrefix(rel, "..") && rel != "." {
+		baseDir := filepath.Base(filepath.Clean(fixFileDir))
+		joined := filepath.ToSlash(filepath.Join(baseDir, rel))
+		return strings.TrimPrefix(joined, "./")
+	}
+	return strings.TrimPrefix(filepath.ToSlash(file), "./")
+}
+
+func buildCompressedPlanEntries(files []string, fixFileDir string) []string {
+	type groupKey struct {
+		dir    string
+		prefix string
+		suffix string
+	}
+	type groupValue struct {
+		order   int
+		numbers []int
+	}
+	type plainEntry struct {
+		order int
+		path  string
+	}
+	type mergedEntry struct {
+		order int
+		path  string
+		start int
+	}
+
+	grouped := make(map[groupKey]*groupValue)
+	var groupOrder []groupKey
+	var plain []plainEntry
+	orderCounter := 0
+
+	for _, file := range files {
+		normalized := normalizePlanPath(file, fixFileDir)
+		base := filepath.Base(normalized)
+		dir := filepath.ToSlash(filepath.Dir(normalized))
+		if dir == "." {
+			dir = ""
+		}
+		matches := numberedSQLFileRegex.FindStringSubmatch(base)
+		if len(matches) != 4 {
+			plain = append(plain, plainEntry{order: orderCounter, path: normalized})
+			orderCounter++
+			continue
+		}
+		num, err := strconv.Atoi(matches[2])
+		if err != nil {
+			plain = append(plain, plainEntry{order: orderCounter, path: normalized})
+			orderCounter++
+			continue
+		}
+		key := groupKey{dir: dir, prefix: matches[1], suffix: matches[3]}
+		if _, ok := grouped[key]; !ok {
+			grouped[key] = &groupValue{order: orderCounter}
+			groupOrder = append(groupOrder, key)
+			orderCounter++
+		}
+		grouped[key].numbers = append(grouped[key].numbers, num)
+	}
+
+	var merged []mergedEntry
+	for _, key := range groupOrder {
+		segments := splitConsecutiveRanges(grouped[key].numbers)
+		for _, seg := range segments {
+			name := fmt.Sprintf("%s(%d-%d)%s", key.prefix, seg.start, seg.end, key.suffix)
+			if key.dir != "" {
+				name = key.dir + "/" + name
+			}
+			merged = append(merged, mergedEntry{
+				order: grouped[key].order,
+				path:  name,
+				start: seg.start,
+			})
+		}
+	}
+
+	sort.SliceStable(merged, func(i, j int) bool {
+		if merged[i].order != merged[j].order {
+			return merged[i].order < merged[j].order
+		}
+		if merged[i].start != merged[j].start {
+			return merged[i].start < merged[j].start
+		}
+		return merged[i].path < merged[j].path
+	})
+	sort.SliceStable(plain, func(i, j int) bool {
+		if plain[i].order != plain[j].order {
+			return plain[i].order < plain[j].order
+		}
+		return plain[i].path < plain[j].path
+	})
+
+	type finalEntry struct {
+		order int
+		path  string
+	}
+	var final []finalEntry
+	for _, item := range merged {
+		final = append(final, finalEntry{order: item.order, path: item.path})
+	}
+	for _, item := range plain {
+		final = append(final, finalEntry{order: item.order, path: item.path})
+	}
+	sort.SliceStable(final, func(i, j int) bool {
+		return final[i].order < final[j].order
+	})
+
+	result := make([]string, 0, len(final))
+	for _, item := range final {
+		result = append(result, item.path)
+	}
+	return result
+}
+
+func logExecutionPlan(stageName string, files []string, fixFileDir string) {
+	if len(files) == 0 {
+		return
+	}
+	log.Printf("[%s] planned execution order (%d files):", stageName, len(files))
+	entries := buildCompressedPlanEntries(files, fixFileDir)
+	for idx, file := range entries {
+		log.Printf("[%s] #%d %s", stageName, idx+1, file)
+	}
+}
+
 // Execute SQL files in parallel with deadlock retry support
-func parallelExecuteSQLFiles(files []string, dsn string) {
+func parallelExecuteSQLFiles(files []string, dsn, stageName string) {
 	// Create database connection pool
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
@@ -226,6 +423,7 @@ func parallelExecuteSQLFiles(files []string, dsn string) {
 	// Execute files and collect deadlocked ones for retry
 	pendingFiles := files
 	retryRound := 0
+	var executionSeq uint64
 
 	for len(pendingFiles) > 0 {
 		if retryRound > 0 {
@@ -267,6 +465,8 @@ func parallelExecuteSQLFiles(files []string, dsn string) {
 
 				// Record start time
 				startTime := time.Now()
+				seq := atomic.AddUint64(&executionSeq, 1)
+				log.Printf("[%s] execution sequence #%d (round %d): %s\n", stageName, seq, retryRound, sqlFile)
 				if retryRound == 0 {
 					log.Printf("Starting to execute SQL file: %s\n", sqlFile)
 					fmt.Printf("Starting to execute SQL file: %s\n", sqlFile)
@@ -310,130 +510,18 @@ func parallelExecuteSQLFiles(files []string, dsn string) {
 		}
 
 		if len(deadlockedFiles) > 0 {
-			// Sort deadlocked files for consistent retry order
-			sortSQLFilesByNumericSuffix(deadlockedFiles)
+			// Keep delete stage deterministic, but randomize non-delete stage on retry.
+			if stageName == "PHASE-2-OTHER" {
+				shuffleSQLFiles(deadlockedFiles)
+			} else {
+				sort.Strings(deadlockedFiles)
+			}
 			log.Printf("Round %d completed: %d file(s) deadlocked, will retry\n", retryRound, len(deadlockedFiles))
 		}
 
 		pendingFiles = deadlockedFiles
 		retryRound++
 	}
-}
-
-// numericSuffixRegex extracts the trailing number from a filename before .sql extension
-// e.g., "table-99.sql" → "99", "lineitem-DELETE-101.sql" → "101"
-var numericSuffixRegex = regexp.MustCompile(`-(\d+)\.sql$`)
-
-// extractNumericSuffix extracts the trailing numeric suffix from a SQL filename.
-// Returns the number and true if found, or 0 and false if no numeric suffix.
-func extractNumericSuffix(filename string) (int, bool) {
-	base := filepath.Base(filename)
-	matches := numericSuffixRegex.FindStringSubmatch(base)
-	if len(matches) >= 2 {
-		num, err := strconv.Atoi(matches[1])
-		if err == nil {
-			return num, true
-		}
-	}
-	return 0, false
-}
-
-// sortSQLFilesByNumericSuffix sorts SQL file paths by the numeric suffix in their filenames.
-// Files with numeric suffixes (e.g., "a-99.sql", "a-101.sql") are sorted numerically.
-// Files without numeric suffixes are sorted lexicographically and placed after numbered files.
-func sortSQLFilesByNumericSuffix(files []string) {
-	sort.SliceStable(files, func(i, j int) bool {
-		numI, hasI := extractNumericSuffix(files[i])
-		numJ, hasJ := extractNumericSuffix(files[j])
-
-		if hasI && hasJ {
-			if numI != numJ {
-				return numI < numJ
-			}
-			// Same number — sort by full path as tiebreaker
-			return files[i] < files[j]
-		}
-		if hasI && !hasJ {
-			return true // numbered files first
-		}
-		if !hasI && hasJ {
-			return false
-		}
-		// Neither has a number — lexicographic
-		return files[i] < files[j]
-	})
-}
-
-// fileRangeRegex captures the prefix and number from filenames like "fixsql/lineitem-DELETE-101.sql"
-// Group 1 = prefix (e.g., "fixsql/lineitem-DELETE-"), Group 2 = number (e.g., "101")
-var fileRangeRegex = regexp.MustCompile(`^(.*-)(\d+)(\.sql)$`)
-
-// formatFileRanges groups SQL files by their prefix pattern and returns compact range expressions.
-// e.g., ["fixsql/lineitem-1.sql", "fixsql/lineitem-2.sql", ..., "fixsql/lineitem-706.sql"]
-// → ["fixsql/lineitem-(1-706).sql"]
-func formatFileRanges(files []string) []string {
-	if len(files) == 0 {
-		return nil
-	}
-
-	// Group files by prefix, tracking min/max number for each prefix
-	type rangeInfo struct {
-		prefix string
-		suffix string // ".sql"
-		minNum int
-		maxNum int
-		count  int
-		order  int // preserve first-seen order
-	}
-
-	groups := make(map[string]*rangeInfo)
-	var groupOrder []string // to preserve order
-	var ungrouped []string
-
-	for _, f := range files {
-		matches := fileRangeRegex.FindStringSubmatch(f)
-		if matches == nil {
-			ungrouped = append(ungrouped, f)
-			continue
-		}
-		prefix := matches[1]
-		num, _ := strconv.Atoi(matches[2])
-		ext := matches[3]
-
-		if g, ok := groups[prefix]; ok {
-			if num < g.minNum {
-				g.minNum = num
-			}
-			if num > g.maxNum {
-				g.maxNum = num
-			}
-			g.count++
-		} else {
-			groups[prefix] = &rangeInfo{
-				prefix: prefix,
-				suffix: ext,
-				minNum: num,
-				maxNum: num,
-				count:  1,
-				order:  len(groupOrder),
-			}
-			groupOrder = append(groupOrder, prefix)
-		}
-	}
-
-	var result []string
-	for _, prefix := range groupOrder {
-		g := groups[prefix]
-		if g.count == 1 {
-			// Single file — no range needed
-			result = append(result, fmt.Sprintf("%s%d%s", g.prefix, g.minNum, g.suffix))
-		} else {
-			result = append(result, fmt.Sprintf("%s(%d-%d)%s", g.prefix, g.minNum, g.maxNum, g.suffix))
-		}
-	}
-	// Append any files that didn't match the pattern
-	result = append(result, ungrouped...)
-	return result
 }
 
 // Main function
@@ -572,39 +660,36 @@ func main() {
 		return
 	}
 
+	// Remove duplicated paths to guarantee each SQL file is scheduled once.
+	sqlFiles = uniqueFiles(sqlFiles)
+
 	// Separate DELETE files and other files
 	var deleteFiles []string
 	var otherFiles []string
 
 	for _, file := range sqlFiles {
-		if strings.Contains(file, "-DELETE") {
+		if isDeleteStageFile(file) {
 			deleteFiles = append(deleteFiles, file)
 		} else {
 			otherFiles = append(otherFiles, file)
 		}
 	}
 
-	// Sort files by numeric suffix to ensure correct execution order
-	// e.g., a-99.sql before a-101.sql (not lexicographic order)
-	sortSQLFilesByNumericSuffix(deleteFiles)
-	sortSQLFilesByNumericSuffix(otherFiles)
+	// Phase-1 keeps deterministic order for audit readability.
+	sort.Strings(deleteFiles)
+	// Phase-2 uses randomized order to reduce lock contention hotspots.
+	shuffleSQLFiles(otherFiles)
 
 	// Print file information
 	log.Printf("Found %d DELETE files, %d other SQL files\n", len(deleteFiles), len(otherFiles))
 	fmt.Printf("Found %d DELETE files, %d other SQL files\n", len(deleteFiles), len(otherFiles))
 
-	// Log sorted file order in compact range format
+	// Log planned execution order for audit/review.
 	if len(deleteFiles) > 0 {
-		log.Printf("DELETE files execution order:")
-		for _, line := range formatFileRanges(deleteFiles) {
-			log.Printf("  %s", line)
-		}
+		logExecutionPlan("PHASE-1-DELETE", deleteFiles, config.FixFileDir)
 	}
 	if len(otherFiles) > 0 {
-		log.Printf("Other SQL files execution order:")
-		for _, line := range formatFileRanges(otherFiles) {
-			log.Printf("  %s", line)
-		}
+		logExecutionPlan("PHASE-2-OTHER", otherFiles, config.FixFileDir)
 	}
 
 	// Initialize semaphore
@@ -618,7 +703,7 @@ func main() {
 		log.Printf("Starting parallel execution of DELETE files, concurrency: %d\n", config.ParallelThds)
 		fmt.Printf("Starting parallel execution of DELETE files, concurrency: %d\n", config.ParallelThds)
 		dsn := parseDSN(config.DstDSN)
-		parallelExecuteSQLFiles(deleteFiles, dsn)
+		parallelExecuteSQLFiles(deleteFiles, dsn, "PHASE-1-DELETE")
 		log.Printf("DELETE files execution completed\n")
 		fmt.Printf("DELETE files execution completed\n")
 	}
@@ -628,7 +713,7 @@ func main() {
 		log.Printf("Starting parallel execution of other SQL files, concurrency: %d\n", config.ParallelThds)
 		fmt.Printf("Starting parallel execution of other SQL files, concurrency: %d\n", config.ParallelThds)
 		dsn := parseDSN(config.DstDSN)
-		parallelExecuteSQLFiles(otherFiles, dsn)
+		parallelExecuteSQLFiles(otherFiles, dsn, "PHASE-2-OTHER")
 		log.Printf("Other SQL files execution completed\n")
 		fmt.Printf("Other SQL files execution completed\n")
 	}
