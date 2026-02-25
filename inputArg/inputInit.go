@@ -5,6 +5,7 @@ import (
 	"gt-checksum/global"
 	"gt-checksum/go-log/log"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -84,6 +85,9 @@ type ConfigParameter struct {
 var rc ConfigParameter
 
 func init() {
+	if strings.HasSuffix(filepath.Base(os.Args[0]), ".test") {
+		return
+	}
 	rc.cliHelp()
 	fmt.Println("Initializing gt-checksum")
 	fmt.Println("Reading configuration files")

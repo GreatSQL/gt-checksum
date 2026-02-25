@@ -11,6 +11,9 @@ import (
 	"strings"
 )
 
+// 缓存“首列可用索引名”，避免高频场景重复查询information_schema.statistics
+var leadingIndexNameGlobalCache = make(map[string]string)
+
 /*
 查询MySQL库下指定表的索引统计信息
 */
@@ -298,6 +301,32 @@ func (my *QueryTable) checkColumnExists(db *sql.DB, columnName string, logThread
 	return exists, nil
 }
 
+func (my *QueryTable) getLeadingIndexName(db *sql.DB, columnName string) string {
+	cacheKey := fmt.Sprintf("%p.%s.%s.%s", db, my.Schema, my.Table, columnName)
+	cacheMutex.RLock()
+	if indexName, ok := leadingIndexNameGlobalCache[cacheKey]; ok {
+		cacheMutex.RUnlock()
+		return indexName
+	}
+	cacheMutex.RUnlock()
+
+	query := fmt.Sprintf(
+		"SELECT INDEX_NAME FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s' AND COLUMN_NAME='%s' AND SEQ_IN_INDEX=1 ORDER BY (INDEX_NAME='PRIMARY') DESC, NON_UNIQUE ASC, INDEX_NAME ASC LIMIT 1",
+		my.Schema,
+		my.Table,
+		columnName,
+	)
+	var indexName string
+	if err := db.QueryRow(query).Scan(&indexName); err != nil {
+		indexName = ""
+	}
+
+	cacheMutex.Lock()
+	leadingIndexNameGlobalCache[cacheKey] = indexName
+	cacheMutex.Unlock()
+	return indexName
+}
+
 /*
 处理MySQL 5.7版本针对列数据类型为FLOAT类型时，select where column = 'float'查询不出数据问题
 */
@@ -371,12 +400,16 @@ func (my QueryTable) TmpTableColumnGroupDataDispos(db *sql.DB, where string, col
 	//strsql = fmt.Sprintf("SELECT DISTINCT %s AS columnName, COUNT(1) OVER (PARTITION BY %s) AS count FROM `%s`.`%s` %s ORDER BY %s", columnName, columnName, my.Schema, my.Table, whereExist, columnName)
 	//上面的SQL效率太低，改成下面这样
 	// 修复：必须添加ORDER BY，因为recursiveIndexColumn依赖有序数据来生成分片
-	strsql = fmt.Sprintf("SELECT %s AS columnName, COUNT(1) AS count FROM `%s`.`%s` %s GROUP BY %s ORDER BY %s", columnName, my.Schema, my.Table, whereExist, columnName, columnName)
+	forceIndexClause := ""
+	if indexName := my.getLeadingIndexName(db, columnName); indexName != "" {
+		forceIndexClause = fmt.Sprintf(" FORCE INDEX (`%s`)", indexName)
+	}
+	strsql = fmt.Sprintf("SELECT %s AS columnName, COUNT(1) AS count FROM `%s`.`%s`%s %s GROUP BY %s ORDER BY %s", columnName, my.Schema, my.Table, forceIndexClause, whereExist, columnName, columnName)
+	fallbackSQL := fmt.Sprintf("SELECT %s AS columnName, COUNT(1) AS count FROM `%s`.`%s` %s GROUP BY %s ORDER BY %s", columnName, my.Schema, my.Table, whereExist, columnName, columnName)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
-		// 如果窗口函数失败，回退到分组查询
-		strsql = fmt.Sprintf("SELECT %s AS columnName, COUNT(1) AS count FROM `%s`.`%s` %s GROUP BY %s ORDER BY %s", columnName, my.Schema, my.Table, whereExist, columnName, columnName)
-		if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
+		// FORCE INDEX 可能在目标端不可用，失败后回退到普通分组查询
+		if dispos.SqlRows, err = dispos.DBSQLforExec(fallbackSQL); err != nil {
 			return nil, err
 		}
 	}

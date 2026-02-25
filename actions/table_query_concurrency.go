@@ -73,8 +73,6 @@ type DifferencesDataStruct struct {
 	TableColumnInfo global.TableAllColumnInfoS //该表的所有列信息，包括列类型
 	SqlWhere        map[string]string          //差异数据查询的where 条件
 	indexColumnType string                     //索引列类型
-	SourceData      string                     //源端查询到的数据，避免重复查询
-	DestData        string                     //目标端查询到的数据，避免重复查询
 }
 
 /*

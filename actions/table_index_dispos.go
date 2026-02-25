@@ -1,6 +1,7 @@
 package actions
 
 import (
+	"bufio"
 	"database/sql"
 	"fmt"
 	"gt-checksum/dataDispos"
@@ -8,10 +9,13 @@ import (
 	"gt-checksum/global"
 	"gt-checksum/inputArg"
 	"gt-checksum/utils"
+	"hash/fnv"
 	"math/rand"
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -36,18 +40,136 @@ var (
 
 	// 全局主键值跟踪机制 - 修复重复DELETE/INSERT冲突问题
 	deleteMutex       sync.Mutex                  // 保护并发访问deletePrimaryKeys map的互斥锁
-	deletePrimaryKeys = make(map[string]struct{}) // 全局已处理的DELETE主键值去重
+	deletePrimaryKeys = make(map[uint64]struct{}) // 全局已处理的DELETE主键值去重（hash key）
 
 	insertMutex         sync.Mutex                  // 保护并发访问insertedPrimaryKeys map的互斥锁
-	insertedPrimaryKeys = make(map[string]struct{}) // 全局已处理的INSERT主键值跟踪
-	processedInserts    = make(map[string]struct{}) // 全局已处理的INSERT记录去重
+	insertedPrimaryKeys = make(map[uint64]struct{}) // 全局已处理的INSERT主键值跟踪（hash key）
+	processedInserts    = make(map[uint64]struct{}) // 全局已处理的INSERT记录去重（hash key）
+	tableMemoryPeaks    sync.Map
+	forcedGCMutex       sync.Mutex
+	lastForcedGCAt      time.Time
 )
+
+type tableMemoryPeak struct {
+	Stage       string
+	AllocMB     uint64
+	HeapInuseMB uint64
+	HeapObjects uint64
+	NumGC       uint32
+}
+
+// ResetMemoryPeakStats clears per-table peak memory metrics for a new checksum run.
+func ResetMemoryPeakStats() {
+	tableMemoryPeaks = sync.Map{}
+}
+
+// LogMemoryPeakSummary prints per-table memory peak summary to log.
+func LogMemoryPeakSummary() {
+	type item struct {
+		table string
+		peak  tableMemoryPeak
+	}
+	var items []item
+	tableMemoryPeaks.Range(func(key, value interface{}) bool {
+		table, ok := key.(string)
+		if !ok {
+			return true
+		}
+		peak, ok := value.(tableMemoryPeak)
+		if !ok {
+			return true
+		}
+		items = append(items, item{table: table, peak: peak})
+		return true
+	})
+	if len(items) == 0 {
+		return
+	}
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].table < items[j].table
+	})
+	global.Wlog.Info("MEM_PEAK_SUMMARY: begin")
+	for _, it := range items {
+		global.Wlog.Info(fmt.Sprintf("MEM_PEAK table=%s peakStage=%s Alloc=%dMB HeapInuse=%dMB HeapObjects=%d NumGC=%d",
+			it.table,
+			it.peak.Stage,
+			it.peak.AllocMB,
+			it.peak.HeapInuseMB,
+			it.peak.HeapObjects,
+			it.peak.NumGC,
+		))
+	}
+	global.Wlog.Info("MEM_PEAK_SUMMARY: end")
+}
+
+func updateTableMemoryPeak(tableKey string, peak tableMemoryPeak) {
+	if tableKey == "" {
+		return
+	}
+	existingValue, ok := tableMemoryPeaks.Load(tableKey)
+	if !ok {
+		tableMemoryPeaks.Store(tableKey, peak)
+		return
+	}
+	existing, ok := existingValue.(tableMemoryPeak)
+	if !ok {
+		tableMemoryPeaks.Store(tableKey, peak)
+		return
+	}
+	if peak.AllocMB > existing.AllocMB || (peak.AllocMB == existing.AllocMB && peak.HeapInuseMB > existing.HeapInuseMB) {
+		tableMemoryPeaks.Store(tableKey, peak)
+	}
+}
 
 /*
 初始化差异数据信息结构体
 */
 func InitDifferencesDataStruct() DifferencesDataStruct {
 	return DifferencesDataStruct{}
+}
+
+func hashDedupeKey(raw string) uint64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(raw))
+	return h.Sum64()
+}
+
+func markDeleteKeyIfAbsent(raw string) bool {
+	key := hashDedupeKey(raw)
+	deleteMutex.Lock()
+	defer deleteMutex.Unlock()
+	if _, exists := deletePrimaryKeys[key]; exists {
+		return false
+	}
+	deletePrimaryKeys[key] = struct{}{}
+	return true
+}
+
+func hasDeleteKey(raw string) bool {
+	key := hashDedupeKey(raw)
+	deleteMutex.Lock()
+	_, exists := deletePrimaryKeys[key]
+	deleteMutex.Unlock()
+	return exists
+}
+
+func markInsertKeyIfAbsent(raw string) bool {
+	key := hashDedupeKey(raw)
+	insertMutex.Lock()
+	defer insertMutex.Unlock()
+	if _, exists := insertedPrimaryKeys[key]; exists {
+		return false
+	}
+	insertedPrimaryKeys[key] = struct{}{}
+	return true
+}
+
+func hasInsertKey(raw string) bool {
+	key := hashDedupeKey(raw)
+	insertMutex.Lock()
+	_, exists := insertedPrimaryKeys[key]
+	insertMutex.Unlock()
+	return exists
 }
 
 /*
@@ -709,21 +831,23 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 
 	// 在处理前清空所有全局去重映射，确保每次运行都有干净的状态
 	deleteMutex.Lock()
-	deletePrimaryKeys = make(map[string]struct{})
+	deletePrimaryKeys = make(map[uint64]struct{})
 	deleteMutex.Unlock()
 
 	insertMutex.Lock()
-	processedInserts = make(map[string]struct{})
-	insertedPrimaryKeys = make(map[string]struct{}) // 关键修复：清空INSERT主键跟踪映射
+	processedInserts = make(map[uint64]struct{})
+	insertedPrimaryKeys = make(map[uint64]struct{}) // 关键修复：清空INSERT主键跟踪映射
 	insertMutex.Unlock()
 	vlog = fmt.Sprintf("(%d) Processing differences and generating repair statements for %s.%s", logThreadSeq, sp.schema, sp.table)
 	global.Wlog.Info(vlog)
+	logStageMemory("diff-compare-start", logThreadSeq, sp.schema, sp.table)
 
 	for {
 		select {
 		case c, ok := <-diffQueryData:
 			if !ok {
 				if len(curry) == 0 {
+					logStageMemory("diff-compare-end", logThreadSeq, sp.schema, sp.table)
 					close(cc)
 					return
 				}
@@ -790,39 +914,31 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 					vlog = fmt.Sprintf("(%d) AbnormalDataDispos - Target SQL condition: %s", logThreadSeq, destSqlWhere)
 					global.Wlog.Debug(vlog)
 
-					// 检查是否已经有查询结果，避免重复查询
+					// 源端查询使用sourceSchema和table
 					var stt, dtt string
-					if c1.SourceData != "" && c1.DestData != "" {
-						// 直接使用已经查询到的数据，避免重复执行SELECT请求
-						vlog = fmt.Sprintf("(%d) Reusing existing query results, skipping duplicate SELECT requests for %s.%s", logThreadSeq, c1.Schema, c1.Table)
-						global.Wlog.Debug(vlog)
-						stt = c1.SourceData
-						dtt = c1.DestData
-					} else {
-						// 源端查询使用sourceSchema和table
-						idxc := dbExec.IndexColumnStruct{
-							Schema:      sourceSchema,
-							Table:       table,
-							TableColumn: colData.SColumnInfo,
-							Drivce:      sp.sdrive,
-							Sqlwhere:    sourceSqlWhere, // 使用处理后的源端SQL条件
-						}
-						stt, _ = idxc.TableIndexColumn().GeneratingQueryCriteria(sdb, logThreadSeq)
-
-						// 目标端查询使用destSchema和table
-						idxcDest := dbExec.IndexColumnStruct{
-							Schema:      destSchema,
-							Table:       table,
-							TableColumn: colData.DColumnInfo,
-							Drivce:      sp.ddrive,
-							Sqlwhere:    destSqlWhere, // 使用处理后的目标端SQL条件
-						}
-						dtt, _ = idxcDest.TableIndexColumn().GeneratingQueryCriteria(ddb, logThreadSeq)
+					idxc := dbExec.IndexColumnStruct{
+						Schema:      sourceSchema,
+						Table:       table,
+						TableColumn: colData.SColumnInfo,
+						Drivce:      sp.sdrive,
+						Sqlwhere:    sourceSqlWhere, // 使用处理后的源端SQL条件
 					}
+					stt, _ = idxc.TableIndexColumn().GeneratingQueryCriteria(sdb, logThreadSeq)
+
+					// 目标端查询使用destSchema和table
+					idxcDest := dbExec.IndexColumnStruct{
+						Schema:      destSchema,
+						Table:       table,
+						TableColumn: colData.DColumnInfo,
+						Drivce:      sp.ddrive,
+						Sqlwhere:    destSqlWhere, // 使用处理后的目标端SQL条件
+					}
+					dtt, _ = idxcDest.TableIndexColumn().GeneratingQueryCriteria(ddb, logThreadSeq)
 
 					if aa.CheckMd5(stt) != aa.CheckMd5(dtt) {
 						vlog = fmt.Sprintf("(%d) Data checksum mismatch for %s.%s, need to find specific differences", logThreadSeq, c1.Schema, c1.Table)
 						global.Wlog.Debug(vlog)
+						waitForMemoryBudget(0.92)
 
 						// 重要优化：精确比较数据，只找出真正需要修复的记录
 						// 1. 将源端和目标端数据转换为切片
@@ -853,16 +969,9 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 							logThreadSeq, len(sourceData), len(cleanSourceData), len(destData), len(cleanDestData), c1.Schema, c1.Table)
 						global.Wlog.Debug(vlog)
 
-						// 添加调试信息：输出前几条数据用于分析重复问题
+						// 避免在大差异场景输出大文本日志，防止日志构造额外放大内存占用
 						if len(cleanSourceData) > 0 {
-							maxDebug := 5
-							if len(cleanSourceData) < maxDebug {
-								maxDebug = len(cleanSourceData)
-							}
-							global.Wlog.Debug("DEBUG_SOURCE_DATA_%d: First %d records:\n", logThreadSeq, maxDebug)
-							for i := 0; i < maxDebug; i++ {
-								global.Wlog.Debug("  [%d]: %s\n", i, cleanSourceData[i])
-							}
+							global.Wlog.Debug("DEBUG_SOURCE_DATA_%d: sourceRecords=%d (sample suppressed)", logThreadSeq, len(cleanSourceData))
 						}
 
 						// 检查去重是否真的有效
@@ -922,16 +1031,9 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 								logThreadSeq, expectedAddCount, len(cleanSourceData), len(cleanDestData), len(add))
 						}
 
-						// 如果添加数量异常，输出前几条add数据进行检查
 						if len(add) > expectedAddCount+10 {
-							maxDebug := 10
-							if len(add) < maxDebug {
-								maxDebug = len(add)
-							}
-							global.Wlog.Debug("DEBUG_ADD_DATA_%d: First %d records (showing because count is abnormal):\n", logThreadSeq, maxDebug)
-							for i := 0; i < maxDebug; i++ {
-								global.Wlog.Debug("  [%d]: %s\n", i, add[i])
-							}
+							global.Wlog.Debug("DEBUG_ADD_DATA_%d: addCount=%d expected=%d (sample suppressed)",
+								logThreadSeq, len(add), expectedAddCount)
 						}
 
 						// 6. 比较记录数量差异的日志记录
@@ -1123,24 +1225,18 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 
 													// 检查该主键值是否已经处理过（全局去重）
 													if primaryKey != "" {
-														deleteMutex.Lock()
-														_, exists := deletePrimaryKeys[primaryKey]
-														deleteMutex.Unlock()
+														exists := hasDeleteKey(primaryKey)
 
 														// 同时检查局部去重，避免同一批次内重复
 														_, localExists := processedPrimaryValues[primaryKey]
 
 														// 关键修复：检查该主键是否已经被INSERT过
-														insertMutex.Lock()
-														_, inserted := insertedPrimaryKeys[primaryKey]
-														insertMutex.Unlock()
+														inserted := hasInsertKey(primaryKey)
 
 														// 如果该主键已经被INSERT过，或者已经被DELETE过，或者在本批次内重复，则跳过
 														if !exists && !localExists && !inserted {
 															// 添加到全局去重map
-															deleteMutex.Lock()
-															deletePrimaryKeys[primaryKey] = struct{}{}
-															deleteMutex.Unlock()
+															markDeleteKeyIfAbsent(primaryKey)
 
 															// 添加到局部去重map
 															processedPrimaryValues[primaryKey] = struct{}{}
@@ -1270,16 +1366,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 
 													// 检查该主键值是否已经处理过
 													if primaryKey != "" {
-														deleteMutex.Lock()
-														_, exists := deletePrimaryKeys[primaryKey]
-														deleteMutex.Unlock()
-
-														if !exists {
-															// 添加到全局去重map
-															deleteMutex.Lock()
-															deletePrimaryKeys[primaryKey] = struct{}{}
-															deleteMutex.Unlock()
-
+														if markDeleteKeyIfAbsent(primaryKey) {
 															// 发送SQL语句
 															if sqlstr != "" {
 																cc <- sqlstr
@@ -1314,16 +1401,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 												}
 
 												// 使用修改后的SQL作为去重键
-												deleteMutex.Lock()
-												_, exists := deletePrimaryKeys[sqlstr]
-												deleteMutex.Unlock()
-
-												if !exists {
-													// 添加到全局去重map
-													deleteMutex.Lock()
-													deletePrimaryKeys[sqlstr] = struct{}{}
-													deleteMutex.Unlock()
-
+												if markDeleteKeyIfAbsent(sqlstr) {
 													// 发送SQL语句
 													if sqlstr != "" {
 														cc <- sqlstr
@@ -1385,20 +1463,14 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 
 											// 检查该主键值是否已经处理过
 											if primaryKey != "" {
-												deleteMutex.Lock()
-												_, exists := deletePrimaryKeys[primaryKey]
-												deleteMutex.Unlock()
+												exists := hasDeleteKey(primaryKey)
 
 												// 关键修复：检查该主键是否已经被INSERT过
-												insertMutex.Lock()
-												_, inserted := insertedPrimaryKeys[primaryKey]
-												insertMutex.Unlock()
+												inserted := hasInsertKey(primaryKey)
 
 												if !exists && !inserted {
 													// 添加到全局去重map
-													deleteMutex.Lock()
-													deletePrimaryKeys[primaryKey] = struct{}{}
-													deleteMutex.Unlock()
+													markDeleteKeyIfAbsent(primaryKey)
 
 													// 发送SQL语句
 													if sqlstr != "" {
@@ -1407,16 +1479,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 												}
 											} else {
 												// 对于无法提取主键值的情况，使用完整SQL作为去重键
-												deleteMutex.Lock()
-												_, exists := deletePrimaryKeys[sqlstr]
-												deleteMutex.Unlock()
-
-												if !exists {
-													// 添加到全局去重map
-													deleteMutex.Lock()
-													deletePrimaryKeys[sqlstr] = struct{}{}
-													deleteMutex.Unlock()
-
+												if markDeleteKeyIfAbsent(sqlstr) {
 													// 发送SQL语句
 													if sqlstr != "" {
 														cc <- sqlstr
@@ -1503,12 +1566,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 														// NULL行不参与去重(MySQL中NULL!=NULL)，仅对非NULL行进行去重
 														if !hasNullKey {
 															primaryKey := fmt.Sprintf("%s.%s.%s", c1.Schema, c1.Table, strings.Join(keyList, ","))
-															insertMutex.Lock()
-															_, alreadyInserted := insertedPrimaryKeys[primaryKey]
-															if !alreadyInserted {
-																insertedPrimaryKeys[primaryKey] = struct{}{}
-															}
-															insertMutex.Unlock()
+															alreadyInserted := !markInsertKeyIfAbsent(primaryKey)
 															if alreadyInserted {
 																isDuplicate = true
 															}
@@ -1568,8 +1626,6 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 		vlog        string
 		deleteCount int
 		insertCount int
-		deleteSqls  []string
-		insertSqls  []string
 	)
 
 	// 修复：清空全局writtenSqlMap，确保只针对当前表去重，避免跨表影响
@@ -1577,122 +1633,366 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 
 	vlog = fmt.Sprintf("(%d) Applying repair statements to target table %s.%s", logThreadSeq, sp.schema, sp.table)
 	global.Wlog.Info(vlog)
+	logStageMemory("fixsql-write-start", logThreadSeq, sp.schema, sp.table)
 
-	for {
-		v, ok := <-fixSQL
-		if !ok {
-			break
-		}
+	stageDir := os.TempDir()
+	if sp.datafixType == "file" && sp.datafixSql != "" {
+		stageDir = sp.datafixSql
+	}
+	deleteStageFile, err := os.CreateTemp(stageDir, fmt.Sprintf("%s-delete-stage-*.tmp", sp.table))
+	if err != nil {
+		sp.getErr(fmt.Sprintf("Failed to create delete stage file for %s.%s", sp.schema, sp.table), err)
+	}
+	insertStageFile, err := os.CreateTemp(stageDir, fmt.Sprintf("%s-insert-stage-*.tmp", sp.table))
+	if err != nil {
+		sp.getErr(fmt.Sprintf("Failed to create insert stage file for %s.%s", sp.schema, sp.table), err)
+	}
+	deleteStagePath := deleteStageFile.Name()
+	insertStagePath := insertStageFile.Name()
+	defer os.Remove(deleteStagePath)
+	defer os.Remove(insertStagePath)
+
+	deleteStageWriter := bufio.NewWriterSize(deleteStageFile, 1024*1024)
+	insertStageWriter := bufio.NewWriterSize(insertStageFile, 1024*1024)
+
+	for v := range fixSQL {
 		sp.pods.DIFFS = "yes"
 		sqlTrim := strings.TrimSpace(strings.ToUpper(v))
 		if strings.HasPrefix(sqlTrim, "DELETE") {
-			deleteSqls = append(deleteSqls, v)
+			if _, err := deleteStageWriter.WriteString(v + "\n"); err != nil {
+				sp.getErr(fmt.Sprintf("Failed writing delete stage file for %s.%s", sp.schema, sp.table), err)
+			}
 			deleteCount++
 		} else if strings.HasPrefix(sqlTrim, "INSERT") {
-			insertSqls = append(insertSqls, v)
+			if _, err := insertStageWriter.WriteString(v + "\n"); err != nil {
+				sp.getErr(fmt.Sprintf("Failed writing insert stage file for %s.%s", sp.schema, sp.table), err)
+			}
 			insertCount++
 		}
 	}
+	if err := deleteStageWriter.Flush(); err != nil {
+		sp.getErr(fmt.Sprintf("Failed flushing delete stage file for %s.%s", sp.schema, sp.table), err)
+	}
+	if err := insertStageWriter.Flush(); err != nil {
+		sp.getErr(fmt.Sprintf("Failed flushing insert stage file for %s.%s", sp.schema, sp.table), err)
+	}
+	deleteStageFile.Close()
+	insertStageFile.Close()
 
-	if len(deleteSqls) > 0 || len(insertSqls) > 0 {
+	if deleteCount > 0 || insertCount > 0 {
 		maxFileSizeBytes := int64(sp.fixTrxSize) * 1024 * 1024
-		maxStmtPerFile := sp.fixTrxNum
 		if maxFileSizeBytes <= 0 {
 			maxFileSizeBytes = 4 * 1024 * 1024
 		}
+		maxStmtPerFile := sp.fixTrxNum
+		if maxStmtPerFile <= 0 {
+			maxStmtPerFile = 1000
+		}
+		stageBatchStmt := maxStmtPerFile
+		stageBatchBytes := maxFileSizeBytes
+		// Keep streaming batches bounded, but allow a larger upper cap to reduce tiny-batch CPU overhead.
+		if stageBatchBytes > 32*1024*1024 {
+			stageBatchBytes = 32 * 1024 * 1024
+		}
 
 		isUniqueKey := strings.HasPrefix(sp.indexColumnType, "pri_") || strings.HasPrefix(sp.indexColumnType, "uni_")
-		optimizedDelete := optimizeSqlStatements(deleteSqls, sp.fixTrxNum, isUniqueKey, sp.deleteSqlSize, sp.insertSqlSize)
-		optimizedInsert := optimizeSqlStatements(insertSqls, sp.fixTrxNum, false, sp.deleteSqlSize, sp.insertSqlSize)
-		var combinedSqls []string
-		combinedSqls = append(combinedSqls, optimizedDelete...)
-		combinedSqls = append(combinedSqls, optimizedInsert...)
-
-		// fixFilePerTable=ON: 按表文件切分，遵循条数和大小双约束，先到先切分
-		if sp.fixFilePerTable == "ON" && sp.datafixType == "file" {
-			if fitSqlChunk(combinedSqls, maxStmtPerFile, maxFileSizeBytes) {
-				tableFileName := fmt.Sprintf("%s/%s.sql", sp.datafixSql, sp.table)
-				tableSfile, err := os.OpenFile(tableFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-				if err != nil {
-					sp.getErr(fmt.Sprintf("Failed to open fix file %s", tableFileName), err)
-				}
-				writeOptimizedSqlChunk(combinedSqls, sp.datafixType, tableSfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
-				tableSfile.Close()
+		var (
+			deleteWriter *sqlRollingWriter
+			insertWriter *sqlRollingWriter
+			sharedWriter *sqlRollingWriter
+		)
+		if sp.datafixType != "table" {
+			if sp.fixFilePerTable == "ON" && (sp.datafixType == "file" || sp.datafixType == "yes") {
+				deleteWriter = sp.newSQLRollingWriter("DELETE", maxStmtPerFile, maxFileSizeBytes, logThreadSeq)
+				insertWriter = sp.newSQLRollingWriter("INSERT", maxStmtPerFile, maxFileSizeBytes, logThreadSeq)
 			} else {
-				deleteChunks := splitSqlByConstraints(optimizedDelete, maxStmtPerFile, maxFileSizeBytes)
-				insertChunks := splitSqlByConstraints(optimizedInsert, maxStmtPerFile, maxFileSizeBytes)
-
-				for idx, chunk := range deleteChunks {
-					if len(chunk) == 0 {
-						continue
-					}
-					deleteFileName := fmt.Sprintf("%s/%s-DELETE-%d.sql", sp.datafixSql, sp.table, idx+1)
-					tableSfile, err := os.OpenFile(deleteFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-					if err != nil {
-						sp.getErr(fmt.Sprintf("Failed to open DELETE fix file %s", deleteFileName), err)
-					}
-					writeOptimizedSqlChunk(chunk, sp.datafixType, tableSfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
-					tableSfile.Close()
-				}
-
-				for idx, chunk := range insertChunks {
-					if len(chunk) == 0 {
-						continue
-					}
-					insertFileName := fmt.Sprintf("%s/%s-%d.sql", sp.datafixSql, sp.table, idx+1)
-					tableSfile, err := os.OpenFile(insertFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-					if err != nil {
-						sp.getErr(fmt.Sprintf("Failed to open INSERT fix file %s", insertFileName), err)
-					}
-					writeOptimizedSqlChunk(chunk, sp.datafixType, tableSfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
-					tableSfile.Close()
-				}
+				sharedWriter = sp.newSQLRollingWriter("ALL", maxStmtPerFile, maxFileSizeBytes, logThreadSeq)
 			}
-		} else {
-			// fixFilePerTable=OFF: 保持兼容，写入datafix.sql；超过阈值后滚动到datafix-N.sql
-			if sp.datafixType != "file" && sp.datafixType != "yes" {
-				processBatch(combinedSqls, sp.datafixType, sp.sfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum, isUniqueKey, sp.deleteSqlSize, sp.insertSqlSize)
-			} else {
-				chunks := splitSqlByConstraints(combinedSqls, maxStmtPerFile, maxFileSizeBytes)
-				baseFilePath := ""
-				if sp.sfile != nil {
-					baseFilePath = sp.sfile.Name()
-				}
-				for idx, chunk := range chunks {
-					if len(chunk) == 0 {
-						continue
-					}
-					if idx == 0 && sp.sfile != nil {
-						writeOptimizedSqlChunk(chunk, sp.datafixType, sp.sfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
-						continue
-					}
-					if baseFilePath == "" {
-						baseFilePath = fmt.Sprintf("%s/datafix.sql", sp.datafixSql)
-					}
-					ext := filepath.Ext(baseFilePath)
-					if ext == "" {
-						ext = ".sql"
-					}
-					baseName := strings.TrimSuffix(baseFilePath, ext)
-					rollFile := fmt.Sprintf("%s-%d%s", baseName, idx+1, ext)
-					tableSfile, err := os.OpenFile(rollFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-					if err != nil {
-						sp.getErr(fmt.Sprintf("Failed to open rollover fix file %s", rollFile), err)
-					}
-					writeOptimizedSqlChunk(chunk, sp.datafixType, tableSfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
-					tableSfile.Close()
-				}
+		}
+		if deleteWriter != nil {
+			defer deleteWriter.close()
+		}
+		if insertWriter != nil {
+			defer insertWriter.close()
+		}
+		if sharedWriter != nil {
+			defer sharedWriter.close()
+		}
+
+		processDeleteBatch := func(batch []string) error {
+			optimized := optimizeSqlStatements(batch, sp.fixTrxNum, isUniqueKey, sp.deleteSqlSize, sp.insertSqlSize)
+			if len(optimized) == 0 {
+				return nil
 			}
+			if sp.datafixType == "table" {
+				writeOptimizedSqlChunk(optimized, sp.datafixType, sp.sfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
+				return nil
+			}
+			if sharedWriter != nil {
+				return sharedWriter.write(optimized)
+			}
+			return deleteWriter.write(optimized)
+		}
+		processInsertBatch := func(batch []string) error {
+			optimized := optimizeSqlStatements(batch, sp.fixTrxNum, false, sp.deleteSqlSize, sp.insertSqlSize)
+			if len(optimized) == 0 {
+				return nil
+			}
+			if sp.datafixType == "table" {
+				writeOptimizedSqlChunk(optimized, sp.datafixType, sp.sfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
+				return nil
+			}
+			if sharedWriter != nil {
+				return sharedWriter.write(optimized)
+			}
+			return insertWriter.write(optimized)
+		}
+
+		if err := processSQLStageFile(deleteStagePath, stageBatchStmt, stageBatchBytes, processDeleteBatch); err != nil {
+			sp.getErr(fmt.Sprintf("Failed processing delete stage file for %s.%s", sp.schema, sp.table), err)
+		}
+		if err := processSQLStageFile(insertStagePath, stageBatchStmt, stageBatchBytes, processInsertBatch); err != nil {
+			sp.getErr(fmt.Sprintf("Failed processing insert stage file for %s.%s", sp.schema, sp.table), err)
 		}
 
 		vlog = fmt.Sprintf("(%d) Repair statements generated for %s.%s: DELETE=%d, INSERT=%d",
-			logThreadSeq, sp.schema, sp.table, len(deleteSqls), len(insertSqls))
+			logThreadSeq, sp.schema, sp.table, deleteCount, insertCount)
 		global.Wlog.Debug(vlog)
 		sp.pods.DIFFS = "yes"
 	}
 
 	// 无论是否有差异，都添加到结果中
+	logStageMemory("fixsql-write-end", logThreadSeq, sp.schema, sp.table)
 	measuredDataPods = append(measuredDataPods, *sp.pods)
+}
+
+type sqlRollingWriter struct {
+	datafixType string
+	ddrive      string
+	djdbc       string
+	logThread   int64
+	fixTrxNum   int
+
+	maxStmt  int
+	maxBytes int64
+
+	sharedFile *os.File
+	pathFunc   func(fileSeq int) (string, bool)
+
+	fileSeq    int
+	current    *os.File
+	currentCnt int
+	currentB   int64
+}
+
+func (w *sqlRollingWriter) ensureFile() error {
+	if w.current != nil {
+		return nil
+	}
+	w.fileSeq++
+	path, useShared := w.pathFunc(w.fileSeq)
+	if useShared && w.sharedFile != nil {
+		w.current = w.sharedFile
+		return nil
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return err
+	}
+	w.current = f
+	return nil
+}
+
+func (w *sqlRollingWriter) rotate() error {
+	if w.current != nil && w.current != w.sharedFile {
+		if err := w.current.Close(); err != nil {
+			return err
+		}
+	}
+	w.current = nil
+	w.currentCnt = 0
+	w.currentB = 0
+	return nil
+}
+
+func (w *sqlRollingWriter) close() error {
+	return w.rotate()
+}
+
+func (w *sqlRollingWriter) writableSQLCount(sqls []string) int {
+	if len(sqls) == 0 {
+		return 0
+	}
+	limit := len(sqls)
+	if w.maxStmt > 0 {
+		remainStmt := w.maxStmt - w.currentCnt
+		if remainStmt <= 0 {
+			return 0
+		}
+		if remainStmt < limit {
+			limit = remainStmt
+		}
+	}
+	if w.maxBytes > 0 {
+		remainBytes := w.maxBytes - w.currentB
+		if remainBytes <= 0 {
+			return 0
+		}
+		var (
+			sum int64
+			cnt int
+		)
+		for ; cnt < len(sqls) && cnt < limit; cnt++ {
+			sz := int64(len(sqls[cnt]) + 1)
+			if cnt > 0 && sum+sz > remainBytes {
+				break
+			}
+			sum += sz
+			if cnt == 0 && sz > remainBytes {
+				// 单条SQL超过文件阈值时，仍允许写入，避免卡死
+				cnt = 1
+				break
+			}
+		}
+		if cnt < limit {
+			limit = cnt
+		}
+	}
+	return limit
+}
+
+func (w *sqlRollingWriter) write(sqls []string) error {
+	for len(sqls) > 0 {
+		if err := w.ensureFile(); err != nil {
+			return err
+		}
+		n := w.writableSQLCount(sqls)
+		if n <= 0 {
+			if err := w.rotate(); err != nil {
+				return err
+			}
+			continue
+		}
+		part := sqls[:n]
+		writeOptimizedSqlChunk(part, w.datafixType, w.current, w.ddrive, w.djdbc, w.logThread, w.fixTrxNum)
+		w.currentCnt += len(part)
+		w.currentB += estimateSqlBytes(part)
+		sqls = sqls[n:]
+
+		if (w.maxStmt > 0 && w.currentCnt >= w.maxStmt) || (w.maxBytes > 0 && w.currentB >= w.maxBytes) {
+			if err := w.rotate(); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (sp *SchedulePlan) newSQLRollingWriter(sqlType string, maxStmtPerFile int, maxFileSizeBytes int64, logThreadSeq int64) *sqlRollingWriter {
+	baseFilePath := ""
+	if sp.sfile != nil {
+		baseFilePath = sp.sfile.Name()
+	}
+	if baseFilePath == "" {
+		baseFilePath = fmt.Sprintf("%s/datafix.sql", sp.datafixSql)
+	}
+	ext := filepath.Ext(baseFilePath)
+	if ext == "" {
+		ext = ".sql"
+	}
+	baseName := strings.TrimSuffix(baseFilePath, ext)
+	if sp.fixFilePerTable == "ON" && (sp.datafixType == "file" || sp.datafixType == "yes") {
+		pathFunc := func(fileSeq int) (string, bool) {
+			if sqlType == "DELETE" {
+				return fmt.Sprintf("%s/%s-DELETE-%d.sql", sp.datafixSql, sp.table, fileSeq), false
+			}
+			return fmt.Sprintf("%s/%s-%d.sql", sp.datafixSql, sp.table, fileSeq), false
+		}
+		return &sqlRollingWriter{
+			datafixType: sp.datafixType,
+			ddrive:      sp.ddrive,
+			djdbc:       sp.djdbc,
+			logThread:   logThreadSeq,
+			fixTrxNum:   sp.fixTrxNum,
+			maxStmt:     maxStmtPerFile,
+			maxBytes:    maxFileSizeBytes,
+			pathFunc:    pathFunc,
+		}
+	}
+
+	pathFunc := func(fileSeq int) (string, bool) {
+		if fileSeq == 1 {
+			if sp.sfile != nil {
+				return baseFilePath, true
+			}
+			return baseFilePath, false
+		}
+		return fmt.Sprintf("%s-%d%s", baseName, fileSeq, ext), false
+	}
+	return &sqlRollingWriter{
+		datafixType: sp.datafixType,
+		ddrive:      sp.ddrive,
+		djdbc:       sp.djdbc,
+		logThread:   logThreadSeq,
+		fixTrxNum:   sp.fixTrxNum,
+		maxStmt:     maxStmtPerFile,
+		maxBytes:    maxFileSizeBytes,
+		sharedFile:  sp.sfile,
+		pathFunc:    pathFunc,
+	}
+}
+
+func processSQLStageFile(stagePath string, maxStmt int, maxBytes int64, handler func([]string) error) error {
+	file, err := os.Open(stagePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	if maxStmt <= 0 {
+		maxStmt = 1000
+	}
+	if maxBytes <= 0 {
+		maxBytes = 4 * 1024 * 1024
+	}
+
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 1024*1024), 64*1024*1024)
+
+	var (
+		batch      []string
+		batchBytes int64
+	)
+	flush := func() error {
+		if len(batch) == 0 {
+			return nil
+		}
+		if err := handler(batch); err != nil {
+			return err
+		}
+		batch = nil
+		batchBytes = 0
+		return nil
+	}
+
+	for scanner.Scan() {
+		sqlLine := strings.TrimSpace(scanner.Text())
+		if sqlLine == "" {
+			continue
+		}
+		sqlBytes := int64(len(sqlLine) + 1)
+		if len(batch) > 0 && (len(batch) >= maxStmt || batchBytes+sqlBytes > maxBytes) {
+			if err := flush(); err != nil {
+				return err
+			}
+		}
+		batch = append(batch, sqlLine)
+		batchBytes += sqlBytes
+	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	return flush()
 }
 
 func estimateSqlBytes(sqls []string) int64 {
@@ -1789,7 +2089,7 @@ func writeOptimizedSqlChunk(sqls []string, datafixType string, sfile *os.File, d
 	if len(sqls) == 0 {
 		return
 	}
-	ApplyDataFixWithTrxNum(sqls, datafixType, sfile, ddrive, djdbc, logThreadSeq, fixTrxNum)
+	ApplyDataFixWithTrxNumOptimizedInput(sqls, datafixType, sfile, ddrive, djdbc, logThreadSeq, fixTrxNum)
 }
 
 // processBatch 批量处理SQL语句，根据类型排序后写入文件
@@ -1815,14 +2115,21 @@ func min(a, b int) int {
 处理有索引表的数据校验
 */
 func (sp SchedulePlan) doIndexDataCheck() {
+	queueDepth := sp.mqQueueDepth
+	if queueDepth > sp.concurrency*2 {
+		queueDepth = sp.concurrency * 2
+	}
+	if queueDepth < 1 {
+		queueDepth = 1
+	}
 	var (
-		queueDepth          = sp.mqQueueDepth
 		sqlWhere            = make(chanString, queueDepth)
 		diffQueryData       = make(chanDiffDataS, queueDepth)
 		fixSQL              = make(chanString, queueDepth)
 		tableColumn         = sp.tableAllCol[fmt.Sprintf("%s_gtchecksum_%s", sp.schema, sp.table)]
 		selectColumnStringM = make(map[string]map[string]string)
 	)
+
 	var idxc, idxcDest dbExec.IndexColumnStruct
 	rand.Seed(time.Now().UnixNano())
 	logThreadSeq := rand.Int63()
@@ -1944,8 +2251,8 @@ func (sp SchedulePlan) doIndexDataCheck() {
 	}
 
 	// 创建独立的channel用于源端和目标端查询SQL
-	sourceSelectSql := make(chanMap, sp.mqQueueDepth)
-	destSelectSql := make(chanMap, sp.mqQueueDepth)
+	sourceSelectSql := make(chanMap, queueDepth)
+	destSelectSql := make(chanMap, queueDepth)
 
 	var scheduleCount = make(chan int64, 1)
 	go sp.indexColumnDispos(sqlWhere, selectColumnStringM)
@@ -2018,6 +2325,7 @@ func (sp *SchedulePlan) queryTableDataSeparate(sourceSelectSql chanMap, destSele
 	// 重新初始化进度条为100，用于显示百分比进度
 	sp.bar = &Bar{}
 	sp.bar.NewOption(0, 100, "Processing")
+	logStageMemory("chunk-query-start", logThreadSeq, sp.schema, sp.table)
 
 	for {
 		// 检查是否所有工作都已完成
@@ -2026,6 +2334,7 @@ func (sp *SchedulePlan) queryTableDataSeparate(sourceSelectSql chanMap, destSele
 			if len(curry) == 0 {
 				// 完成进度条显示
 				sp.bar.Finish()
+				logStageMemory("chunk-query-end", logThreadSeq, sp.schema, sp.table)
 				close(diffQueryData)
 				return
 			}
@@ -2105,6 +2414,7 @@ func (sp *SchedulePlan) queryTableDataSeparate(sourceSelectSql chanMap, destSele
 			// 强制刷新缓冲区确保实时显示
 			fmt.Fprint(os.Stdout, "")
 
+			waitForMemoryBudget(0.90)
 			curry <- struct{}{}
 			go func(currentSeq int64, sourceSql, destSql map[string]string) {
 				defer func() {
@@ -2163,8 +2473,6 @@ func (sp *SchedulePlan) queryTableDataSeparate(sourceSelectSql chanMap, destSele
 						Table:           sp.table,
 						SqlWhere:        map[string]string{sp.sdrive: sourceSql[sp.sdrive], sp.ddrive: destSql[sp.ddrive]},
 						TableColumnInfo: cc1,
-						SourceData:      stt, // 传递已经查询到的源端数据，避免重复查询
-						DestData:        dtt, // 传递已经查询到的目标端数据，避免重复查询
 					}
 					diffQueryData <- differencesData
 				}
@@ -2187,4 +2495,95 @@ func abs(x int64) int64 {
 		return -x
 	}
 	return x
+}
+
+func logStageMemory(stage string, logThreadSeq int64, schema string, table string) {
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	updateTableMemoryPeak(fmt.Sprintf("%s.%s", schema, table), tableMemoryPeak{
+		Stage:       stage,
+		AllocMB:     m.Alloc / 1024 / 1024,
+		HeapInuseMB: m.HeapInuse / 1024 / 1024,
+		HeapObjects: m.HeapObjects,
+		NumGC:       m.NumGC,
+	})
+	global.Wlog.Info(fmt.Sprintf("(%d) MEM_STAGE=%s table=%s.%s Alloc=%dMB HeapInuse=%dMB HeapObjects=%d NumGC=%d",
+		logThreadSeq,
+		stage,
+		schema,
+		table,
+		m.Alloc/1024/1024,
+		m.HeapInuse/1024/1024,
+		m.HeapObjects,
+		m.NumGC,
+	))
+}
+
+func waitForMemoryBudget(highWatermark float64) {
+	globalConfig := inputArg.GetGlobalConfig()
+	if globalConfig == nil {
+		return
+	}
+	limitMB := globalConfig.SecondaryL.RulesV.MemoryLimit
+	if limitMB <= 0 {
+		return
+	}
+	if highWatermark <= 0 || highWatermark >= 1 {
+		highWatermark = 0.90
+	}
+	if highWatermark < 0.70 {
+		highWatermark = 0.70
+	}
+	if highWatermark > 0.98 {
+		highWatermark = 0.98
+	}
+	threshold := int(float64(limitMB) * highWatermark)
+	hardThreshold := int(float64(limitMB) * minFloat64(0.98, highWatermark+0.06))
+	start := time.Now()
+	sleepStep := 20 * time.Millisecond
+	for {
+		var m runtime.MemStats
+		runtime.ReadMemStats(&m)
+		currentMB := int(m.Alloc / 1024 / 1024)
+		heapInuseMB := int(m.HeapInuse / 1024 / 1024)
+		if heapInuseMB > currentMB {
+			currentMB = heapInuseMB
+		}
+		if currentMB < threshold {
+			return
+		}
+
+		// Force GC only when memory is near hard limit and only at a throttled cadence.
+		if currentMB >= hardThreshold {
+			tryForceGC(1500 * time.Millisecond)
+		}
+
+		// Avoid long producer stalls; the function is called frequently at hot points.
+		if time.Since(start) > 2*time.Second {
+			return
+		}
+		time.Sleep(sleepStep)
+		if sleepStep < 120*time.Millisecond {
+			sleepStep += 20 * time.Millisecond
+		}
+	}
+}
+
+func tryForceGC(minInterval time.Duration) {
+	forcedGCMutex.Lock()
+	now := time.Now()
+	if !lastForcedGCAt.IsZero() && now.Sub(lastForcedGCAt) < minInterval {
+		forcedGCMutex.Unlock()
+		return
+	}
+	lastForcedGCAt = now
+	forcedGCMutex.Unlock()
+	runtime.GC()
+}
+
+func minFloat64(a float64, b float64) float64 {
+	if a < b {
+		return a
+	}
+	return b
 }

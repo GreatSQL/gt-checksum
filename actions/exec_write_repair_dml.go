@@ -297,6 +297,16 @@ func ApplyDataFix(fixSql []string, datafixType string, sfile *os.File, ddrive, j
 }
 
 func ApplyDataFixWithTrxNum(fixSql []string, datafixType string, sfile *os.File, ddrive, jdbc string, logThreadSeq int64, fixTrxNum int) error {
+	return applyDataFixWithTrxNumInternal(fixSql, datafixType, sfile, ddrive, jdbc, logThreadSeq, fixTrxNum, false)
+}
+
+// ApplyDataFixWithTrxNumOptimizedInput writes SQL that has already been optimized upstream.
+// It skips the extra INSERT merge pass to avoid duplicate CPU cost on large fixsql batches.
+func ApplyDataFixWithTrxNumOptimizedInput(fixSql []string, datafixType string, sfile *os.File, ddrive, jdbc string, logThreadSeq int64, fixTrxNum int) error {
+	return applyDataFixWithTrxNumInternal(fixSql, datafixType, sfile, ddrive, jdbc, logThreadSeq, fixTrxNum, true)
+}
+
+func applyDataFixWithTrxNumInternal(fixSql []string, datafixType string, sfile *os.File, ddrive, jdbc string, logThreadSeq int64, fixTrxNum int, skipInputOptimize bool) error {
 	var (
 		err       error
 		repairdml = repairSqlStruct{
@@ -306,8 +316,9 @@ func ApplyDataFixWithTrxNum(fixSql []string, datafixType string, sfile *os.File,
 		}
 	)
 
-	// 优化INSERT语句：合并相同表的多条INSERT为单条VALUES多组数据格式
-	if len(fixSql) > 1 {
+	// Optimize input SQL only when caller passes raw statements.
+	// Streamed datafix path has already optimized SQL in batches.
+	if !skipInputOptimize && len(fixSql) > 1 {
 		var deleteSqls []string
 		var insertSqls []string
 
