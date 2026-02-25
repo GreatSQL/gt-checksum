@@ -2,11 +2,11 @@ package main
 
 import (
 	"fmt"
+	"gt-checksum/MySQL"
 	"gt-checksum/actions"
 	"gt-checksum/dbExec"
 	"gt-checksum/global"
 	"gt-checksum/inputArg"
-	"gt-checksum/MySQL"
 	"gt-checksum/utils"
 	"os"
 	"strings"
@@ -57,13 +57,14 @@ func main() {
 
 	//获取配置文件
 	m := inputArg.ConfigInit(0)
-	
+
 	// 初始化性能指标变量
 	initStartTime := time.Now()
 	var metadataCollectionTime, connSetupTime, checksumTime, extraOpsTime, totalElapsedTime, miscellaneousTime time.Duration
 
 	//启动内存监控
 	utils.MemoryMonitor(fmt.Sprintf("%dMB", m.SecondaryL.RulesV.MemoryLimit), m)
+	actions.ResetMemoryPeakStats()
 
 	if !actions.SchemaTableInit(m).GlobalAccessPriCheck(1, 2) {
 		fmt.Println(fmt.Sprintf("gt-checksum: Missing required global privileges (SESSION_VARIABLES_ADMIN and REPLICATION). Check %s for details or set logLevel=debug", m.SecondaryL.LogV.LogFile))
@@ -97,7 +98,6 @@ func main() {
 		}
 	}
 
-
 	switch m.SecondaryL.RulesV.CheckObject {
 	case "struct":
 		// 当checkObject=struct时，执行所有结构相关的检查（包括表结构、索引、分区和外键）
@@ -114,7 +114,7 @@ func main() {
 	// 注意：proc和func选项已在参数处理阶段被强制改为data，所以这里不再需要单独的case
 	case "data":
 		initStartTime = time.Now()
-		
+
 		//校验表结构
 		tableListColCheck, _, err = schemaTableInstance.TableColumnNameCheck(tableList, 9, 10)
 		if err != nil {
@@ -148,7 +148,7 @@ func main() {
 		}
 
 		metadataCollectionTime = time.Since(initStartTime)
-		
+
 		//根据要校验的表，获取该表的全部列信息
 		fmt.Println("gt-checksum: Collecting table column information")
 		tableAllCol := schemaTableInstance.SchemaTableAllCol(tableList, 21, 22)
@@ -171,17 +171,17 @@ func main() {
 
 		// 记录额外操作时间
 		extraOpsStart := time.Now()
-		
+
 		//关闭连接池连接
 		sdc.Close(27)
 		ddc.Close(28)
-		
+
 		extraOpsTime = time.Since(extraOpsStart)
-		
+
 		// 计算杂项时间（主要是初始化时间）
 		totalElapsedTime = time.Since(beginTime)
 		miscellaneousTime = totalElapsedTime - (initStartTime.Sub(beginTime)) - metadataCollectionTime - connSetupTime - checksumTime - extraOpsTime
-		
+
 	default:
 		fmt.Println("gt-checksum: Invalid checkObject option value. Check log file or set logLevel=debug for details")
 		os.Exit(1)
@@ -191,7 +191,8 @@ func main() {
 	fmt.Println("")
 	fmt.Println("** gt-checksum Overview of results **")
 	actions.CheckResultOut(m)
-	
+	actions.LogMemoryPeakSummary()
+
 	// 输出性能指标
 	fmt.Println()
 	fmt.Println("Performance Metrics:")

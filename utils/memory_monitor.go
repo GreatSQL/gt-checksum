@@ -6,6 +6,7 @@ import (
 	"gt-checksum/inputArg"
 	"os"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,20 +30,27 @@ func MemoryMonitor(memoryLimit string, config *inputArg.ConfigParameter) {
 	// 用于跟踪参数调整次数
 	adjustmentCount := 0
 
-	// 定义GC触发阈值为内存限制的80%
-	gcThresholdMB := int(float64(limitMB) * 0.8)
+	// 定义GC触发阈值为内存限制的92%
+	gcThresholdMB := int(float64(limitMB) * 0.92)
+	// 超过该阈值进入应急释放流程（120%）
+	emergencyThresholdMB := int(float64(limitMB) * 1.2)
+	// 超过该阈值且应急多次失败时才退出（避免直接退出）
+	fatalThresholdMB := int(float64(limitMB) * 1.35)
 
-	// 定义内存下降阈值，当内存使用量下降到限制的90%以下时才允许再次调整
-	memoryDecreaseThresholdMB := int(float64(limitMB) * 0.9)
+	// 定义内存下降阈值，当内存使用量下降到限制的88%以下时才允许再次调整
+	memoryDecreaseThresholdMB := int(float64(limitMB) * 0.88)
 
 	// 标记是否刚刚进行过参数调整
 	justAdjusted := false
 
 	// 记录上次输出GC提示的时间，用于控制输出频率
 	lastGCTime := time.Now()
+	lastForcedGC := time.Now().Add(-10 * time.Second)
+	lastEmergencyAt := time.Now().Add(-10 * time.Second)
+	emergencyFailureCount := 0
 
 	go func() {
-		ticker := time.NewTicker(50 * time.Millisecond)
+		ticker := time.NewTicker(250 * time.Millisecond)
 		defer ticker.Stop()
 
 		for range ticker.C {
@@ -50,7 +58,10 @@ func MemoryMonitor(memoryLimit string, config *inputArg.ConfigParameter) {
 
 			// 当内存使用接近限制时触发垃圾回收
 			if currentMB >= gcThresholdMB && currentMB < limitMB {
-				runtime.GC()
+				if time.Since(lastForcedGC) >= 2*time.Second {
+					runtime.GC()
+					lastForcedGC = time.Now()
+				}
 
 				// 控制GC提示信息输出频率，最多每2秒输出一次
 				if time.Since(lastGCTime) >= 2*time.Second {
@@ -63,8 +74,6 @@ func MemoryMonitor(memoryLimit string, config *inputArg.ConfigParameter) {
 					lastGCTime = time.Now()
 				}
 
-				// 等待GC完成
-				time.Sleep(100 * time.Millisecond)
 				// 再次检查内存使用
 				currentMB = getCurrentMemoryUsage()
 			}
@@ -85,10 +94,38 @@ func MemoryMonitor(memoryLimit string, config *inputArg.ConfigParameter) {
 				cleanupTmpFileAndLog(currentMB, limitMB, config)
 
 				// 检查参数是否已经是最小值
-				if config.SecondaryL.RulesV.ParallelThds <= 1 && config.SecondaryL.RulesV.QueueSize <= 1 && config.SecondaryL.RulesV.ChanRowCount <= 100 {
-					// 所有参数已降至最小值，仍然内存超限，退出程序
-					fmt.Printf("\nFatal error: Current memory usage %dMB has reached the limit (%dMB). Parameters already at minimal values. Exiting...\n", currentMB, limitMB)
-					os.Exit(1)
+				minimalParams := config.SecondaryL.RulesV.ParallelThds <= 1 &&
+					config.SecondaryL.RulesV.QueueSize <= 1 &&
+					config.SecondaryL.RulesV.ChanRowCount <= 100
+				if minimalParams {
+					// 当达到120%时先尝试应急释放，而不是直接退出
+					if currentMB >= emergencyThresholdMB {
+						if time.Since(lastEmergencyAt) >= 2*time.Second {
+							lastEmergencyAt = time.Now()
+							currentMB = emergencyMemoryRelief(currentMB, limitMB)
+							if currentMB < limitMB {
+								emergencyFailureCount = 0
+								justAdjusted = true
+								continue
+							}
+							emergencyFailureCount++
+						}
+						if currentMB >= fatalThresholdMB && emergencyFailureCount >= 3 {
+							fmt.Printf("\nFatal error: Current memory usage %dMB remains above emergency threshold after relief attempts (limit=%dMB, threshold=%dMB). Exiting...\n",
+								currentMB, limitMB, emergencyThresholdMB)
+							os.Exit(1)
+						}
+						// 继续运行，等待下一轮监控和应急释放
+						continue
+					}
+
+					// 低于120%时仅尝试释放并继续，不做强退
+					currentMB = emergencyMemoryRelief(currentMB, limitMB)
+					if currentMB < limitMB {
+						emergencyFailureCount = 0
+						justAdjusted = true
+					}
+					continue
 				}
 
 				// 增加调整计数
@@ -145,6 +182,7 @@ func MemoryMonitor(memoryLimit string, config *inputArg.ConfigParameter) {
 
 				// 设置刚刚调整过的标志
 				justAdjusted = true
+				emergencyFailureCount = 0
 			}
 		}
 	}()
@@ -201,6 +239,20 @@ func getCurrentMemoryUsage() int {
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 	return int(m.Alloc / 1024 / 1024)
+}
+
+func emergencyMemoryRelief(currentMB, limitMB int) int {
+	// Run a short relief sequence to reclaim heap/OS pages before giving up.
+	for i := 0; i < 2; i++ {
+		runtime.GC()
+		debug.FreeOSMemory()
+		time.Sleep(150 * time.Millisecond)
+		currentMB = getCurrentMemoryUsage()
+		if currentMB < limitMB {
+			return currentMB
+		}
+	}
+	return currentMB
 }
 
 // cleanupTmpFileAndLog 清理临时文件并记录内存溢出日志

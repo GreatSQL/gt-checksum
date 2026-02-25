@@ -10,3 +10,5 @@ docs
 fixsql*
 .vscode
 .trae
+diffs.tgz
+.gitignore
