@@ -33,13 +33,24 @@ type FileOperate struct {
 */
 func (f FileOperate) ConcurrencyWriteFile(writeString []string) ([]string, error) {
 	var (
-		c        string
 		md5Slice []string
 		vlog     string
 	)
 	bufWriter := bufio.NewWriterSize(f.File, f.BufSize)
 	mutex.Lock()
 	defer mutex.Unlock()
+
+	writeChecked := func(s string) error {
+		n, err := bufWriter.WriteString(s)
+		if err != nil {
+			return err
+		}
+		if n != len(s) {
+			return io.ErrShortWrite
+		}
+		return nil
+	}
+
 	needMD5 := f.SqlType != "sql"
 	if needMD5 {
 		md5Slice = make([]string, 0, len(writeString))
@@ -49,20 +60,42 @@ func (f FileOperate) ConcurrencyWriteFile(writeString []string) ([]string, error
 			sum := md5.Sum([]byte(i))
 			sumS := hex.EncodeToString(sum[:])
 			md5Slice = append(md5Slice, sumS)
-			c = fmt.Sprintf("%s %s %s\n", sumS, f.SqlType, i)
+			if err := writeChecked(sumS); err != nil {
+				vlog = fmt.Sprintf("[write_file] Failed to write md5 to file %s, error: %v", f.fileName, err)
+				global.Wlog.Error(vlog)
+				return nil, err
+			}
+			if err := writeChecked(" "); err != nil {
+				vlog = fmt.Sprintf("[write_file] Failed to write separator to file %s, error: %v", f.fileName, err)
+				global.Wlog.Error(vlog)
+				return nil, err
+			}
+			if err := writeChecked(f.SqlType); err != nil {
+				vlog = fmt.Sprintf("[write_file] Failed to write sql type to file %s, error: %v", f.fileName, err)
+				global.Wlog.Error(vlog)
+				return nil, err
+			}
+			if err := writeChecked(" "); err != nil {
+				vlog = fmt.Sprintf("[write_file] Failed to write separator to file %s, error: %v", f.fileName, err)
+				global.Wlog.Error(vlog)
+				return nil, err
+			}
+			if err := writeChecked(i); err != nil {
+				vlog = fmt.Sprintf("[write_file] Failed to write sql body to file %s, error: %v", f.fileName, err)
+				global.Wlog.Error(vlog)
+				return nil, err
+			}
 		} else {
-			c = fmt.Sprintf("%s\n", i)
+			if err := writeChecked(i); err != nil {
+				vlog = fmt.Sprintf("[write_file] Failed to write sql body to file %s, error: %v", f.fileName, err)
+				global.Wlog.Error(vlog)
+				return nil, err
+			}
 		}
-		wc, err := bufWriter.WriteString(c)
-		if err != nil {
-			vlog = fmt.Sprintf("[write_file] Failed to write to file %s, error: %v", f.fileName, err)
+		if err := bufWriter.WriteByte('\n'); err != nil {
+			vlog = fmt.Sprintf("[write_file] Failed to write newline to file %s, error: %v", f.fileName, err)
 			global.Wlog.Error(vlog)
 			return nil, err
-		}
-		if wc != len(c) {
-			vlog = fmt.Sprintf("[write_file] Byte count mismatch in file %s, expected: %v, actual: %v", f.fileName, len(c), wc)
-			global.Wlog.Error(vlog)
-			return nil, io.ErrShortWrite
 		}
 	}
 	if err := bufWriter.Flush(); err != nil {
