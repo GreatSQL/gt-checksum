@@ -2,7 +2,9 @@ package actions
 
 import (
 	"bufio"
+	"crypto/md5"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"gt-checksum/dataDispos"
 	"gt-checksum/dbExec"
@@ -2757,47 +2759,24 @@ func (sp *SchedulePlan) queryTableDataSeparate(sourceSelectSql chanMap, destSele
 
 				// 源端查询
 				sdb := sp.sdbPool.Get(logThreadSeq)
-				//sourceQueryStart := time.Now().UnixMilli()
-				//global.Wlog.Debug("DEBUG_SOURCE_START_%d: seq=%d, getting source query...\n", logThreadSeq, currentSeq)
-				stt, err := (&dbExec.IndexColumnStruct{
-					Schema:   sp.sourceSchema,
-					Table:    sp.table,
-					Drivce:   sp.sdrive,
-					Sqlwhere: sourceSql[sp.sdrive],
-					ColData:  cc1.SColumnInfo,
-				}).TableIndexColumn().GeneratingQueryCriteria(sdb, logThreadSeq)
-				//sourceQueryEnd := time.Now().UnixMilli()
+				sourceChecksum, err := queryRowsChecksumBySQL(sdb, sourceSql[sp.sdrive], sp.sdrive, logThreadSeq)
 				sp.sdbPool.Put(sdb, logThreadSeq)
 				if err != nil {
 					global.Wlog.Info(fmt.Sprintf("QUERY_ERROR: source query failed for seq=%d, sql=%s, err=%v", currentSeq, sourceSql[sp.sdrive], err))
 					return
 				}
 
-				//sourceDuration := float64(sourceQueryEnd-sourceQueryStart) / 1000
-				//global.Wlog.Debug("DEBUG_SOURCE_QUERY_%d: seq=%d, duration=%.2fs, total_time_so_far=%.2fs\n", logThreadSeq, currentSeq, sourceDuration, float64(sourceQueryEnd-startTime)/1000)
-
 				// 目标端查询
 				ddb := sp.ddbPool.Get(logThreadSeq)
-				//destQueryStart := time.Now().UnixMilli()
-				dtt, err := (&dbExec.IndexColumnStruct{
-					Schema:   sp.destSchema,
-					Table:    sp.table,
-					Drivce:   sp.ddrive,
-					Sqlwhere: destSql[sp.ddrive],
-					ColData:  cc1.DColumnInfo,
-				}).TableIndexColumn().GeneratingQueryCriteria(ddb, logThreadSeq)
-				//destQueryEnd := time.Now().UnixMilli()
+				destChecksum, err := queryRowsChecksumBySQL(ddb, destSql[sp.ddrive], sp.ddrive, logThreadSeq)
 				sp.ddbPool.Put(ddb, logThreadSeq)
 				if err != nil {
 					global.Wlog.Info(fmt.Sprintf("QUERY_ERROR: dest query failed for seq=%d, sql=%s, err=%v", currentSeq, destSql[sp.ddrive], err))
 					return
 				}
 
-				//global.Wlog.Debug("DEBUG_DEST_QUERY_%d: seq=%d, duration=%.2fs\n", logThreadSeq, currentSeq, float64(destQueryEnd-destQueryStart)/1000)
-
 				// 比较结果
-				aa := &CheckSumTypeStruct{}
-				if aa.CheckMd5(stt) != aa.CheckMd5(dtt) {
+				if sourceChecksum != destChecksum {
 					differencesData := DifferencesDataStruct{
 						Schema:          sp.schema,
 						Table:           sp.table,
@@ -2847,6 +2826,111 @@ func logStageMemory(stage string, logThreadSeq int64, schema string, table strin
 		m.HeapObjects,
 		m.NumGC,
 	))
+}
+
+func dataDisposDBTypeByDrive(drive string) string {
+	if strings.EqualFold(drive, "godror") || strings.EqualFold(drive, "oracle") {
+		return "Oracle"
+	}
+	return "MySQL"
+}
+
+func normalizedDrive(drive string) string {
+	if strings.EqualFold(drive, "godror") || strings.EqualFold(drive, "oracle") {
+		return "godror"
+	}
+	return "mysql"
+}
+
+func queryRowsDataBySQL(db *sql.DB, query string, drive string, logThreadSeq int64) ([]string, error) {
+	dispos := dataDispos.DBdataDispos{
+		DBType:       dataDisposDBTypeByDrive(drive),
+		LogThreadSeq: logThreadSeq,
+		Event:        "Q_Table_Data",
+		DB:           db,
+	}
+	rows, err := dispos.DBSQLforExec(query)
+	if err != nil {
+		return nil, err
+	}
+	dispos.SqlRows = rows
+	data, err := dispos.DataRowsDispos(make([]string, 0, 1024))
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+func queryRowsChecksumBySQL(db *sql.DB, query string, drive string, logThreadSeq int64) (string, error) {
+	dispos := dataDispos.DBdataDispos{
+		DBType:       dataDisposDBTypeByDrive(drive),
+		LogThreadSeq: logThreadSeq,
+		Event:        "Q_Table_Data",
+		DB:           db,
+	}
+	rows, err := dispos.DBSQLforExec(query)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+
+	columns, err := rows.Columns()
+	if err != nil {
+		return "", err
+	}
+
+	valuePtrs := make([]interface{}, len(columns))
+	values := make([]interface{}, len(columns))
+	rowSep := "/*go actions rowData*/"
+	colSep := "/*go actions columnData*/"
+	driver := normalizedDrive(drive)
+	hasher := md5.New()
+	firstRow := true
+
+	for rows.Next() {
+		for i := 0; i < len(columns); i++ {
+			valuePtrs[i] = &values[i]
+		}
+		if err := rows.Scan(valuePtrs...); err != nil {
+			return "", err
+		}
+		if !firstRow {
+			_, _ = io.WriteString(hasher, rowSep)
+		} else {
+			firstRow = false
+		}
+
+		for i := 0; i < len(columns); i++ {
+			if i > 0 {
+				_, _ = io.WriteString(hasher, colSep)
+			}
+			val := values[i]
+			var s string
+			if b, ok := val.([]byte); ok {
+				s = string(b)
+			} else if val == nil {
+				s = "<nil>"
+			} else {
+				s = fmt.Sprintf("%v", val)
+			}
+			if val == nil {
+				s = "<nil>"
+			}
+			if driver == "godror" && s == "" {
+				s = "<nil>"
+			}
+			if driver == "mysql" && s == "" {
+				s = "<entry>"
+			}
+			_, _ = io.WriteString(hasher, s)
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
 func waitForMemoryBudget(highWatermark float64) {
