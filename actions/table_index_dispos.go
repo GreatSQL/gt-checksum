@@ -10,6 +10,7 @@ import (
 	"gt-checksum/inputArg"
 	"gt-checksum/utils"
 	"hash/fnv"
+	"io"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -134,7 +135,10 @@ func hashDedupeKey(raw string) uint64 {
 	return h.Sum64()
 }
 
-func markDeleteKeyIfAbsent(raw string) bool {
+func markDeleteKeyIfAbsent(raw string, enabled bool) bool {
+	if !enabled {
+		return true
+	}
 	key := hashDedupeKey(raw)
 	deleteMutex.Lock()
 	defer deleteMutex.Unlock()
@@ -145,7 +149,10 @@ func markDeleteKeyIfAbsent(raw string) bool {
 	return true
 }
 
-func hasDeleteKey(raw string) bool {
+func hasDeleteKey(raw string, enabled bool) bool {
+	if !enabled {
+		return false
+	}
 	key := hashDedupeKey(raw)
 	deleteMutex.Lock()
 	_, exists := deletePrimaryKeys[key]
@@ -153,7 +160,10 @@ func hasDeleteKey(raw string) bool {
 	return exists
 }
 
-func markInsertKeyIfAbsent(raw string) bool {
+func markInsertKeyIfAbsent(raw string, enabled bool) bool {
+	if !enabled {
+		return true
+	}
 	key := hashDedupeKey(raw)
 	insertMutex.Lock()
 	defer insertMutex.Unlock()
@@ -164,7 +174,10 @@ func markInsertKeyIfAbsent(raw string) bool {
 	return true
 }
 
-func hasInsertKey(raw string) bool {
+func hasInsertKey(raw string, enabled bool) bool {
+	if !enabled {
+		return false
+	}
 	key := hashDedupeKey(raw)
 	insertMutex.Lock()
 	_, exists := insertedPrimaryKeys[key]
@@ -1057,6 +1070,10 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 		curry            = make(chanStruct, sp.concurrency)
 		totalInsertCount int64 // 全局INSERT语句计数器
 	)
+	isUniqueIndex := strings.HasPrefix(sp.indexColumnType, "pri_") || strings.HasPrefix(sp.indexColumnType, "uni_")
+	// For unique/primary indexed compare flow, chunk ranges are non-overlapping in practice.
+	// Keep global PK dedupe only for non-unique flows to reduce large hash-map residency.
+	useGlobalKeyDedupe := !isUniqueIndex
 
 	// 在处理前清空所有全局去重映射，确保每次运行都有干净的状态
 	deleteMutex.Lock()
@@ -1454,18 +1471,18 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 
 													// 检查该主键值是否已经处理过（全局去重）
 													if primaryKey != "" {
-														exists := hasDeleteKey(primaryKey)
+														exists := hasDeleteKey(primaryKey, useGlobalKeyDedupe)
 
 														// 同时检查局部去重，避免同一批次内重复
 														_, localExists := processedPrimaryValues[primaryKey]
 
 														// 关键修复：检查该主键是否已经被INSERT过
-														inserted := hasInsertKey(primaryKey)
+														inserted := hasInsertKey(primaryKey, useGlobalKeyDedupe)
 
 														// 如果该主键已经被INSERT过，或者已经被DELETE过，或者在本批次内重复，则跳过
 														if !exists && !localExists && !inserted {
 															// 添加到全局去重map
-															markDeleteKeyIfAbsent(primaryKey)
+															markDeleteKeyIfAbsent(primaryKey, useGlobalKeyDedupe)
 
 															// 添加到局部去重map
 															processedPrimaryValues[primaryKey] = struct{}{}
@@ -1595,7 +1612,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 
 													// 检查该主键值是否已经处理过
 													if primaryKey != "" {
-														if markDeleteKeyIfAbsent(primaryKey) {
+														if markDeleteKeyIfAbsent(primaryKey, useGlobalKeyDedupe) {
 															// 发送SQL语句
 															if sqlstr != "" {
 																cc <- sqlstr
@@ -1630,7 +1647,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 												}
 
 												// 使用修改后的SQL作为去重键
-												if markDeleteKeyIfAbsent(sqlstr) {
+												if markDeleteKeyIfAbsent(sqlstr, useGlobalKeyDedupe) {
 													// 发送SQL语句
 													if sqlstr != "" {
 														cc <- sqlstr
@@ -1692,14 +1709,14 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 
 											// 检查该主键值是否已经处理过
 											if primaryKey != "" {
-												exists := hasDeleteKey(primaryKey)
+												exists := hasDeleteKey(primaryKey, useGlobalKeyDedupe)
 
 												// 关键修复：检查该主键是否已经被INSERT过
-												inserted := hasInsertKey(primaryKey)
+												inserted := hasInsertKey(primaryKey, useGlobalKeyDedupe)
 
 												if !exists && !inserted {
 													// 添加到全局去重map
-													markDeleteKeyIfAbsent(primaryKey)
+													markDeleteKeyIfAbsent(primaryKey, useGlobalKeyDedupe)
 
 													// 发送SQL语句
 													if sqlstr != "" {
@@ -1708,7 +1725,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 												}
 											} else {
 												// 对于无法提取主键值的情况，使用完整SQL作为去重键
-												if markDeleteKeyIfAbsent(sqlstr) {
+												if markDeleteKeyIfAbsent(sqlstr, useGlobalKeyDedupe) {
 													// 发送SQL语句
 													if sqlstr != "" {
 														cc <- sqlstr
@@ -1795,7 +1812,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 														// NULL行不参与去重(MySQL中NULL!=NULL)，仅对非NULL行进行去重
 														if !hasNullKey {
 															primaryKey := fmt.Sprintf("%s.%s.%s", c1.Schema, c1.Table, strings.Join(keyList, ","))
-															alreadyInserted := !markInsertKeyIfAbsent(primaryKey)
+															alreadyInserted := !markInsertKeyIfAbsent(primaryKey, useGlobalKeyDedupe)
 															if alreadyInserted {
 																isDuplicate = true
 															}
@@ -1864,118 +1881,182 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 	global.Wlog.Info(vlog)
 	logStageMemory("fixsql-write-start", logThreadSeq, sp.schema, sp.table)
 
-	stageDir := os.TempDir()
-	if sp.datafixType == "file" && sp.datafixSql != "" {
-		stageDir = sp.datafixSql
+	maxFileSizeBytes := int64(sp.fixTrxSize) * 1024 * 1024
+	if maxFileSizeBytes <= 0 {
+		maxFileSizeBytes = 4 * 1024 * 1024
 	}
-	deleteStageFile, err := os.CreateTemp(stageDir, fmt.Sprintf("%s-delete-stage-*.tmp", sp.table))
-	if err != nil {
-		sp.getErr(fmt.Sprintf("Failed to create delete stage file for %s.%s", sp.schema, sp.table), err)
+	maxStmtPerFile := sp.fixTrxNum
+	if maxStmtPerFile <= 0 {
+		maxStmtPerFile = 1000
 	}
-	insertStageFile, err := os.CreateTemp(stageDir, fmt.Sprintf("%s-insert-stage-*.tmp", sp.table))
-	if err != nil {
-		sp.getErr(fmt.Sprintf("Failed to create insert stage file for %s.%s", sp.schema, sp.table), err)
+	stageBatchStmt := maxStmtPerFile
+	stageBatchBytes := maxFileSizeBytes
+	// Keep streaming batches bounded, but allow a larger upper cap to reduce tiny-batch CPU overhead.
+	if stageBatchBytes > 32*1024*1024 {
+		stageBatchBytes = 32 * 1024 * 1024
 	}
-	deleteStagePath := deleteStageFile.Name()
-	insertStagePath := insertStageFile.Name()
-	defer os.Remove(deleteStagePath)
-	defer os.Remove(insertStagePath)
 
-	deleteStageWriter := bufio.NewWriterSize(deleteStageFile, 1024*1024)
-	insertStageWriter := bufio.NewWriterSize(insertStageFile, 1024*1024)
-
-	for v := range fixSQL {
-		sp.pods.DIFFS = "yes"
-		sqlTrim := strings.TrimSpace(strings.ToUpper(v))
-		if strings.HasPrefix(sqlTrim, "DELETE") {
-			if _, err := deleteStageWriter.WriteString(v + "\n"); err != nil {
-				sp.getErr(fmt.Sprintf("Failed writing delete stage file for %s.%s", sp.schema, sp.table), err)
-			}
-			deleteCount++
-		} else if strings.HasPrefix(sqlTrim, "INSERT") {
-			if _, err := insertStageWriter.WriteString(v + "\n"); err != nil {
-				sp.getErr(fmt.Sprintf("Failed writing insert stage file for %s.%s", sp.schema, sp.table), err)
-			}
-			insertCount++
+	isUniqueKey := strings.HasPrefix(sp.indexColumnType, "pri_") || strings.HasPrefix(sp.indexColumnType, "uni_")
+	var (
+		deleteWriter *sqlRollingWriter
+		insertWriter *sqlRollingWriter
+		sharedWriter *sqlRollingWriter
+	)
+	if sp.datafixType != "table" {
+		if sp.fixFilePerTable == "ON" && (sp.datafixType == "file" || sp.datafixType == "yes") {
+			deleteWriter = sp.newSQLRollingWriter("DELETE", maxStmtPerFile, maxFileSizeBytes, logThreadSeq)
+			insertWriter = sp.newSQLRollingWriter("INSERT", maxStmtPerFile, maxFileSizeBytes, logThreadSeq)
+		} else {
+			sharedWriter = sp.newSQLRollingWriter("ALL", maxStmtPerFile, maxFileSizeBytes, logThreadSeq)
 		}
 	}
-	if err := deleteStageWriter.Flush(); err != nil {
-		sp.getErr(fmt.Sprintf("Failed flushing delete stage file for %s.%s", sp.schema, sp.table), err)
+	if deleteWriter != nil {
+		defer deleteWriter.close()
 	}
-	if err := insertStageWriter.Flush(); err != nil {
-		sp.getErr(fmt.Sprintf("Failed flushing insert stage file for %s.%s", sp.schema, sp.table), err)
+	if insertWriter != nil {
+		defer insertWriter.close()
 	}
-	deleteStageFile.Close()
-	insertStageFile.Close()
+	if sharedWriter != nil {
+		defer sharedWriter.close()
+	}
 
-	if deleteCount > 0 || insertCount > 0 {
-		maxFileSizeBytes := int64(sp.fixTrxSize) * 1024 * 1024
-		if maxFileSizeBytes <= 0 {
-			maxFileSizeBytes = 4 * 1024 * 1024
+	processDeleteBatch := func(batch []string) error {
+		optimized := optimizeSqlStatements(batch, sp.fixTrxNum, isUniqueKey, sp.deleteSqlSize, sp.insertSqlSize)
+		if len(optimized) == 0 {
+			return nil
 		}
-		maxStmtPerFile := sp.fixTrxNum
-		if maxStmtPerFile <= 0 {
-			maxStmtPerFile = 1000
-		}
-		stageBatchStmt := maxStmtPerFile
-		stageBatchBytes := maxFileSizeBytes
-		// Keep streaming batches bounded, but allow a larger upper cap to reduce tiny-batch CPU overhead.
-		if stageBatchBytes > 32*1024*1024 {
-			stageBatchBytes = 32 * 1024 * 1024
-		}
-
-		isUniqueKey := strings.HasPrefix(sp.indexColumnType, "pri_") || strings.HasPrefix(sp.indexColumnType, "uni_")
-		var (
-			deleteWriter *sqlRollingWriter
-			insertWriter *sqlRollingWriter
-			sharedWriter *sqlRollingWriter
-		)
-		if sp.datafixType != "table" {
-			if sp.fixFilePerTable == "ON" && (sp.datafixType == "file" || sp.datafixType == "yes") {
-				deleteWriter = sp.newSQLRollingWriter("DELETE", maxStmtPerFile, maxFileSizeBytes, logThreadSeq)
-				insertWriter = sp.newSQLRollingWriter("INSERT", maxStmtPerFile, maxFileSizeBytes, logThreadSeq)
-			} else {
-				sharedWriter = sp.newSQLRollingWriter("ALL", maxStmtPerFile, maxFileSizeBytes, logThreadSeq)
-			}
-		}
-		if deleteWriter != nil {
-			defer deleteWriter.close()
-		}
-		if insertWriter != nil {
-			defer insertWriter.close()
+		if sp.datafixType == "table" {
+			writeOptimizedSqlChunk(optimized, sp.datafixType, sp.sfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
+			return nil
 		}
 		if sharedWriter != nil {
-			defer sharedWriter.close()
+			return sharedWriter.write(optimized)
+		}
+		return deleteWriter.write(optimized)
+	}
+	processInsertBatch := func(batch []string) error {
+		optimized := optimizeSqlStatements(batch, sp.fixTrxNum, false, sp.deleteSqlSize, sp.insertSqlSize)
+		if len(optimized) == 0 {
+			return nil
+		}
+		if sp.datafixType == "table" {
+			writeOptimizedSqlChunk(optimized, sp.datafixType, sp.sfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
+			return nil
+		}
+		if sharedWriter != nil {
+			return sharedWriter.write(optimized)
+		}
+		return insertWriter.write(optimized)
+	}
+
+	useDirectStreamPath := sp.datafixType != "table" &&
+		sp.fixFilePerTable == "ON" &&
+		(sp.datafixType == "file" || sp.datafixType == "yes")
+	if useDirectStreamPath {
+		global.Wlog.Info(fmt.Sprintf("(%d) Using direct fixsql stream path for %s.%s (skip stage tmp files)",
+			logThreadSeq, sp.schema, sp.table))
+		deleteBatch := make([]string, 0, stageBatchStmt)
+		insertBatch := make([]string, 0, stageBatchStmt)
+		var deleteBatchBytes int64
+		var insertBatchBytes int64
+
+		flushDelete := func() {
+			if len(deleteBatch) == 0 {
+				return
+			}
+			if err := processDeleteBatch(deleteBatch); err != nil {
+				sp.getErr(fmt.Sprintf("Failed streaming DELETE fixsql for %s.%s", sp.schema, sp.table), err)
+			}
+			deleteBatch = deleteBatch[:0]
+			deleteBatchBytes = 0
+		}
+		flushInsert := func() {
+			if len(insertBatch) == 0 {
+				return
+			}
+			if err := processInsertBatch(insertBatch); err != nil {
+				sp.getErr(fmt.Sprintf("Failed streaming INSERT fixsql for %s.%s", sp.schema, sp.table), err)
+			}
+			insertBatch = insertBatch[:0]
+			insertBatchBytes = 0
 		}
 
-		processDeleteBatch := func(batch []string) error {
-			optimized := optimizeSqlStatements(batch, sp.fixTrxNum, isUniqueKey, sp.deleteSqlSize, sp.insertSqlSize)
-			if len(optimized) == 0 {
-				return nil
+		for v := range fixSQL {
+			sqlType := detectFixSQLType(v)
+			if sqlType == "" {
+				continue
 			}
-			if sp.datafixType == "table" {
-				writeOptimizedSqlChunk(optimized, sp.datafixType, sp.sfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
-				return nil
+			sp.pods.DIFFS = "yes"
+			sqlBytes := int64(len(v) + 1)
+			switch sqlType {
+			case "DELETE":
+				if len(deleteBatch) > 0 && (len(deleteBatch) >= stageBatchStmt || deleteBatchBytes+sqlBytes > stageBatchBytes) {
+					flushDelete()
+				}
+				deleteBatch = append(deleteBatch, v)
+				deleteBatchBytes += sqlBytes
+				deleteCount++
+			case "INSERT":
+				if len(insertBatch) > 0 && (len(insertBatch) >= stageBatchStmt || insertBatchBytes+sqlBytes > stageBatchBytes) {
+					flushInsert()
+				}
+				insertBatch = append(insertBatch, v)
+				insertBatchBytes += sqlBytes
+				insertCount++
 			}
-			if sharedWriter != nil {
-				return sharedWriter.write(optimized)
-			}
-			return deleteWriter.write(optimized)
 		}
-		processInsertBatch := func(batch []string) error {
-			optimized := optimizeSqlStatements(batch, sp.fixTrxNum, false, sp.deleteSqlSize, sp.insertSqlSize)
-			if len(optimized) == 0 {
-				return nil
-			}
-			if sp.datafixType == "table" {
-				writeOptimizedSqlChunk(optimized, sp.datafixType, sp.sfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
-				return nil
-			}
-			if sharedWriter != nil {
-				return sharedWriter.write(optimized)
-			}
-			return insertWriter.write(optimized)
+		flushDelete()
+		flushInsert()
+	} else {
+		global.Wlog.Info(fmt.Sprintf("(%d) Using stage file fixsql path for %s.%s",
+			logThreadSeq, sp.schema, sp.table))
+		stageDir := os.TempDir()
+		if sp.datafixType == "file" && sp.datafixSql != "" {
+			stageDir = sp.datafixSql
 		}
+		deleteStageFile, err := os.CreateTemp(stageDir, fmt.Sprintf("%s-delete-stage-*.tmp", sp.table))
+		if err != nil {
+			sp.getErr(fmt.Sprintf("Failed to create delete stage file for %s.%s", sp.schema, sp.table), err)
+		}
+		insertStageFile, err := os.CreateTemp(stageDir, fmt.Sprintf("%s-insert-stage-*.tmp", sp.table))
+		if err != nil {
+			sp.getErr(fmt.Sprintf("Failed to create insert stage file for %s.%s", sp.schema, sp.table), err)
+		}
+		deleteStagePath := deleteStageFile.Name()
+		insertStagePath := insertStageFile.Name()
+		defer os.Remove(deleteStagePath)
+		defer os.Remove(insertStagePath)
+
+		deleteStageWriter := bufio.NewWriterSize(deleteStageFile, 4*1024*1024)
+		insertStageWriter := bufio.NewWriterSize(insertStageFile, 4*1024*1024)
+
+		for v := range fixSQL {
+			sqlType := detectFixSQLType(v)
+			if sqlType == "" {
+				continue
+			}
+			sp.pods.DIFFS = "yes"
+			switch sqlType {
+			case "DELETE":
+				if _, err := deleteStageWriter.WriteString(v + "\n"); err != nil {
+					sp.getErr(fmt.Sprintf("Failed writing delete stage file for %s.%s", sp.schema, sp.table), err)
+				}
+				deleteCount++
+			case "INSERT":
+				if _, err := insertStageWriter.WriteString(v + "\n"); err != nil {
+					sp.getErr(fmt.Sprintf("Failed writing insert stage file for %s.%s", sp.schema, sp.table), err)
+				}
+				insertCount++
+			}
+		}
+		if err := deleteStageWriter.Flush(); err != nil {
+			sp.getErr(fmt.Sprintf("Failed flushing delete stage file for %s.%s", sp.schema, sp.table), err)
+		}
+		if err := insertStageWriter.Flush(); err != nil {
+			sp.getErr(fmt.Sprintf("Failed flushing insert stage file for %s.%s", sp.schema, sp.table), err)
+		}
+		deleteStageFile.Close()
+		insertStageFile.Close()
 
 		if err := processSQLStageFile(deleteStagePath, stageBatchStmt, stageBatchBytes, processDeleteBatch); err != nil {
 			sp.getErr(fmt.Sprintf("Failed processing delete stage file for %s.%s", sp.schema, sp.table), err)
@@ -1983,7 +2064,9 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 		if err := processSQLStageFile(insertStagePath, stageBatchStmt, stageBatchBytes, processInsertBatch); err != nil {
 			sp.getErr(fmt.Sprintf("Failed processing insert stage file for %s.%s", sp.schema, sp.table), err)
 		}
+	}
 
+	if deleteCount > 0 || insertCount > 0 {
 		vlog = fmt.Sprintf("(%d) Repair statements generated for %s.%s: DELETE=%d, INSERT=%d",
 			logThreadSeq, sp.schema, sp.table, deleteCount, insertCount)
 		global.Wlog.Debug(vlog)
@@ -1993,6 +2076,17 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 	// 无论是否有差异，都添加到结果中
 	logStageMemory("fixsql-write-end", logThreadSeq, sp.schema, sp.table)
 	measuredDataPods = append(measuredDataPods, *sp.pods)
+}
+
+func detectFixSQLType(sql string) string {
+	sqlTrim := strings.TrimSpace(strings.ToUpper(sql))
+	if strings.HasPrefix(sqlTrim, "DELETE") {
+		return "DELETE"
+	}
+	if strings.HasPrefix(sqlTrim, "INSERT") {
+		return "INSERT"
+	}
+	return ""
 }
 
 type sqlRollingWriter struct {
@@ -2185,8 +2279,7 @@ func processSQLStageFile(stagePath string, maxStmt int, maxBytes int64, handler 
 		maxBytes = 4 * 1024 * 1024
 	}
 
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 0, 1024*1024), 64*1024*1024)
+	reader := bufio.NewReaderSize(file, 4*1024*1024)
 
 	var (
 		batch      []string
@@ -2204,9 +2297,16 @@ func processSQLStageFile(stagePath string, maxStmt int, maxBytes int64, handler 
 		return nil
 	}
 
-	for scanner.Scan() {
-		sqlLine := strings.TrimSpace(scanner.Text())
+	for {
+		line, readErr := reader.ReadString('\n')
+		if readErr != nil && readErr != io.EOF {
+			return readErr
+		}
+		sqlLine := strings.TrimSpace(line)
 		if sqlLine == "" {
+			if readErr == io.EOF {
+				break
+			}
 			continue
 		}
 		sqlBytes := int64(len(sqlLine) + 1)
@@ -2217,9 +2317,9 @@ func processSQLStageFile(stagePath string, maxStmt int, maxBytes int64, handler 
 		}
 		batch = append(batch, sqlLine)
 		batchBytes += sqlBytes
-	}
-	if err := scanner.Err(); err != nil {
-		return err
+		if readErr == io.EOF {
+			break
+		}
 	}
 	return flush()
 }
