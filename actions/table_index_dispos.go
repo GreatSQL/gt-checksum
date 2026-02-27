@@ -172,6 +172,218 @@ func hasInsertKey(raw string) bool {
 	return exists
 }
 
+func isIntegerColumnType(columnType string) bool {
+	ct := strings.ToLower(strings.TrimSpace(columnType))
+	if ct == "" {
+		return false
+	}
+	return strings.HasPrefix(ct, "tinyint") ||
+		strings.HasPrefix(ct, "smallint") ||
+		strings.HasPrefix(ct, "mediumint") ||
+		strings.HasPrefix(ct, "int") ||
+		strings.HasPrefix(ct, "bigint")
+}
+
+func (sp *SchedulePlan) getSourceColumnType(columnName string) string {
+	candidates := []string{
+		fmt.Sprintf("%s_gtchecksum_%s", sp.sourceSchema, sp.table),
+		fmt.Sprintf("%s_gtchecksum_%s", sp.schema, sp.table),
+	}
+	for _, key := range candidates {
+		colInfo, ok := sp.tableAllCol[key]
+		if !ok {
+			continue
+		}
+		for _, col := range colInfo.SColumnInfo {
+			name := col["columnName"]
+			if !strings.EqualFold(name, columnName) {
+				continue
+			}
+			if t := col["dataType"]; t != "" {
+				return t
+			}
+			if t := col["columnType"]; t != "" {
+				return t
+			}
+		}
+	}
+	return ""
+}
+
+func queryTableMinMaxInt64(db *sql.DB, schema, table, columnName, where string) (int64, int64, bool, error) {
+	query := fmt.Sprintf("SELECT CAST(MIN(`%s`) AS CHAR), CAST(MAX(`%s`) AS CHAR) FROM `%s`.`%s`", columnName, columnName, schema, table)
+	if where != "" {
+		query = fmt.Sprintf("%s WHERE %s", query, where)
+	}
+	var minStr, maxStr sql.NullString
+	if err := db.QueryRow(query).Scan(&minStr, &maxStr); err != nil {
+		return 0, 0, false, err
+	}
+	if !minStr.Valid || !maxStr.Valid || strings.TrimSpace(minStr.String) == "" || strings.TrimSpace(maxStr.String) == "" {
+		return 0, 0, false, nil
+	}
+	minVal, err := strconv.ParseInt(strings.TrimSpace(minStr.String), 10, 64)
+	if err != nil {
+		return 0, 0, false, nil
+	}
+	maxVal, err := strconv.ParseInt(strings.TrimSpace(maxStr.String), 10, 64)
+	if err != nil {
+		return 0, 0, false, nil
+	}
+	return minVal, maxVal, true, nil
+}
+
+func queryTableRowsEstimate(db *sql.DB, schema, table string) uint64 {
+	query := fmt.Sprintf("SELECT TABLE_ROWS FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s' LIMIT 1", schema, table)
+	var tableRows sql.NullInt64
+	if err := db.QueryRow(query).Scan(&tableRows); err != nil {
+		return 0
+	}
+	if !tableRows.Valid || tableRows.Int64 <= 0 {
+		return 0
+	}
+	return uint64(tableRows.Int64)
+}
+
+func queryColumnHasNull(db *sql.DB, schema, table, columnName, where string) (bool, error) {
+	nullPredicate := fmt.Sprintf("`%s` IS NULL", columnName)
+	query := fmt.Sprintf("SELECT 1 FROM `%s`.`%s`", schema, table)
+	if where != "" {
+		query = fmt.Sprintf("%s WHERE (%s) AND %s LIMIT 1", query, where, nullPredicate)
+	} else {
+		query = fmt.Sprintf("%s WHERE %s LIMIT 1", query, nullPredicate)
+	}
+	var one int
+	err := db.QueryRow(query).Scan(&one)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func buildNumericChunkWhereClauses(columnName, baseWhere string, minVal, maxVal int64, chunkRows int, estimatedRows uint64, includeNull bool) []string {
+	if chunkRows <= 0 || maxVal < minVal {
+		return nil
+	}
+
+	targetChunks := 1
+	if estimatedRows > 0 {
+		targetChunks = int((estimatedRows + uint64(chunkRows) - 1) / uint64(chunkRows))
+	} else {
+		span := maxVal - minVal + 1
+		targetChunks = int((span + int64(chunkRows) - 1) / int64(chunkRows))
+	}
+	if targetChunks < 1 {
+		targetChunks = 1
+	}
+
+	span := maxVal - minVal + 1
+	step := (span + int64(targetChunks) - 1) / int64(targetChunks)
+	if step < 1 {
+		step = 1
+	}
+
+	clauses := make([]string, 0, targetChunks+1)
+	if includeNull {
+		nullClause := fmt.Sprintf("`%s` IS NULL", columnName)
+		if baseWhere != "" {
+			nullClause = fmt.Sprintf("%s and %s", baseWhere, nullClause)
+		}
+		clauses = append(clauses, nullClause)
+	}
+
+	for start := minVal; start <= maxVal; {
+		next := start + step
+		var clause string
+		if next <= maxVal {
+			clause = fmt.Sprintf("`%s` >= %d and `%s` < %d", columnName, start, columnName, next)
+		} else {
+			clause = fmt.Sprintf("`%s` >= %d", columnName, start)
+		}
+		if baseWhere != "" {
+			clause = fmt.Sprintf("%s and %s", baseWhere, clause)
+		}
+		clauses = append(clauses, clause)
+
+		if next <= start {
+			break
+		}
+		start = next
+	}
+	return clauses
+}
+
+func (sp *SchedulePlan) generateFirstLevelNumericChunks(sdb, ddb *sql.DB, level, queryNum int, where string, logThreadSeq int64) ([]string, bool) {
+	if level != 0 || queryNum <= 0 {
+		return nil, false
+	}
+	if where != "" {
+		return nil, false
+	}
+	if !strings.EqualFold(sp.sdrive, "mysql") || !strings.EqualFold(sp.ddrive, "mysql") {
+		return nil, false
+	}
+	if level >= len(sp.columnName) {
+		return nil, false
+	}
+
+	column := sp.columnName[level]
+	columnType := sp.getSourceColumnType(column)
+	if !isIntegerColumnType(columnType) {
+		return nil, false
+	}
+
+	sMin, sMax, sHasRows, sErr := queryTableMinMaxInt64(sdb, sp.sourceSchema, sp.table, column, where)
+	if sErr != nil {
+		return nil, false
+	}
+	dMin, dMax, dHasRows, dErr := queryTableMinMaxInt64(ddb, sp.destSchema, sp.table, column, where)
+	if dErr != nil {
+		return nil, false
+	}
+	if !sHasRows && !dHasRows {
+		return []string{}, true
+	}
+
+	minVal := sMin
+	maxVal := sMax
+	if !sHasRows {
+		minVal = dMin
+		maxVal = dMax
+	}
+	if dHasRows {
+		if dMin < minVal {
+			minVal = dMin
+		}
+		if dMax > maxVal {
+			maxVal = dMax
+		}
+	}
+
+	sEstRows := queryTableRowsEstimate(sdb, sp.sourceSchema, sp.table)
+	dEstRows := queryTableRowsEstimate(ddb, sp.destSchema, sp.table)
+	estRows := sEstRows
+	if dEstRows > estRows {
+		estRows = dEstRows
+	}
+
+	sHasNull, _ := queryColumnHasNull(sdb, sp.sourceSchema, sp.table, column, where)
+	dHasNull, _ := queryColumnHasNull(ddb, sp.destSchema, sp.table, column, where)
+
+	clauses := buildNumericChunkWhereClauses(column, where, minVal, maxVal, queryNum, estRows, sHasNull || dHasNull)
+	if len(clauses) == 0 {
+		return nil, false
+	}
+
+	vlog := fmt.Sprintf("(%d) Numeric range chunking enabled for %s.%s.%s, chunks=%d, span=[%d,%d], estRows=%d",
+		logThreadSeq, sp.sourceSchema, sp.table, column, len(clauses), minVal, maxVal, estRows)
+	global.Wlog.Info(vlog)
+	return clauses, true
+}
+
 /*
 递归查询索引列数据，并按照单次校验块的大小来切割索引列数据，生成查询的where条件
 */
@@ -185,6 +397,23 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 		partFirstValue = true
 		curryCount     int64
 	)
+
+	// Fast path for large MySQL integer leading columns:
+	// build chunk ranges from min/max + table_rows estimate and skip full GROUP BY key materialization.
+	if clauses, ok := sp.generateFirstLevelNumericChunks(sdb, ddb, level, queryNum, where, logThreadSeq); ok {
+		for _, clause := range clauses {
+			if level < len(sp.columnName)-1 {
+				sp.recursiveIndexColumn(sqlWhere, sdb, ddb, level+1, queryNum, clause, selectColumn, logThreadSeq)
+				continue
+			}
+			sqlWhere <- clause
+		}
+		if level == 0 {
+			close(sqlWhere)
+		}
+		return
+	}
+
 	//获取索引列的数据类型
 	a := sp.tableAllCol[fmt.Sprintf("%s_gtchecksum_%s", sp.schema, sp.table)].SColumnInfo
 	//查询源目标端索引列数据
