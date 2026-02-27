@@ -14,6 +14,10 @@ import (
 // 缓存“首列可用索引名”，避免高频场景重复查询information_schema.statistics
 var leadingIndexNameGlobalCache = make(map[string]string)
 
+// 在首层分组场景下，使用 `GROUP BY col, count=1` 的轻量模式阈值。
+// 当表行数/首列基数较低（重复度低）时，该模式通常明显快于 COUNT(*) 聚合。
+const fastGroupModeDupRatioThreshold = 8.0
+
 /*
 查询MySQL库下指定表的索引统计信息
 */
@@ -327,6 +331,74 @@ func (my *QueryTable) getLeadingIndexName(db *sql.DB, columnName string) string 
 	return indexName
 }
 
+func (my *QueryTable) getTableRowsEstimate(db *sql.DB) uint64 {
+	cacheKey := fmt.Sprintf("%p.%s.%s.tableRows", db, my.Schema, my.Table)
+	cacheMutex.RLock()
+	if cached, ok := columnDataTypeGlobalCache[cacheKey]; ok {
+		cacheMutex.RUnlock()
+		if n, err := strconv.ParseUint(cached, 10, 64); err == nil {
+			return n
+		}
+	} else {
+		cacheMutex.RUnlock()
+	}
+
+	query := fmt.Sprintf("SELECT TABLE_ROWS FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s' LIMIT 1", my.Schema, my.Table)
+	var tableRows sql.NullInt64
+	if err := db.QueryRow(query).Scan(&tableRows); err != nil || !tableRows.Valid || tableRows.Int64 <= 0 {
+		return 0
+	}
+
+	cacheMutex.Lock()
+	columnDataTypeGlobalCache[cacheKey] = strconv.FormatInt(tableRows.Int64, 10)
+	cacheMutex.Unlock()
+	return uint64(tableRows.Int64)
+}
+
+func (my *QueryTable) getLeadingIndexCardinality(db *sql.DB, indexName string, columnName string) uint64 {
+	if indexName == "" || columnName == "" {
+		return 0
+	}
+	cacheKey := fmt.Sprintf("%p.%s.%s.%s.%s.cardinality", db, my.Schema, my.Table, indexName, columnName)
+	cacheMutex.RLock()
+	if cached, ok := columnDataTypeGlobalCache[cacheKey]; ok {
+		cacheMutex.RUnlock()
+		if n, err := strconv.ParseUint(cached, 10, 64); err == nil {
+			return n
+		}
+	} else {
+		cacheMutex.RUnlock()
+	}
+
+	query := fmt.Sprintf(
+		"SELECT CARDINALITY FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s' AND INDEX_NAME='%s' AND COLUMN_NAME='%s' AND SEQ_IN_INDEX=1 LIMIT 1",
+		my.Schema,
+		my.Table,
+		indexName,
+		columnName,
+	)
+	var cardinality sql.NullInt64
+	if err := db.QueryRow(query).Scan(&cardinality); err != nil || !cardinality.Valid || cardinality.Int64 <= 0 {
+		return 0
+	}
+
+	cacheMutex.Lock()
+	columnDataTypeGlobalCache[cacheKey] = strconv.FormatInt(cardinality.Int64, 10)
+	cacheMutex.Unlock()
+	return uint64(cardinality.Int64)
+}
+
+func shouldUseFastGroupMode(where string, tableRows uint64, cardinality uint64, hasLeadingIndex bool) bool {
+	if where != "" || !hasLeadingIndex {
+		return false
+	}
+	if tableRows == 0 || cardinality == 0 || tableRows < cardinality {
+		return false
+	}
+	dupRatio := float64(tableRows) / float64(cardinality)
+	return dupRatio <= fastGroupModeDupRatioThreshold
+}
+
 /*
 处理MySQL 5.7版本针对列数据类型为FLOAT类型时，select where column = 'float'查询不出数据问题
 */
@@ -395,22 +467,45 @@ func (my QueryTable) TmpTableColumnGroupDataDispos(db *sql.DB, where string, col
 			whereExist = fmt.Sprintf("WHERE %s ", where)
 		}
 	}
-	// 修复：对于复合主键，查询所有唯一值，而不是分组后的值
-	// 这确保了所有可能的主键组合都被处理
-	//strsql = fmt.Sprintf("SELECT DISTINCT %s AS columnName, COUNT(1) OVER (PARTITION BY %s) AS count FROM `%s`.`%s` %s ORDER BY %s", columnName, columnName, my.Schema, my.Table, whereExist, columnName)
-	//上面的SQL效率太低，改成下面这样
 	// 修复：必须添加ORDER BY，因为recursiveIndexColumn依赖有序数据来生成分片
 	forceIndexClause := ""
-	if indexName := my.getLeadingIndexName(db, columnName); indexName != "" {
-		forceIndexClause = fmt.Sprintf(" FORCE INDEX (`%s`)", indexName)
+	leadingIndexName := my.getLeadingIndexName(db, columnName)
+	if leadingIndexName != "" {
+		forceIndexClause = fmt.Sprintf(" FORCE INDEX (`%s`)", leadingIndexName)
 	}
-	strsql = fmt.Sprintf("SELECT %s AS columnName, COUNT(1) AS count FROM `%s`.`%s`%s %s GROUP BY %s ORDER BY %s", columnName, my.Schema, my.Table, forceIndexClause, whereExist, columnName, columnName)
-	fallbackSQL := fmt.Sprintf("SELECT %s AS columnName, COUNT(1) AS count FROM `%s`.`%s` %s GROUP BY %s ORDER BY %s", columnName, my.Schema, my.Table, whereExist, columnName, columnName)
+	useFastGroupMode := false
+	if shouldUseFastGroupMode(where, my.getTableRowsEstimate(db), my.getLeadingIndexCardinality(db, leadingIndexName, columnName), leadingIndexName != "") {
+		useFastGroupMode = true
+		vlog = fmt.Sprintf("(%d) [%s] Fast group mode enabled for %s.%s column %s", logThreadSeq, Event, my.Schema, my.Table, columnName)
+		global.Wlog.Info(vlog)
+	}
+
+	accurateForceSQL := fmt.Sprintf("SELECT %s AS columnName, COUNT(1) AS count FROM `%s`.`%s`%s %s GROUP BY %s ORDER BY %s", columnName, my.Schema, my.Table, forceIndexClause, whereExist, columnName, columnName)
+	accuratePlainSQL := fmt.Sprintf("SELECT %s AS columnName, COUNT(1) AS count FROM `%s`.`%s` %s GROUP BY %s ORDER BY %s", columnName, my.Schema, my.Table, whereExist, columnName, columnName)
+
+	fastForceSQL := fmt.Sprintf("SELECT %s AS columnName, 1 AS count FROM `%s`.`%s`%s %s GROUP BY %s ORDER BY %s", columnName, my.Schema, my.Table, forceIndexClause, whereExist, columnName, columnName)
+	fastPlainSQL := fmt.Sprintf("SELECT %s AS columnName, 1 AS count FROM `%s`.`%s` %s GROUP BY %s ORDER BY %s", columnName, my.Schema, my.Table, whereExist, columnName, columnName)
+
+	primarySQL := accurateForceSQL
+	secondarySQL := accuratePlainSQL
+	finalFallbackSQL := ""
+	if useFastGroupMode {
+		primarySQL = fastForceSQL
+		secondarySQL = fastPlainSQL
+		finalFallbackSQL = accuratePlainSQL
+	}
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
-	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
+	if dispos.SqlRows, err = dispos.DBSQLforExec(primarySQL); err != nil {
 		// FORCE INDEX 可能在目标端不可用，失败后回退到普通分组查询
-		if dispos.SqlRows, err = dispos.DBSQLforExec(fallbackSQL); err != nil {
-			return nil, err
+		if dispos.SqlRows, err = dispos.DBSQLforExec(secondarySQL); err != nil {
+			// Fast mode 再次失败时，兜底回退到精确 COUNT(*) 分组，优先保证正确性。
+			if finalFallbackSQL != "" {
+				if dispos.SqlRows, err = dispos.DBSQLforExec(finalFallbackSQL); err != nil {
+					return nil, err
+				}
+			} else {
+				return nil, err
+			}
 		}
 	}
 	C := dispos.DataChanDispos()
