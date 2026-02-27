@@ -7,6 +7,8 @@ import (
 	"time"
 )
 
+const defaultShowActualRows = "ON"
+
 var showActualRowsRuntimeCache = struct {
 	sync.RWMutex
 	file     string
@@ -14,10 +16,18 @@ var showActualRowsRuntimeCache = struct {
 	lastRead time.Time
 	value    string
 }{
-	value: "ON",
+	value: defaultShowActualRows,
 }
 
 func normalizeOnOff(v string) string {
+	v = strings.TrimSpace(v)
+	if idx := strings.IndexAny(v, ";#"); idx >= 0 {
+		v = strings.TrimSpace(v[:idx])
+	}
+	v = strings.Trim(v, `"'`)
+	if fields := strings.Fields(v); len(fields) > 0 {
+		v = fields[0]
+	}
 	v = strings.ToUpper(strings.TrimSpace(v))
 	if v == "ON" {
 		return "ON"
@@ -65,7 +75,7 @@ func IsShowActualRowsEnabled() bool {
 		return normalizeOnOff(cfg.CliShowActualRows) == "ON"
 	}
 
-	defaultValue := normalizeOnOff(cfg.SecondaryL.RulesV.ShowActualRows)
+	defaultValue := defaultShowActualRows
 	configFile := strings.TrimSpace(cfg.Config)
 	if configFile == "" {
 		return defaultValue == "ON"
