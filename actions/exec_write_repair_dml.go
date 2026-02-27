@@ -179,15 +179,19 @@ func (rs repairSqlStruct) SqlFileOptimized(sfile *os.File, sql []string, logThre
 	return rs.sqlFileInternal(sfile, sql, logThreadSeq, true)
 }
 
-func firstNonEmptySQLPrefix(sqls []string) string {
+func isFirstNonEmptySQLAlterTable(sqls []string) bool {
+	const alterPrefix = "ALTER TABLE"
 	for _, stmt := range sqls {
 		trimmed := strings.TrimSpace(stmt)
 		if trimmed == "" {
 			continue
 		}
-		return strings.ToUpper(trimmed)
+		if len(trimmed) < len(alterPrefix) {
+			return false
+		}
+		return strings.EqualFold(trimmed[:len(alterPrefix)], alterPrefix)
 	}
-	return ""
+	return false
 }
 
 func isInsertIntoSQL(trimmedSQL string) bool {
@@ -231,8 +235,7 @@ func (rs repairSqlStruct) sqlFileInternal(sfile *os.File, sql []string, logThrea
 		global.Wlog.Debug(vlog)
 	}
 
-	firstSQL := firstNonEmptySQLPrefix(sql)
-	if strings.HasPrefix(firstSQL, "ALTER TABLE") {
+	if isFirstNonEmptySQLAlterTable(sql) {
 		// ALTER TABLE语句不需要事务包装
 		// 先去重
 		var uniqueSqls []string
