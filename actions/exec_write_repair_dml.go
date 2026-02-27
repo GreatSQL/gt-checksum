@@ -172,6 +172,33 @@ func (rs repairSqlStruct) execRepairSql(sqlstr []string, dbType string, logThrea
 生成修复sql语句，并写入到文件中
 */
 func (rs repairSqlStruct) SqlFile(sfile *os.File, sql []string, logThreadSeq int64) error { //在/tmp/下创建数据修复文件，将在目标端数据修复的语句写入到文件中
+	return rs.sqlFileInternal(sfile, sql, logThreadSeq, false)
+}
+
+func (rs repairSqlStruct) SqlFileOptimized(sfile *os.File, sql []string, logThreadSeq int64) error { // optimized upstream input; avoid table-wide dedupe map growth
+	return rs.sqlFileInternal(sfile, sql, logThreadSeq, true)
+}
+
+func firstNonEmptySQLPrefix(sqls []string) string {
+	for _, stmt := range sqls {
+		trimmed := strings.TrimSpace(stmt)
+		if trimmed == "" {
+			continue
+		}
+		return strings.ToUpper(trimmed)
+	}
+	return ""
+}
+
+func isInsertIntoSQL(trimmedSQL string) bool {
+	const prefix = "INSERT INTO"
+	if len(trimmedSQL) < len(prefix) {
+		return false
+	}
+	return strings.EqualFold(trimmedSQL[:len(prefix)], prefix)
+}
+
+func (rs repairSqlStruct) sqlFileInternal(sfile *os.File, sql []string, logThreadSeq int64, localOnlyDedup bool) error { //在/tmp/下创建数据修复文件，将在目标端数据修复的语句写入到文件中
 	var (
 		vlog string
 		err  error
@@ -204,13 +231,23 @@ func (rs repairSqlStruct) SqlFile(sfile *os.File, sql []string, logThreadSeq int
 		global.Wlog.Debug(vlog)
 	}
 
-	if strings.HasPrefix(strings.ToUpper(strings.Join(sql, ";")), "ALTER TABLE") {
+	firstSQL := firstNonEmptySQLPrefix(sql)
+	if strings.HasPrefix(firstSQL, "ALTER TABLE") {
 		// ALTER TABLE语句不需要事务包装
 		// 先去重
 		var uniqueSqls []string
+		localSeen := make(map[string]struct{})
 		for _, s := range sql {
 			trimmedSql := strings.TrimSpace(s)
 			if trimmedSql == "" {
+				continue
+			}
+			if localOnlyDedup {
+				if _, exists := localSeen[trimmedSql]; exists {
+					continue
+				}
+				localSeen[trimmedSql] = struct{}{}
+				uniqueSqls = append(uniqueSqls, s)
 				continue
 			}
 			if _, loaded := writtenSqlMap.LoadOrStore(trimmedSql, true); !loaded {
@@ -226,6 +263,7 @@ func (rs repairSqlStruct) SqlFile(sfile *os.File, sql []string, logThreadSeq int
 	} else {
 		// 不对INSERT语句进行去重，保留所有需要的记录
 		var uniqueSqls []string
+		localSeen := make(map[string]struct{})
 		for _, s := range sql {
 			trimmedSql := strings.TrimSpace(s)
 			if trimmedSql == "" {
@@ -233,9 +271,17 @@ func (rs repairSqlStruct) SqlFile(sfile *os.File, sql []string, logThreadSeq int
 			}
 			// 对于INSERT语句，不进行去重，确保所有需要的记录都被插入
 			// 对于其他类型的语句，仍然进行去重
-			if strings.HasPrefix(strings.ToUpper(trimmedSql), "INSERT INTO") {
+			if isInsertIntoSQL(trimmedSql) {
 				uniqueSqls = append(uniqueSqls, s)
 			} else {
+				if localOnlyDedup {
+					if _, exists := localSeen[trimmedSql]; exists {
+						continue
+					}
+					localSeen[trimmedSql] = struct{}{}
+					uniqueSqls = append(uniqueSqls, s)
+					continue
+				}
 				// 使用全局writtenSqlMap进行去重，确保跨调用去重
 				if _, loaded := writtenSqlMap.LoadOrStore(trimmedSql, true); !loaded {
 					uniqueSqls = append(uniqueSqls, s)
@@ -348,7 +394,12 @@ func applyDataFixWithTrxNumInternal(fixSql []string, datafixType string, sfile *
 
 	// 修复：当datafixType为"yes"时，将修复SQL写入文件
 	if datafixType == "yes" || datafixType == "file" {
-		if err = repairdml.SqlFile(sfile, fixSql, logThreadSeq); err != nil {
+		if skipInputOptimize {
+			err = repairdml.SqlFileOptimized(sfile, fixSql, logThreadSeq)
+		} else {
+			err = repairdml.SqlFile(sfile, fixSql, logThreadSeq)
+		}
+		if err != nil {
 			return err
 		}
 	}

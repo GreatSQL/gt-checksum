@@ -35,40 +35,45 @@ func (f FileOperate) ConcurrencyWriteFile(writeString []string) ([]string, error
 	var (
 		c        string
 		md5Slice []string
-		event    string
 		vlog     string
 	)
 	bufWriter := bufio.NewWriterSize(f.File, f.BufSize)
-	event = fmt.Sprintf("[%s]", "write_file")
+	mutex.Lock()
+	defer mutex.Unlock()
+	needMD5 := f.SqlType != "sql"
+	if needMD5 {
+		md5Slice = make([]string, 0, len(writeString))
+	}
 	for _, i := range writeString {
-		sum := md5.Sum([]byte(i))
-		sumS := hex.EncodeToString(sum[:])
-		md5Slice = append(md5Slice, sumS)
-		if f.SqlType == "sql" {
-			c = fmt.Sprintf("%s\n", i)
-		} else {
+		if needMD5 {
+			sum := md5.Sum([]byte(i))
+			sumS := hex.EncodeToString(sum[:])
+			md5Slice = append(md5Slice, sumS)
 			c = fmt.Sprintf("%s %s %s\n", sumS, f.SqlType, i)
+		} else {
+			c = fmt.Sprintf("%s\n", i)
 		}
-		mutex.Lock()
-		vlog = fmt.Sprintf("%s Writing data to file %s, content: %v", event, f.fileName, c)
-		global.Wlog.Debug(vlog)
 		wc, err := bufWriter.WriteString(c)
-		bufWriter.Flush()
 		if err != nil {
-			vlog = fmt.Sprintf("%s Failed to write to file %s, content: %v, error: %v", event, f.fileName, c, err)
+			vlog = fmt.Sprintf("[write_file] Failed to write to file %s, error: %v", f.fileName, err)
 			global.Wlog.Error(vlog)
 			return nil, err
 		}
 		if wc != len(c) {
-			vlog = fmt.Sprintf("%s Byte count mismatch in file %s, expected: %v, actual: %v", event, f.fileName, len(c), wc)
+			vlog = fmt.Sprintf("[write_file] Byte count mismatch in file %s, expected: %v, actual: %v", f.fileName, len(c), wc)
 			global.Wlog.Error(vlog)
-			return nil, err
+			return nil, io.ErrShortWrite
 		}
-		mutex.Unlock()
-		vlog = fmt.Sprintf("%s Data successfully written to file %s", event, f.fileName)
-		global.Wlog.Debug(vlog)
+	}
+	if err := bufWriter.Flush(); err != nil {
+		vlog = fmt.Sprintf("[write_file] Failed to flush file %s, error: %v", f.fileName, err)
+		global.Wlog.Error(vlog)
+		return nil, err
 	}
 
+	if !needMD5 {
+		return nil, nil
+	}
 	return md5Slice, nil
 }
 
