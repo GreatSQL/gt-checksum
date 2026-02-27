@@ -2462,12 +2462,13 @@ func (sp SchedulePlan) doIndexDataCheck() {
 		sp.tableMaxRows = B
 	}
 	// 重新查询精确行数
-	sourceExactCount := sp.getExactRowCount(sp.sdbPool, sp.sourceSchema, sp.table, logThreadSeq)
-	targetExactCount := sp.getExactRowCount(sp.ddbPool, sp.destSchema, sp.table, logThreadSeq)
+	sourceExactCount, sourceCountExact := sp.getExactRowCount(sp.sdbPool, sp.sourceSchema, sp.table, logThreadSeq)
+	targetExactCount, targetCountExact := sp.getExactRowCount(sp.ddbPool, sp.destSchema, sp.table, logThreadSeq)
 	sp.pods.Rows = fmt.Sprintf("%d,%d", sourceExactCount, targetExactCount)
 
-	// 如果行数不匹配，直接设置DIFFS为yes
-	if sourceExactCount != targetExactCount {
+	// 仅在两端都拿到精确计数时，才用行数差异做提前判定。
+	// 元数据估算值仅用于展示，不应影响一致性判定逻辑。
+	if sourceCountExact && targetCountExact && sourceExactCount != targetExactCount {
 		vlog = fmt.Sprintf("Row count mismatch detected for %s.%s: source=%d, target=%d, diff=%d", sp.sourceSchema, sp.table, sourceExactCount, targetExactCount, abs(int64(sourceExactCount)-int64(targetExactCount)))
 		global.Wlog.Info(vlog)
 		sp.pods.DIFFS = "yes"

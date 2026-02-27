@@ -399,6 +399,63 @@ func shouldUseFastGroupMode(where string, tableRows uint64, cardinality uint64, 
 	return dupRatio <= fastGroupModeDupRatioThreshold
 }
 
+func extractWhereColumnsForGroupQuery(where string) []string {
+	if strings.TrimSpace(where) == "" {
+		return nil
+	}
+	// Match identifier on left side of common predicates.
+	// Accept both `col` and bare col forms.
+	re := regexp.MustCompile("(?i)(?:`([a-zA-Z0-9_]+)`|\\b([a-zA-Z_][a-zA-Z0-9_]*)\\b)\\s*(?:<=|>=|!=|=|<|>|LIKE\\b|IN\\b|BETWEEN\\b|IS\\b)")
+	matches := re.FindAllStringSubmatch(where, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	keywords := map[string]struct{}{
+		"AND": {}, "OR": {}, "NOT": {}, "NULL": {}, "TRUE": {}, "FALSE": {},
+		"SELECT": {}, "FROM": {}, "WHERE": {}, "GROUP": {}, "ORDER": {}, "LIMIT": {},
+	}
+	seen := make(map[string]struct{}, len(matches))
+	cols := make([]string, 0, len(matches))
+	for _, m := range matches {
+		col := strings.TrimSpace(m[1])
+		if col == "" {
+			col = strings.TrimSpace(m[2])
+		}
+		if col == "" {
+			continue
+		}
+		up := strings.ToUpper(col)
+		if _, bad := keywords[up]; bad {
+			continue
+		}
+		if _, ok := seen[up]; ok {
+			continue
+		}
+		seen[up] = struct{}{}
+		cols = append(cols, col)
+	}
+	return cols
+}
+
+func (my *QueryTable) chooseGroupByForceIndex(db *sql.DB, groupColumn, where string) string {
+	// No where: preserve historical behavior, prefer leading index of grouped column.
+	if strings.TrimSpace(where) == "" {
+		return my.getLeadingIndexName(db, groupColumn)
+	}
+
+	// Where exists: prefer index that matches filter columns to avoid full index scan.
+	// Example: WHERE ps_partkey range + GROUP BY ps_suppkey should prefer PRIMARY(ps_partkey,...)
+	for _, col := range extractWhereColumnsForGroupQuery(where) {
+		idx := my.getLeadingIndexName(db, col)
+		if idx != "" {
+			return idx
+		}
+	}
+
+	// Fall back to no FORCE INDEX and let optimizer decide.
+	return ""
+}
+
 /*
 处理MySQL 5.7版本针对列数据类型为FLOAT类型时，select where column = 'float'查询不出数据问题
 */
@@ -470,8 +527,24 @@ func (my QueryTable) TmpTableColumnGroupDataDispos(db *sql.DB, where string, col
 	// 修复：必须添加ORDER BY，因为recursiveIndexColumn依赖有序数据来生成分片
 	forceIndexClause := ""
 	leadingIndexName := my.getLeadingIndexName(db, columnName)
-	if leadingIndexName != "" {
-		forceIndexClause = fmt.Sprintf(" FORCE INDEX (`%s`)", leadingIndexName)
+	groupQueryForceIndexName := my.chooseGroupByForceIndex(db, columnName, where)
+	if groupQueryForceIndexName != "" {
+		vlog = fmt.Sprintf("(%d) [%s] Force index chosen for grouped query on %s.%s(%s): %s",
+			logThreadSeq, Event, my.Schema, my.Table, columnName, groupQueryForceIndexName)
+		global.Wlog.Debug(vlog)
+	}
+	if where != "" && groupQueryForceIndexName != "" && !strings.EqualFold(groupQueryForceIndexName, leadingIndexName) {
+		vlog = fmt.Sprintf("(%d) [%s] Use WHERE-driven force index (%s) instead of GROUP-column index (%s) for %s.%s",
+			logThreadSeq, Event, groupQueryForceIndexName, leadingIndexName, my.Schema, my.Table)
+		global.Wlog.Info(vlog)
+	}
+	if where != "" && groupQueryForceIndexName == "" {
+		vlog = fmt.Sprintf("(%d) [%s] No suitable force index detected from WHERE columns for %s.%s(%s), fallback to optimizer",
+			logThreadSeq, Event, my.Schema, my.Table, columnName)
+		global.Wlog.Debug(vlog)
+	}
+	if groupQueryForceIndexName != "" {
+		forceIndexClause = fmt.Sprintf(" FORCE INDEX (`%s`)", groupQueryForceIndexName)
 	}
 	useFastGroupMode := false
 	if shouldUseFastGroupMode(where, my.getTableRowsEstimate(db), my.getLeadingIndexCardinality(db, leadingIndexName, columnName), leadingIndexName != "") {
@@ -514,6 +587,30 @@ func (my QueryTable) TmpTableColumnGroupDataDispos(db *sql.DB, where string, col
 	return C, nil
 }
 
+func (my *QueryTable) getMaxLeadingIndexCardinality(db *sql.DB) uint64 {
+	cacheKey := fmt.Sprintf("%p.%s.%s.maxLeadingCardinality", db, my.Schema, my.Table)
+	cacheMutex.RLock()
+	if cached, ok := columnDataTypeGlobalCache[cacheKey]; ok {
+		cacheMutex.RUnlock()
+		if n, err := strconv.ParseUint(cached, 10, 64); err == nil {
+			return n
+		}
+	} else {
+		cacheMutex.RUnlock()
+	}
+
+	query := fmt.Sprintf("SELECT MAX(CARDINALITY) FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s' AND SEQ_IN_INDEX=1", my.Schema, my.Table)
+	var card sql.NullInt64
+	if err := db.QueryRow(query).Scan(&card); err != nil || !card.Valid || card.Int64 <= 0 {
+		return 0
+	}
+
+	cacheMutex.Lock()
+	columnDataTypeGlobalCache[cacheKey] = strconv.FormatInt(card.Int64, 10)
+	cacheMutex.Unlock()
+	return uint64(card.Int64)
+}
+
 /*
 MySQL 查询表的统计信息中行数
 */
@@ -528,53 +625,26 @@ func (my *QueryTable) TableRows(db *sql.DB, logThreadSeq int64) (uint64, error) 
 		return 0, fmt.Errorf("schema is empty for table %s", my.Table)
 	}
 
-	vlog := fmt.Sprintf("(%d) [%s] Start querying the statistical information of table %s.%s in the %s database and get the number of rows in the table", logThreadSeq, Event, my.Schema, my.Table, DBType)
+	vlog := fmt.Sprintf("(%d) [%s] Start querying row count for table %s.%s in the %s database", logThreadSeq, Event, my.Schema, my.Table, DBType)
 	global.Wlog.Debug(vlog)
 
-	// 首先尝试从INFORMATION_SCHEMA获取表统计信息
-	strsql := fmt.Sprintf("SELECT TABLE_ROWS AS tableRows FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s'", my.Schema, my.Table)
-	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
-	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
-		vlog = fmt.Sprintf("(%d) [%s] Failed to get table statistics: %v, trying COUNT(*) instead", logThreadSeq, Event, err)
-		global.Wlog.Warn(vlog)
-		return 0, nil
+	// Prefer INFORMATION_SCHEMA.TABLES row estimate and avoid heavy COUNT(*) full scans.
+	if tableRows := my.getTableRowsEstimate(db); tableRows > 0 {
+		vlog = fmt.Sprintf("(%d) [%s] TABLE_ROWS estimate for %s.%s: %d", logThreadSeq, Event, my.Schema, my.Table, tableRows)
+		global.Wlog.Debug(vlog)
+		return tableRows, nil
 	}
 
-	tableData, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
-	if err != nil {
-		return 0, nil
-	}
-	defer dispos.SqlRows.Close()
-
-	// 检查tableData是否为空，如果为空则使用COUNT(*)查询
-	if len(tableData) == 0 {
-		vlog = fmt.Sprintf("(%d) [%s] No table statistics found for table %s.%s in the %s database, trying COUNT(*)", logThreadSeq, Event, my.Schema, my.Table, DBType)
-		global.Wlog.Warn(vlog)
-
-		// 使用COUNT(*)查询获取行数
-		strsql = fmt.Sprintf("SELECT COUNT(*) AS tableRows FROM `%s`.`%s`", my.Schema, my.Table)
-		if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
-			vlog = fmt.Sprintf("(%d) [%s] Failed to get row count with COUNT(*): %v", logThreadSeq, Event, err)
-			global.Wlog.Error(vlog)
-			return 0, nil
-		}
-
-		tableData, err = dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
-		if err != nil {
-			return 0, nil
-		}
-
-		if len(tableData) == 0 {
-			vlog = fmt.Sprintf("(%d) [%s] No rows returned from COUNT(*) query for table %s.%s", logThreadSeq, Event, my.Schema, my.Table)
-			global.Wlog.Warn(vlog)
-			return 0, nil
-		}
+	// Fallback to max leading index cardinality estimate.
+	if cardRows := my.getMaxLeadingIndexCardinality(db); cardRows > 0 {
+		vlog = fmt.Sprintf("(%d) [%s] MAX(CARDINALITY) estimate for %s.%s: %d", logThreadSeq, Event, my.Schema, my.Table, cardRows)
+		global.Wlog.Debug(vlog)
+		return cardRows, nil
 	}
 
-	vlog = fmt.Sprintf("(%d) [%s] The number of rows in table %s.%s in the %s database has been obtained.", logThreadSeq, Event, my.Schema, my.Table, DBType)
-	global.Wlog.Debug(vlog)
-
-	return strconv.ParseUint(fmt.Sprintf("%s", tableData[0]["tableRows"]), 10, 64)
+	vlog = fmt.Sprintf("(%d) [%s] Row estimate unavailable for %s.%s, returning 0 without COUNT(*) fallback", logThreadSeq, Event, my.Schema, my.Table)
+	global.Wlog.Warn(vlog)
+	return 0, nil
 }
 
 /*
