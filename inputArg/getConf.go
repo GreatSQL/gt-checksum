@@ -257,6 +257,27 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 		rc.SecondaryL.RulesV.MemoryLimit = 1024
 	}
 
+	showActualRowsValue := strings.ToUpper(strings.TrimSpace(getLastConfigValue("showActualRows")))
+	if showActualRowsValue == "" {
+		rc.SecondaryL.RulesV.ShowActualRows = "ON"
+	} else if showActualRowsValue == "ON" || showActualRowsValue == "OFF" {
+		rc.SecondaryL.RulesV.ShowActualRows = showActualRowsValue
+	} else {
+		fmt.Println("Using default value 'ON' for option showActualRows")
+		rc.SecondaryL.RulesV.ShowActualRows = "ON"
+	}
+
+	if rc.CliShowActualRows != "" {
+		override := strings.ToUpper(strings.TrimSpace(rc.CliShowActualRows))
+		if override == "ON" || override == "OFF" {
+			rc.SecondaryL.RulesV.ShowActualRows = override
+			rc.CliShowActualRows = override
+			fmt.Printf("Using system parameter showActualRows=%s\n", override)
+		} else {
+			fmt.Printf("Ignoring invalid system parameter showActualRows=%s, use config/default value %s\n", rc.CliShowActualRows, rc.SecondaryL.RulesV.ShowActualRows)
+		}
+	}
+
 	//Repair 获取相关参数
 	fixTrxNumValue := getLastConfigValue("fixTrxNum")
 	if fixTrxNumValue != "" {

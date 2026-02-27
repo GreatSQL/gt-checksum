@@ -1,6 +1,7 @@
 package actions
 
 import (
+	"database/sql"
 	"fmt"
 	"gt-checksum/dbExec"
 	"gt-checksum/global"
@@ -13,6 +14,13 @@ import (
 
 // 包级变量，用于存储已处理的SQL语句，实现跨函数调用的去重
 var globalSqlMap sync.Map
+
+type rowCountCacheEntry struct {
+	Count int64
+	Exact bool
+}
+
+var tableRowCountCache sync.Map
 
 /*
 Perform MD5 verification on different data rows without removing duplicate values
@@ -617,8 +625,8 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 	sp.FixSqlExec(sqlStrExec, int64(logThreadSeq))
 	//Output verification result information
 	// 重新查询精确行数
-	sourceExactCount := sp.getExactRowCount(sp.sdbPool, sp.schema, sp.table, logThreadSeq)
-	targetExactCount := sp.getExactRowCount(sp.ddbPool, sp.schema, sp.table, logThreadSeq)
+	sourceExactCount, _ := sp.getExactRowCount(sp.sdbPool, sp.schema, sp.table, logThreadSeq)
+	targetExactCount, _ := sp.getExactRowCount(sp.ddbPool, sp.schema, sp.table, logThreadSeq)
 	pods.Rows = fmt.Sprintf("%d,%d", sourceExactCount, targetExactCount)
 	measuredDataPods = append(measuredDataPods, pods)
 	displayTableName = sp.getDisplayTableName()
@@ -628,7 +636,25 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 }
 
 // getExactRowCount Query the exact number of rows in a table
-func (sp *SchedulePlan) getExactRowCount(dbPool *global.Pool, schema, table string, logThreadSeq int64) int64 {
+func (sp *SchedulePlan) queryEstimatedTableRows(db *sql.DB, schema, table string) (int64, bool) {
+	query := fmt.Sprintf("SELECT TABLE_ROWS FROM information_schema.tables WHERE table_schema = '%s' AND table_name = '%s' LIMIT 1", schema, table)
+	var tableRows sql.NullInt64
+	if err := db.QueryRow(query).Scan(&tableRows); err == nil && tableRows.Valid && tableRows.Int64 >= 0 {
+		return tableRows.Int64, true
+	}
+	return 0, false
+}
+
+func (sp *SchedulePlan) queryEstimatedIndexCardinality(db *sql.DB, schema, table string) (int64, bool) {
+	query := fmt.Sprintf("SELECT MAX(CARDINALITY) FROM information_schema.statistics WHERE table_schema = '%s' AND table_name = '%s' AND seq_in_index = 1", schema, table)
+	var card sql.NullInt64
+	if err := db.QueryRow(query).Scan(&card); err == nil && card.Valid && card.Int64 > 0 {
+		return card.Int64, true
+	}
+	return 0, false
+}
+
+func (sp *SchedulePlan) getExactRowCount(dbPool *global.Pool, schema, table string, logThreadSeq int64) (int64, bool) {
 	db := dbPool.Get(logThreadSeq)
 	defer dbPool.Put(db, logThreadSeq)
 
@@ -660,20 +686,59 @@ func (sp *SchedulePlan) getExactRowCount(dbPool *global.Pool, schema, table stri
 		if targetSchema == "" {
 			vlog = fmt.Sprintf("(%d) Cannot determine schema for table %s", logThreadSeq, table)
 			global.Wlog.Error(vlog)
-			return 0
+			return 0, false
 		}
 	}
 
-	var count int64
-	var query string
-	var vlog string
+	var (
+		count int64
+		query string
+		vlog  string
+	)
 
 	// 获取全局配置中的sqlWhere条件
 	globalConfig := inputArg.GetGlobalConfig()
-	if globalConfig != nil && globalConfig.SecondaryL.SchemaV.SqlWhere != "" {
+	whereClause := ""
+	if globalConfig != nil {
+		whereClause = strings.TrimSpace(globalConfig.SecondaryL.SchemaV.SqlWhere)
+	}
+	showActualRows := inputArg.IsShowActualRowsEnabled()
+
+	cacheKey := fmt.Sprintf("%p.%s.%s.%s.%t", db, targetSchema, table, whereClause, showActualRows)
+	if cached, ok := tableRowCountCache.Load(cacheKey); ok {
+		if entry, ok2 := cached.(rowCountCacheEntry); ok2 {
+			return entry.Count, entry.Exact
+		}
+	}
+
+	// showActualRows=OFF: always use metadata estimates and avoid heavy COUNT(*) scans.
+	if !showActualRows {
+		if estimatedRows, ok := sp.queryEstimatedTableRows(db, targetSchema, table); ok {
+			vlog = fmt.Sprintf("(%d) showActualRows=OFF, using TABLE_ROWS estimate for %s.%s: %d", logThreadSeq, targetSchema, table, estimatedRows)
+			global.Wlog.Debug(vlog)
+			entry := rowCountCacheEntry{Count: estimatedRows, Exact: false}
+			tableRowCountCache.Store(cacheKey, entry)
+			return entry.Count, entry.Exact
+		}
+		if cardRows, ok := sp.queryEstimatedIndexCardinality(db, targetSchema, table); ok {
+			vlog = fmt.Sprintf("(%d) showActualRows=OFF, using index cardinality estimate for %s.%s: %d", logThreadSeq, targetSchema, table, cardRows)
+			global.Wlog.Debug(vlog)
+			entry := rowCountCacheEntry{Count: cardRows, Exact: false}
+			tableRowCountCache.Store(cacheKey, entry)
+			return entry.Count, entry.Exact
+		}
+		vlog = fmt.Sprintf("(%d) Row estimate unavailable for %s.%s, fallback to 0 to avoid heavy COUNT(*)", logThreadSeq, targetSchema, table)
+		global.Wlog.Warn(vlog)
+		entry := rowCountCacheEntry{Count: 0, Exact: false}
+		tableRowCountCache.Store(cacheKey, entry)
+		return entry.Count, entry.Exact
+	}
+
+	// showActualRows=ON: keep original exact row count behavior.
+	if whereClause != "" {
 		// 检查表中是否存在WHERE条件中引用的所有列
 		// 提取WHERE条件中的所有列名
-		columns := extractColumnsFromWhere(globalConfig.SecondaryL.SchemaV.SqlWhere)
+		columns := extractColumnsFromWhere(whereClause)
 		if len(columns) > 0 {
 			// 检查每个列是否在表中存在
 			allColumnsExist := true
@@ -703,11 +768,11 @@ func (sp *SchedulePlan) getExactRowCount(dbPool *global.Pool, schema, table stri
 				if dbPool == sp.sdbPool {
 					global.AddSkippedTable(targetSchema, table, "data", "columns referenced in WHERE condition do not exist")
 				}
-				return 0
+				return 0, false
 			}
 		}
 
-		query = fmt.Sprintf("SELECT COUNT(*) FROM `%s`.`%s` WHERE %s", targetSchema, table, globalConfig.SecondaryL.SchemaV.SqlWhere)
+		query = fmt.Sprintf("SELECT COUNT(*) FROM `%s`.`%s` WHERE %s", targetSchema, table, whereClause)
 	} else {
 		query = fmt.Sprintf("SELECT COUNT(*) FROM `%s`.`%s`", targetSchema, table)
 	}
@@ -719,11 +784,13 @@ func (sp *SchedulePlan) getExactRowCount(dbPool *global.Pool, schema, table stri
 	if err != nil {
 		vlog = fmt.Sprintf("(%d) Failed to get row count for %s.%s: %v", logThreadSeq, targetSchema, table, err)
 		global.Wlog.Error(vlog)
-		return 0
+		return 0, false
 	}
 
 	vlog = fmt.Sprintf("(%d) Row count for %s.%s: %d", logThreadSeq, targetSchema, table, count)
 	global.Wlog.Debug(vlog)
 
-	return count
+	entry := rowCountCacheEntry{Count: count, Exact: true}
+	tableRowCountCache.Store(cacheKey, entry)
+	return entry.Count, entry.Exact
 }

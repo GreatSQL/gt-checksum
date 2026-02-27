@@ -288,6 +288,16 @@ func (rc *ConfigParameter) checkPar() {
 		global.Wlog.Error(vlog)
 		os.Exit(1)
 	}
+	rc.SecondaryL.RulesV.ShowActualRows = strings.ToUpper(strings.TrimSpace(rc.SecondaryL.RulesV.ShowActualRows))
+	if rc.SecondaryL.RulesV.ShowActualRows == "" {
+		rc.SecondaryL.RulesV.ShowActualRows = "ON"
+	}
+	if rc.SecondaryL.RulesV.ShowActualRows != "ON" && rc.SecondaryL.RulesV.ShowActualRows != "OFF" {
+		fmt.Println(fmt.Sprintf("gt-checksum: showActualRows must be ON or OFF. Check %s or set logLevel=debug for details", rc.SecondaryL.LogV.LogFile))
+		vlog = fmt.Sprintf("(%d) [%s] option \"showActualRows\" must be ON or OFF.", rc.LogThreadSeq, Event)
+		global.Wlog.Error(vlog)
+		os.Exit(1)
+	}
 	if rc.SecondaryL.RepairV.FixTrxSize < 1 {
 		fmt.Println(fmt.Sprintf("gt-checksum: fixTrxSize must be greater than 0. Check %s or set logLevel=debug for details", rc.SecondaryL.LogV.LogFile))
 		vlog = fmt.Sprintf("(%d) [%s] option \"fixTrxSize\" must be greater than 0.", rc.LogThreadSeq, Event)

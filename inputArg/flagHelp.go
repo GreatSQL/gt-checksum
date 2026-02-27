@@ -70,6 +70,12 @@ func (rc *ConfigParameter) cliHelp() {
 			Value:       0,
 			Destination: &rc.CliDeleteSqlSize,
 		},
+		cli.StringFlag{
+			Name:        "showActualRows",
+			Usage:       "Override showActualRows from system parameter, values: ON|OFF, e.g. --showActualRows ON",
+			Value:       "",
+			Destination: &rc.CliShowActualRows,
+		},
 	}
 	app.Action = func(c *cli.Context) { //应用执行函数
 		if rc.Config == "" {

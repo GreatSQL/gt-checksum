@@ -41,6 +41,7 @@ type RulesS struct {
 	QueueSize      int
 	CheckObject    string
 	MemoryLimit    int
+	ShowActualRows string
 	IsRoutineCheck bool // 标记是否同时检查存储过程和函数
 }
 
@@ -78,6 +79,7 @@ type ConfigParameter struct {
 	CliFixTrxSize       int
 	CliInsertSqlSize    int
 	CliDeleteSqlSize    int
+	CliShowActualRows   string
 	LogThreadSeq        int64
 	NoIndexTableTmpFile string
 }
