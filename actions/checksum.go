@@ -7,7 +7,6 @@ import (
 	"io"
 	"math/rand"
 	"os"
-	"time"
 
 	"gt-checksum/global"
 )
@@ -119,7 +118,7 @@ func (csts CheckSumTypeStruct) Arrcmp(src []string, dest []string) ([]string, []
 	}
 
 	// 调试：记录差异数量
-	global.Wlog.Debug("DEBUG_ARRCMP: src_len=%d, dest_len=%d, added_len=%d, deleted_len=%d", len(src), len(dest), len(added), len(deleted))
+	global.Wlog.Debugf("DEBUG_ARRCMP: src_len=%d, dest_len=%d, added_len=%d, deleted_len=%d", len(src), len(dest), len(added), len(deleted))
 
 	return added, deleted
 }
@@ -160,7 +159,6 @@ func (csts CheckSumTypeStruct) RandomString(n int, allowedChars ...[]rune) strin
 		letters = allowedChars[0]
 	}
 	b := make([]rune, n)
-	rand.Seed(time.Now().UnixNano())
 	for i := range b {
 		b[i] = letters[rand.Intn(len(letters))]
 	}
@@ -174,13 +172,13 @@ func (csts CheckSumTypeStruct) FileMd5(f1 string) string {
 	f, err := os.Open(f1)
 	if err != nil {
 		fmt.Println("Open", err)
-		//return "", err
+		return ""
 	}
 	defer f.Close()
 	md5hash := md5.New()
 	if _, err = io.Copy(md5hash, f); err != nil {
 		fmt.Println("Copy", err)
-		//return "", err
+		return ""
 	}
 	md5Val := fmt.Sprintf("%x", md5hash.Sum(nil))
 	return md5Val

@@ -6,15 +6,17 @@ import (
 	"strings"
 )
 
+var (
+	deleteStatementPattern       = regexp.MustCompile(`(?i)^DELETE\s+FROM\s+\x60([^\x60]+)\x60\.\x60([^\x60]+)\x60\s+WHERE\s+(.*?);$`)
+	insertStatementPattern       = regexp.MustCompile(`(?i)^INSERT\s+INTO\s+\x60([^\x60]+)\x60\.\x60([^\x60]+)\x60\s*\(([^)]+)\)\s+VALUES\s*\((.+)\);$`)
+	insertStatementNoColsPattern = regexp.MustCompile(`(?i)^INSERT\s+INTO\s+\x60([^\x60]+)\x60\.\x60([^\x60]+)\x60\s+VALUES\s*\((.+)\);$`)
+)
+
 // OptimizeDeleteSqls 优化 DELETE 语句，将相同表、相同列（单列或多列）的单条等值 DELETE 语句合并为 IN (...) 语句
 func OptimizeDeleteSqls(sqls []string, maxSqlSize int, fixTrxNum int) []string {
 	if len(sqls) <= 1 {
 		return sqls
 	}
-
-	// 解析单条 DELETE 语句的正则表达式，提取表名和以WHERE开头的条件部分
-	// 匹配: DELETE FROM `schema`.`table` WHERE [condition];
-	deletePattern := regexp.MustCompile(`(?i)^DELETE\s+FROM\s+\x60([^\x60]+)\x60\.\x60([^\x60]+)\x60\s+WHERE\s+(.*?);$`)
 
 	var optimizedSqls []string
 
@@ -32,7 +34,7 @@ func OptimizeDeleteSqls(sqls []string, maxSqlSize int, fixTrxNum int) []string {
 
 	for _, sql := range sqls {
 		sqlTrim := strings.TrimSpace(sql)
-		matches := deletePattern.FindStringSubmatch(sqlTrim)
+		matches := deleteStatementPattern.FindStringSubmatch(sqlTrim)
 
 		if len(matches) != 4 {
 			optimizedSqls = append(optimizedSqls, sql)
@@ -263,14 +265,12 @@ func parseInsertStatement(sql string) (schema, table, columns, values string, ok
 		return "", "", "", "", false
 	}
 
-	insertIntoPattern := regexp.MustCompile(`(?i)^INSERT\s+INTO\s+\x60([^\x60]+)\x60\.\x60([^\x60]+)\x60\s*\(([^)]+)\)\s+VALUES\s*\((.+)\);$`)
-	matches := insertIntoPattern.FindStringSubmatch(sql)
+	matches := insertStatementPattern.FindStringSubmatch(sql)
 	if len(matches) == 5 {
 		return matches[1], matches[2], matches[3], matches[4], true
 	}
 
-	insertIntoPatternNoCols := regexp.MustCompile(`(?i)^INSERT\s+INTO\s+\x60([^\x60]+)\x60\.\x60([^\x60]+)\x60\s+VALUES\s*\((.+)\);$`)
-	matchesNoCols := insertIntoPatternNoCols.FindStringSubmatch(sql)
+	matchesNoCols := insertStatementNoColsPattern.FindStringSubmatch(sql)
 	if len(matchesNoCols) == 4 {
 		return matchesNoCols[1], matchesNoCols[2], "", matchesNoCols[3], true
 	}

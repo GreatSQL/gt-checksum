@@ -139,7 +139,6 @@ func (sp *SchedulePlan) DoSampleDataCheck() {
 		diffQueryData                  = make(chanDiffDataS, queueDepth)
 		fixSQL                         = make(chanString, queueDepth)
 	)
-	rand.Seed(time.Now().UnixNano())
 	logThreadSeq := rand.Int63()
 	vlog = fmt.Sprintf("(%d) Starting sampling data checksum", logThreadSeq)
 	global.Wlog.Info(vlog)

@@ -625,8 +625,22 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 	sp.FixSqlExec(sqlStrExec, int64(logThreadSeq))
 	//Output verification result information
 	// 重新查询精确行数
-	sourceExactCount, _ := sp.getExactRowCount(sp.sdbPool, sp.schema, sp.table, logThreadSeq)
-	targetExactCount, _ := sp.getExactRowCount(sp.ddbPool, sp.schema, sp.table, logThreadSeq)
+	sourceExactCount, sourceCountExact := sp.getExactRowCount(sp.sdbPool, sp.schema, sp.table, logThreadSeq)
+	targetExactCount, targetCountExact := sp.getExactRowCount(sp.ddbPool, sp.schema, sp.table, logThreadSeq)
+	if !sourceCountExact {
+		global.Wlog.Warn(fmt.Sprintf("(%d) Source row count for %s.%s is not exact, fallback value=%d", logThreadSeq, sp.schema, sp.table, sourceExactCount))
+		if sourceExactCount == 0 && barTableRow > 0 {
+			sourceExactCount = barTableRow
+			global.Wlog.Warn(fmt.Sprintf("(%d) Source row count fallback to progress baseline for %s.%s: %d", logThreadSeq, sp.schema, sp.table, sourceExactCount))
+		}
+	}
+	if !targetCountExact {
+		global.Wlog.Warn(fmt.Sprintf("(%d) Target row count for %s.%s is not exact, fallback value=%d", logThreadSeq, sp.schema, sp.table, targetExactCount))
+		if targetExactCount == 0 && barTableRow > 0 {
+			targetExactCount = barTableRow
+			global.Wlog.Warn(fmt.Sprintf("(%d) Target row count fallback to progress baseline for %s.%s: %d", logThreadSeq, sp.schema, sp.table, targetExactCount))
+		}
+	}
 	pods.Rows = fmt.Sprintf("%d,%d", sourceExactCount, targetExactCount)
 	measuredDataPods = append(measuredDataPods, pods)
 	displayTableName = sp.getDisplayTableName()
