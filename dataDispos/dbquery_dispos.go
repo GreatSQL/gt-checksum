@@ -27,7 +27,7 @@ func (dbpos *DBdataDispos) ColumnTypeDispos(columnName string) (string, int, boo
 		vlog              string
 		indexColumnType   string //索引列的数据类型
 		indexColumnIsNull bool   //索引列数据类型是否允许为null
-		office            int    //浮点类型的偏移量
+		office            = 2    //浮点类型的偏移量，默认保留2位
 	)
 	vlog = fmt.Sprintf("(%d) Table [%v.%v] column info: %v", dbpos.LogThreadSeq, dbpos.Schema, dbpos.Table, dbpos.TableColumnType)
 	global.Wlog.Debug(vlog)
@@ -39,7 +39,22 @@ func (dbpos *DBdataDispos) ColumnTypeDispos(columnName string) (string, int, boo
 			if strings.Contains(strings.Join(IntType, ","), ct) {
 				indexColumnType = "int"
 			} else if strings.Contains(strings.Join(floatType, ","), ct) {
-				office, _ = strconv.Atoi(strings.TrimSpace(strings.ReplaceAll(strings.Split(i["dataType"], ",")[1], ")", "")))
+				// 示例: decimal(18,4) / float(10,2)
+				dataType := strings.ToUpper(strings.TrimSpace(i["dataType"]))
+				if strings.Contains(dataType, "(") && strings.Contains(dataType, ",") {
+					dataTypeParts := strings.SplitN(dataType, "(", 2)
+					precisionPart := strings.TrimSuffix(dataTypeParts[1], ")")
+					precisionParts := strings.Split(precisionPart, ",")
+					if len(precisionParts) == 2 {
+						parsedOffice, parseErr := strconv.Atoi(strings.TrimSpace(precisionParts[1]))
+						if parseErr == nil && parsedOffice >= 0 {
+							office = parsedOffice
+						} else {
+							global.Wlog.Warn(fmt.Sprintf("(%d) Parse float office failed for column [%s] type [%s], use default office=%d",
+								dbpos.LogThreadSeq, columnName, i["dataType"], office))
+						}
+					}
+				}
 				indexColumnType = "float"
 			} else {
 				indexColumnType = "char"
@@ -56,6 +71,7 @@ func (dbpos *DBdataDispos) ColumnTypeDispos(columnName string) (string, int, boo
 	return indexColumnType, office, indexColumnIsNull
 }
 
+// Deprecated: DataAscSort is kept for legacy compatibility and is not used in the current checksum path.
 func (dbpos *DBdataDispos) DataAscSort(data map[string]interface{}, columnName string) []map[string]string {
 	var (
 		vlog               string
@@ -75,11 +91,11 @@ func (dbpos *DBdataDispos) DataAscSort(data map[string]interface{}, columnName s
 		switch indexColumnType {
 		case "int":
 			if indexColumnIsNull {
-				if k != "<nil>" {
+				if k != ValueNullPlaceholder {
 					zc, _ := strconv.Atoi(k)
 					zint = append(zint, zc)
 				} else {
-					znull["<nil>"] = v
+					znull[ValueNullPlaceholder] = v
 				}
 			} else {
 				zc, _ := strconv.Atoi(k)
@@ -88,11 +104,11 @@ func (dbpos *DBdataDispos) DataAscSort(data map[string]interface{}, columnName s
 		case "float":
 			//处理null值
 			if indexColumnIsNull {
-				if k != "<nil>" {
+				if k != ValueNullPlaceholder {
 					zc, _ := strconv.ParseFloat(k, office)
 					zfloat = append(zfloat, zc)
 				} else {
-					znull["<nil>"] = v
+					znull[ValueNullPlaceholder] = v
 				}
 			} else {
 				zc, _ := strconv.ParseFloat(k, office)
@@ -100,10 +116,10 @@ func (dbpos *DBdataDispos) DataAscSort(data map[string]interface{}, columnName s
 			}
 		case "char":
 			if indexColumnIsNull {
-				if k != "<nil>" {
+				if k != ValueNullPlaceholder {
 					zchar = append(zchar, k)
 				} else {
-					znull["<nil>"] = v
+					znull[ValueNullPlaceholder] = v
 				}
 			} else {
 				zchar = append(zchar, k)
@@ -124,10 +140,10 @@ func (dbpos *DBdataDispos) DataAscSort(data map[string]interface{}, columnName s
 		sort.Ints(zint)
 		vlog = fmt.Sprintf("(%d) Sorted int type index column data: [%v]", dbpos.LogThreadSeq, zint)
 		global.Wlog.Debug(vlog)
-		if _, ok := znull["<nil>"]; ok {
+		if _, ok := znull[ValueNullPlaceholder]; ok {
 			vlog = fmt.Sprintf("(%d) The index column data of int type and index column data is null values.", dbpos.LogThreadSeq)
 			global.Wlog.Debug(vlog)
-			indexColumnUniqueS = append(indexColumnUniqueS, map[string]string{"columnName": fmt.Sprintf("%v", "<nil>"), "count": fmt.Sprintf("%v", z[fmt.Sprintf("%v", "<nil>")])})
+			indexColumnUniqueS = append(indexColumnUniqueS, map[string]string{"columnName": fmt.Sprintf("%v", ValueNullPlaceholder), "count": fmt.Sprintf("%v", z[fmt.Sprintf("%v", ValueNullPlaceholder)])})
 		} else {
 			for _, i := range zint {
 				indexColumnUniqueS = append(indexColumnUniqueS, map[string]string{fmt.Sprintf("%v", i): fmt.Sprintf("%v", data[fmt.Sprintf("%v", i)])})
@@ -141,10 +157,10 @@ func (dbpos *DBdataDispos) DataAscSort(data map[string]interface{}, columnName s
 		sort.Float64s(zfloat)
 		vlog = fmt.Sprintf("(%d) Sorted float type index column data: [%v]", dbpos.LogThreadSeq, zfloat)
 		global.Wlog.Debug(vlog)
-		if _, ok := znull["<nil>"]; ok {
+		if _, ok := znull[ValueNullPlaceholder]; ok {
 			vlog = fmt.Sprintf("(%d) The index column data of float type and index column data is null values.", dbpos.LogThreadSeq)
 			global.Wlog.Debug(vlog)
-			indexColumnUniqueS = append(indexColumnUniqueS, map[string]string{"columnName": fmt.Sprintf("%v", "<nil>"), "count": fmt.Sprintf("%v", z[fmt.Sprintf("%v", "<nil>")])})
+			indexColumnUniqueS = append(indexColumnUniqueS, map[string]string{"columnName": fmt.Sprintf("%v", ValueNullPlaceholder), "count": fmt.Sprintf("%v", z[fmt.Sprintf("%v", ValueNullPlaceholder)])})
 		} else {
 			for _, i := range zfloat {
 				ii := strconv.FormatFloat(i, 'f', 2, 64)
@@ -158,10 +174,10 @@ func (dbpos *DBdataDispos) DataAscSort(data map[string]interface{}, columnName s
 		sort.Strings(zchar)
 		vlog = fmt.Sprintf("(%d) Sorted char type index column data: [%v]", dbpos.LogThreadSeq, zchar)
 		global.Wlog.Debug(vlog)
-		if _, ok := znull["<nil>"]; ok {
+		if _, ok := znull[ValueNullPlaceholder]; ok {
 			vlog = fmt.Sprintf("(%d) The index column data of char type and index column data is null values.", dbpos.LogThreadSeq)
 			global.Wlog.Debug(vlog)
-			indexColumnUniqueS = append(indexColumnUniqueS, map[string]string{"columnName": fmt.Sprintf("%v", "<nil>"), "count": fmt.Sprintf("%v", z[fmt.Sprintf("%v", "<nil>")])})
+			indexColumnUniqueS = append(indexColumnUniqueS, map[string]string{"columnName": fmt.Sprintf("%v", ValueNullPlaceholder), "count": fmt.Sprintf("%v", z[fmt.Sprintf("%v", ValueNullPlaceholder)])})
 		} else {
 			for _, i := range zchar {
 				indexColumnUniqueS = append(indexColumnUniqueS, map[string]string{i: fmt.Sprintf("%v", data[i])})
@@ -179,10 +195,10 @@ func (dbpos *DBdataDispos) RowsdataNullDispos(i map[string]interface{}) map[stri
 	var (
 		znull = make(map[string]interface{}) //源目标端索引列数据的集合（无序的） //针对null的值的一个处理
 	)
-	if fmt.Sprintf("%v", i["columnName"]) == "<nil>" {
+	if fmt.Sprintf("%v", i["columnName"]) == ValueNullPlaceholder {
 		if _, ok := i["count"]; ok {
 			c, _ := strconv.ParseUint(fmt.Sprintf("%v", i["count"]), 10, 64)
-			znull["<nil>"] = c
+			znull[ValueNullPlaceholder] = c
 		}
 	} else {
 		znull[fmt.Sprintf("%v", i["columnName"])] = i["count"]
@@ -195,9 +211,11 @@ func (dbpos *DBdataDispos) RowsdataNullDispos(i map[string]interface{}) map[stri
 func (dbpos *DBdataDispos) DataChanDispos() chan map[string]interface{} {
 	var chanEntry = make(chan map[string]interface{}, 1000)
 	go func() {
+		defer close(chanEntry)
+		defer dbpos.SqlRows.Close()
 		columns, err := dbpos.SqlRows.Columns()
 		if err != nil {
-			errInfo := fmt.Sprintf("(%d) %s DB Get the column fail. Error Info: %s", dbpos.DBType, dbpos.LogThreadSeq, err)
+			errInfo := fmt.Sprintf("(%d) %s DB Get the column fail. Error Info: %s", dbpos.LogThreadSeq, dbpos.DBType, err)
 			global.Wlog.Error(errInfo)
 			return
 		}
@@ -211,7 +229,11 @@ func (dbpos *DBdataDispos) DataChanDispos() chan map[string]interface{} {
 			for i := 0; i < len(columns); i++ {
 				valuePtrs[i] = &values[i]
 			}
-			dbpos.SqlRows.Scan(valuePtrs...)
+			if err = dbpos.SqlRows.Scan(valuePtrs...); err != nil {
+				errInfo := fmt.Sprintf("(%d) %s DB Scan row fail. Error Info: %s", dbpos.LogThreadSeq, dbpos.DBType, err)
+				global.Wlog.Error(errInfo)
+				return
+			}
 			entry := make(map[string]interface{})
 			for i, col := range columns {
 				var v interface{}
@@ -224,17 +246,19 @@ func (dbpos *DBdataDispos) DataChanDispos() chan map[string]interface{} {
 					v = val
 				}
 				if v == nil {
-					v = "<nil>"
+					v = ValueNullPlaceholder
 				}
 				if v == "" {
-					v = "<entry>"
+					v = ValueEmptyPlaceholder
 				}
 				entry[col] = v
 			}
 			chanEntry <- dbpos.RowsdataNullDispos(entry)
 		}
-		close(chanEntry)
-		dbpos.SqlRows.Close()
+		if err = dbpos.SqlRows.Err(); err != nil {
+			errInfo := fmt.Sprintf("(%d) %s DB Iterate rows fail. Error Info: %s", dbpos.LogThreadSeq, dbpos.DBType, err)
+			global.Wlog.Error(errInfo)
+		}
 	}()
 	// 获取列名
 	return chanEntry
@@ -259,7 +283,11 @@ func (dbpos *DBdataDispos) DataRowsAndColumnSliceDispos(tableData []map[string]i
 		for i := 0; i < len(columns); i++ {
 			valuePtrs[i] = &values[i]
 		}
-		dbpos.SqlRows.Scan(valuePtrs...)
+		if err = dbpos.SqlRows.Scan(valuePtrs...); err != nil {
+			errInfo := fmt.Sprintf("(%d) [%s] Failed to scan %s database row data. Error Info: %s", dbpos.LogThreadSeq, dbpos.Event, dbpos.DBType, err)
+			global.Wlog.Error(errInfo)
+			return nil, err
+		}
 		entry := make(map[string]interface{})
 		for i, col := range columns {
 			var v interface{}
@@ -276,15 +304,20 @@ func (dbpos *DBdataDispos) DataRowsAndColumnSliceDispos(tableData []map[string]i
 				if col == "ROUTINE_DEFINITION" {
 					v = ""
 				} else {
-					v = "<nil>"
+					v = ValueNullPlaceholder
 				}
 			}
 			if v == "" && col != "ROUTINE_DEFINITION" {
-				v = "<entry>"
+				v = ValueEmptyPlaceholder
 			}
 			entry[col] = v
 		}
 		tableData = append(tableData, entry)
+	}
+	if err = dbpos.SqlRows.Err(); err != nil {
+		errInfo := fmt.Sprintf("(%d) [%s] Failed to iterate %s database row data. Error Info: %s", dbpos.LogThreadSeq, dbpos.Event, dbpos.DBType, err)
+		global.Wlog.Error(errInfo)
+		return nil, err
 	}
 	return tableData, nil
 }
@@ -296,7 +329,7 @@ func (dbpos *DBdataDispos) DataRowsDispos(tableData []string) ([]string, error) 
 	// 获取列名
 	columns, err := dbpos.SqlRows.Columns()
 	if err != nil {
-		errInfo := fmt.Sprintf("(%d) %s DB Get the column fail. Error Info: %s", dbpos.DBType, dbpos.LogThreadSeq, err)
+		errInfo := fmt.Sprintf("(%d) %s DB Get the column fail. Error Info: %s", dbpos.LogThreadSeq, dbpos.DBType, err)
 		global.Wlog.Error(errInfo)
 		return nil, err
 	}
@@ -311,7 +344,11 @@ func (dbpos *DBdataDispos) DataRowsDispos(tableData []string) ([]string, error) 
 		for i := 0; i < len(columns); i++ {
 			valuePtrs[i] = &values[i]
 		}
-		dbpos.SqlRows.Scan(valuePtrs...)
+		if err = dbpos.SqlRows.Scan(valuePtrs...); err != nil {
+			errInfo := fmt.Sprintf("(%d) %s DB Scan row fail. Error Info: %s", dbpos.LogThreadSeq, dbpos.DBType, err)
+			global.Wlog.Error(errInfo)
+			return nil, err
+		}
 		entry := make(map[string]interface{})
 		for i, col := range columns {
 			var v interface{}
@@ -324,23 +361,28 @@ func (dbpos *DBdataDispos) DataRowsDispos(tableData []string) ([]string, error) 
 				v = val
 			}
 			if v == nil {
-				v = "<nil>"
+				v = ValueNullPlaceholder
 			}
 			//oracle只有null没有空值
 			if dbpos.DBType == "Oracle" {
 				if v == "" {
-					v = "<nil>"
+					v = ValueNullPlaceholder
 				}
 			}
 			if dbpos.DBType == "MySQL" {
 				if v == "" {
-					v = "<entry>"
+					v = ValueEmptyPlaceholder
 				}
 			}
 			entry[col] = v
 			tmpaaS = append(tmpaaS, fmt.Sprintf("%v", v))
 		}
 		tableData = append(tableData, strings.Join(tmpaaS, "/*go actions columnData*/"))
+	}
+	if err = dbpos.SqlRows.Err(); err != nil {
+		errInfo := fmt.Sprintf("(%d) %s DB Iterate rows fail. Error Info: %s", dbpos.LogThreadSeq, dbpos.DBType, err)
+		global.Wlog.Error(errInfo)
+		return nil, err
 	}
 	return tableData, nil
 }

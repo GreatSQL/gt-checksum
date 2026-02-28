@@ -6,6 +6,7 @@ import (
 	oracle "gt-checksum/Oracle"
 )
 
+// IndexColumnStruct carries metadata required to build index-based query chunks.
 type IndexColumnStruct struct {
 	Drivce           string
 	Schema           string
