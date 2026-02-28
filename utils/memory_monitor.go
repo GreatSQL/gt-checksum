@@ -20,12 +20,49 @@ var (
 	ParamChanged     bool                     // 标记参数是否已变更
 )
 
+type RuntimeTuneSnapshot struct {
+	ParallelThds int
+	QueueSize    int
+	ChunkSize    int
+}
+
+var runtimeTuneState = struct {
+	sync.RWMutex
+	value RuntimeTuneSnapshot
+}{}
+
+func initRuntimeTuneState(config *inputArg.ConfigParameter) {
+	if config == nil {
+		return
+	}
+	runtimeTuneState.Lock()
+	runtimeTuneState.value = RuntimeTuneSnapshot{
+		ParallelThds: config.SecondaryL.RulesV.ParallelThds,
+		QueueSize:    config.SecondaryL.RulesV.QueueSize,
+		ChunkSize:    config.SecondaryL.RulesV.ChanRowCount,
+	}
+	runtimeTuneState.Unlock()
+}
+
+func GetRuntimeTuneSnapshot() RuntimeTuneSnapshot {
+	runtimeTuneState.RLock()
+	defer runtimeTuneState.RUnlock()
+	return runtimeTuneState.value
+}
+
+func setRuntimeTuneSnapshot(v RuntimeTuneSnapshot) {
+	runtimeTuneState.Lock()
+	runtimeTuneState.value = v
+	runtimeTuneState.Unlock()
+}
+
 // MemoryMonitor monitors the memory usage of the program asynchronously.
 func MemoryMonitor(memoryLimit string, config *inputArg.ConfigParameter) {
 	limitMB := parseMemoryLimit(memoryLimit)
 	if limitMB == 0 {
 		return
 	}
+	initRuntimeTuneState(config)
 
 	// 用于跟踪参数调整次数
 	adjustmentCount := 0
@@ -94,9 +131,10 @@ func MemoryMonitor(memoryLimit string, config *inputArg.ConfigParameter) {
 				cleanupTmpFileAndLog(currentMB, limitMB, config)
 
 				// 检查参数是否已经是最小值
-				minimalParams := config.SecondaryL.RulesV.ParallelThds <= 1 &&
-					config.SecondaryL.RulesV.QueueSize <= 1 &&
-					config.SecondaryL.RulesV.ChanRowCount <= 100
+				currentTune := GetRuntimeTuneSnapshot()
+				minimalParams := currentTune.ParallelThds <= 1 &&
+					currentTune.QueueSize <= 1 &&
+					currentTune.ChunkSize <= 100
 				if minimalParams {
 					// 当达到120%时先尝试应急释放，而不是直接退出
 					if currentMB >= emergencyThresholdMB {
@@ -132,9 +170,9 @@ func MemoryMonitor(memoryLimit string, config *inputArg.ConfigParameter) {
 				adjustmentCount++
 
 				// 记录调整前的参数值
-				prevParallelThds := config.SecondaryL.RulesV.ParallelThds
-				prevQueueSize := config.SecondaryL.RulesV.QueueSize
-				prevChunkSize := config.SecondaryL.RulesV.ChanRowCount
+				prevParallelThds := currentTune.ParallelThds
+				prevQueueSize := currentTune.QueueSize
+				prevChunkSize := currentTune.ChunkSize
 
 				// 计算新的参数值，采用更温和的调整策略
 				// 所有参数都统一调整为原来的90%
@@ -142,10 +180,12 @@ func MemoryMonitor(memoryLimit string, config *inputArg.ConfigParameter) {
 				newQueueSize := max(1, int(float64(prevQueueSize)*0.9))
 				newChunkSize := max(100, int(float64(prevChunkSize)*0.9)) // 最小值为100，避免过小影响性能
 
-				// 更新配置值
-				config.SecondaryL.RulesV.ParallelThds = newParallelThds
-				config.SecondaryL.RulesV.QueueSize = newQueueSize
-				config.SecondaryL.RulesV.ChanRowCount = newChunkSize
+				// 仅更新运行时参数快照，避免并发写配置对象
+				setRuntimeTuneSnapshot(RuntimeTuneSnapshot{
+					ParallelThds: newParallelThds,
+					QueueSize:    newQueueSize,
+					ChunkSize:    newChunkSize,
+				})
 
 				// 设置参数变更标志并发送通知
 				paramChangeMutex.Lock()

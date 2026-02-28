@@ -6,6 +6,7 @@ import (
 	"strings"
 )
 
+// DataInfo defines buffer settings used by merge streams in data comparison workflows.
 type DataInfo struct {
 	ChanQueueDepth int
 }
@@ -36,7 +37,7 @@ func (sp *DataInfo) ChangeMerge(ch1 <-chan map[string]interface{}, ch2 <-chan ma
 						v22 = fmt.Sprintf("%v", k)
 					}
 					// 尝试将值转换为整数进行比较，以便数字类型的索引列能够正确排序
-					if v11 != "END" && v22 != "END" {
+					if v11 != StreamEndMarker && v22 != StreamEndMarker {
 						if v1Int, err1 := strconv.Atoi(v11); err1 == nil {
 							if v2Int, err2 := strconv.Atoi(v22); err2 == nil {
 								// 两个值都是整数，按数字大小比较
@@ -81,7 +82,7 @@ func (sp *DataInfo) ChangeMerge(ch1 <-chan map[string]interface{}, ch2 <-chan ma
 					cc <- v2
 				}
 			} else {
-				cc <- map[string]interface{}{"END": "0"}
+				cc <- map[string]interface{}{StreamEndMarker: StreamEndValue}
 				close(cc)
 				break
 			}
@@ -151,7 +152,7 @@ func (sp *DataInfo) Merge(ch1 <-chan map[string]interface{}, ch2 <-chan map[stri
 					cc <- v2
 				}
 			} else {
-				cc <- map[string]interface{}{"END": "0"}
+				cc <- map[string]interface{}{StreamEndMarker: StreamEndValue}
 				close(cc)
 				break
 			}

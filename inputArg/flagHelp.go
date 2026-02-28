@@ -81,7 +81,7 @@ func (rc *ConfigParameter) cliHelp() {
 		if rc.Config == "" {
 			if _, err := os.Stat("gc.conf"); err != nil {
 				fmt.Println("No config file specified and no gc.conf found in current directory. Use -h or --help for usage")
-				os.Exit(0)
+				os.Exit(1)
 			} else {
 				rc.Config = "gc.conf"
 				fmt.Println("\ngt-checksum: reading 'gc.conf' from current directory.")

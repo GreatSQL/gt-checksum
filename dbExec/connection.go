@@ -12,6 +12,7 @@ import (
 	_ "github.com/godror/godror"
 )
 
+// DBConnStruct stores connection and pool settings for database sessions.
 type DBConnStruct struct {
 	DBDevice        string
 	JDBC            string
@@ -46,7 +47,7 @@ func (dbs *DBConnStruct) OpenDB() (*sql.DB, error) {
 	defer func() {
 		if err := recover(); err != nil {
 			global.Wlog.Error("Failed to create database session connection")
-			os.Exit(0)
+			os.Exit(1)
 		}
 	}()
 	return dbs.openDb()
@@ -55,10 +56,11 @@ func (dbs *DBConnStruct) QPrepareRow(db *sql.DB, sqlStr string) (*sql.Rows, erro
 	global.Wlog.Info("begin prepare sql \"", sqlStr, "\"")
 	var sqlRows *sql.Rows
 	stmt, err := db.Prepare(sqlStr)
-	if err != err {
+	if err != nil {
 		global.Wlog.Error("sql prepare fail. sql: ", sqlStr, " Error info: ", err)
 		return nil, err
 	}
+	defer stmt.Close()
 	if strings.HasPrefix(strings.ToUpper(sqlStr), "SELECT") {
 		sqlRows, err = stmt.Query()
 		if err != nil {
@@ -71,7 +73,6 @@ func (dbs *DBConnStruct) QPrepareRow(db *sql.DB, sqlStr string) (*sql.Rows, erro
 			return nil, err
 		}
 	}
-	stmt.Close()
 	global.Wlog.Info("sql exec successful. sql info: ", sqlStr)
 	return sqlRows, nil
 }
@@ -87,6 +88,7 @@ func (dbs *DBConnStruct) QMapData(db *sql.DB, sqlStr string) ([]map[string]inter
 	if sqlRows, err = dbs.QPrepareRow(db, sqlStr); err != nil {
 		return nil, err
 	}
+	defer sqlRows.Close()
 	// 获取列名
 	columns, err := sqlRows.Columns()
 
@@ -106,7 +108,10 @@ func (dbs *DBConnStruct) QMapData(db *sql.DB, sqlStr string) ([]map[string]inter
 		for i := 0; i < len(columns); i++ {
 			valuePtrs[i] = &values[i]
 		}
-		sqlRows.Scan(valuePtrs...)
+		if err = sqlRows.Scan(valuePtrs...); err != nil {
+			global.Wlog.Error("scan row fail. sql: ", sqlStr, " Error info: ", err)
+			return nil, err
+		}
 		entry := make(map[string]interface{})
 		for i, col := range columns {
 			var v interface{}
@@ -120,6 +125,10 @@ func (dbs *DBConnStruct) QMapData(db *sql.DB, sqlStr string) ([]map[string]inter
 			entry[col] = v
 		}
 		tableData = append(tableData, entry)
+	}
+	if err = sqlRows.Err(); err != nil {
+		global.Wlog.Error("iterate rows fail. sql: ", sqlStr, " Error info: ", err)
+		return nil, err
 	}
 	return tableData, nil
 }
@@ -159,14 +168,23 @@ func (dbs *DBConnStruct) LSQInt(db *sql.DB, sqlstr string) (int, error) {
 		global.Wlog.Error("Parpare sql fail. sql: ", sqlstr, "error info: ", err)
 		return 0, err
 	}
+	defer stamt.Close()
 	global.Wlog.Debug("Execute sql: \"", sqlstr, "\" at the MySQL")
 	rows, err := stamt.Query()
 	if err != nil {
 		global.Wlog.Error("Execute sql fail. sql: ", sqlstr, "error info: ", err)
 		return 0, err
 	}
+	defer rows.Close()
 	for rows.Next() {
-		rows.Scan(&tmpTableCount)
+		if err = rows.Scan(&tmpTableCount); err != nil {
+			global.Wlog.Error("Scan sql result fail. sql: ", sqlstr, "error info: ", err)
+			return 0, err
+		}
+	}
+	if err = rows.Err(); err != nil {
+		global.Wlog.Error("Iterate sql result fail. sql: ", sqlstr, "error info: ", err)
+		return 0, err
 	}
 	return tmpTableCount, nil
 }
@@ -178,21 +196,29 @@ func (dbs *DBConnStruct) LSQSEInt(db *sql.DB, sqlstr string) ([]string, error) {
 	var tmpTableCount []string
 	global.Wlog.Debug("Prepare sql: \"", sqlstr, "\" at the MySQL")
 	stmat, err := db.Prepare(sqlstr)
-	if err != err {
+	if err != nil {
 		global.Wlog.Error("Prepare sql fail. sql: ", sqlstr, "error info: ", err)
 		return tmpTableCount, err
 	}
+	defer stmat.Close()
 	global.Wlog.Debug("Execute sql: \"", sqlstr, "\" at the MySQL")
 	rows, err := stmat.Query()
 	var num string
-	if err != err {
+	if err != nil {
 		global.Wlog.Error("Execute sql fail. sql: ", sqlstr, "error info: ", err)
 		return tmpTableCount, err
-	} else {
-		for rows.Next() {
-			rows.Scan(&num)
-			tmpTableCount = append(tmpTableCount, num)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		if err = rows.Scan(&num); err != nil {
+			global.Wlog.Error("Scan sql result fail. sql: ", sqlstr, "error info: ", err)
+			return tmpTableCount, err
 		}
+		tmpTableCount = append(tmpTableCount, num)
+	}
+	if err = rows.Err(); err != nil {
+		global.Wlog.Error("Iterate sql result fail. sql: ", sqlstr, "error info: ", err)
+		return tmpTableCount, err
 	}
 	return tmpTableCount, nil
 }
@@ -209,7 +235,12 @@ func (dbs *DBConnStruct) DbSqlExecString(db *sql.DB, sqlstr string) (string, err
 	if err != nil {
 		global.Wlog.Error(fmt.Sprintf("Database error: %v", err))
 		rows, err = db.Query(sqlstr)
+		if err != nil {
+			global.Wlog.Error(fmt.Sprintf("Retry query failed: %v", err))
+			return "", err
+		}
 	}
+	defer rows.Close()
 	global.Wlog.Debug("Execute sql: \"", sqlstr, "\" at the MySQL")
 	columns, err = rows.Columns()
 	if err != nil {
@@ -223,7 +254,10 @@ func (dbs *DBConnStruct) DbSqlExecString(db *sql.DB, sqlstr string) (string, err
 		for i := 0; i < len(columns); i++ {
 			valuePtrs[i] = &values[i]
 		}
-		rows.Scan(valuePtrs...)
+		if err = rows.Scan(valuePtrs...); err != nil {
+			global.Wlog.Error("Scan sql result fail. sql: ", sqlstr, "error info: ", err)
+			return "", err
+		}
 		for i := range columns {
 			var v interface{}
 			val := values[i]
@@ -238,7 +272,10 @@ func (dbs *DBConnStruct) DbSqlExecString(db *sql.DB, sqlstr string) (string, err
 		tmpaa := strings.Join(tmpaaS, "/*go actions columnData*/")
 		rowDataString = append(rowDataString, tmpaa)
 	}
-	rows.Close()
+	if err = rows.Err(); err != nil {
+		global.Wlog.Error("Iterate sql result fail. sql: ", sqlstr, "error info: ", err)
+		return "", err
+	}
 	return strings.Join(rowDataString, "/*go actions rowData*/"), nil
 }
 

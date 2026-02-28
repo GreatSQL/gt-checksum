@@ -1,7 +1,6 @@
 package inputArg
 
 import (
-	"errors"
 	"fmt"
 	"gt-checksum/dbExec"
 	"gt-checksum/global"
@@ -12,18 +11,16 @@ import (
 	"time"
 )
 
-var illegalParameterStatus = false
-
 // 判断库表配置参数是否存在非法参数
-func (rc *ConfigParameter) rexPat(rex *regexp.Regexp, rexStr string, illegalParameterStatus bool) {
+func (rc *ConfigParameter) rexPat(rex *regexp.Regexp, rexStr string) {
+	illegalParameterStatus := false
 	if strings.Contains(rexStr, ",") {
 		ab := strings.Split(rexStr, ",")
 		for _, i := range ab {
 			if i != "" {
 				if !rex.MatchString(i) {
 					illegalParameterStatus = true
-				} else {
-					illegalParameterStatus = false
+					break
 				}
 			}
 		}
@@ -31,13 +28,11 @@ func (rc *ConfigParameter) rexPat(rex *regexp.Regexp, rexStr string, illegalPara
 		if rexStr != "NIL" && rexStr != "nil" {
 			if !rex.MatchString(rexStr) {
 				illegalParameterStatus = true
-			} else {
-				illegalParameterStatus = false
 			}
 		}
 	}
 	if illegalParameterStatus { //不法参数
-		rc.getErr("tables/ignoreTables option incorrect", errors.New("option error"))
+		rc.getErr("tables/ignoreTables option incorrect", fmt.Errorf("option error: %s", rexStr))
 	}
 }
 
@@ -95,7 +90,7 @@ var schemaTableFilter = func(igschema, igtable string) string {
 func (rc *ConfigParameter) getErr(msg string, err error) {
 	if err != nil {
 		fmt.Println("Error:", msg, "Details:", err)
-		os.Exit(0)
+		os.Exit(1)
 	}
 }
 
@@ -111,7 +106,8 @@ func (rc *ConfigParameter) checkPar() {
 
 	if rc.SecondaryL.DsnsV.SrcDrive == "oracle" {
 		rc.SecondaryL.DsnsV.SrcDrive = "godror"
-	} else if rc.SecondaryL.DsnsV.DestDrive == "oracle" {
+	}
+	if rc.SecondaryL.DsnsV.DestDrive == "oracle" {
 		rc.SecondaryL.DsnsV.DestDrive = "godror"
 	}
 
@@ -125,7 +121,7 @@ func (rc *ConfigParameter) checkPar() {
 		fmt.Println(fmt.Sprintf("gt-checksum: Failed to connect to source database. Check %s for details or set logLevel=debug", rc.SecondaryL.LogV.LogFile))
 		vlog = fmt.Sprintf("(%d) [%s] srcDSN connect failed: {%s}", rc.LogThreadSeq, Event, err)
 		global.Wlog.Error(vlog)
-		os.Exit(0)
+		os.Exit(1)
 	}
 	vlog = fmt.Sprintf("(%d) [%s] dstDSN connected", rc.LogThreadSeq, Event)
 	global.Wlog.Debug(vlog)
@@ -154,8 +150,8 @@ func (rc *ConfigParameter) checkPar() {
 		os.Exit(1)
 	}
 	tabr, _ := regexp.Compile(`[0-9a-zA-Z!@_{}*%-]\.[0-9a-zA-Z!@_{}%*-]`)
-	rc.rexPat(tabr, rc.SecondaryL.SchemaV.Tables, illegalParameterStatus)
-	rc.rexPat(tabr, rc.SecondaryL.SchemaV.Tables, illegalParameterStatus)
+	rc.rexPat(tabr, rc.SecondaryL.SchemaV.Tables)
+	rc.rexPat(tabr, rc.SecondaryL.SchemaV.IgnoreTables)
 	if rc.SecondaryL.SchemaV.Tables == rc.SecondaryL.SchemaV.IgnoreTables {
 		fmt.Println(fmt.Sprintf("gt-checksum: Invalid tables/ignoreTables options. Check %s for details", rc.SecondaryL.LogV.LogFile))
 		vlog = fmt.Sprintf("(%d) [%s] The option \"table\" and \"ignoreTables\" cannot be the same", rc.LogThreadSeq, Event)

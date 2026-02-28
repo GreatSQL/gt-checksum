@@ -1,6 +1,8 @@
 package inputArg
 
 import (
+	"fmt"
+	"gt-checksum/global"
 	"os"
 	"strings"
 	"sync"
@@ -8,18 +10,20 @@ import (
 )
 
 const defaultShowActualRows = "ON"
+const runtimeConfigRefreshInterval = 2 * time.Second
 
 var showActualRowsRuntimeCache = struct {
 	sync.RWMutex
 	file     string
 	modTime  time.Time
 	lastRead time.Time
+	lastWarn time.Time
 	value    string
 }{
 	value: defaultShowActualRows,
 }
 
-func normalizeOnOff(v string) string {
+func normalizeOnOff(v string) (string, bool) {
 	v = strings.TrimSpace(v)
 	if idx := strings.IndexAny(v, ";#"); idx >= 0 {
 		v = strings.TrimSpace(v[:idx])
@@ -29,10 +33,26 @@ func normalizeOnOff(v string) string {
 		v = fields[0]
 	}
 	v = strings.ToUpper(strings.TrimSpace(v))
-	if v == "ON" {
-		return "ON"
+	if v == "ON" || v == "OFF" {
+		return v, true
 	}
-	return "OFF"
+	return "", false
+}
+
+func warnShowActualRows(message string) {
+	showActualRowsRuntimeCache.Lock()
+	if time.Since(showActualRowsRuntimeCache.lastWarn) < runtimeConfigRefreshInterval {
+		showActualRowsRuntimeCache.Unlock()
+		return
+	}
+	showActualRowsRuntimeCache.lastWarn = time.Now()
+	showActualRowsRuntimeCache.Unlock()
+
+	if global.Wlog != nil {
+		global.Wlog.Warn(message)
+	} else {
+		fmt.Println(message)
+	}
 }
 
 func readLastConfigValue(configFile, paramName string) (string, bool) {
@@ -67,12 +87,16 @@ func readLastConfigValue(configFile, paramName string) (string, bool) {
 func IsShowActualRowsEnabled() bool {
 	cfg := GetGlobalConfig()
 	if cfg == nil {
-		return false
+		return defaultShowActualRows == "ON"
 	}
 
 	// CLI override has highest priority and is immutable for this process.
-	if strings.TrimSpace(cfg.CliShowActualRows) != "" {
-		return normalizeOnOff(cfg.CliShowActualRows) == "ON"
+	if override := strings.TrimSpace(cfg.CliShowActualRows); override != "" {
+		if normalized, ok := normalizeOnOff(override); ok {
+			return normalized == "ON"
+		}
+		warnShowActualRows(fmt.Sprintf("Invalid showActualRows CLI value [%s], fallback to default [%s]", override, defaultShowActualRows))
+		return defaultShowActualRows == "ON"
 	}
 
 	defaultValue := defaultShowActualRows
@@ -81,8 +105,24 @@ func IsShowActualRowsEnabled() bool {
 		return defaultValue == "ON"
 	}
 
+	showActualRowsRuntimeCache.RLock()
+	if showActualRowsRuntimeCache.file == configFile && time.Since(showActualRowsRuntimeCache.lastRead) < runtimeConfigRefreshInterval {
+		cachedValue := showActualRowsRuntimeCache.value
+		showActualRowsRuntimeCache.RUnlock()
+		return cachedValue == "ON"
+	}
+	showActualRowsRuntimeCache.RUnlock()
+
 	stat, err := os.Stat(configFile)
 	if err != nil {
+		warnShowActualRows(fmt.Sprintf("Cannot stat config file [%s], fallback showActualRows=%s", configFile, defaultValue))
+		showActualRowsRuntimeCache.Lock()
+		showActualRowsRuntimeCache.file = configFile
+		showActualRowsRuntimeCache.modTime = time.Time{}
+		showActualRowsRuntimeCache.lastRead = time.Now()
+		showActualRowsRuntimeCache.value = defaultValue
+		showActualRowsRuntimeCache.Unlock()
+		cfg.SecondaryL.RulesV.ShowActualRows = defaultValue
 		return defaultValue == "ON"
 	}
 
@@ -92,13 +132,17 @@ func IsShowActualRowsEnabled() bool {
 	cachedValue := showActualRowsRuntimeCache.value
 	showActualRowsRuntimeCache.RUnlock()
 	if sameFile && sameModTime {
-		return normalizeOnOff(cachedValue) == "ON"
+		return cachedValue == "ON"
 	}
 
 	fileValue, found := readLastConfigValue(configFile, "showActualRows")
 	newValue := defaultValue
 	if found {
-		newValue = normalizeOnOff(fileValue)
+		if normalized, ok := normalizeOnOff(fileValue); ok {
+			newValue = normalized
+		} else {
+			warnShowActualRows(fmt.Sprintf("Invalid showActualRows config value [%s], fallback to default [%s]", fileValue, defaultValue))
+		}
 	}
 
 	showActualRowsRuntimeCache.Lock()

@@ -35,6 +35,8 @@ type SchemaS struct {
 	CaseSensitiveObjectName string
 	SqlWhere                string
 }
+
+// RulesS defines checksum task execution and runtime control options.
 type RulesS struct {
 	ParallelThds   int
 	ChanRowCount   int
@@ -70,6 +72,8 @@ type ConnPool struct {
 	PoolMin int
 	PoolMax int
 }
+
+// ConfigParameter represents the runtime configuration state loaded from CLI and file.
 type ConfigParameter struct {
 	FirstL              FirstLevel
 	SecondaryL          SecondaryLevel

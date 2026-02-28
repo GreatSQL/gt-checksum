@@ -499,11 +499,11 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 			}
 			vlog = fmt.Sprintf("(%d) Index column %s level %d - WHERE: %s, value: %s, count: %v", logThreadSeq, sp.columnName[level], level, where, key, value)
 			global.Wlog.Debug(vlog)
-			if key == "<nil>" || key == "<entry>" {
+			if key == dataDispos.ValueNullPlaceholder || key == dataDispos.ValueEmptyPlaceholder {
 				vlog = fmt.Sprintf("(%d) Processing NULL values for index column %s level %d", logThreadSeq, sp.columnName[level], level)
 				global.Wlog.Debug(vlog)
 				if e != "" { //假如null或者entry不是首行，则先处理原有数据条件
-					if key != "END" {
+					if key != dataDispos.StreamEndMarker {
 						g = key
 					}
 					if e == g {
@@ -523,10 +523,10 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 				if where != "" {
 					whereExist = fmt.Sprintf("%s and ", where)
 				}
-				if key == "<entry>" {
+				if key == dataDispos.ValueEmptyPlaceholder {
 					sqlwhere = fmt.Sprintf("%s `%s` = '' ", whereExist, sp.columnName[level])
 				}
-				if key == "<nil>" {
+				if key == dataDispos.ValueNullPlaceholder {
 					sqlwhere = fmt.Sprintf("%s `%s` is null ", whereExist, sp.columnName[level])
 				}
 				//global.Wlog.Debug("DEBUG_WHERE6: %s", sqlwhere)
@@ -538,7 +538,7 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 				sqlwhere = ""
 			} else {
 				//获取联合索引或单列索引的首值
-				if key != "END" && e == "" {
+				if key != dataDispos.StreamEndMarker && e == "" {
 					e = key
 					global.Wlog.Debugf("DEBUG_FIRST_VALUE: First key from merged data stream is '%s'\n", key)
 				}
@@ -550,7 +550,7 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 					global.Wlog.Debugf("DEBUG_DATA_STREAM_%d: key='%s', value='%s', current e='%s'\n", autoIncSeq, key, value, e)
 				}
 				//获取每行的count值,并将count值记录及每次动态的值
-				if key != "END" {
+				if key != dataDispos.StreamEndMarker {
 					c, _ = strconv.Atoi(value)
 					g = key
 					if level == 0 {
@@ -560,7 +560,7 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 					d = d + c
 				}
 				//判断行数累加值是否小于要校验的值，并且是最后一条索引列数据
-				if d < queryNum && d > 0 && key == "END" {
+				if d < queryNum && d > 0 && key == dataDispos.StreamEndMarker {
 					vlog = fmt.Sprintf("(%d) Processing end of index column %s level %d", logThreadSeq, sp.columnName[level], level)
 					global.Wlog.Debug(vlog)
 					var whereExist string
@@ -601,7 +601,7 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 					//进入下一层的索引计算
 					sp.recursiveIndexColumn(sqlWhere, sdb, ddb, level, queryNum, newWhere, selectColumn, logThreadSeq)
 					level-- //回到上一层
-					if key != "END" {
+					if key != dataDispos.StreamEndMarker {
 						e = key
 					}
 				} else { //如果是最后一列，直接输出当前索引列深度的条件
@@ -627,7 +627,7 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 
 					sqlWhere <- sqlwhere
 
-					if key != "END" {
+					if key != dataDispos.StreamEndMarker {
 						e = key
 					}
 					sqlwhere = ""
@@ -803,18 +803,11 @@ func (sp *SchedulePlan) queryTableSql(sqlWhere chanString, selectSql chanMap, cc
 		// 监听参数变更通知
 		case <-utils.ParamChangedChan:
 			// 检查并更新SchedulePlan的参数
-			// 从全局配置重新获取最新参数值
-			fromGlobalConfig := func() bool {
-				// 获取全局配置的最新参数值
-				globalConfig := inputArg.GetGlobalConfig()
-				if globalConfig != nil {
-					sp.concurrency = globalConfig.SecondaryL.RulesV.ParallelThds
-					sp.chunkSize = globalConfig.SecondaryL.RulesV.ChanRowCount
-					return true
-				}
-				return false
-			}
-			if fromGlobalConfig() {
+			// 从运行时快照读取最新参数值，避免并发读写全局配置
+			runtimeTune := utils.GetRuntimeTuneSnapshot()
+			if runtimeTune.ParallelThds > 0 && runtimeTune.ChunkSize > 0 {
+				sp.concurrency = runtimeTune.ParallelThds
+				sp.chunkSize = runtimeTune.ChunkSize
 				// 关闭旧通道并创建新通道
 				close(curry)
 				curry = createCurryChan()
@@ -951,18 +944,11 @@ func (sp *SchedulePlan) queryTableData(selectSql chanMap, diffQueryData chanDiff
 		// 监听参数变更通知
 		case <-utils.ParamChangedChan:
 			// 检查并更新SchedulePlan的参数
-			// 从全局配置重新获取最新参数值
-			fromGlobalConfig := func() bool {
-				// 获取全局配置的最新参数值
-				globalConfig := inputArg.GetGlobalConfig()
-				if globalConfig != nil {
-					sp.concurrency = globalConfig.SecondaryL.RulesV.ParallelThds
-					sp.chunkSize = globalConfig.SecondaryL.RulesV.ChanRowCount
-					return true
-				}
-				return false
-			}
-			if fromGlobalConfig() {
+			// 从运行时快照读取最新参数值，避免并发读写全局配置
+			runtimeTune := utils.GetRuntimeTuneSnapshot()
+			if runtimeTune.ParallelThds > 0 && runtimeTune.ChunkSize > 0 {
+				sp.concurrency = runtimeTune.ParallelThds
+				sp.chunkSize = runtimeTune.ChunkSize
 				// 关闭旧通道并创建新通道
 				close(curry)
 				curry = createCurryChan()
@@ -1856,7 +1842,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 															kvParts := strings.SplitN(kv, ":", 2)
 															if len(kvParts) == 2 {
 																val := strings.TrimSpace(kvParts[1])
-																if val == "" || val == "<nil>" || strings.EqualFold(val, "NULL") {
+																if val == "" || val == dataDispos.ValueNullPlaceholder || strings.EqualFold(val, "NULL") {
 																	hasNullKey = true
 																	break
 																}
@@ -2984,15 +2970,15 @@ func queryRowsChecksumBySQL(db *sql.DB, query string, drive string, logThreadSeq
 			if b, ok := val.([]byte); ok {
 				s = string(b)
 			} else if val == nil {
-				s = "<nil>"
+				s = dataDispos.ValueNullPlaceholder
 			} else {
 				s = fmt.Sprintf("%v", val)
 			}
 			if driver == "godror" && s == "" {
-				s = "<nil>"
+				s = dataDispos.ValueNullPlaceholder
 			}
 			if driver == "mysql" && s == "" {
-				s = "<entry>"
+				s = dataDispos.ValueEmptyPlaceholder
 			}
 			_, _ = io.WriteString(hasher, s)
 		}

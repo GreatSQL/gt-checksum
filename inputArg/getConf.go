@@ -195,11 +195,11 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 		if val, err := strconv.Atoi(queueSizeValue); err == nil {
 			rc.SecondaryL.RulesV.QueueSize = val
 		} else {
-			fmt.Println("Using default value '100' for option queueSize")
+			fmt.Println("Using default value '1000' for option queueSize")
 			rc.SecondaryL.RulesV.QueueSize = 1000
 		}
 	} else {
-		fmt.Println("Using default value '100' for option queueSize")
+		fmt.Println("Using default value '1000' for option queueSize")
 		rc.SecondaryL.RulesV.QueueSize = 1000
 	}
 
@@ -402,18 +402,18 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 			files, err := os.ReadDir(rc.SecondaryL.RepairV.FixFileDir)
 			if err == nil && len(files) > 0 {
 				fmt.Printf("Error: Directory '%s' already exists and is not empty\n", rc.SecondaryL.RepairV.FixFileDir)
-				os.Exit(0)
+				os.Exit(1)
 			}
 		} else if os.IsNotExist(err) {
 			// 目录不存在，创建目录
 			if err := os.MkdirAll(rc.SecondaryL.RepairV.FixFileDir, 0755); err != nil {
 				fmt.Printf("Error: Failed to create directory '%s': %v\n", rc.SecondaryL.RepairV.FixFileDir, err)
-				os.Exit(0)
+				os.Exit(1)
 			}
 		} else {
 			// 其他错误
 			fmt.Printf("Error: Failed to check directory '%s': %v\n", rc.SecondaryL.RepairV.FixFileDir, err)
-			os.Exit(0)
+			os.Exit(1)
 		}
 	}
 }
@@ -439,7 +439,7 @@ func (rc *ConfigParameter) GetConfig() {
 		if len(sections) > 0 {
 			fmt.Println("Error: Found unrecognized configuration sections:", strings.Join(sections, ", "))
 			fmt.Println("Please remove these sections and set parameters directly without section tags.")
-			os.Exit(0)
+			os.Exit(1)
 		}
 	}
 
