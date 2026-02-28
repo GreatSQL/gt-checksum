@@ -2,6 +2,7 @@ package actions
 
 import (
 	"fmt"
+	"gt-checksum/global"
 	"sort"
 	"strings"
 	"sync"
@@ -21,12 +22,12 @@ var rollbackSQL = func(sl []string) []string {
 			oldrow := strings.Replace(e[0], "(", "", 1)
 			newrow := strings.Replace(e[1], ");", "", 1)
 			// 确保schema和table都有反引号
-	schemaTableWithQuotes := strings.ReplaceAll(strings.ReplaceAll(schemaTable, ".", ".`"), "`,", ".`")
-	if !strings.HasPrefix(schemaTableWithQuotes, "`") && strings.Contains(schemaTableWithQuotes, ".") {
-		parts := strings.Split(schemaTableWithQuotes, ".")
-		schemaTableWithQuotes = fmt.Sprintf("`%s`.%s", parts[0], parts[1])
-	}
-	delSql := fmt.Sprintf("DELETE FROM %s WHERE %s;", schemaTableWithQuotes, newrow)
+			schemaTableWithQuotes := strings.ReplaceAll(strings.ReplaceAll(schemaTable, ".", ".`"), "`,", ".`")
+			if !strings.HasPrefix(schemaTableWithQuotes, "`") && strings.Contains(schemaTableWithQuotes, ".") {
+				parts := strings.Split(schemaTableWithQuotes, ".")
+				schemaTableWithQuotes = fmt.Sprintf("`%s`.%s", parts[0], parts[1])
+			}
+			delSql := fmt.Sprintf("DELETE FROM %s WHERE %s;", schemaTableWithQuotes, newrow)
 			addSql := fmt.Sprintf("INSERT INTO %s VALUES (%s);", schemaTable, oldrow)
 			newDelS = append(newDelS, delSql, addSql)
 		}
@@ -73,21 +74,21 @@ func DifferencesDataDispos(SourceItemAbnormalDataChan chan SourceItemAbnormalDat
 					return delS[i] > delS[j]
 				})
 				dels := rollbackSQL(delS)
-				fmt.Println(dels)
+				global.Wlog.Debug(fmt.Sprintf("DifferencesDataDispos generated delete rollback SQL count=%d", len(dels)))
 			} else if len(addS) > 0 && len(delS) > 0 { //针对目标端需要删除的事务进行回滚，针对事务生成回滚sql
 				//此处需要将多余参数按照事务的方式进行倒叙
 				sort.Slice(delS, func(i, j int) bool {
 					return delS[i] > delS[j]
 				})
 				dels := rollbackSQL(delS)
-				fmt.Println(dels)
+				global.Wlog.Debug(fmt.Sprintf("DifferencesDataDispos generated delete rollback SQL count=%d", len(dels)))
 				adds := positiveSequenceSQL(addS)
-				fmt.Println(adds)
+				global.Wlog.Debug(fmt.Sprintf("DifferencesDataDispos generated positive SQL count=%d", len(adds)))
 
 			} else if len(addS) > 0 && len(delS) == 0 {
-				fmt.Println("--1--", addS)
+				global.Wlog.Debug(fmt.Sprintf("DifferencesDataDispos only add SQL count=%d", len(addS)))
 				adds := positiveSequenceSQL(addS)
-				fmt.Println(adds)
+				global.Wlog.Debug(fmt.Sprintf("DifferencesDataDispos generated positive SQL count=%d", len(adds)))
 			}
 		}
 	}

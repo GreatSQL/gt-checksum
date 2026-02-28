@@ -864,7 +864,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 						mysqlDataFix.CheckDestTableHasPrimaryKey(stcls.destDB, logThreadSeq)
 					}
 					modifySql := dbf.DataAbnormalFix().FixAlterColumnSqlDispos("modify", alterColumnData, k1, originalLastColumn, originalColName, logThreadSeq)
-					vlog = fmt.Sprintf("(%d) %s The column name of column %s of the source and target table %s.%s:[%s.%s] is the same, but the definition of the column is inconsistent, and a modify statement is generated, and the modification statement is {%v}", logThreadSeq, originalColName, stcls.schema, stcls.table, destSchema, stcls.table, modifySql)
+					vlog = fmt.Sprintf("(%d) %s The column name of column %s of the source and target table %s.%s:[%s.%s] is the same, but the definition of the column is inconsistent, and a modify statement is generated, and the modification statement is {%v}", logThreadSeq, event, originalColName, stcls.schema, stcls.table, destSchema, stcls.table, modifySql)
 					global.Wlog.Warn(vlog)
 					alterSlice = append(alterSlice, modifySql)
 				}
@@ -1105,7 +1105,7 @@ func (stcls *schemaTable) FuzzyMatchingDispos(dbCheckNameList map[string]int, Ft
 			for k, _ := range dbCheckNameList {
 				if strings.Contains(k, tmpschema) {
 					b[k]++
-					vlog = fmt.Sprintf("Added %schema% match: %s", k)
+					vlog = fmt.Sprintf("Added %%schema%% match: %s", k)
 					global.Wlog.Debug(vlog)
 				}
 			}
@@ -1114,7 +1114,7 @@ func (stcls *schemaTable) FuzzyMatchingDispos(dbCheckNameList map[string]int, Ft
 			for k, _ := range dbCheckNameList {
 				if strings.HasSuffix(k, tmpschema) {
 					b[k]++
-					vlog = fmt.Sprintf("Added %schema match: %s", k)
+					vlog = fmt.Sprintf("Added %%schema match: %s", k)
 					global.Wlog.Debug(vlog)
 				}
 			}
@@ -1123,7 +1123,7 @@ func (stcls *schemaTable) FuzzyMatchingDispos(dbCheckNameList map[string]int, Ft
 			for k, _ := range dbCheckNameList {
 				if strings.HasPrefix(k, tmpschema) {
 					b[k]++
-					vlog = fmt.Sprintf("Added schema% match: %s", k)
+					vlog = fmt.Sprintf("Added schema%% match: %s", k)
 					global.Wlog.Debug(vlog)
 				}
 			}
@@ -1250,14 +1250,14 @@ func (stcls *schemaTable) FuzzyMatchingDispos(dbCheckNameList map[string]int, Ft
 						tmptable := strings.ReplaceAll(table, "%", "")
 						if strings.HasPrefix(dbTableName, tmptable) {
 							f[fmt.Sprintf("%s.%s", dbSchema, dbTableName)]++
-							vlog = fmt.Sprintf("Added table% match: %s.%s", dbSchema, dbTableName)
+							vlog = fmt.Sprintf("Added table%% match: %s.%s", dbSchema, dbTableName)
 							global.Wlog.Debug(vlog)
 						}
 					} else if strings.HasPrefix(table, "%") && strings.HasSuffix(table, "%") { // 处理schema.%table%
 						tmptable := strings.ReplaceAll(table, "%", "")
 						if strings.Contains(dbTableName, tmptable) {
 							f[fmt.Sprintf("%s.%s", dbSchema, dbTableName)]++
-							vlog = fmt.Sprintf("Added %table% match: %s.%s", dbSchema, dbTableName)
+							vlog = fmt.Sprintf("Added %%table%% match: %s.%s", dbSchema, dbTableName)
 							global.Wlog.Debug(vlog)
 						}
 					} else { // 处理schema.table
@@ -3065,7 +3065,7 @@ func (stcls *schemaTable) Partitions(dtabS []string, logThreadSeq, logThreadSeq2
 		global.Wlog.Debug(vlog)
 		tc := dbExec.TableColumnNameStruct{Schema: stcls.schema, Table: stcls.table, Drive: stcls.sourceDrive}
 		if sourcePartitions, err = tc.Query().Partitions(stcls.sourceDB, logThreadSeq2); err != nil {
-			global.Wlog.Error("(%d) Failed to get source partitions for table %s.%s: %v", logThreadSeq, stcls.schema, stcls.table, err)
+			global.Wlog.Errorf("(%d) Failed to get source partitions for table %s.%s: %v", logThreadSeq, stcls.schema, stcls.table, err)
 			return
 		}
 
@@ -3076,7 +3076,7 @@ func (stcls *schemaTable) Partitions(dtabS []string, logThreadSeq, logThreadSeq2
 		vlog = fmt.Sprintf("(%d) Start processing dstDSN {%s} table %s.%s partitions data. to dispos it...", logThreadSeq, stcls.destDrive, stcls.schema, stcls.table)
 		global.Wlog.Debug(vlog)
 		if destPartitions, err = tc.Query().Partitions(stcls.destDB, logThreadSeq2); err != nil {
-			global.Wlog.Error("(%d) Failed to get dest partitions for table %s.%s: %v", logThreadSeq, stcls.schema, stcls.table, err)
+			global.Wlog.Errorf("(%d) Failed to get dest partitions for table %s.%s: %v", logThreadSeq, stcls.schema, stcls.table, err)
 			return
 		}
 		vlog = fmt.Sprintf("(%d) Dest DB %s table %s.%s partitions count: %d", logThreadSeq, stcls.destDrive, stcls.schema, stcls.table, len(destPartitions))

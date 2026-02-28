@@ -7,7 +7,6 @@ import (
 	"math/rand"
 	"os"
 	"strings"
-	"time"
 )
 
 func (sp *SchedulePlan) getErr(msg string, err error) {
@@ -28,7 +27,6 @@ func (sp *SchedulePlan) DoCountDataCheck() {
 		err                            error
 		vlog                           string
 	)
-	rand.Seed(time.Now().UnixNano())
 	logThreadSeq := rand.Int63()
 	vlog = fmt.Sprintf("(%d) Starting table row count checksum", logThreadSeq)
 	global.Wlog.Info(vlog)

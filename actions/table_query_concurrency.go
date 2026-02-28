@@ -7,7 +7,6 @@ import (
 	"math/rand"
 	"os"
 	"strings"
-	"time"
 )
 
 type SchedulePlan struct {
@@ -15,6 +14,7 @@ type SchedulePlan struct {
 
 	schema, table            string   //待校验库名、表名
 	sourceSchema, destSchema string   //源端和目标端库名
+	destTable                string   //目标端表名（表映射场景下可能与源端不同）
 	columnName               []string //待校验表的列名，有可能是多个
 	tmpTableDataFileDir      string   //临时表文件生成的相对路径
 	tableIndexColumnMap      map[string][]string
@@ -79,8 +79,6 @@ type DifferencesDataStruct struct {
 查询索引列信息，并发执行调度生成
 */
 func (sp *SchedulePlan) Schedulingtasks() {
-	rand.Seed(time.Now().UnixNano())
-
 	totalTables := len(sp.tableIndexColumnMap)
 	for k, v := range sp.tableIndexColumnMap {
 		//是否校验无索引表
@@ -89,7 +87,6 @@ func (sp *SchedulePlan) Schedulingtasks() {
 		}
 		// 为每个表创建独立的SchedulePlan副本，避免并发冲突
 		spCopy := *sp
-		spCopy.file, _ = os.OpenFile(sp.TmpFileName, os.O_CREATE|os.O_RDWR, 0777)
 		// 解析key中的源表和目标表信息
 		// key格式: sourceSchema/*gtchecksumSchemaTable*/sourceTable/*indexColumnType*/indexType/*mapping*/destSchema/*mappingTable*/destTable
 		vlog := fmt.Sprintf("Processing table key: %s", k)
@@ -155,6 +152,17 @@ func (sp *SchedulePlan) Schedulingtasks() {
 		spCopy.sourceSchema = sourceSchema
 		spCopy.destSchema = destSchema
 		spCopy.indexColumnType = indexType
+		if destTable == "" {
+			destTable = sourceTable
+		}
+		spCopy.destTable = destTable
+
+		tmpFile, err := os.OpenFile(spCopy.TmpFileName, os.O_CREATE|os.O_RDWR, 0777)
+		if err != nil {
+			global.Wlog.Error(fmt.Sprintf("Failed to open temp file %s for table %s.%s: %v", spCopy.TmpFileName, spCopy.sourceSchema, spCopy.table, err))
+			continue
+		}
+		spCopy.file = tmpFile
 
 		vlog = fmt.Sprintf("Key parsed - Source: %s.%s, Target: %s.%s, Index: %s",
 			sourceSchema, sourceTable, destSchema, destTable, indexType)
@@ -218,7 +226,9 @@ func (sp *SchedulePlan) Schedulingtasks() {
 			// 显示完成消息
 			fmt.Printf("table %s checksum completed\n", displayTableName)
 		}
-		spCopy.file.Close()
+		if spCopy.file != nil {
+			_ = spCopy.file.Close()
+		}
 		os.Remove(spCopy.TmpFileName)
 	}
 
@@ -334,10 +344,12 @@ func checkDDLConsistency(sourceColumns, destColumns []map[string]string, sourceS
 	}
 
 	var mismatches []string
+	hasExistenceMismatch := false
 
 	// 检查源端有但目标端没有的列
 	for name, srcType := range sourceColMap {
 		if _, exists := destColMap[name]; !exists {
+			hasExistenceMismatch = true
 			mismatches = append(mismatches, fmt.Sprintf("  Column '%s' (%s) exists in source %s.%s but NOT in target %s.%s",
 				name, srcType, sourceSchema, sourceTable, destSchema, destTable))
 		}
@@ -346,13 +358,14 @@ func checkDDLConsistency(sourceColumns, destColumns []map[string]string, sourceS
 	// 检查目标端有但源端没有的列
 	for name, destType := range destColMap {
 		if _, exists := sourceColMap[name]; !exists {
+			hasExistenceMismatch = true
 			mismatches = append(mismatches, fmt.Sprintf("  Column '%s' (%s) exists in target %s.%s but NOT in source %s.%s",
 				name, destType, destSchema, destTable, sourceSchema, sourceTable))
 		}
 	}
 
 	// 检查列数量是否一致
-	if len(sourceColMap) != len(destColMap) {
+	if len(sourceColMap) != len(destColMap) && !hasExistenceMismatch {
 		mismatches = append(mismatches, fmt.Sprintf("  Column count mismatch: source %s.%s has %d columns, target %s.%s has %d columns",
 			sourceSchema, sourceTable, len(sourceColMap), destSchema, destTable, len(destColMap)))
 	}

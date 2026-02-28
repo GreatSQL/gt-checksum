@@ -47,7 +47,6 @@ var (
 
 	insertMutex         sync.Mutex                  // 保护并发访问insertedPrimaryKeys map的互斥锁
 	insertedPrimaryKeys = make(map[uint64]struct{}) // 全局已处理的INSERT主键值跟踪（hash key）
-	processedInserts    = make(map[uint64]struct{}) // 全局已处理的INSERT记录去重（hash key）
 	tableMemoryPeaks    sync.Map
 	forcedGCMutex       sync.Mutex
 	lastForcedGCAt      time.Time
@@ -478,7 +477,7 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 			if !ok {
 				// 修复：在通道关闭前，检查是否还有未处理的边界数据需要查询
 				// 这确保了当总数据量正好是chunkSize的整数倍时，最后一条记录不会被遗漏
-				global.Wlog.Debug("DEBUG_CHANNEL_CLOSE: level=%d, e='%s', e!=''=%v\n", level, e, e != "")
+				global.Wlog.Debugf("DEBUG_CHANNEL_CLOSE: level=%d, e='%s', e!=''=%v\n", level, e, e != "")
 
 				// 当d==0且e不为空时，说明上一个chunk刚好在边界处结束，
 				// e被设置为下一个值但从未被包含在任何chunk中，需要补发一个最终chunk
@@ -488,7 +487,7 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 						whereExist = fmt.Sprintf("%v and ", where)
 					}
 					sqlwhere = fmt.Sprintf("%v `%v` >= '%v' ", whereExist, sp.columnName[level], e)
-					global.Wlog.Debug("(%d) Final chunk emitted for remaining boundary value: %s", logThreadSeq, sqlwhere)
+					global.Wlog.Debugf("(%d) Final chunk emitted for remaining boundary value: %s", logThreadSeq, sqlwhere)
 					sqlWhere <- sqlwhere
 					sqlwhere = ""
 				}
@@ -541,14 +540,14 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 				//获取联合索引或单列索引的首值
 				if key != "END" && e == "" {
 					e = key
-					global.Wlog.Debug("DEBUG_FIRST_VALUE: First key from merged data stream is '%s'\n", key)
+					global.Wlog.Debugf("DEBUG_FIRST_VALUE: First key from merged data stream is '%s'\n", key)
 				}
 				vlog = fmt.Sprintf("(%d) Index column %s level %d starting value: %s", logThreadSeq, sp.columnName[level], level, e)
 				global.Wlog.Debug(vlog)
 
 				// 如果是level=0的前几个值，额外记录调试信息
 				if level == 0 && autoIncSeq <= 3 {
-					global.Wlog.Debug("DEBUG_DATA_STREAM_%d: key='%s', value='%s', current e='%s'\n", autoIncSeq, key, value, e)
+					global.Wlog.Debugf("DEBUG_DATA_STREAM_%d: key='%s', value='%s', current e='%s'\n", autoIncSeq, key, value, e)
 				}
 				//获取每行的count值,并将count值记录及每次动态的值
 				if key != "END" {
@@ -649,7 +648,6 @@ func (sp *SchedulePlan) indexColumnDispos(sqlWhere chanString, selectColumn map[
 		where        string
 	)
 	time.Sleep(time.Nanosecond * 2)
-	rand.Seed(time.Now().UnixNano())
 	logThreadSeq = rand.Int63()
 	vlog = fmt.Sprintf("(%d) Generating query sequence for table %s.%s", logThreadSeq, sp.schema, sp.table)
 	global.Wlog.Info(vlog)
@@ -1083,7 +1081,6 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 	deleteMutex.Unlock()
 
 	insertMutex.Lock()
-	processedInserts = make(map[uint64]struct{})
 	insertedPrimaryKeys = make(map[uint64]struct{}) // 关键修复：清空INSERT主键跟踪映射
 	insertMutex.Unlock()
 	vlog = fmt.Sprintf("(%d) Processing differences and generating repair statements for %s.%s", logThreadSeq, sp.schema, sp.table)
@@ -1163,7 +1160,10 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 					global.Wlog.Debug(vlog)
 
 					// 源端查询使用sourceSchema和table
-					var stt, dtt string
+					var (
+						stt, dtt string
+						err      error
+					)
 					idxc := dbExec.IndexColumnStruct{
 						Schema:      sourceSchema,
 						Table:       table,
@@ -1171,17 +1171,68 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 						Drivce:      sp.sdrive,
 						Sqlwhere:    sourceSqlWhere, // 使用处理后的源端SQL条件
 					}
-					stt, _ = idxc.TableIndexColumn().GeneratingQueryCriteria(sdb, logThreadSeq)
+					stt, err = idxc.TableIndexColumn().GeneratingQueryCriteria(sdb, logThreadSeq)
+					if err != nil {
+						global.Wlog.Warn(fmt.Sprintf("(%d) failed to query source chunk by criteria for %s.%s, fallback to raw SQL query, err=%v", logThreadSeq, sourceSchema, table, err))
+						fallbackSourceSQL := strings.TrimSpace(c1.SqlWhere[sp.sdrive])
+						if strings.HasPrefix(strings.ToUpper(fallbackSourceSQL), "SELECT") {
+							sourceRows, fallbackErr := queryRowsDataBySQL(sdb, fallbackSourceSQL, sp.sdrive, logThreadSeq)
+							if fallbackErr != nil {
+								global.Wlog.Error(fmt.Sprintf("(%d) source fallback query failed for %s.%s, mark table as diff, err=%v", logThreadSeq, sourceSchema, table, fallbackErr))
+								lock.Lock()
+								if sp.pods != nil {
+									sp.pods.DIFFS = "yes"
+								}
+								lock.Unlock()
+								return
+							}
+							stt = strings.Join(sourceRows, "/*go actions rowData*/")
+						} else {
+							global.Wlog.Error(fmt.Sprintf("(%d) source fallback SQL is unavailable for %s.%s, mark table as diff", logThreadSeq, sourceSchema, table))
+							lock.Lock()
+							if sp.pods != nil {
+								sp.pods.DIFFS = "yes"
+							}
+							lock.Unlock()
+							return
+						}
+					}
 
 					// 目标端查询使用destSchema和table
+					destTable := sp.getDestTableName()
 					idxcDest := dbExec.IndexColumnStruct{
 						Schema:      destSchema,
-						Table:       table,
+						Table:       destTable,
 						TableColumn: colData.DColumnInfo,
 						Drivce:      sp.ddrive,
 						Sqlwhere:    destSqlWhere, // 使用处理后的目标端SQL条件
 					}
-					dtt, _ = idxcDest.TableIndexColumn().GeneratingQueryCriteria(ddb, logThreadSeq)
+					dtt, err = idxcDest.TableIndexColumn().GeneratingQueryCriteria(ddb, logThreadSeq)
+					if err != nil {
+						global.Wlog.Warn(fmt.Sprintf("(%d) failed to query dest chunk by criteria for %s.%s, fallback to raw SQL query, err=%v", logThreadSeq, destSchema, destTable, err))
+						fallbackDestSQL := strings.TrimSpace(c1.SqlWhere[sp.ddrive])
+						if strings.HasPrefix(strings.ToUpper(fallbackDestSQL), "SELECT") {
+							destRows, fallbackErr := queryRowsDataBySQL(ddb, fallbackDestSQL, sp.ddrive, logThreadSeq)
+							if fallbackErr != nil {
+								global.Wlog.Error(fmt.Sprintf("(%d) dest fallback query failed for %s.%s, mark table as diff, err=%v", logThreadSeq, destSchema, destTable, fallbackErr))
+								lock.Lock()
+								if sp.pods != nil {
+									sp.pods.DIFFS = "yes"
+								}
+								lock.Unlock()
+								return
+							}
+							dtt = strings.Join(destRows, "/*go actions rowData*/")
+						} else {
+							global.Wlog.Error(fmt.Sprintf("(%d) dest fallback SQL is unavailable for %s.%s, mark table as diff", logThreadSeq, destSchema, destTable))
+							lock.Lock()
+							if sp.pods != nil {
+								sp.pods.DIFFS = "yes"
+							}
+							lock.Unlock()
+							return
+						}
+					}
 
 					if aa.CheckMd5(stt) != aa.CheckMd5(dtt) {
 						vlog = fmt.Sprintf("(%d) Data checksum mismatch for %s.%s, need to find specific differences", logThreadSeq, c1.Schema, c1.Table)
@@ -1219,7 +1270,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 
 						// 避免在大差异场景输出大文本日志，防止日志构造额外放大内存占用
 						if len(cleanSourceData) > 0 {
-							global.Wlog.Debug("DEBUG_SOURCE_DATA_%d: sourceRecords=%d (sample suppressed)", logThreadSeq, len(cleanSourceData))
+							global.Wlog.Debugf("DEBUG_SOURCE_DATA_%d: sourceRecords=%d (sample suppressed)", logThreadSeq, len(cleanSourceData))
 						}
 
 						// 检查去重是否真的有效
@@ -1228,7 +1279,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 							// 检查是否只有一个空字符串（源表为空的情况）
 							if len(sourceData) == 1 && sourceData[0] == "" {
 								// 源表为空，不是真正的重复记录
-								global.Wlog.Debug("(%d) Source data is empty, skipping duplicate check for %s.%s", logThreadSeq, c1.Schema, c1.Table)
+								global.Wlog.Debugf("(%d) Source data is empty, skipping duplicate check for %s.%s", logThreadSeq, c1.Schema, c1.Table)
 							} else {
 								duplicateCount := len(sourceData) - len(cleanSourceData)
 								vlog = fmt.Sprintf("(%d) Found %d duplicate records in source data for %s.%s", logThreadSeq, duplicateCount, c1.Schema, c1.Table)
@@ -1240,7 +1291,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 							// 检查是否只有一个空字符串（目标表为空的情况）
 							if len(destData) == 1 && destData[0] == "" {
 								// 目标表为空，不是真正的重复记录
-								global.Wlog.Debug("(%d) Destination table %s.%s is empty, skipping duplicate check", logThreadSeq, c1.Schema, c1.Table)
+								global.Wlog.Debugf("(%d) Destination table %s.%s is empty, skipping duplicate check", logThreadSeq, c1.Schema, c1.Table)
 
 								// 每个表只输出一次目标表为空的提示
 								tableKey := fmt.Sprintf("%s.%s", c1.Schema, c1.Table)
@@ -1272,15 +1323,15 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 						// 添加调试信息：检查差异数量的合理性
 						expectedAddCount := len(cleanSourceData) - len(cleanDestData)
 						if len(cleanDestData) == 0 {
-							global.Wlog.Debug("DEBUG_DIFF_ANALYSIS_%d: Expected add count: %d (source=%d, dest=0), Actual add count: %d\n",
+							global.Wlog.Debugf("DEBUG_DIFF_ANALYSIS_%d: Expected add count: %d (source=%d, dest=0), Actual add count: %d\n",
 								logThreadSeq, len(cleanSourceData), len(cleanSourceData), len(add))
 						} else {
-							global.Wlog.Debug("DEBUG_DIFF_ANALYSIS_%d: Expected add count: %d (source=%d, dest=%d), Actual add count: %d\n",
+							global.Wlog.Debugf("DEBUG_DIFF_ANALYSIS_%d: Expected add count: %d (source=%d, dest=%d), Actual add count: %d\n",
 								logThreadSeq, expectedAddCount, len(cleanSourceData), len(cleanDestData), len(add))
 						}
 
 						if len(add) > expectedAddCount+10 {
-							global.Wlog.Debug("DEBUG_ADD_DATA_%d: addCount=%d expected=%d (sample suppressed)",
+							global.Wlog.Debugf("DEBUG_ADD_DATA_%d: addCount=%d expected=%d (sample suppressed)",
 								logThreadSeq, len(add), expectedAddCount)
 						}
 
@@ -1377,7 +1428,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 							if len(del) > 0 {
 								vlog = fmt.Sprintf("(%d) Generating DELETE statements for %s.%s", logThreadSeq, c1.Schema, c1.Table)
 								global.Wlog.Debug(vlog)
-								global.Wlog.Debug("DEBUG_SQL_ORDER_%d: Processing %d DELETE statements first for %s.%s\n",
+								global.Wlog.Debugf("DEBUG_SQL_ORDER_%d: Processing %d DELETE statements first for %s.%s\n",
 									logThreadSeq, len(del), c1.Schema, c1.Table)
 
 								deleteSqlSize := sp.deleteSqlSize
@@ -1744,7 +1795,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 							if len(add) > 0 {
 								vlog = fmt.Sprintf("(%d) Generating INSERT statements for %s.%s", logThreadSeq, c1.Schema, c1.Table)
 								global.Wlog.Debug(vlog)
-								global.Wlog.Debug("DEBUG_SQL_ORDER_%d: Processing %d INSERT statements after DELETE for %s.%s\n",
+								global.Wlog.Debugf("DEBUG_SQL_ORDER_%d: Processing %d INSERT statements after DELETE for %s.%s\n",
 									logThreadSeq, len(add), c1.Schema, c1.Table)
 
 								// 分组处理INSERT语句，每fixTrxNum条合并一次
@@ -1758,7 +1809,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 									// INSERT去重已由insertedPrimaryKeys机制保证，不再限制batchAdd大小
 
 									// 生成单独的INSERT语句，避免多线程并发下的重复冲突
-									global.Wlog.Debug("DEBUG_INSERT_LOOP_%d: Starting INSERT generation for %d records in batch for %s.%s\n",
+									global.Wlog.Debugf("DEBUG_INSERT_LOOP_%d: Starting INSERT generation for %d records in batch for %s.%s\n",
 										logThreadSeq, len(batchAdd), c1.Schema, c1.Table)
 
 									insertCount := 0
@@ -1837,7 +1888,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 												if len(sqlstr) > 50 {
 													sqlPreview = sqlstr[:50] + "..."
 												}
-												global.Wlog.Debug("DEBUG_INSERT_DETAIL_%d: Batch[%d] - Insert count %d - SQL starts with: %s\n",
+												global.Wlog.Debugf("DEBUG_INSERT_DETAIL_%d: Batch[%d] - Insert count %d - SQL starts with: %s\n",
 													logThreadSeq, batchIndex, insertCount, sqlPreview)
 											}
 
@@ -1847,10 +1898,10 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 									}
 
 									if duplicateCount > 0 {
-										global.Wlog.Debug("DEBUG_INSERT_LOOP_%d: Generated %d INSERT statements, skipped %d duplicates for batch with %d records in %s.%s (Total so far: %d)\n",
+										global.Wlog.Debugf("DEBUG_INSERT_LOOP_%d: Generated %d INSERT statements, skipped %d duplicates for batch with %d records in %s.%s (Total so far: %d)\n",
 											logThreadSeq, insertCount, duplicateCount, len(batchAdd), c1.Schema, c1.Table, totalInsertCount)
 									} else {
-										global.Wlog.Debug("DEBUG_INSERT_LOOP_%d: Generated %d INSERT statements for batch with %d records in %s.%s (Total so far: %d)\n",
+										global.Wlog.Debugf("DEBUG_INSERT_LOOP_%d: Generated %d INSERT statements for batch with %d records in %s.%s (Total so far: %d)\n",
 											logThreadSeq, insertCount, len(batchAdd), c1.Schema, c1.Table, totalInsertCount)
 									}
 								}
@@ -1863,7 +1914,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 			}
 		}
 	}
-	global.Wlog.Debug("DEBUG_FINAL_COUNT_%d: Total INSERT statements generated for %s.%s: %d\n",
+	global.Wlog.Debugf("DEBUG_FINAL_COUNT_%d: Total INSERT statements generated for %s.%s: %d\n",
 		logThreadSeq, sp.schema, sp.table, totalInsertCount)
 	vlog = fmt.Sprintf("(%d) Completed difference processing and repair statements for %s.%s", logThreadSeq, sp.schema, sp.table)
 	global.Wlog.Info(vlog)
@@ -2430,7 +2481,7 @@ func processBatch(sqls []string, datafixType string, sfile *os.File, ddrive stri
 	}
 	finalSqls := optimizeSqlStatements(sqls, fixTrxNum, isUniqueKey, deleteSqlSize, insertSqlSize)
 	writeOptimizedSqlChunk(finalSqls, datafixType, sfile, ddrive, djdbc, logThreadSeq, fixTrxNum)
-	global.Wlog.Debug("DEBUG_BATCH_WRITE_%d: Wrote %d SQL statements to file, DELETE=%d, INSERT=%d\n",
+	global.Wlog.Debugf("DEBUG_BATCH_WRITE_%d: Wrote %d SQL statements to file, DELETE=%d, INSERT=%d\n",
 		logThreadSeq, len(finalSqls), len(sqls), len(finalSqls))
 }
 
@@ -2440,6 +2491,13 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func (sp SchedulePlan) getDestTableName() string {
+	if strings.TrimSpace(sp.destTable) != "" {
+		return sp.destTable
+	}
+	return sp.table
 }
 
 /*
@@ -2462,26 +2520,29 @@ func (sp SchedulePlan) doIndexDataCheck() {
 	)
 
 	var idxc, idxcDest dbExec.IndexColumnStruct
-	rand.Seed(time.Now().UnixNano())
 	logThreadSeq := rand.Int63()
+	destTable := sp.getDestTableName()
+	destColInfo := sp.tableAllCol[fmt.Sprintf("%s_gtchecksum_%s", sp.destSchema, sp.table)].DColumnInfo
+	if mappedDestCols, ok := sp.tableAllCol[fmt.Sprintf("%s_gtchecksum_%s", sp.destSchema, destTable)]; ok && len(mappedDestCols.DColumnInfo) > 0 {
+		destColInfo = mappedDestCols.DColumnInfo
+	}
 	idxc = dbExec.IndexColumnStruct{Schema: sp.sourceSchema, Table: sp.table, ColumnName: sp.columnName,
 		ChanrowCount: sp.chanrowCount, Drivce: sp.sdrive,
 		ColData: sp.tableAllCol[fmt.Sprintf("%s_gtchecksum_%s", sp.sourceSchema, sp.table)].SColumnInfo}
 	selectColumnStringM[sp.sdrive] = idxc.TableIndexColumn().TmpTableIndexColumnSelectDispos(logThreadSeq)
-	idxcDest = dbExec.IndexColumnStruct{Schema: sp.destSchema, Table: sp.table, ColumnName: sp.columnName,
+	idxcDest = dbExec.IndexColumnStruct{Schema: sp.destSchema, Table: destTable, ColumnName: sp.columnName,
 		ChanrowCount: sp.chanrowCount, Drivce: sp.ddrive,
-		ColData: sp.tableAllCol[fmt.Sprintf("%s_gtchecksum_%s", sp.destSchema, sp.table)].DColumnInfo}
+		ColData: destColInfo}
 	selectColumnStringM[sp.ddrive] = idxcDest.TableIndexColumn().TmpTableIndexColumnSelectDispos(logThreadSeq)
 
 	// 设置Pod结构体，包括映射关系信息
 	mappingInfo := ""
-	if sp.sourceSchema != sp.destSchema {
+	if sp.sourceSchema != sp.destSchema && sp.table != destTable {
+		mappingInfo = fmt.Sprintf("Schema: %s:%s, Table: %s:%s", sp.sourceSchema, sp.destSchema, sp.table, destTable)
+	} else if sp.sourceSchema != sp.destSchema {
 		mappingInfo = fmt.Sprintf("Schema: %s:%s", sp.sourceSchema, sp.destSchema)
-		if sp.table != sp.table { // 如果表名也不同，添加表名映射信息
-			mappingInfo += fmt.Sprintf(", Table: %s:%s", sp.table, sp.table)
-		}
-	} else if sp.table != sp.table { // 只有表名不同
-		mappingInfo = fmt.Sprintf("Table: %s:%s", sp.table, sp.table)
+	} else if sp.table != destTable {
+		mappingInfo = fmt.Sprintf("Table: %s:%s", sp.table, destTable)
 	}
 
 	sp.pods = &Pod{
@@ -2503,16 +2564,16 @@ func (sp SchedulePlan) doIndexDataCheck() {
 			continue
 		}
 		checkSQL := fmt.Sprintf("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = '%s' AND table_name = '%s' AND column_name = '%s'",
-			sp.destSchema, sp.table, colName)
+			sp.destSchema, destTable, colName)
 		var colCount int
 		err := ddbCheck.QueryRow(checkSQL).Scan(&colCount)
 		if err != nil || colCount == 0 {
 			sp.ddbPool.Put(ddbCheck, logThreadSeq)
 			vlog := fmt.Sprintf("[doIndexDataCheck] Index column '%s' does not exist in target table %s.%s (possible GIPK/INVISIBLE column mismatch). Setting Diffs=yes.",
-				colName, sp.destSchema, sp.table)
+				colName, sp.destSchema, destTable)
 			global.Wlog.Warn(vlog)
 			fmt.Printf("\n[WARNING] Index column '%s' exists in source %s.%s but NOT in target %s.%s (DDL mismatch)\n",
-				colName, sp.sourceSchema, sp.table, sp.destSchema, sp.table)
+				colName, sp.sourceSchema, sp.table, sp.destSchema, destTable)
 
 			// 获取行数用于报告
 			idxc = dbExec.IndexColumnStruct{Schema: sp.sourceSchema, Table: sp.table, Drivce: sp.sdrive}
@@ -2520,7 +2581,7 @@ func (sp SchedulePlan) doIndexDataCheck() {
 			srcRows, _ := idxc.TableIndexColumn().TableRows(sdb, int64(logThreadSeq))
 			sp.sdbPool.Put(sdb, logThreadSeq)
 
-			idxcDest := dbExec.IndexColumnStruct{Schema: sp.destSchema, Table: sp.table, Drivce: sp.ddrive}
+			idxcDest := dbExec.IndexColumnStruct{Schema: sp.destSchema, Table: destTable, Drivce: sp.ddrive}
 			ddb := sp.ddbPool.Get(logThreadSeq)
 			destRows, _ := idxcDest.TableIndexColumn().TableRows(ddb, int64(logThreadSeq))
 			sp.ddbPool.Put(ddb, logThreadSeq)
@@ -2547,13 +2608,13 @@ func (sp SchedulePlan) doIndexDataCheck() {
 		return
 	}
 
-	idxcDest = dbExec.IndexColumnStruct{Schema: sp.destSchema, Table: sp.table, Drivce: sp.ddrive}
+	idxcDest = dbExec.IndexColumnStruct{Schema: sp.destSchema, Table: destTable, Drivce: sp.ddrive}
 	ddb := sp.ddbPool.Get(logThreadSeq)
-	vlog = fmt.Sprintf("(%d) [doIndexDataCheck] Querying destination table rows for %s.%s", logThreadSeq, sp.destSchema, sp.table)
+	vlog = fmt.Sprintf("(%d) [doIndexDataCheck] Querying destination table rows for %s.%s", logThreadSeq, sp.destSchema, destTable)
 	global.Wlog.Debug(vlog)
 	B, err := idxcDest.TableIndexColumn().TableRows(ddb, int64(logThreadSeq))
 	if err != nil {
-		vlog = fmt.Sprintf("(%d) [doIndexDataCheck] Failed to get destination table rows for %s.%s: %v", logThreadSeq, sp.destSchema, sp.table, err)
+		vlog = fmt.Sprintf("(%d) [doIndexDataCheck] Failed to get destination table rows for %s.%s: %v", logThreadSeq, sp.destSchema, destTable, err)
 		global.Wlog.Error(vlog)
 		return
 	}
@@ -2565,7 +2626,7 @@ func (sp SchedulePlan) doIndexDataCheck() {
 	}
 	// 重新查询精确行数
 	sourceExactCount, sourceCountExact := sp.getExactRowCount(sp.sdbPool, sp.sourceSchema, sp.table, logThreadSeq)
-	targetExactCount, targetCountExact := sp.getExactRowCount(sp.ddbPool, sp.destSchema, sp.table, logThreadSeq)
+	targetExactCount, targetCountExact := sp.getExactRowCount(sp.ddbPool, sp.destSchema, destTable, logThreadSeq)
 	sp.pods.Rows = fmt.Sprintf("%d,%d", sourceExactCount, targetExactCount)
 
 	// 仅在两端都拿到精确计数时，才用行数差异做提前判定。
@@ -2599,10 +2660,11 @@ func (sp SchedulePlan) doIndexDataCheck() {
 
 // 新的函数处理分离的源端和目标端查询
 func (sp *SchedulePlan) queryTableSqlSeparate(sqlWhere chanString, sourceSelectSql chanMap, destSelectSql chanMap, cc1 global.TableAllColumnInfoS, sc chan int64, logThreadSeq int64) {
+	destTable := sp.getDestTableName()
 	for c := range sqlWhere {
 		// 源端查询SQL
-		sourceWhere := strings.Replace(c, fmt.Sprintf("%s.%s", sp.destSchema, sp.table), fmt.Sprintf("%s.%s", sp.sourceSchema, sp.table), -1)
-		sourceWhere = strings.Replace(sourceWhere, fmt.Sprintf("`%s`.`%s`", sp.destSchema, sp.table), fmt.Sprintf("`%s`.`%s`", sp.sourceSchema, sp.table), -1)
+		sourceWhere := strings.Replace(c, fmt.Sprintf("%s.%s", sp.destSchema, destTable), fmt.Sprintf("%s.%s", sp.sourceSchema, sp.table), -1)
+		sourceWhere = strings.Replace(sourceWhere, fmt.Sprintf("`%s`.`%s`", sp.destSchema, destTable), fmt.Sprintf("`%s`.`%s`", sp.sourceSchema, sp.table), -1)
 
 		idxc := dbExec.IndexColumnStruct{
 			Schema:   sp.sourceSchema,
@@ -2619,12 +2681,12 @@ func (sp *SchedulePlan) queryTableSqlSeparate(sqlWhere chanString, sourceSelectS
 		}
 
 		// 目标端查询SQL
-		destWhere := strings.Replace(c, fmt.Sprintf("%s.%s", sp.sourceSchema, sp.table), fmt.Sprintf("%s.%s", sp.destSchema, sp.table), -1)
-		destWhere = strings.Replace(destWhere, fmt.Sprintf("`%s`.`%s`", sp.sourceSchema, sp.table), fmt.Sprintf("`%s`.`%s`", sp.destSchema, sp.table), -1)
+		destWhere := strings.Replace(c, fmt.Sprintf("%s.%s", sp.sourceSchema, sp.table), fmt.Sprintf("%s.%s", sp.destSchema, destTable), -1)
+		destWhere = strings.Replace(destWhere, fmt.Sprintf("`%s`.`%s`", sp.sourceSchema, sp.table), fmt.Sprintf("`%s`.`%s`", sp.destSchema, destTable), -1)
 
 		idxcDest := dbExec.IndexColumnStruct{
 			Schema:   sp.destSchema,
-			Table:    sp.table,
+			Table:    destTable,
 			Drivce:   sp.ddrive,
 			Sqlwhere: destWhere,
 			ColData:  cc1.DColumnInfo,
@@ -2679,7 +2741,7 @@ func (sp *SchedulePlan) queryTableDataSeparate(sourceSelectSql chanMap, destSele
 		case d, ok := <-sc:
 			if ok && d > 0 {
 				total = d
-				global.Wlog.Debug("DEBUG_PROGRESS_%d: Total tasks received=%d at time=%.2fs\n",
+				global.Wlog.Debugf("DEBUG_PROGRESS_%d: Total tasks received=%d at time=%.2fs\n",
 					logThreadSeq, d, float64(time.Now().UnixMilli()-startTime)/1000)
 			}
 		case sourceSql, ok := <-sourceSelectSql:
@@ -2762,7 +2824,13 @@ func (sp *SchedulePlan) queryTableDataSeparate(sourceSelectSql chanMap, destSele
 				sourceChecksum, err := queryRowsChecksumBySQL(sdb, sourceSql[sp.sdrive], sp.sdrive, logThreadSeq)
 				sp.sdbPool.Put(sdb, logThreadSeq)
 				if err != nil {
-					global.Wlog.Info(fmt.Sprintf("QUERY_ERROR: source query failed for seq=%d, sql=%s, err=%v", currentSeq, sourceSql[sp.sdrive], err))
+					global.Wlog.Warn(fmt.Sprintf("QUERY_ERROR: source checksum query failed for seq=%d, fallback to full row compare, sql=%s, err=%v", currentSeq, sourceSql[sp.sdrive], err))
+					diffQueryData <- DifferencesDataStruct{
+						Schema:          sp.schema,
+						Table:           sp.table,
+						SqlWhere:        map[string]string{sp.sdrive: sourceSql[sp.sdrive], sp.ddrive: destSql[sp.ddrive]},
+						TableColumnInfo: cc1,
+					}
 					return
 				}
 
@@ -2771,7 +2839,13 @@ func (sp *SchedulePlan) queryTableDataSeparate(sourceSelectSql chanMap, destSele
 				destChecksum, err := queryRowsChecksumBySQL(ddb, destSql[sp.ddrive], sp.ddrive, logThreadSeq)
 				sp.ddbPool.Put(ddb, logThreadSeq)
 				if err != nil {
-					global.Wlog.Info(fmt.Sprintf("QUERY_ERROR: dest query failed for seq=%d, sql=%s, err=%v", currentSeq, destSql[sp.ddrive], err))
+					global.Wlog.Warn(fmt.Sprintf("QUERY_ERROR: dest checksum query failed for seq=%d, fallback to full row compare, sql=%s, err=%v", currentSeq, destSql[sp.ddrive], err))
+					diffQueryData <- DifferencesDataStruct{
+						Schema:          sp.schema,
+						Table:           sp.table,
+						SqlWhere:        map[string]string{sp.sdrive: sourceSql[sp.sdrive], sp.ddrive: destSql[sp.ddrive]},
+						TableColumnInfo: cc1,
+					}
 					return
 				}
 
@@ -2913,9 +2987,6 @@ func queryRowsChecksumBySQL(db *sql.DB, query string, drive string, logThreadSeq
 				s = "<nil>"
 			} else {
 				s = fmt.Sprintf("%v", val)
-			}
-			if val == nil {
-				s = "<nil>"
 			}
 			if driver == "godror" && s == "" {
 				s = "<nil>"
