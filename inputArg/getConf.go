@@ -77,8 +77,15 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 	srcDSNValue := getLastConfigValue("srcDSN")
 	rc.SecondaryL.DsnsV.SrcDSN = srcDSNValue
 	if strings.Contains(rc.SecondaryL.DsnsV.SrcDSN, "|") {
-		rc.SecondaryL.DsnsV.SrcDrive = strings.Split(rc.SecondaryL.DsnsV.SrcDSN, "|")[0]
-		rc.SecondaryL.DsnsV.SrcJdbc = strings.Split(rc.SecondaryL.DsnsV.SrcDSN, "|")[1]
+		parts := strings.SplitN(rc.SecondaryL.DsnsV.SrcDSN, "|", 2)
+		rc.SecondaryL.DsnsV.SrcDrive = strings.TrimSpace(parts[0])
+		rc.SecondaryL.DsnsV.SrcJdbc = strings.TrimSpace(parts[1])
+		if strings.EqualFold(rc.SecondaryL.DsnsV.SrcDrive, "oracle") {
+			normalized, normErr := normalizeOracleJDBC(rc.SecondaryL.DsnsV.SrcJdbc)
+			rc.getErr("invalid srcDSN Oracle format", normErr)
+			rc.SecondaryL.DsnsV.SrcJdbc = normalized
+			rc.SecondaryL.DsnsV.SrcDSN = fmt.Sprintf("%s|%s", rc.SecondaryL.DsnsV.SrcDrive, normalized)
+		}
 	} else {
 		rc.SecondaryL.DsnsV.SrcDrive = "mysql" // 默认使用mysql驱动
 		rc.SecondaryL.DsnsV.SrcJdbc = rc.SecondaryL.DsnsV.SrcDSN
@@ -87,8 +94,15 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 	dstDSNValue := getLastConfigValue("dstDSN")
 	rc.SecondaryL.DsnsV.DstDSN = dstDSNValue
 	if strings.Contains(rc.SecondaryL.DsnsV.DstDSN, "|") {
-		rc.SecondaryL.DsnsV.DestDrive = strings.Split(rc.SecondaryL.DsnsV.DstDSN, "|")[0]
-		rc.SecondaryL.DsnsV.DestJdbc = strings.Split(rc.SecondaryL.DsnsV.DstDSN, "|")[1]
+		parts := strings.SplitN(rc.SecondaryL.DsnsV.DstDSN, "|", 2)
+		rc.SecondaryL.DsnsV.DestDrive = strings.TrimSpace(parts[0])
+		rc.SecondaryL.DsnsV.DestJdbc = strings.TrimSpace(parts[1])
+		if strings.EqualFold(rc.SecondaryL.DsnsV.DestDrive, "oracle") {
+			normalized, normErr := normalizeOracleJDBC(rc.SecondaryL.DsnsV.DestJdbc)
+			rc.getErr("invalid dstDSN Oracle format", normErr)
+			rc.SecondaryL.DsnsV.DestJdbc = normalized
+			rc.SecondaryL.DsnsV.DstDSN = fmt.Sprintf("%s|%s", rc.SecondaryL.DsnsV.DestDrive, normalized)
+		}
 	} else {
 		rc.SecondaryL.DsnsV.DestDrive = "mysql" // 默认使用mysql驱动
 		rc.SecondaryL.DsnsV.DestJdbc = rc.SecondaryL.DsnsV.DstDSN
