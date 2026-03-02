@@ -59,6 +59,25 @@ $ gt-checksum -c ./gc.conf
     a.如果参数设置 `datafix=file`，则只需授予 `SELECT ANY TABLE` 权限；
     b.如果参数设置 `datafix=table`，则需要授予 `SELECT ANY TABLE、INSERT ANY TABLE、DELETE ANY TABLE` 权限。
 
+### checkObject 权限矩阵（MySQL & Oracle）
+
+`checkObject` 参数可选值为 `data`、`struct`、`routine`、`trigger`，默认值为 `data`。
+
+下表基于当前版本代码实现路径梳理了各模式最小建议权限、权限来源及版本差异：
+
+| checkObject | MySQL 所需权限（名称 / 来源 / 说明） | Oracle 所需权限（名称 / 来源 / 说明） | 版本差异与说明 |
+|---|---|---|---|
+| `data` | 1) `REPLICATION CLIENT`（系统权限，程序启动时检查）<br>2) `SESSION_VARIABLES_ADMIN`（系统权限，程序启动时检查）<br>3) `SELECT`（对象权限，表/库/全局任一层级可覆盖）<br>4) 若 `datafix=table`：`INSERT`、`DELETE`、`ALTER`（对象权限） | 1) `SELECT ANY DICTIONARY`（系统权限，程序启动时检查）<br>2) `SELECT`（对象权限）<br>3) 若 `datafix=table`：`INSERT`、`DELETE`（对象权限）或 `INSERT ANY TABLE`、`DELETE ANY TABLE`（系统权限） | MySQL 5.7 无 `SESSION_VARIABLES_ADMIN`；MySQL 8.0 及以上建议授予。Oracle 12c+ 存在 `READ` 对象权限，但当前实现按 `SELECT` 语义检查。 |
+| `struct` | 程序仍执行全局权限检查；结构比对会读取 `INFORMATION_SCHEMA.COLUMNS`、`INFORMATION_SCHEMA.STATISTICS`、`INFORMATION_SCHEMA.PARTITIONS`、`INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS`等。建议至少具备目标对象与上述元数据表 `SELECT` 权限。 | 程序仍执行全局权限检查；结构比对会读取 `DBA_TAB_COLUMNS`、`DBA_COL_COMMENTS`、`USER_CONSTRAINTS`、`ALL_TABLES`，并调用 `DBMS_METADATA.GET_DDL('TABLE',...)`。建议具备 `SELECT ANY DICTIONARY` 及元数据访问能力。 | 当前实现中，`checkObject=struct` 已合并执行表结构、索引、分区、外键检查。 |
+| `routine` | 读取 `INFORMATION_SCHEMA.PARAMETERS`、`INFORMATION_SCHEMA.ROUTINES`。为确保可读取完整定义，建议授予 `SHOW_ROUTINE`（系统权限）或等效的全局读取能力。 | 读取 `ALL_PROCEDURES`，并调用 `DBMS_METADATA.GET_DDL('PROCEDURE'/'FUNCTION',...)`。建议具备 `SELECT ANY DICTIONARY` 与 `DBMS_METADATA` 访问能力。 | MySQL 8.0.20+ 引入 `SHOW_ROUTINE` 权限语义更清晰；低版本通常通过更高权限覆盖。 |
+| `trigger` | 读取 `INFORMATION_SCHEMA.TRIGGERS`，并执行 `SHOW CREATE TRIGGER`。建议授予 `TRIGGER`（对象权限）。 | 读取 `ALL_TRIGGERS`，并调用 `DBMS_METADATA.GET_DDL('TRIGGER',...)`。建议具备 `SELECT ANY DICTIONARY` 与元数据访问能力。 | Oracle 11g/12c/19c/23c 在 `ALL_TRIGGERS` 视图语义上基本一致（返回当前用户可访问对象）。 |
+
+补充说明：
+
+1. 不论 `checkObject` 取值为何，程序启动阶段都会先做全局权限检查。
+2. 表级权限检查（`TableAccessPriCheck`）当前仅在 `checkObject=data` 分支中强制执行。
+3. `checkObject=trigger` 或 `routine` 时，若账号无法读取对应元数据，可能出现“未报错但结果不完整”的情况，建议按上表补齐权限后再执行。
+
 ## 快速使用案例
 
 拷贝或重命名模板文件*gc-sample.conf*为*gc.conf*，主要修改`srcDSN`,`dstDSN`,`tables`,`ignoreTables`等几个参数后，执行如下命令进行数据校验：
