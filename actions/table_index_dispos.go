@@ -58,6 +58,7 @@ var (
 	temporalGoDurationRe     = regexp.MustCompile(`^(-?\d+)h(\d+)m(\d+(?:\.\d+)?)s$`)
 	temporalDateOnlyRe       = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 	temporalDateTimeRe       = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})`)
+	oracleSimpleIdentRe      = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_$#]*$`)
 )
 
 type tableMemoryPeak struct {
@@ -69,7 +70,7 @@ type tableMemoryPeak struct {
 }
 
 func adaptWhereForDrive(where, drive string) string {
-	if drive == "godror" {
+	if strings.EqualFold(drive, "godror") || strings.EqualFold(drive, "oracle") {
 		return strings.ReplaceAll(where, "`", "\"")
 	}
 	return where
@@ -244,11 +245,42 @@ func (sp *SchedulePlan) getSourceColumnType(columnName string) string {
 	return ""
 }
 
-func queryTableMinMaxInt64(db *sql.DB, schema, table, columnName, where string) (int64, int64, bool, error) {
-	query := fmt.Sprintf("SELECT CAST(MIN(`%s`) AS CHAR), CAST(MAX(`%s`) AS CHAR) FROM `%s`.`%s`", columnName, columnName, schema, table)
-	if where != "" {
-		query = fmt.Sprintf("%s WHERE %s", query, where)
+func quoteIdentifierByDrive(name, drive string) string {
+	name = strings.TrimSpace(name)
+	if strings.EqualFold(drive, "godror") || strings.EqualFold(drive, "oracle") {
+		if len(name) >= 2 && strings.HasPrefix(name, "\"") && strings.HasSuffix(name, "\"") {
+			unquoted := strings.ReplaceAll(name[1:len(name)-1], "\"\"", "\"")
+			return fmt.Sprintf("\"%s\"", strings.ReplaceAll(unquoted, "\"", "\"\""))
+		}
+		if oracleSimpleIdentRe.MatchString(name) {
+			return strings.ToUpper(name)
+		}
+		return fmt.Sprintf("\"%s\"", strings.ReplaceAll(name, "\"", "\"\""))
 	}
+	return fmt.Sprintf("`%s`", strings.ReplaceAll(name, "`", "``"))
+}
+
+func qualifiedTableByDrive(schema, table, drive string) string {
+	return fmt.Sprintf("%s.%s", quoteIdentifierByDrive(schema, drive), quoteIdentifierByDrive(table, drive))
+}
+
+func queryTableMinMaxInt64ByDrive(db *sql.DB, drive, schema, table, columnName, where string) (int64, int64, bool, error) {
+	columnExpr := quoteIdentifierByDrive(columnName, drive)
+	query := ""
+	if strings.EqualFold(drive, "godror") || strings.EqualFold(drive, "oracle") {
+		query = fmt.Sprintf("SELECT CAST(MIN(%s) AS VARCHAR2(64)), CAST(MAX(%s) AS VARCHAR2(64)) FROM %s",
+			columnExpr, columnExpr, qualifiedTableByDrive(schema, table, drive))
+		if where != "" {
+			query = fmt.Sprintf("%s WHERE %s", query, adaptWhereForDrive(where, drive))
+		}
+	} else {
+		query = fmt.Sprintf("SELECT CAST(MIN(%s) AS CHAR), CAST(MAX(%s) AS CHAR) FROM %s",
+			columnExpr, columnExpr, qualifiedTableByDrive(schema, table, drive))
+		if where != "" {
+			query = fmt.Sprintf("%s WHERE %s", query, where)
+		}
+	}
+
 	var minStr, maxStr sql.NullString
 	if err := db.QueryRow(query).Scan(&minStr, &maxStr); err != nil {
 		return 0, 0, false, err
@@ -267,11 +299,24 @@ func queryTableMinMaxInt64(db *sql.DB, schema, table, columnName, where string) 
 	return minVal, maxVal, true, nil
 }
 
-func queryTableRowsEstimate(db *sql.DB, schema, table string) uint64 {
-	query := fmt.Sprintf("SELECT TABLE_ROWS FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s' LIMIT 1", schema, table)
-	var tableRows sql.NullInt64
-	if err := db.QueryRow(query).Scan(&tableRows); err != nil {
-		return 0
+func queryTableRowsEstimateByDrive(db *sql.DB, drive, schema, table string) uint64 {
+	var (
+		query     string
+		tableRows sql.NullInt64
+	)
+	if strings.EqualFold(drive, "godror") || strings.EqualFold(drive, "oracle") {
+		query = fmt.Sprintf("SELECT NUM_ROWS FROM ALL_TABLES WHERE %s AND %s",
+			oracleMetadataMatchExpr("OWNER", schema),
+			oracleMetadataMatchExpr("TABLE_NAME", table),
+		)
+		if err := db.QueryRow(query).Scan(&tableRows); err != nil {
+			return 0
+		}
+	} else {
+		query = "SELECT TABLE_ROWS FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=? AND TABLE_NAME=? LIMIT 1"
+		if err := db.QueryRow(query, schema, table).Scan(&tableRows); err != nil {
+			return 0
+		}
 	}
 	if !tableRows.Valid || tableRows.Int64 <= 0 {
 		return 0
@@ -279,14 +324,25 @@ func queryTableRowsEstimate(db *sql.DB, schema, table string) uint64 {
 	return uint64(tableRows.Int64)
 }
 
-func queryColumnHasNull(db *sql.DB, schema, table, columnName, where string) (bool, error) {
-	nullPredicate := fmt.Sprintf("`%s` IS NULL", columnName)
-	query := fmt.Sprintf("SELECT 1 FROM `%s`.`%s`", schema, table)
-	if where != "" {
-		query = fmt.Sprintf("%s WHERE (%s) AND %s LIMIT 1", query, where, nullPredicate)
+func queryColumnHasNullByDrive(db *sql.DB, drive, schema, table, columnName, where string) (bool, error) {
+	columnExpr := quoteIdentifierByDrive(columnName, drive)
+	query := fmt.Sprintf("SELECT 1 FROM %s", qualifiedTableByDrive(schema, table, drive))
+	if strings.EqualFold(drive, "godror") || strings.EqualFold(drive, "oracle") {
+		nullPredicate := fmt.Sprintf("%s IS NULL", columnExpr)
+		if where != "" {
+			query = fmt.Sprintf("%s WHERE (%s) AND %s AND ROWNUM = 1", query, adaptWhereForDrive(where, drive), nullPredicate)
+		} else {
+			query = fmt.Sprintf("%s WHERE %s AND ROWNUM = 1", query, nullPredicate)
+		}
 	} else {
-		query = fmt.Sprintf("%s WHERE %s LIMIT 1", query, nullPredicate)
+		nullPredicate := fmt.Sprintf("%s IS NULL", columnExpr)
+		if where != "" {
+			query = fmt.Sprintf("%s WHERE (%s) AND %s LIMIT 1", query, where, nullPredicate)
+		} else {
+			query = fmt.Sprintf("%s WHERE %s LIMIT 1", query, nullPredicate)
+		}
 	}
+
 	var one int
 	err := db.QueryRow(query).Scan(&one)
 	if err == sql.ErrNoRows {
@@ -298,10 +354,11 @@ func queryColumnHasNull(db *sql.DB, schema, table, columnName, where string) (bo
 	return true, nil
 }
 
-func buildNumericChunkWhereClauses(columnName, baseWhere string, minVal, maxVal int64, chunkRows int, estimatedRows uint64, includeNull bool) []string {
+func buildNumericChunkWhereClauses(columnName, baseWhere, drive string, minVal, maxVal int64, chunkRows int, estimatedRows uint64, includeNull bool) []string {
 	if chunkRows <= 0 || maxVal < minVal {
 		return nil
 	}
+	colExpr := quoteIdentifierByDrive(columnName, drive)
 
 	targetChunks := 1
 	if estimatedRows > 0 {
@@ -322,7 +379,7 @@ func buildNumericChunkWhereClauses(columnName, baseWhere string, minVal, maxVal 
 
 	clauses := make([]string, 0, targetChunks+1)
 	if includeNull {
-		nullClause := fmt.Sprintf("`%s` IS NULL", columnName)
+		nullClause := fmt.Sprintf("%s IS NULL", colExpr)
 		if baseWhere != "" {
 			nullClause = fmt.Sprintf("%s and %s", baseWhere, nullClause)
 		}
@@ -333,9 +390,9 @@ func buildNumericChunkWhereClauses(columnName, baseWhere string, minVal, maxVal 
 		next := start + step
 		var clause string
 		if next <= maxVal {
-			clause = fmt.Sprintf("`%s` >= %d and `%s` < %d", columnName, start, columnName, next)
+			clause = fmt.Sprintf("%s >= %d and %s < %d", colExpr, start, colExpr, next)
 		} else {
-			clause = fmt.Sprintf("`%s` >= %d", columnName, start)
+			clause = fmt.Sprintf("%s >= %d", colExpr, start)
 		}
 		if baseWhere != "" {
 			clause = fmt.Sprintf("%s and %s", baseWhere, clause)
@@ -357,7 +414,9 @@ func (sp *SchedulePlan) generateFirstLevelNumericChunks(sdb, ddb *sql.DB, level,
 	if where != "" {
 		return nil, false
 	}
-	if !strings.EqualFold(sp.sdrive, "mysql") || !strings.EqualFold(sp.ddrive, "mysql") {
+	sourceDriveSupported := strings.EqualFold(sp.sdrive, "mysql") || strings.EqualFold(sp.sdrive, "godror") || strings.EqualFold(sp.sdrive, "oracle")
+	destDriveSupported := strings.EqualFold(sp.ddrive, "mysql") || strings.EqualFold(sp.ddrive, "godror") || strings.EqualFold(sp.ddrive, "oracle")
+	if !sourceDriveSupported || !destDriveSupported {
 		return nil, false
 	}
 	if level >= len(sp.columnName) {
@@ -370,11 +429,11 @@ func (sp *SchedulePlan) generateFirstLevelNumericChunks(sdb, ddb *sql.DB, level,
 		return nil, false
 	}
 
-	sMin, sMax, sHasRows, sErr := queryTableMinMaxInt64(sdb, sp.sourceSchema, sp.table, column, where)
+	sMin, sMax, sHasRows, sErr := queryTableMinMaxInt64ByDrive(sdb, sp.sdrive, sp.sourceSchema, sp.table, column, where)
 	if sErr != nil {
 		return nil, false
 	}
-	dMin, dMax, dHasRows, dErr := queryTableMinMaxInt64(ddb, sp.destSchema, sp.table, column, where)
+	dMin, dMax, dHasRows, dErr := queryTableMinMaxInt64ByDrive(ddb, sp.ddrive, sp.destSchema, sp.table, column, where)
 	if dErr != nil {
 		return nil, false
 	}
@@ -397,23 +456,23 @@ func (sp *SchedulePlan) generateFirstLevelNumericChunks(sdb, ddb *sql.DB, level,
 		}
 	}
 
-	sEstRows := queryTableRowsEstimate(sdb, sp.sourceSchema, sp.table)
-	dEstRows := queryTableRowsEstimate(ddb, sp.destSchema, sp.table)
+	sEstRows := queryTableRowsEstimateByDrive(sdb, sp.sdrive, sp.sourceSchema, sp.table)
+	dEstRows := queryTableRowsEstimateByDrive(ddb, sp.ddrive, sp.destSchema, sp.table)
 	estRows := sEstRows
 	if dEstRows > estRows {
 		estRows = dEstRows
 	}
 
-	sHasNull, _ := queryColumnHasNull(sdb, sp.sourceSchema, sp.table, column, where)
-	dHasNull, _ := queryColumnHasNull(ddb, sp.destSchema, sp.table, column, where)
+	sHasNull, _ := queryColumnHasNullByDrive(sdb, sp.sdrive, sp.sourceSchema, sp.table, column, where)
+	dHasNull, _ := queryColumnHasNullByDrive(ddb, sp.ddrive, sp.destSchema, sp.table, column, where)
 
-	clauses := buildNumericChunkWhereClauses(column, where, minVal, maxVal, queryNum, estRows, sHasNull || dHasNull)
+	clauses := buildNumericChunkWhereClauses(column, where, sp.sdrive, minVal, maxVal, queryNum, estRows, sHasNull || dHasNull)
 	if len(clauses) == 0 {
 		return nil, false
 	}
 
-	vlog := fmt.Sprintf("(%d) Numeric range chunking enabled for %s.%s.%s, chunks=%d, span=[%d,%d], estRows=%d",
-		logThreadSeq, sp.sourceSchema, sp.table, column, len(clauses), minVal, maxVal, estRows)
+	vlog := fmt.Sprintf("(%d) Numeric range chunking enabled for %s.%s.%s, chunks=%d, span=[%d,%d], estRows=%d, drives=%s=>%s",
+		logThreadSeq, sp.sourceSchema, sp.table, column, len(clauses), minVal, maxVal, estRows, sp.sdrive, sp.ddrive)
 	global.Wlog.Info(vlog)
 	return clauses, true
 }
@@ -450,8 +509,8 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 		return
 	}
 
-	// Fast path for large MySQL integer leading columns:
-	// build chunk ranges from min/max + table_rows estimate and skip full GROUP BY key materialization.
+	// Fast path for integer leading columns (MySQL/Oracle):
+	// build chunk ranges from min/max + row estimate and skip full GROUP BY key materialization.
 	if clauses, ok := sp.generateFirstLevelNumericChunks(sdb, ddb, level, queryNum, where, logThreadSeq); ok {
 		for _, clause := range clauses {
 			if level < len(sp.columnName)-1 {
@@ -537,8 +596,11 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 				}
 				return
 			}
-			vlog = fmt.Sprintf("(%d) Index column %s level %d - WHERE: %s, value: %s, count: %v", logThreadSeq, sp.columnName[level], level, where, key, value)
-			global.Wlog.Debug(vlog)
+			shouldLogDetail := autoIncSeq <= 10 || key == dataDispos.StreamEndMarker || autoIncSeq%500 == 0
+			if shouldLogDetail {
+				vlog = fmt.Sprintf("(%d) Index column %s level %d - WHERE: %s, value: %s, count: %v", logThreadSeq, sp.columnName[level], level, where, key, value)
+				global.Wlog.Debug(vlog)
+			}
 			if key == dataDispos.ValueNullPlaceholder || key == dataDispos.ValueEmptyPlaceholder {
 				vlog = fmt.Sprintf("(%d) Processing NULL values for index column %s level %d", logThreadSeq, sp.columnName[level], level)
 				global.Wlog.Debug(vlog)
@@ -1366,6 +1428,14 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 							cleanSourceData = normalizeRowsForTemporalComparison(cleanSourceData, temporalCompareKinds)
 							cleanDestData = normalizeRowsForTemporalComparison(cleanDestData, temporalCompareKinds)
 							global.Wlog.Debugf("(%d) Applied temporal normalization for %s.%s before Arrcmp", logThreadSeq, c1.Schema, c1.Table)
+						}
+
+						if len(cleanSourceData) == len(cleanDestData) &&
+							hashRowsIgnoringOrder(cleanSourceData) == hashRowsIgnoringOrder(cleanDestData) {
+							// Normalization made both row multisets equal, so this chunk requires no fix DML.
+							global.Wlog.Debugf("(%d) Normalized row sets are equal for %s.%s, skip diff DML generation",
+								logThreadSeq, c1.Schema, c1.Table)
+							return
 						}
 						add, del := aa.Arrcmp(cleanSourceData, cleanDestData)
 						if len(add) > 0 && len(del) > 0 && len(temporalCompareKinds) > 0 {
@@ -3030,8 +3100,7 @@ func queryRowsChecksumBySQL(db *sql.DB, query string, drive string, logThreadSeq
 	rowSep := "/*go actions rowData*/"
 	colSep := "/*go actions columnData*/"
 	driver := normalizedDrive(drive)
-	hasher := md5.New()
-	firstRow := true
+	rowDigestCounts := make(map[string]uint64, 128)
 
 	valuePtrs := make([]interface{}, len(columns))
 	values := make([]interface{}, len(columns))
@@ -3042,25 +3111,39 @@ func queryRowsChecksumBySQL(db *sql.DB, query string, drive string, logThreadSeq
 		if err := rows.Scan(valuePtrs...); err != nil {
 			return "", err
 		}
-		if !firstRow {
-			_, _ = io.WriteString(hasher, rowSep)
-		} else {
-			firstRow = false
-		}
-
+		rowHasher := md5.New()
 		for i := 0; i < len(columns); i++ {
 			if i > 0 {
-				_, _ = io.WriteString(hasher, colSep)
+				_, _ = io.WriteString(rowHasher, colSep)
 			}
 			s := normalizeChecksumValue(values[i], driver)
-			_, _ = io.WriteString(hasher, s)
+			_, _ = io.WriteString(rowHasher, s)
 		}
+		rowDigest := hex.EncodeToString(rowHasher.Sum(nil))
+		rowDigestCounts[rowDigest]++
 	}
 
 	if err := rows.Err(); err != nil {
 		return "", err
 	}
-	return hex.EncodeToString(hasher.Sum(nil)), nil
+	if len(rowDigestCounts) == 0 {
+		return "", nil
+	}
+	keys := make([]string, 0, len(rowDigestCounts))
+	for digest := range rowDigestCounts {
+		keys = append(keys, digest)
+	}
+	sort.Strings(keys)
+	finalHasher := md5.New()
+	for i, digest := range keys {
+		if i > 0 {
+			_, _ = io.WriteString(finalHasher, rowSep)
+		}
+		_, _ = io.WriteString(finalHasher, digest)
+		_, _ = io.WriteString(finalHasher, ":")
+		_, _ = io.WriteString(finalHasher, strconv.FormatUint(rowDigestCounts[digest], 10))
+	}
+	return hex.EncodeToString(finalHasher.Sum(nil)), nil
 }
 
 func normalizeChecksumValue(val interface{}, driver string) string {
@@ -3072,6 +3155,31 @@ func normalizeChecksumValue(val interface{}, driver string) string {
 	default:
 		return dataDispos.NormalizeValueForComparison(val, "")
 	}
+}
+
+func hashRowsIgnoringOrder(rows []string) string {
+	if len(rows) == 0 {
+		return ""
+	}
+	counts := make(map[string]uint64, len(rows))
+	for _, row := range rows {
+		counts[row]++
+	}
+	keys := make([]string, 0, len(counts))
+	for k := range counts {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	h := md5.New()
+	for i, key := range keys {
+		if i > 0 {
+			_, _ = io.WriteString(h, "/*go actions rowData*/")
+		}
+		_, _ = io.WriteString(h, key)
+		_, _ = io.WriteString(h, ":")
+		_, _ = io.WriteString(h, strconv.FormatUint(counts[key], 10))
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func waitForMemoryBudget(highWatermark float64) {
