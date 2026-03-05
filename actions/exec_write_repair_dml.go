@@ -6,6 +6,7 @@ import (
 	"gt-checksum/global"
 	"gt-checksum/inputArg"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 )
@@ -18,6 +19,49 @@ type repairSqlStruct struct {
 
 // 包级变量，用于存储已写入文件的SQL语句，实现跨函数调用的去重
 var writtenSqlMap sync.Map
+
+var mysqlDateFormatLiteralPattern = regexp.MustCompile(`(?i)DATE_FORMAT\(\s*'((?:\\'|[^'])*)'\s*,\s*'%Y-%m-%d %H:%i:%s'\s*\)`)
+var mysqlDateTimePrefixPatternForFix = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(\.\d{1,6})?`)
+
+func normalizeMySQLDateTimeLiteralForFix(value string) string {
+	s := strings.TrimSpace(value)
+	if s == "" {
+		return s
+	}
+	matches := mysqlDateTimePrefixPatternForFix.FindStringSubmatch(s)
+	if len(matches) >= 3 {
+		frac := ""
+		if len(matches) >= 4 {
+			frac = matches[3]
+		}
+		return matches[1] + " " + matches[2] + frac
+	}
+	if len(s) >= 19 && s[10] == 'T' {
+		return s[:10] + " " + s[11:]
+	}
+	return s
+}
+
+// normalizeMySQLDateFormatLiteralInSQL rewrites:
+// DATE_FORMAT('2026-02-17 16:04:25 +0800 CST','%Y-%m-%d %H:%i:%s')
+// to:
+// '2026-02-17 16:04:25'
+// so fixsql can execute safely on MySQL.
+func normalizeMySQLDateFormatLiteralInSQL(sql string) string {
+	if !strings.Contains(strings.ToUpper(sql), "DATE_FORMAT(") {
+		return sql
+	}
+	return mysqlDateFormatLiteralPattern.ReplaceAllStringFunc(sql, func(segment string) string {
+		matches := mysqlDateFormatLiteralPattern.FindStringSubmatch(segment)
+		if len(matches) < 2 {
+			return segment
+		}
+		raw := strings.ReplaceAll(matches[1], `\'`, `'`)
+		normalized := normalizeMySQLDateTimeLiteralForFix(raw)
+		escaped := strings.ReplaceAll(normalized, `'`, `\'`)
+		return fmt.Sprintf("'%s'", escaped)
+	})
+}
 
 func isFile(file string) *os.File {
 	sfile, err := os.Open(file)
@@ -98,6 +142,9 @@ func (rs repairSqlStruct) execRepairSql(sqlstr []string, dbType string, logThrea
 	if rs.FixTrxNum <= 0 {
 		// 如果fixTrxNum <= 0，则所有SQL放在一个事务中（默认行为）
 		for _, i := range sqlstr {
+			if dbType == "mysql" {
+				i = normalizeMySQLDateFormatLiteralInSQL(i)
+			}
 			if strings.HasPrefix(strings.ToUpper(i), "ALTER TABLE") {
 				if _, err = db.Exec(i); err != nil {
 					vlog = fmt.Sprintf("(%d) Failed to commit dataFix SQL. Error: %s", logThreadSeq, err)
@@ -137,6 +184,9 @@ func (rs repairSqlStruct) execRepairSql(sqlstr []string, dbType string, logThrea
 			// 执行当前批次的SQL语句
 			for j := i; j < end; j++ {
 				sql := sqlstr[j]
+				if dbType == "mysql" {
+					sql = normalizeMySQLDateFormatLiteralInSQL(sql)
+				}
 				if strings.HasPrefix(strings.ToUpper(sql), "ALTER TABLE") {
 					if _, err = db.Exec(sql); err != nil {
 						vlog = fmt.Sprintf("(%d) Failed to execute ALTER TABLE statement: %s. Error: %s", logThreadSeq, sql, err)
@@ -241,6 +291,9 @@ func (rs repairSqlStruct) sqlFileInternal(sfile *os.File, sql []string, logThrea
 		var uniqueSqls []string
 		localSeen := make(map[string]struct{})
 		for _, s := range sql {
+			if rs.Drive == "mysql" {
+				s = normalizeMySQLDateFormatLiteralInSQL(s)
+			}
 			trimmedSql := strings.TrimSpace(s)
 			if trimmedSql == "" {
 				continue
@@ -268,6 +321,9 @@ func (rs repairSqlStruct) sqlFileInternal(sfile *os.File, sql []string, logThrea
 		var uniqueSqls []string
 		localSeen := make(map[string]struct{})
 		for _, s := range sql {
+			if rs.Drive == "mysql" {
+				s = normalizeMySQLDateFormatLiteralInSQL(s)
+			}
 			trimmedSql := strings.TrimSpace(s)
 			if trimmedSql == "" {
 				continue

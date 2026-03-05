@@ -123,6 +123,7 @@ func executeSQLFile(db *sql.DB, sqlFile string) error {
 		if stmt == "" {
 			continue
 		}
+		stmt = normalizeMySQLDateFormatLiteralInSQLForExec(stmt)
 
 		// Execute the statement
 		_, err = tx.Exec(stmt)
@@ -188,6 +189,44 @@ func splitSQLStatements(content string) []string {
 	}
 
 	return statements
+}
+
+var mysqlDateFormatLiteralForExecPattern = regexp.MustCompile(`(?i)DATE_FORMAT\(\s*'((?:\\'|[^'])*)'\s*,\s*'%Y-%m-%d %H:%i:%s'\s*\)`)
+var mysqlDateTimePrefixForExecPattern = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(\.\d{1,6})?`)
+
+func normalizeMySQLDateTimeLiteralForExec(value string) string {
+	s := strings.TrimSpace(value)
+	if s == "" {
+		return s
+	}
+	matches := mysqlDateTimePrefixForExecPattern.FindStringSubmatch(s)
+	if len(matches) >= 3 {
+		frac := ""
+		if len(matches) >= 4 {
+			frac = matches[3]
+		}
+		return matches[1] + " " + matches[2] + frac
+	}
+	if len(s) >= 19 && s[10] == 'T' {
+		return s[:10] + " " + s[11:]
+	}
+	return s
+}
+
+func normalizeMySQLDateFormatLiteralInSQLForExec(sql string) string {
+	if !strings.Contains(strings.ToUpper(sql), "DATE_FORMAT(") {
+		return sql
+	}
+	return mysqlDateFormatLiteralForExecPattern.ReplaceAllStringFunc(sql, func(segment string) string {
+		matches := mysqlDateFormatLiteralForExecPattern.FindStringSubmatch(segment)
+		if len(matches) < 2 {
+			return segment
+		}
+		raw := strings.ReplaceAll(matches[1], `\'`, `'`)
+		normalized := normalizeMySQLDateTimeLiteralForExec(raw)
+		escaped := strings.ReplaceAll(normalized, `'`, `\'`)
+		return fmt.Sprintf("'%s'", escaped)
+	})
 }
 
 // Maximum number of retry attempts for deadlocked SQL files

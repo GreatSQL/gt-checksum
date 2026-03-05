@@ -195,7 +195,7 @@ CREATE TABLE range_hash_partition_table (
     id INT,
     purchased DATE,
     data VARCHAR(20),
-    purchase_year NUMBER,
+    purchase_year INT,
     purchase_day_of_year VARCHAR(3)
     )
     PARTITION BY RANGE( YEAR(purchased) )
@@ -326,7 +326,7 @@ INSERT INTO t1 VALUES(
     '测试        ',
     '多语言: こんにちは, 안녕하세요, 🚀',
     '999999999999999999999999999999999.99999',
-    '123456788999999994901752384638776796929370637168124949325214122442045721958041896028585083862128281682169991410291033767936000',
+    '9007199254740991',
     '-99999999.99',
     '9999-12-31 23:59:59',
     '1970-01-01 00:00:00',
