@@ -80,7 +80,7 @@ func (or *QueryTable) TableColumnName(db *sql.DB, logThreadSeq int64) ([]map[str
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start querying the metadata information of table %s.%s in the %s database and get all the column names", logThreadSeq, Event, or.Schema, or.Table, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("SELECT tc.column_name AS \"columnName\", DECODE(tc.data_type, 'NUMBER', NVL2(DATA_PRECISION, 'NUMBER(' || tc.DATA_PRECISION || ',' || tc.DATA_SCALE || ')', 'NUMBER'), 'VARCHAR2', 'VARCHAR2(' || tc.DATA_LENGTH || ')', 'CHAR', 'CHAR(' || tc.DATA_LENGTH || ')', 'RAW', 'RAW(' || tc.DATA_LENGTH || ')',tc.DATA_TYPE) AS \"columnType\", NULLABLE AS \"isNull\", '', '', TO_NCHAR(cc.comments) AS \"columnComment\", DATA_DEFAULT AS \"columnDefault\" FROM dba_tab_columns tc JOIN dba_col_comments cc ON tc.OWNER=cc.owner AND tc.TABLE_NAME=cc.table_name AND tc.COLUMN_NAME=cc.column_name WHERE tc.owner='%s' AND tc.table_name = '%s' ORDER BY tc.COLUMN_ID", or.Schema, or.Table)
+	strsql = fmt.Sprintf("SELECT tc.column_name AS \"columnName\", DECODE(tc.data_type, 'NUMBER', NVL2(DATA_PRECISION, 'NUMBER(' || tc.DATA_PRECISION || ',' || tc.DATA_SCALE || ')', 'NUMBER'), 'VARCHAR2', 'VARCHAR2(' || tc.DATA_LENGTH || ')', 'CHAR', 'CHAR(' || tc.DATA_LENGTH || ')', 'RAW', 'RAW(' || tc.DATA_LENGTH || ')',tc.DATA_TYPE) AS \"columnType\", NULLABLE AS \"isNull\", '', '', TO_NCHAR(cc.comments) AS \"columnComment\", DATA_DEFAULT AS \"columnDefault\" FROM dba_tab_columns tc JOIN dba_col_comments cc ON tc.OWNER=cc.owner AND tc.TABLE_NAME=cc.table_name AND tc.COLUMN_NAME=cc.column_name WHERE %s AND %s ORDER BY tc.COLUMN_ID", oracleMetadataMatchExpr("tc.OWNER", or.Schema), oracleMetadataMatchExpr("tc.TABLE_NAME", or.Table))
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		if err != nil {
@@ -336,7 +336,7 @@ func (or *QueryTable) TableAllColumn(db *sql.DB, logThreadSeq int64) ([]map[stri
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start to query the metadata of all the columns of table %s.%s in the %s database", logThreadSeq, Event, or.Schema, or.Table, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("SELECT column_name AS \"columnName\", CASE WHEN data_type='NUMBER' AND DATA_PRECISION IS NULL THEN DATA_TYPE WHEN data_type='NUMBER' AND DATA_PRECISION IS NOT NULL THEN DATA_TYPE || '(' || DATA_PRECISION || ',' || NVL(DATA_SCALE,0) || ')' WHEN data_type='VARCHAR2' THEN DATA_TYPE||'('||DATA_LENGTH||')' ELSE DATA_TYPE END AS \"dataType\", COLUMN_id AS \"columnSeq\", NULLABLE AS \"isNull\" FROM all_tab_columns WHERE owner='%s' AND TABLE_NAME='%s' ORDER BY column_id", or.Schema, or.Table)
+	strsql = fmt.Sprintf("SELECT column_name AS \"columnName\", CASE WHEN data_type='NUMBER' AND DATA_PRECISION IS NULL THEN DATA_TYPE WHEN data_type='NUMBER' AND DATA_PRECISION IS NOT NULL THEN DATA_TYPE || '(' || DATA_PRECISION || ',' || NVL(DATA_SCALE,0) || ')' WHEN data_type='VARCHAR2' THEN DATA_TYPE||'('||DATA_LENGTH||')' ELSE DATA_TYPE END AS \"dataType\", COLUMN_id AS \"columnSeq\", NULLABLE AS \"isNull\" FROM all_tab_columns WHERE %s AND %s ORDER BY column_id", oracleMetadataMatchExpr("owner", or.Schema), oracleMetadataMatchExpr("TABLE_NAME", or.Table))
 
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	mysql "gt-checksum/MySQL"
 	oracle "gt-checksum/Oracle"
+	"strings"
 )
 
 type TableColumnNameStruct struct {
@@ -34,9 +35,15 @@ type QueryTableColumnNameInterface interface {
 func (tcns *TableColumnNameStruct) Query() QueryTableColumnNameInterface {
 	var aa QueryTableColumnNameInterface
 	if tcns.Drive == "mysql" {
+		schemaName := tcns.Schema
+		tableName := tcns.Table
+		if strings.ToLower(tcns.CaseSensitiveObjectName) == "no" {
+			schemaName = strings.ToLower(schemaName)
+			tableName = strings.ToLower(tableName)
+		}
 		aa = &mysql.QueryTable{
-			Schema:                  tcns.Schema,
-			Table:                   tcns.Table,
+			Schema:                  schemaName,
+			Table:                   tableName,
 			Db:                      tcns.Db,
 			CaseSensitiveObjectName: tcns.CaseSensitiveObjectName,
 		}
@@ -46,7 +53,7 @@ func (tcns *TableColumnNameStruct) Query() QueryTableColumnNameInterface {
 			Schema:                  tcns.Schema,
 			Table:                   tcns.Table,
 			Db:                      tcns.Db,
-			CaseSensitiveObjectName: tcns.CaseSensitiveObjectName,
+			CaseSensitiveObjectName: "",
 		}
 	}
 	return aa

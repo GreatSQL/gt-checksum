@@ -173,7 +173,13 @@ func (sp *SchedulePlan) Schedulingtasks() {
 		destColKey := fmt.Sprintf("%s_gtchecksum_%s", destSchema, destTable)
 		if sourceColInfo, ok1 := sp.tableAllCol[sourceColKey]; ok1 {
 			if destColInfo, ok2 := sp.tableAllCol[destColKey]; ok2 {
-				if mismatch := checkDDLConsistency(sourceColInfo.SColumnInfo, destColInfo.DColumnInfo, sourceSchema, sourceTable, destSchema, destTable); mismatch != "" {
+				if mismatch := checkDDLConsistency(
+					sourceColInfo.SColumnInfo,
+					destColInfo.DColumnInfo,
+					sourceSchema, sourceTable,
+					destSchema, destTable,
+					sp.sdrive, sp.ddrive,
+				); mismatch != "" {
 					// DDL不一致，记录详细报告
 					fmt.Printf("\n[WARNING] DDL mismatch detected for table %s.%s vs %s.%s, skipping checksum:\n%s\n",
 						sourceSchema, sourceTable, destSchema, destTable, mismatch)
@@ -302,9 +308,33 @@ func CheckTableQuerySchedule(sdb, ddb *global.Pool, tableIndexColumnMap map[stri
 
 // checkDDLConsistency 检查源端与目标端表的DDL定义是否一致
 // 返回空字符串表示一致，返回非空字符串为详细的不一致报告
-func checkDDLConsistency(sourceColumns, destColumns []map[string]string, sourceSchema, sourceTable, destSchema, destTable string) string {
+func checkDDLConsistency(sourceColumns, destColumns []map[string]string, sourceSchema, sourceTable, destSchema, destTable, sourceDrive, destDrive string) string {
+	type columnMeta struct {
+		name     string
+		dataType string
+	}
+
+	isOracleDrive := func(d string) bool {
+		x := strings.ToLower(strings.TrimSpace(d))
+		return x == "oracle" || x == "godror"
+	}
+	isMySQLDrive := func(d string) bool {
+		x := strings.ToLower(strings.TrimSpace(d))
+		return x == "mysql"
+	}
+	normalizeColumnKey := func(name string) string {
+		key := strings.TrimSpace(name)
+		// Oracle metadata returns unquoted identifiers in uppercase.
+		// For Oracle<->MySQL comparison, compare column names case-insensitively
+		// to avoid false DDL mismatch on same semantic column names.
+		if (isOracleDrive(sourceDrive) && isMySQLDrive(destDrive)) || (isMySQLDrive(sourceDrive) && isOracleDrive(destDrive)) {
+			return strings.ToUpper(key)
+		}
+		return key
+	}
+
 	// 构建源端列名集合
-	sourceColMap := make(map[string]string) // columnName -> dataType
+	sourceColMap := make(map[string]columnMeta)
 	for _, col := range sourceColumns {
 		name := ""
 		if v, ok := col["columnName"]; ok {
@@ -319,12 +349,13 @@ func checkDDLConsistency(sourceColumns, destColumns []map[string]string, sourceS
 			dataType = v
 		}
 		if name != "" {
-			sourceColMap[name] = dataType
+			key := normalizeColumnKey(name)
+			sourceColMap[key] = columnMeta{name: name, dataType: dataType}
 		}
 	}
 
 	// 构建目标端列名集合
-	destColMap := make(map[string]string)
+	destColMap := make(map[string]columnMeta)
 	for _, col := range destColumns {
 		name := ""
 		if v, ok := col["columnName"]; ok {
@@ -339,7 +370,8 @@ func checkDDLConsistency(sourceColumns, destColumns []map[string]string, sourceS
 			dataType = v
 		}
 		if name != "" {
-			destColMap[name] = dataType
+			key := normalizeColumnKey(name)
+			destColMap[key] = columnMeta{name: name, dataType: dataType}
 		}
 	}
 
@@ -347,20 +379,20 @@ func checkDDLConsistency(sourceColumns, destColumns []map[string]string, sourceS
 	hasExistenceMismatch := false
 
 	// 检查源端有但目标端没有的列
-	for name, srcType := range sourceColMap {
-		if _, exists := destColMap[name]; !exists {
+	for key, srcCol := range sourceColMap {
+		if _, exists := destColMap[key]; !exists {
 			hasExistenceMismatch = true
 			mismatches = append(mismatches, fmt.Sprintf("  Column '%s' (%s) exists in source %s.%s but NOT in target %s.%s",
-				name, srcType, sourceSchema, sourceTable, destSchema, destTable))
+				srcCol.name, srcCol.dataType, sourceSchema, sourceTable, destSchema, destTable))
 		}
 	}
 
 	// 检查目标端有但源端没有的列
-	for name, destType := range destColMap {
-		if _, exists := sourceColMap[name]; !exists {
+	for key, destCol := range destColMap {
+		if _, exists := sourceColMap[key]; !exists {
 			hasExistenceMismatch = true
 			mismatches = append(mismatches, fmt.Sprintf("  Column '%s' (%s) exists in target %s.%s but NOT in source %s.%s",
-				name, destType, destSchema, destTable, sourceSchema, sourceTable))
+				destCol.name, destCol.dataType, destSchema, destTable, sourceSchema, sourceTable))
 		}
 	}
 
