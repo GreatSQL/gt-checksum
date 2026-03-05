@@ -13,6 +13,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 // 全局变量
@@ -181,6 +183,67 @@ func (stcls *schemaTable) getSourceTableName(schema, table string) string {
 	return fmt.Sprintf("%s.%s", schema, table)
 }
 
+func isOracleDriveName(drive string) bool {
+	return strings.EqualFold(drive, "godror") || strings.EqualFold(drive, "oracle")
+}
+
+func splitSchemaTableCacheKey(key string) (string, string, bool) {
+	parts := strings.SplitN(key, "/*schema&table*/", 2)
+	if len(parts) != 2 {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
+}
+
+func (stcls *schemaTable) sourceObjectNameEqual(a, b string) bool {
+	a = strings.TrimSpace(a)
+	b = strings.TrimSpace(b)
+	if isOracleDriveName(stcls.sourceDrive) {
+		return strings.EqualFold(a, b)
+	}
+	if strings.EqualFold(stcls.caseSensitiveObjectName, "yes") {
+		return a == b
+	}
+	return strings.EqualFold(a, b)
+}
+
+func (stcls *schemaTable) destObjectNameEqual(a, b string) bool {
+	a = strings.TrimSpace(a)
+	b = strings.TrimSpace(b)
+	if isOracleDriveName(stcls.destDrive) {
+		return strings.EqualFold(a, b)
+	}
+	if strings.EqualFold(stcls.caseSensitiveObjectName, "yes") {
+		return a == b
+	}
+	return strings.EqualFold(a, b)
+}
+
+func (stcls *schemaTable) findMappedSchema(sourceSchema string) (string, bool) {
+	if mapped, ok := stcls.tableMappings[sourceSchema]; ok {
+		return mapped, true
+	}
+	for src, dst := range stcls.tableMappings {
+		if stcls.sourceObjectNameEqual(src, sourceSchema) {
+			return dst, true
+		}
+	}
+	return "", false
+}
+
+func (stcls *schemaTable) tableKeyInSet(tableSet map[string]int, schema, table string) bool {
+	for key := range tableSet {
+		parts := strings.SplitN(key, ".", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		if stcls.sourceObjectNameEqual(parts[0], schema) && stcls.sourceObjectNameEqual(parts[1], table) {
+			return true
+		}
+	}
+	return false
+}
+
 // getDestTableName 返回目标表的名称
 func (stcls *schemaTable) getDestTableName(schema, table string) string {
 	destSchema := schema
@@ -240,6 +303,48 @@ func (stcls *schemaTable) tableColumnName(db *sql.DB, tc dbExec.TableColumnNameS
 	return col, nil
 }
 
+func escapeSQLLiteral(value string) string {
+	return strings.ReplaceAll(value, "'", "''")
+}
+
+func isOracleDrive(drive string) bool {
+	return drive == "godror" || strings.EqualFold(drive, "oracle")
+}
+
+func (stcls *schemaTable) tableExistsByDrive(db *sql.DB, drive, schema, table string) (bool, error) {
+	var (
+		count int
+		query string
+	)
+
+	if isOracleDrive(drive) {
+		query = fmt.Sprintf(
+			"SELECT COUNT(1) FROM all_tables WHERE UPPER(owner)=UPPER('%s') AND UPPER(table_name)=UPPER('%s')",
+			escapeSQLLiteral(schema),
+			escapeSQLLiteral(table),
+		)
+	} else {
+		if strings.ToLower(stcls.caseSensitiveObjectName) == "yes" {
+			query = fmt.Sprintf(
+				"SELECT COUNT(1) FROM information_schema.TABLES WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s'",
+				escapeSQLLiteral(schema),
+				escapeSQLLiteral(table),
+			)
+		} else {
+			query = fmt.Sprintf(
+				"SELECT COUNT(1) FROM information_schema.TABLES WHERE LOWER(TABLE_SCHEMA)=LOWER('%s') AND LOWER(TABLE_NAME)=LOWER('%s')",
+				escapeSQLLiteral(schema),
+				escapeSQLLiteral(table),
+			)
+		}
+	}
+
+	if err := db.QueryRow(query).Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
 /*
 校验表的列名是否正确
 */
@@ -248,7 +353,6 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 		vlog                                 string
 		newCheckTableList, abnormalTableList []string
 		aa                                   = &CheckSumTypeStruct{}
-		err                                  error
 		tableAbnormalBool                    = false
 		event                                string
 	)
@@ -300,51 +404,86 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 
 		vlog = fmt.Sprintf("Table mapping options - source: %s, target: %s, mappings: %v", sourceSchema, destSchema, stcls.tableMappings)
 		global.Wlog.Debug(vlog)
+		mappedTableKey := fmt.Sprintf("%s.%s", sourceSchema, sourceTableName)
+		if sourceSchema != destSchema || sourceTableName != destTableName {
+			mappedTableKey = fmt.Sprintf("%s.%s:%s.%s", sourceSchema, sourceTableName, destSchema, destTableName)
+		}
 
 		vlog = fmt.Sprintf("(%d %s Validating table structure %s.%s -> %s.%s", logThreadSeq, event, sourceSchema, stcls.table, destSchema, stcls.table)
 		global.Wlog.Debug(vlog)
 
-		// 检查源表是否存在
-		sourceTableExists := true
-		sourceTableQuery := fmt.Sprintf("SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA = '%s' AND TABLE_NAME = '%s'", sourceSchema, sourceTableName)
-		var exists int
-		err = stcls.sourceDB.QueryRow(sourceTableQuery).Scan(&exists)
-		if err == sql.ErrNoRows {
-			sourceTableExists = false
-			vlog = fmt.Sprintf("(%d) %s Source table %s.%s does not exist", logThreadSeq, event, sourceSchema, stcls.table)
-			global.Wlog.Warn(vlog)
-			// 记录跳过的表
-			global.AddSkippedTable(sourceSchema, stcls.table, "data", "table does not exist")
-			// 创建表结构检查记录，使用struct类型
-			pod := Pod{
-				Schema:      sourceSchema,
-				Table:       stcls.table,
-				CheckObject: "struct",
-				DIFFS:       "yes",
-				Datafix:     stcls.datafix,
-			}
-			stcls.appendPod(pod)
-			continue // 跳过当前表，处理下一个表
-		} else if err != nil {
-			vlog = fmt.Sprintf("(%d) %s Error checking source table existence %s.%s: %v", logThreadSeq, event, sourceSchema, stcls.table, err)
+		// 检查源表和目标表是否存在（按驱动走不同元数据查询）
+		sourceTableExists, err := stcls.tableExistsByDrive(stcls.sourceDB, stcls.sourceDrive, sourceSchema, sourceTableName)
+		if err != nil {
+			vlog = fmt.Sprintf("(%d) %s Error checking source table existence %s.%s: %v", logThreadSeq, event, sourceSchema, sourceTableName, err)
+			global.Wlog.Error(vlog)
+			return nil, nil, err
+		}
+		destTableExists, err := stcls.tableExistsByDrive(stcls.destDB, stcls.destDrive, destSchema, destTableName)
+		if err != nil {
+			vlog = fmt.Sprintf("(%d) %s Error checking target table existence %s.%s: %v", logThreadSeq, event, destSchema, destTableName, err)
 			global.Wlog.Error(vlog)
 			return nil, nil, err
 		}
 
-		// 检查目标表是否存在
-		destTableExists := true
-		destTableQuery := fmt.Sprintf("SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA = '%s' AND TABLE_NAME = '%s'", destSchema, destTableName)
-		err = stcls.destDB.QueryRow(destTableQuery).Scan(&exists)
-		if err == sql.ErrNoRows {
-			destTableExists = false
-			vlog = fmt.Sprintf("(%d) %s Target table %s.%s does not exist", logThreadSeq, event, destSchema, stcls.table)
-			global.Wlog.Warn(vlog)
-			// 记录跳过的表
-			global.AddSkippedTable(destSchema, stcls.table, "data", "target table does not exist")
-		} else if err != nil {
-			vlog = fmt.Sprintf("(%d) %s Error checking target table existence %s.%s: %v", logThreadSeq, event, destSchema, stcls.table, err)
-			global.Wlog.Error(vlog)
-			return nil, nil, err
+		oracleToMySQLDataMode := stcls.sourceDrive == "godror" && stcls.destDrive == "mysql" && stcls.checkRules.CheckObject != "struct"
+
+		if !sourceTableExists || !destTableExists {
+			if oracleToMySQLDataMode {
+				diffReason := "table missing on one side"
+				if !sourceTableExists && !destTableExists {
+					diffReason = "table missing on both source and target"
+				} else if !sourceTableExists {
+					diffReason = "table missing on source"
+				} else if !destTableExists {
+					diffReason = "table missing on target"
+				}
+				pod := Pod{
+					Schema:      sourceSchema,
+					Table:       sourceTableName,
+					CheckObject: "data",
+					DIFFS:       "DDL-yes",
+					Datafix:     stcls.datafix,
+					Rows:        diffReason,
+				}
+				stcls.appendPod(pod)
+				abnormalTableList = append(abnormalTableList, mappedTableKey)
+				global.AddSkippedTable(sourceSchema, sourceTableName, "data", diffReason)
+				vlog = fmt.Sprintf("(%d) %s Skip data check for %s.%s due to DDL mismatch: %s", logThreadSeq, event, sourceSchema, sourceTableName, diffReason)
+				global.Wlog.Warn(vlog)
+				continue
+			}
+
+			if !sourceTableExists && !destTableExists {
+				vlog = fmt.Sprintf("(%d) %s Source/target table both missing: %s.%s -> %s.%s", logThreadSeq, event, sourceSchema, sourceTableName, destSchema, destTableName)
+				global.Wlog.Warn(vlog)
+				pod := Pod{
+					Schema:      sourceSchema,
+					Table:       sourceTableName,
+					CheckObject: "struct",
+					DIFFS:       "yes",
+					Datafix:     stcls.datafix,
+				}
+				stcls.appendPod(pod)
+				abnormalTableList = append(abnormalTableList, mappedTableKey)
+				continue
+			}
+
+			if !sourceTableExists {
+				vlog = fmt.Sprintf("(%d) %s Source table %s.%s does not exist", logThreadSeq, event, sourceSchema, sourceTableName)
+				global.Wlog.Warn(vlog)
+				global.AddSkippedTable(sourceSchema, sourceTableName, "data", "table does not exist")
+				pod := Pod{
+					Schema:      sourceSchema,
+					Table:       sourceTableName,
+					CheckObject: "struct",
+					DIFFS:       "yes",
+					Datafix:     stcls.datafix,
+				}
+				stcls.appendPod(pod)
+				abnormalTableList = append(abnormalTableList, mappedTableKey)
+				continue
+			}
 		}
 
 		// 处理特殊情况：源表存在但目标表不存在
@@ -432,13 +571,13 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 
 		dbf := dbExec.DataAbnormalFixStruct{
 			Schema:                  destSchema, // 使用目标端schema
-			Table:                   stcls.table,
+			Table:                   destTableName,
 			DestDevice:              stcls.destDrive,
 			DatafixType:             stcls.datafix,
 			SourceSchema:            sourceSchema, // 添加源端schema
 			CaseSensitiveObjectName: stcls.caseSensitiveObjectName,
 		}
-		tc := dbExec.TableColumnNameStruct{Schema: sourceSchema, Table: stcls.table, Drive: stcls.sourceDrive}
+		tc := dbExec.TableColumnNameStruct{Schema: sourceSchema, Table: sourceTableName, Drive: stcls.sourceDrive, CaseSensitiveObjectName: stcls.caseSensitiveObjectName}
 		sColumn, err = stcls.tableColumnName(stcls.sourceDB, tc, logThreadSeq, logThreadSeq2)
 		if err != nil {
 			vlog = fmt.Sprintf("(%d) %s Failed to get metadata for source table %s.%s: %v", logThreadSeq, event, sourceSchema, stcls.table, err)
@@ -449,9 +588,8 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 		global.Wlog.Debug(vlog)
 
 		// 使用目标端schema
-		tc.Schema = destSchema
-		tc.Drive = stcls.destDrive
-		dColumn, err = stcls.tableColumnName(stcls.destDB, tc, logThreadSeq, logThreadSeq2)
+		tcDest := dbExec.TableColumnNameStruct{Schema: destSchema, Table: destTableName, Drive: stcls.destDrive, CaseSensitiveObjectName: stcls.caseSensitiveObjectName}
+		dColumn, err = stcls.tableColumnName(stcls.destDB, tcDest, logThreadSeq, logThreadSeq2)
 		if err != nil {
 			vlog = fmt.Sprintf("(%d) %s Failed to get metadata for target table %s.%s: %v", logThreadSeq, event, destSchema, stcls.table, err)
 			global.Wlog.Error(vlog)
@@ -466,6 +604,11 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 		var sourceColumnSeq, destColumnSeq = make(map[string]int), make(map[string]int)
 		// 创建原始列名映射，用于保存原始大小写
 		var originalColumnNameMap = make(map[string]string)
+		columnNameCaseSensitive := stcls.caseSensitiveObjectName == "yes"
+		if oracleToMySQLDataMode {
+			// Oracle -> MySQL data mode uses case-insensitive column-name matching.
+			columnNameCaseSensitive = false
+		}
 
 		for k1, v1 := range sColumn {
 			v1k := ""
@@ -473,8 +616,8 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 				// 保存原始列名
 				originalColumnNameMap[strings.ToUpper(k)] = k
 
-				// 根据caseSensitiveObjectName决定是使用原始列名还是大写列名进行比较
-				if stcls.caseSensitiveObjectName == "yes" {
+				// 根据匹配模式决定是使用原始列名还是大写列名进行比较
+				if columnNameCaseSensitive {
 					// 严格区分大小写，使用原始列名
 					v1k = k
 				} else {
@@ -493,8 +636,8 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 				// 保存原始列名
 				originalColumnNameMap[strings.ToUpper(k)] = k
 
-				// 根据caseSensitiveObjectName决定是使用原始列名还是大写列名进行比较
-				if stcls.caseSensitiveObjectName == "yes" {
+				// 根据匹配模式决定是使用原始列名还是大写列名进行比较
+				if columnNameCaseSensitive {
 					// 严格区分大小写，使用原始列名
 					v1k = k
 				} else {
@@ -511,8 +654,8 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 		// 确保在生成SQL时使用原始大小写的列名
 		// 创建一个函数来获取正确大小写的列名
 		getOriginalColumnName := func(colName string) string {
-			// 根据caseSensitiveObjectName决定如何查找原始列名
-			if stcls.caseSensitiveObjectName == "yes" {
+			// 根据匹配模式决定如何查找原始列名
+			if columnNameCaseSensitive {
 				// 严格区分大小写时，colName已经是原始列名，直接返回
 				return colName
 			} else {
@@ -528,8 +671,8 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 		addColumn, delColumn := aa.Arrcmp(sourceColumnSlice, destColumnSlice)
 
 		// 检查是否只是列名大小写不同的情况
-		// 当caseSensitiveObjectName=yes时，我们需要特殊处理大小写不同但实际上是同一列的情况
-		if stcls.caseSensitiveObjectName == "yes" {
+		// 当大小写敏感时，需要特殊处理大小写不同但实际上是同一列的情况
+		if columnNameCaseSensitive {
 			// 创建临时映射，用于存储大小写不敏感的列名比较
 			var lowerSourceMap = make(map[string]string)
 			var lowerDestMap = make(map[string]string)
@@ -638,7 +781,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 		if stcls.checkRules.CheckObject != "struct" {
 			if len(addColumn) == 0 && len(delColumn) == 0 {
 				// 使用目标端schema
-				newCheckTableList = append(newCheckTableList, fmt.Sprintf("%s.%s", destSchema, stcls.table))
+				newCheckTableList = append(newCheckTableList, mappedTableKey)
 			} else {
 				// 检查是否包含INVISIBLE列的差异
 				hasInvisibleColumns := false
@@ -690,7 +833,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 					}
 					stcls.appendPod(pod)
 				}
-				abnormalTableList = append(abnormalTableList, fmt.Sprintf("%s.%s", destSchema, stcls.table))
+				abnormalTableList = append(abnormalTableList, mappedTableKey)
 			}
 			// 无论checkObject设置如何，都只生成struct类型的记录，避免重复
 			continue
@@ -1063,6 +1206,9 @@ func (stcls *schemaTable) FuzzyMatchingDispos(dbCheckNameList map[string]int, Ft
 	)
 	b := make(map[string]int)
 	f := make(map[string]int)
+	if strings.TrimSpace(Ftable) == "" || strings.EqualFold(strings.TrimSpace(Ftable), "nil") {
+		return f
+	}
 
 	// 添加调试日志，显示当前的映射规则
 	vlog = fmt.Sprintf("Current table mappings: %v", stcls.tableMappings)
@@ -1128,12 +1274,26 @@ func (stcls *schemaTable) FuzzyMatchingDispos(dbCheckNameList map[string]int, Ft
 				}
 			}
 		} else { //处理schema
-			// 检查是否在映射规则中存在
-			if _, exists := stcls.tableMappings[schema]; exists {
-				// schema是源端schema，直接添加
-				b[schema]++
-				vlog = fmt.Sprintf("Added source schema from mapping: %s", schema)
-				global.Wlog.Debug(vlog)
+			// 检查是否在映射规则中存在（Oracle源端按不区分大小写匹配）
+			if _, exists := stcls.findMappedSchema(schema); exists {
+				added := false
+				for dbName := range dbCheckNameList {
+					dbSchemaName, _, ok := splitSchemaTableCacheKey(dbName)
+					if !ok {
+						continue
+					}
+					if stcls.sourceObjectNameEqual(dbSchemaName, schema) {
+						b[dbSchemaName]++
+						added = true
+						vlog = fmt.Sprintf("Added source schema from mapping: %s (pattern: %s)", dbSchemaName, schema)
+						global.Wlog.Debug(vlog)
+					}
+				}
+				if !added {
+					b[schema]++
+					vlog = fmt.Sprintf("Added source schema from mapping fallback: %s", schema)
+					global.Wlog.Debug(vlog)
+				}
 			} else if hasMappingRule {
 				// 如果有明确的映射规则，尝试使用它
 				dstSchema := ""
@@ -1143,17 +1303,23 @@ func (stcls *schemaTable) FuzzyMatchingDispos(dbCheckNameList map[string]int, Ft
 					dstSchema = dstPattern
 				}
 
-				// 检查源schema是否存在于数据库列表中
-				if _, exists := dbCheckNameList[schema]; exists {
-					b[schema]++
-					vlog = fmt.Sprintf("Added explicit mapping source schema: %s -> %s", schema, dstSchema)
-					global.Wlog.Debug(vlog)
+				// 检查源schema是否存在于数据库列表中（大小写兼容）
+				for dbName := range dbCheckNameList {
+					dbSchemaName, _, ok := splitSchemaTableCacheKey(dbName)
+					if !ok {
+						continue
+					}
+					if stcls.sourceObjectNameEqual(dbSchemaName, schema) {
+						b[dbSchemaName]++
+						vlog = fmt.Sprintf("Added explicit mapping source schema: %s -> %s", dbSchemaName, dstSchema)
+						global.Wlog.Debug(vlog)
+					}
 				}
 			} else {
 				// 检查是否是目标端schema
 				found := false
 				for src, dst := range stcls.tableMappings {
-					if dst == schema {
+					if stcls.destObjectNameEqual(dst, schema) {
 						// 找到对应源端schema
 						b[src]++
 						found = true
@@ -1164,11 +1330,17 @@ func (stcls *schemaTable) FuzzyMatchingDispos(dbCheckNameList map[string]int, Ft
 				}
 				// 如果没有映射关系，则按常规处理
 				if !found {
-					// 检查schema是否存在于数据库列表中
-					if _, exists := dbCheckNameList[schema]; exists {
-						b[schema]++
-						vlog = fmt.Sprintf("Added direct schema (no mapping): %s", schema)
-						global.Wlog.Debug(vlog)
+					// 检查schema是否存在于数据库列表中（大小写兼容）
+					for dbName := range dbCheckNameList {
+						dbSchemaName, _, ok := splitSchemaTableCacheKey(dbName)
+						if !ok {
+							continue
+						}
+						if stcls.sourceObjectNameEqual(dbSchemaName, schema) {
+							b[dbSchemaName]++
+							vlog = fmt.Sprintf("Added direct schema (no mapping): %s", dbSchemaName)
+							global.Wlog.Debug(vlog)
+						}
 					}
 				}
 			}
@@ -1211,26 +1383,23 @@ func (stcls *schemaTable) FuzzyMatchingDispos(dbCheckNameList map[string]int, Ft
 		for dbSchema, _ := range b {
 			// 检查是否有映射关系
 			mappedSchema := dbSchema
-			if mapped, exists := stcls.tableMappings[dbSchema]; exists {
+			if mapped, exists := stcls.findMappedSchema(dbSchema); exists {
 				mappedSchema = mapped
 				vlog = fmt.Sprintf("Found schema mapping: %s -> %s", dbSchema, mappedSchema)
 				global.Wlog.Debug(vlog)
 			}
 
 			// 检查schema是否匹配
-			if dbSchema == schema || schema == "*" {
+			if stcls.sourceObjectNameEqual(dbSchema, schema) || schema == "*" {
 				// 构建表名查询
 				for dbName, _ := range dbCheckNameList {
-					dbParts := strings.Split(dbName, "/*schema&table*/")
-					if len(dbParts) < 2 {
+					dbSchemaName, dbTableName, ok := splitSchemaTableCacheKey(dbName)
+					if !ok {
 						continue
 					}
 
-					dbSchemaName := dbParts[0]
-					dbTableName := dbParts[1]
-
 					// 检查schema是否匹配
-					if dbSchemaName != dbSchema {
+					if !stcls.sourceObjectNameEqual(dbSchemaName, dbSchema) {
 						continue
 					}
 
@@ -1261,10 +1430,11 @@ func (stcls *schemaTable) FuzzyMatchingDispos(dbCheckNameList map[string]int, Ft
 							global.Wlog.Debug(vlog)
 						}
 					} else { // 处理schema.table
-						// 对于精确表名匹配，直接添加到结果中，不依赖于dbCheckNameList
-						f[fmt.Sprintf("%s.%s", dbSchema, table)]++
-						vlog = fmt.Sprintf("Added exact table match: %s.%s", dbSchema, table)
-						global.Wlog.Debug(vlog)
+						if stcls.sourceObjectNameEqual(dbTableName, table) {
+							f[fmt.Sprintf("%s.%s", dbSchema, dbTableName)]++
+							vlog = fmt.Sprintf("Added exact table match: %s.%s", dbSchema, dbTableName)
+							global.Wlog.Debug(vlog)
+						}
 					}
 				}
 			}
@@ -1386,52 +1556,54 @@ func (stcls *schemaTable) SchemaTableFilter(logThreadSeq1, logThreadSeq2 int64) 
 					vlog = fmt.Sprintf("Processing wildcard mapping: %s.* -> %s.*", srcDB, dstDB)
 					global.Wlog.Debug(vlog)
 
-					// 获取源库中的所有表
-					for dbName, _ := range dbCheckNameList {
-						if strings.HasPrefix(dbName, srcDB+"/*schema&table*/") {
-							tableName := strings.TrimPrefix(dbName, srcDB+"/*schema&table*/")
+					// 获取源库中的所有表（Oracle源端按不区分大小写匹配schema）
+					for dbName := range dbCheckNameList {
+						dbSchemaName, tableName, ok := splitSchemaTableCacheKey(dbName)
+						if !ok || !stcls.sourceObjectNameEqual(dbSchemaName, srcDB) {
+							continue
+						}
 
-							// 创建表映射
+						// 创建表映射
+						mapping := TableMapping{
+							SourceSchema: dbSchemaName,
+							SourceTable:  tableName,
+							DestSchema:   dstDB,
+							DestTable:    tableName,
+						}
+						tableMappings = append(tableMappings, mapping)
+
+						vlog = fmt.Sprintf("Added mapping: %s.%s -> %s.%s", dbSchemaName, tableName, dstDB, tableName)
+						global.Wlog.Debug(vlog)
+					}
+
+					// 检查目标库中是否有源库中不存在的表
+					for dbName := range destDbCheckNameList {
+						dbSchemaName, tableName, ok := splitSchemaTableCacheKey(dbName)
+						if !ok || !stcls.destObjectNameEqual(dbSchemaName, dstDB) {
+							continue
+						}
+
+						// 检查这个表是否已经在映射列表中
+						found := false
+						for _, m := range tableMappings {
+							if stcls.destObjectNameEqual(m.DestSchema, dstDB) && m.DestTable == tableName {
+								found = true
+								break
+							}
+						}
+
+						// 如果没有找到，添加新的映射
+						if !found {
 							mapping := TableMapping{
 								SourceSchema: srcDB,
 								SourceTable:  tableName,
-								DestSchema:   dstDB,
+								DestSchema:   dbSchemaName,
 								DestTable:    tableName,
 							}
 							tableMappings = append(tableMappings, mapping)
 
-							vlog = fmt.Sprintf("Added mapping: %s.%s -> %s.%s", srcDB, tableName, dstDB, tableName)
+							vlog = fmt.Sprintf("Added mapping from dest table: %s.%s -> %s.%s", srcDB, tableName, dbSchemaName, tableName)
 							global.Wlog.Debug(vlog)
-						}
-					}
-
-					// 检查目标库中是否有源库中不存在的表
-					for dbName, _ := range destDbCheckNameList {
-						if strings.HasPrefix(dbName, dstDB+"/*schema&table*/") {
-							tableName := strings.TrimPrefix(dbName, dstDB+"/*schema&table*/")
-
-							// 检查这个表是否已经在映射列表中
-							found := false
-							for _, m := range tableMappings {
-								if m.DestSchema == dstDB && m.DestTable == tableName {
-									found = true
-									break
-								}
-							}
-
-							// 如果没有找到，添加新的映射
-							if !found {
-								mapping := TableMapping{
-									SourceSchema: srcDB,
-									SourceTable:  tableName,
-									DestSchema:   dstDB,
-									DestTable:    tableName,
-								}
-								tableMappings = append(tableMappings, mapping)
-
-								vlog = fmt.Sprintf("Added mapping from dest table: %s.%s -> %s.%s", srcDB, tableName, dstDB, tableName)
-								global.Wlog.Debug(vlog)
-							}
 						}
 					}
 				} else if strings.Contains(srcPattern, ".") && strings.Contains(dstPattern, ".") {
@@ -1448,48 +1620,49 @@ func (stcls *schemaTable) SchemaTableFilter(logThreadSeq1, logThreadSeq2 int64) 
 						// 检查表名是否包含通配符
 						if strings.Contains(srcTable, "%") || strings.Contains(dstTable, "%") {
 							// 处理带通配符的表名映射
-							for dbName, _ := range dbCheckNameList {
-								if strings.HasPrefix(dbName, srcDB+"/*schema&table*/") {
-									tableName := strings.TrimPrefix(dbName, srcDB+"/*schema&table*/")
+							for dbName := range dbCheckNameList {
+								dbSchemaName, tableName, ok := splitSchemaTableCacheKey(dbName)
+								if !ok || !stcls.sourceObjectNameEqual(dbSchemaName, srcDB) {
+									continue
+								}
 
-									// 检查表名是否匹配源端通配符模式
-									matchSrc := false
-									if strings.HasPrefix(srcTable, "%") && strings.HasSuffix(srcTable, "%") {
-										// 处理 %table% 模式
-										tmpTable := strings.ReplaceAll(srcTable, "%", "")
-										if strings.Contains(tableName, tmpTable) {
-											matchSrc = true
-										}
-									} else if strings.HasPrefix(srcTable, "%") {
-										// 处理 %table 模式
-										tmpTable := strings.ReplaceAll(srcTable, "%", "")
-										if strings.HasSuffix(tableName, tmpTable) {
-											matchSrc = true
-										}
-									} else if strings.HasSuffix(srcTable, "%") {
-										// 处理 table% 模式
-										tmpTable := strings.ReplaceAll(srcTable, "%", "")
-										if strings.HasPrefix(tableName, tmpTable) {
-											matchSrc = true
-										}
+								// 检查表名是否匹配源端通配符模式
+								matchSrc := false
+								if strings.HasPrefix(srcTable, "%") && strings.HasSuffix(srcTable, "%") {
+									// 处理 %table% 模式
+									tmpTable := strings.ReplaceAll(srcTable, "%", "")
+									if strings.Contains(tableName, tmpTable) {
+										matchSrc = true
 									}
-
-									if matchSrc {
-										// 生成目标端表名
-										destTableName := tableName
-
-										// 创建表映射
-										mapping := TableMapping{
-											SourceSchema: srcDB,
-											SourceTable:  tableName,
-											DestSchema:   dstDB,
-											DestTable:    destTableName,
-										}
-										tableMappings = append(tableMappings, mapping)
-
-										vlog = fmt.Sprintf("Added wildcard mapping: %s.%s -> %s.%s", srcDB, tableName, dstDB, destTableName)
-										global.Wlog.Debug(vlog)
+								} else if strings.HasPrefix(srcTable, "%") {
+									// 处理 %table 模式
+									tmpTable := strings.ReplaceAll(srcTable, "%", "")
+									if strings.HasSuffix(tableName, tmpTable) {
+										matchSrc = true
 									}
+								} else if strings.HasSuffix(srcTable, "%") {
+									// 处理 table% 模式
+									tmpTable := strings.ReplaceAll(srcTable, "%", "")
+									if strings.HasPrefix(tableName, tmpTable) {
+										matchSrc = true
+									}
+								}
+
+								if matchSrc {
+									// 生成目标端表名
+									destTableName := tableName
+
+									// 创建表映射
+									mapping := TableMapping{
+										SourceSchema: dbSchemaName,
+										SourceTable:  tableName,
+										DestSchema:   dstDB,
+										DestTable:    destTableName,
+									}
+									tableMappings = append(tableMappings, mapping)
+
+									vlog = fmt.Sprintf("Added wildcard mapping: %s.%s -> %s.%s", dbSchemaName, tableName, dstDB, destTableName)
+									global.Wlog.Debug(vlog)
 								}
 							}
 						} else {
@@ -1518,30 +1691,30 @@ func (stcls *schemaTable) SchemaTableFilter(logThreadSeq1, logThreadSeq2 int64) 
 				ignoreSchema := stcls.FuzzyMatchingDispos(dbCheckNameList, stcls.ignoreTable, logThreadSeq1)
 
 				// 获取该库中的所有表
-				for dbName, _ := range dbCheckNameList {
-					if strings.HasPrefix(dbName, srcDB+"/*schema&table*/") {
-						tableName := strings.TrimPrefix(dbName, srcDB+"/*schema&table*/")
-
-						// 检查该表是否在忽略列表中
-						tableKey := fmt.Sprintf("%s.%s", srcDB, tableName)
-						if _, ignored := ignoreSchema[tableKey]; ignored {
-							vlog = fmt.Sprintf("Ignoring table: %s.%s", srcDB, tableName)
-							global.Wlog.Debug(vlog)
-							continue
-						}
-
-						// 创建表映射（源端和目标端相同）
-						mapping := TableMapping{
-							SourceSchema: srcDB,
-							SourceTable:  tableName,
-							DestSchema:   srcDB,
-							DestTable:    tableName,
-						}
-						tableMappings = append(tableMappings, mapping)
-
-						vlog = fmt.Sprintf("Added non-mapping entry: %s.%s", srcDB, tableName)
-						global.Wlog.Debug(vlog)
+				for dbName := range dbCheckNameList {
+					dbSchemaName, tableName, ok := splitSchemaTableCacheKey(dbName)
+					if !ok || !stcls.sourceObjectNameEqual(dbSchemaName, srcDB) {
+						continue
 					}
+
+					// 检查该表是否在忽略列表中
+					if stcls.tableKeyInSet(ignoreSchema, dbSchemaName, tableName) {
+						vlog = fmt.Sprintf("Ignoring table: %s.%s", dbSchemaName, tableName)
+						global.Wlog.Debug(vlog)
+						continue
+					}
+
+					// 创建表映射（源端和目标端相同）
+					mapping := TableMapping{
+						SourceSchema: dbSchemaName,
+						SourceTable:  tableName,
+						DestSchema:   dbSchemaName,
+						DestTable:    tableName,
+					}
+					tableMappings = append(tableMappings, mapping)
+
+					vlog = fmt.Sprintf("Added non-mapping entry: %s.%s", dbSchemaName, tableName)
+					global.Wlog.Debug(vlog)
 				}
 			} else if strings.Contains(pattern, ".") {
 				// 处理 db1.t1 格式
@@ -1553,56 +1726,56 @@ func (stcls *schemaTable) SchemaTableFilter(logThreadSeq1, logThreadSeq2 int64) 
 					// 检查表名是否包含通配符
 					if strings.Contains(srcTable, "%") {
 						// 处理表名通配符
-						for dbName, _ := range dbCheckNameList {
-							if strings.HasPrefix(dbName, srcDB+"/*schema&table*/") {
-								tableName := strings.TrimPrefix(dbName, srcDB+"/*schema&table*/")
+						for dbName := range dbCheckNameList {
+							dbSchemaName, tableName, ok := splitSchemaTableCacheKey(dbName)
+							if !ok || !stcls.sourceObjectNameEqual(dbSchemaName, srcDB) {
+								continue
+							}
 
-								// 检查表名是否匹配通配符模式
-								match := false
-								if strings.HasPrefix(srcTable, "%") && strings.HasSuffix(srcTable, "%") {
-									// 处理 %table% 模式
-									tmpTable := strings.ReplaceAll(srcTable, "%", "")
-									if strings.Contains(tableName, tmpTable) {
-										match = true
-									}
-								} else if strings.HasPrefix(srcTable, "%") {
-									// 处理 %table 模式
-									tmpTable := strings.ReplaceAll(srcTable, "%", "")
-									if strings.HasSuffix(tableName, tmpTable) {
-										match = true
-									}
-								} else if strings.HasSuffix(srcTable, "%") {
-									// 处理 table% 模式
-									tmpTable := strings.ReplaceAll(srcTable, "%", "")
-									if strings.HasPrefix(tableName, tmpTable) {
-										match = true
-									}
+							// 检查表名是否匹配通配符模式
+							match := false
+							if strings.HasPrefix(srcTable, "%") && strings.HasSuffix(srcTable, "%") {
+								// 处理 %table% 模式
+								tmpTable := strings.ReplaceAll(srcTable, "%", "")
+								if strings.Contains(tableName, tmpTable) {
+									match = true
 								}
+							} else if strings.HasPrefix(srcTable, "%") {
+								// 处理 %table 模式
+								tmpTable := strings.ReplaceAll(srcTable, "%", "")
+								if strings.HasSuffix(tableName, tmpTable) {
+									match = true
+								}
+							} else if strings.HasSuffix(srcTable, "%") {
+								// 处理 table% 模式
+								tmpTable := strings.ReplaceAll(srcTable, "%", "")
+								if strings.HasPrefix(tableName, tmpTable) {
+									match = true
+								}
+							}
 
-								if match {
-									// 处理忽略表
-									ignoreSchema := stcls.FuzzyMatchingDispos(dbCheckNameList, stcls.ignoreTable, logThreadSeq1)
+							if match {
+								// 处理忽略表
+								ignoreSchema := stcls.FuzzyMatchingDispos(dbCheckNameList, stcls.ignoreTable, logThreadSeq1)
 
-									// 检查该表是否在忽略列表中
-									tableKey := fmt.Sprintf("%s.%s", srcDB, tableName)
-									if _, ignored := ignoreSchema[tableKey]; ignored {
-										vlog = fmt.Sprintf("Ignoring table: %s.%s", srcDB, tableName)
-										global.Wlog.Debug(vlog)
-										continue
-									}
-
-									// 创建表映射（源端和目标端相同）
-									mapping := TableMapping{
-										SourceSchema: srcDB,
-										SourceTable:  tableName,
-										DestSchema:   srcDB,
-										DestTable:    tableName,
-									}
-									tableMappings = append(tableMappings, mapping)
-
-									vlog = fmt.Sprintf("Added wildcard matching entry: %s.%s", srcDB, tableName)
+								// 检查该表是否在忽略列表中
+								if stcls.tableKeyInSet(ignoreSchema, dbSchemaName, tableName) {
+									vlog = fmt.Sprintf("Ignoring table: %s.%s", dbSchemaName, tableName)
 									global.Wlog.Debug(vlog)
+									continue
 								}
+
+								// 创建表映射（源端和目标端相同）
+								mapping := TableMapping{
+									SourceSchema: dbSchemaName,
+									SourceTable:  tableName,
+									DestSchema:   dbSchemaName,
+									DestTable:    tableName,
+								}
+								tableMappings = append(tableMappings, mapping)
+
+								vlog = fmt.Sprintf("Added wildcard matching entry: %s.%s", dbSchemaName, tableName)
+								global.Wlog.Debug(vlog)
 							}
 						}
 					} else {
@@ -1611,8 +1784,7 @@ func (stcls *schemaTable) SchemaTableFilter(logThreadSeq1, logThreadSeq2 int64) 
 						ignoreSchema := stcls.FuzzyMatchingDispos(dbCheckNameList, stcls.ignoreTable, logThreadSeq1)
 
 						// 检查该表是否在忽略列表中
-						tableKey := fmt.Sprintf("%s.%s", srcDB, srcTable)
-						if _, ignored := ignoreSchema[tableKey]; ignored {
+						if stcls.tableKeyInSet(ignoreSchema, srcDB, srcTable) {
 							vlog = fmt.Sprintf("Ignoring table: %s.%s", srcDB, srcTable)
 							global.Wlog.Debug(vlog)
 							continue
@@ -1645,8 +1817,12 @@ func (stcls *schemaTable) SchemaTableFilter(logThreadSeq1, logThreadSeq2 int64) 
 
 		// 处理忽略表
 		ignoreSchema := stcls.FuzzyMatchingDispos(dbCheckNameList, stcls.ignoreTable, logThreadSeq1)
-		for k, _ := range ignoreSchema {
-			if _, ok := schema[k]; ok {
+		for k := range schema {
+			parts := strings.SplitN(k, ".", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			if stcls.tableKeyInSet(ignoreSchema, parts[0], parts[1]) {
 				delete(schema, k)
 			}
 		}
@@ -1826,8 +2002,6 @@ func (stcls *schemaTable) SchemaTableAllCol(tableList []string, logThreadSeq, lo
 */
 func (stcls *schemaTable) TableIndexColumn(dtabS []string, logThreadSeq, logThreadSeq2 int64) map[string][]string {
 	var (
-		queryData           []map[string]interface{}
-		err                 error
 		vlog                string
 		tableIndexColumnMap = make(map[string][]string)
 	)
@@ -1841,110 +2015,171 @@ func (stcls *schemaTable) TableIndexColumn(dtabS []string, logThreadSeq, logThre
 	vlog = fmt.Sprintf("Current table mappings: %v", stcls.tableMappings)
 	global.Wlog.Debug(vlog)
 
-	for _, i := range dtabS {
-		vlog = fmt.Sprintf("Processing table entry: %s", i)
-		global.Wlog.Debug(vlog)
+	workers := stcls.tableIndexMetaWorkerCount(len(dtabS))
+	vlog = fmt.Sprintf("(%d) TableIndexColumn worker pool size: %d", logThreadSeq, workers)
+	global.Wlog.Debug(vlog)
 
-		// 解析表映射信息
-		var sourceSchema, sourceTable, destSchema, destTable string
+	type tableIndexJob struct {
+		rawEntry     string
+		sourceSchema string
+		sourceTable  string
+		destSchema   string
+		destTable    string
+	}
 
-		// 检查是否包含映射关系（格式为 sourceSchema.sourceTable:destSchema.destTable）
-		if strings.Contains(i, ":") {
-			parts := strings.Split(i, ":")
-			if len(parts) == 2 {
-				sourceParts := strings.Split(parts[0], ".")
-				destParts := strings.Split(parts[1], ".")
+	jobs := make(chan tableIndexJob, len(dtabS))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
 
-				if len(sourceParts) == 2 && len(destParts) == 2 {
-					sourceSchema = sourceParts[0]
-					sourceTable = sourceParts[1]
-					destSchema = destParts[0]
-					destTable = destParts[1]
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for job := range jobs {
+				startAt := time.Now()
+				logMsg := fmt.Sprintf("Processing table entry: %s", job.rawEntry)
+				global.Wlog.Debug(logMsg)
+
+				logMsg = fmt.Sprintf("Parsed mapping: sourceSchema=%s, sourceTable=%s, destSchema=%s, destTable=%s",
+					job.sourceSchema, job.sourceTable, job.destSchema, job.destTable)
+				global.Wlog.Debug(logMsg)
+
+				logMsg = fmt.Sprintf("(%d) Start querying source index metadata for table %s.%s (target mapping %s.%s)",
+					logThreadSeq, job.sourceSchema, job.sourceTable, job.destSchema, job.destTable)
+				global.Wlog.Debug(logMsg)
+
+				idxc := dbExec.IndexColumnStruct{Schema: job.sourceSchema, Table: job.sourceTable, Drivce: stcls.sourceDrive, CaseSensitiveObjectName: stcls.caseSensitiveObjectName}
+				queryData, err := idxc.TableIndexColumn().QueryTableIndexColumnInfo(stcls.sourceDB, logThreadSeq2)
+				if err != nil {
+					logMsg = fmt.Sprintf("(%d) Error querying source table index for %s.%s: %v", logThreadSeq, job.sourceSchema, job.sourceTable, err)
+					global.Wlog.Error(logMsg)
+					continue
 				}
+
+				tc := dbExec.TableColumnNameStruct{Schema: job.sourceSchema, Table: job.sourceTable, Drive: stcls.sourceDrive, Db: stcls.sourceDB}
+				indexType := tc.Query().TableIndexChoice(queryData, logThreadSeq2)
+				logMsg = fmt.Sprintf("(%d) Source table %s.%s index list information query completed. index list message is {%v}",
+					logThreadSeq, job.sourceSchema, job.sourceTable, indexType)
+				global.Wlog.Debug(logMsg)
+
+				displayTableName := fmt.Sprintf("%s.%s:%s.%s", job.sourceSchema, job.sourceTable, job.destSchema, job.destTable)
+
+				if len(indexType) == 0 {
+					key := fmt.Sprintf("%s/*gtchecksumSchemaTable*/%s/*mapping*/%s/*mappingTable*/%s",
+						job.sourceSchema, job.sourceTable, job.destSchema, job.destTable)
+					mu.Lock()
+					tableIndexColumnMap[key] = []string{}
+					mu.Unlock()
+
+					logMsg = fmt.Sprintf("(%d) The source table %s has no index.", logThreadSeq, displayTableName)
+					global.Wlog.Warn(logMsg)
+				} else {
+					logMsg = fmt.Sprintf("(%d) Start to perform index selection on source table %s.%s according to the algorithm",
+						logThreadSeq, job.sourceSchema, job.sourceTable)
+					global.Wlog.Debug(logMsg)
+
+					ab, aa := stcls.tableIndexAlgorithm(indexType)
+					key := fmt.Sprintf("%s/*gtchecksumSchemaTable*/%s/*indexColumnType*/%s/*mapping*/%s/*mappingTable*/%s",
+						job.sourceSchema, job.sourceTable, ab, job.destSchema, job.destTable)
+					mu.Lock()
+					tableIndexColumnMap[key] = aa
+					mu.Unlock()
+
+					logMsg = fmt.Sprintf("(%d) The index selection of source table %s is completed, and the selected index information is { keyName:%s keyColumn: %s}",
+						logThreadSeq, displayTableName, ab, aa)
+					global.Wlog.Debug(logMsg)
+				}
+
+				logMsg = fmt.Sprintf("(%d) Source index metadata phase completed for %s in %s", logThreadSeq, displayTableName, time.Since(startAt).Round(time.Millisecond))
+				global.Wlog.Debug(logMsg)
 			}
-		} else {
-			// 没有映射关系，源端和目标端相同
-			parts := strings.Split(i, ".")
-			if len(parts) == 2 {
-				sourceSchema = parts[0]
-				sourceTable = parts[1]
-				destSchema = sourceSchema
-				destTable = sourceTable
-			}
-		}
+		}()
+	}
 
-		// 设置当前表名
-		stcls.table = sourceTable
-
-		vlog = fmt.Sprintf("Parsed mapping: sourceSchema=%s, sourceTable=%s, destSchema=%s, destTable=%s",
-			sourceSchema, sourceTable, destSchema, destTable)
-		global.Wlog.Debug(vlog)
-
-		vlog = fmt.Sprintf("(%d) Start querying the index list information of source table %s.%s and target table %s.%s.",
-			logThreadSeq, sourceSchema, sourceTable, destSchema, destTable)
-		global.Wlog.Debug(vlog)
-
-		// 查询源端索引信息
-		idxc := dbExec.IndexColumnStruct{Schema: sourceSchema, Table: sourceTable, Drivce: stcls.sourceDrive}
-		queryData, err = idxc.TableIndexColumn().QueryTableIndexColumnInfo(stcls.sourceDB, logThreadSeq2)
-		if err != nil {
-			vlog = fmt.Sprintf("(%d) Error querying source table index: %v", logThreadSeq, err)
-			global.Wlog.Error(vlog)
-			continue
-		}
-		tc := dbExec.TableColumnNameStruct{Schema: sourceSchema, Table: sourceTable, Drive: stcls.sourceDrive, Db: stcls.sourceDB}
-		indexType := tc.Query().TableIndexChoice(queryData, logThreadSeq2)
-		vlog = fmt.Sprintf("(%d) Source table %s.%s index list information query completed. index list message is {%v}",
-			logThreadSeq, sourceSchema, sourceTable, indexType)
-		global.Wlog.Debug(vlog)
-
-		// 查询目标端索引信息
-		idxcDest := dbExec.IndexColumnStruct{Schema: destSchema, Table: destTable, Drivce: stcls.destDrive}
-		queryDataDest, err := idxcDest.TableIndexColumn().QueryTableIndexColumnInfo(stcls.destDB, logThreadSeq2)
-		if err != nil {
-			vlog = fmt.Sprintf("(%d) Error querying destination table index: %v", logThreadSeq, err)
-			global.Wlog.Error(vlog)
-			continue
-		}
-
-		tcDest := dbExec.TableColumnNameStruct{Schema: destSchema, Table: destTable, Drive: stcls.destDrive, Db: stcls.destDB}
-		indexTypeDest := tcDest.Query().TableIndexChoice(queryDataDest, logThreadSeq2)
-		vlog = fmt.Sprintf("(%d) Target table %s.%s index list information query completed. index list message is {%v}",
-			logThreadSeq, destSchema, destTable, indexTypeDest)
-		global.Wlog.Debug(vlog)
-
-		// 使用源端schema和表名作为key，因为后续处理中会根据源端表进行数据校验
-		// 同时在key中保存目标端schema和表名，以便后续处理
-		if len(indexType) == 0 { //针对于表没有索引的，进行处理
-			key := fmt.Sprintf("%s/*gtchecksumSchemaTable*/%s/*mapping*/%s/*mappingTable*/%s",
-				sourceSchema, sourceTable, destSchema, destTable)
-			tableIndexColumnMap[key] = []string{}
-
-			// 构建显示名称，包含映射关系
-			displayTableName := fmt.Sprintf("%s.%s:%s.%s", sourceSchema, sourceTable, destSchema, destTable)
-
-			vlog = fmt.Sprintf("(%d) The source table %s has no index.", logThreadSeq, displayTableName)
+	seen := make(map[string]struct{}, len(dtabS))
+	for _, entry := range dtabS {
+		sourceSchema, sourceTable, destSchema, destTable, ok := parseSchemaTableMappingEntry(entry)
+		if !ok {
+			vlog = fmt.Sprintf("Skip invalid table entry in TableIndexColumn: %s", entry)
 			global.Wlog.Warn(vlog)
-		} else {
-			vlog = fmt.Sprintf("(%d) Start to perform index selection on source table %s.%s according to the algorithm",
-				logThreadSeq, sourceSchema, sourceTable)
-			global.Wlog.Debug(vlog)
-			ab, aa := stcls.tableIndexAlgorithm(indexType)
-			key := fmt.Sprintf("%s/*gtchecksumSchemaTable*/%s/*indexColumnType*/%s/*mapping*/%s/*mappingTable*/%s",
-				sourceSchema, sourceTable, ab, destSchema, destTable)
-			tableIndexColumnMap[key] = aa
+			continue
+		}
 
-			// 构建显示名称，包含映射关系
-			displayTableName := fmt.Sprintf("%s.%s:%s.%s", sourceSchema, sourceTable, destSchema, destTable)
+		uniqueKey := fmt.Sprintf("%s.%s:%s.%s", sourceSchema, sourceTable, destSchema, destTable)
+		if _, exists := seen[uniqueKey]; exists {
+			continue
+		}
+		seen[uniqueKey] = struct{}{}
 
-			vlog = fmt.Sprintf("(%d) The index selection of source table %s is completed, and the selected index information is { keyName:%s keyColumn: %s}",
-				logThreadSeq, displayTableName, ab, aa)
-			global.Wlog.Debug(vlog)
+		jobs <- tableIndexJob{
+			rawEntry:     entry,
+			sourceSchema: sourceSchema,
+			sourceTable:  sourceTable,
+			destSchema:   destSchema,
+			destTable:    destTable,
 		}
 	}
+	close(jobs)
+	wg.Wait()
+
 	vlog = fmt.Sprintf("(%d) Table index listing information and appropriate index completion", logThreadSeq)
 	global.Wlog.Info(vlog)
 	return tableIndexColumnMap
+}
+
+func (stcls *schemaTable) tableIndexMetaWorkerCount(tableCount int) int {
+	if tableCount <= 1 {
+		return 1
+	}
+
+	workers := stcls.checkRules.ParallelThds
+	if workers <= 0 {
+		workers = 4
+	}
+	if workers < 2 {
+		workers = 2
+	}
+	if workers > 8 {
+		workers = 8
+	}
+	if workers > tableCount {
+		workers = tableCount
+	}
+
+	return workers
+}
+
+func parseSchemaTableMappingEntry(entry string) (sourceSchema, sourceTable, destSchema, destTable string, ok bool) {
+	entry = strings.TrimSpace(entry)
+	if entry == "" {
+		return "", "", "", "", false
+	}
+
+	if strings.Contains(entry, ":") {
+		parts := strings.SplitN(entry, ":", 2)
+		if len(parts) != 2 {
+			return "", "", "", "", false
+		}
+
+		sourceParts := strings.Split(parts[0], ".")
+		destParts := strings.Split(parts[1], ".")
+		if len(sourceParts) != 2 || len(destParts) != 2 {
+			return "", "", "", "", false
+		}
+
+		if sourceParts[0] == "" || sourceParts[1] == "" || destParts[0] == "" || destParts[1] == "" {
+			return "", "", "", "", false
+		}
+
+		return sourceParts[0], sourceParts[1], destParts[0], destParts[1], true
+	}
+
+	parts := strings.Split(entry, ".")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", "", "", false
+	}
+
+	return parts[0], parts[1], parts[0], parts[1], true
 }
 
 // 解析表映射规则
@@ -3488,7 +3723,7 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 			continue
 		}
 
-		idxc := dbExec.IndexColumnStruct{Schema: sourceSchema, Table: stcls.table, Drivce: stcls.sourceDrive}
+		idxc := dbExec.IndexColumnStruct{Schema: sourceSchema, Table: stcls.table, Drivce: stcls.sourceDrive, CaseSensitiveObjectName: stcls.caseSensitiveObjectName}
 		vlog = fmt.Sprintf("(%d) %s Start processing srcDSN {%s} table %s.%s index column data. to dispos it...", logThreadSeq, event, stcls.sourceDrive, sourceSchema, stcls.table)
 		global.Wlog.Debug(vlog)
 		squeryData, err := idxc.TableIndexColumn().QueryTableIndexColumnInfo(stcls.sourceDB, logThreadSeq2)

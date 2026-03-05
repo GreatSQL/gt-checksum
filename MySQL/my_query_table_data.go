@@ -704,20 +704,11 @@ func (my *QueryTable) NoIndexGeneratingQueryCriteria(db *sql.DB, beginSeq uint64
 
 	// 处理列名
 	for _, i := range my.TableColumn {
-		var tmpcolumnName string
-		tmpcolumnName = fmt.Sprintf("`%s`", i["columnName"])
-		if strings.ToUpper(i["dataType"]) == "DATETIME" {
-			tmpcolumnName = fmt.Sprintf("DATE_FORMAT(%s,'%%Y-%%m-%%d %%H:%%i:%%s')", tmpcolumnName)
-		}
-		if strings.Contains(strings.ToUpper(i["dataType"]), "TIMESTAMP") {
-			tmpcolumnName = fmt.Sprintf("DATE_FORMAT(%s,'%%Y-%%m-%%d %%H:%%i:%%s')", tmpcolumnName)
-		}
-		if strings.HasPrefix(strings.ToUpper(i["dataType"]), "DOUBLE(") {
-			dianAfter := strings.ReplaceAll(strings.Split(i["dataType"], ",")[1], ")", "")
-			bb, _ := strconv.Atoi(dianAfter)
-			dianBefer := strings.Split(strings.Split(i["dataType"], ",")[0], "(")[1]
-			bbc, _ := strconv.Atoi(dianBefer)
-			tmpcolumnName = fmt.Sprintf("CAST(%s AS DECIMAL(%d,%d))", tmpcolumnName, bbc, bb)
+		tmpcolumnName := fmt.Sprintf("`%s`", i["columnName"])
+		tmpcolumnName = formatComparableColumnExpr(tmpcolumnName, i["dataType"])
+		if shouldNormalizeZeroFillInteger(i["dataType"]) {
+			global.Wlog.Info(fmt.Sprintf("(%d) [%s] Apply ZEROFILL normalization for %s.%s.%s",
+				logThreadSeq, Event, my.Schema, my.Table, i["columnName"]))
 		}
 		columnNameSeq = append(columnNameSeq, tmpcolumnName)
 	}
@@ -931,7 +922,7 @@ func (my QueryTable) GeneratingQueryCriteria(db *sql.DB, logThreadSeq int64) (st
 		} else {
 			cacheMutex.RUnlock()
 			// 从INFORMATION_SCHEMA.COLUMNS获取列信息
-			strsql := fmt.Sprintf("SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s' ORDER BY ORDINAL_POSITION", my.Schema, my.Table)
+			strsql := fmt.Sprintf("SELECT COLUMN_NAME, COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s' ORDER BY ORDINAL_POSITION", my.Schema, my.Table)
 			dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 			if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 				vlog = fmt.Sprintf("(%d) [%s] Failed to execute query: %s, Error: %v", logThreadSeq, Event, strsql, err)
@@ -1010,7 +1001,7 @@ func (my QueryTable) GeneratingQueryCriteria(db *sql.DB, logThreadSeq int64) (st
 
 		// 3. 如果从全局缓存中也没有找到数据类型，查询INFORMATION_SCHEMA.COLUMNS获取
 		if !columnDataTypeFound {
-			strsql := fmt.Sprintf("SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s' AND COLUMN_NAME='%s'", my.Schema, my.Table, columnName)
+			strsql := fmt.Sprintf("SELECT COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s' AND COLUMN_NAME='%s'", my.Schema, my.Table, columnName)
 			dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 			if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err == nil {
 				if dispos.SqlRows.Next() {
@@ -1026,18 +1017,10 @@ func (my QueryTable) GeneratingQueryCriteria(db *sql.DB, logThreadSeq int64) (st
 		}
 
 		// 应用与GeneratingQuerySql相同的格式化逻辑
-		if strings.ToUpper(dataType) == "DATETIME" {
-			tmpcolumnName = fmt.Sprintf("date_format(%s,'%%Y-%%m-%%d %%H:%%i:%%s')", tmpcolumnName)
-		}
-		if strings.Contains(strings.ToUpper(dataType), "TIMESTAMP") {
-			tmpcolumnName = fmt.Sprintf("date_format(%s,'%%Y-%%m-%%d %%H:%%i:%%s')", tmpcolumnName)
-		}
-		if strings.HasPrefix(strings.ToUpper(dataType), "DOUBLE(") {
-			dianAfter := strings.ReplaceAll(strings.Split(dataType, ",")[1], ")", "")
-			bb, _ := strconv.Atoi(dianAfter)
-			dianBefer := strings.Split(strings.Split(dataType, ",")[0], "(")[1]
-			bbc, _ := strconv.Atoi(dianBefer)
-			tmpcolumnName = fmt.Sprintf("CAST(%s AS DECIMAL(%d,%d))", tmpcolumnName, bbc, bb)
+		tmpcolumnName = formatComparableColumnExpr(tmpcolumnName, dataType)
+		if shouldNormalizeZeroFillInteger(dataType) {
+			global.Wlog.Info(fmt.Sprintf("(%d) [%s] Apply ZEROFILL normalization for %s.%s.%s",
+				logThreadSeq, Event, my.Schema, my.Table, columnName))
 		}
 		formattedColumnSeq = append(formattedColumnSeq, tmpcolumnName)
 	}
@@ -1096,6 +1079,59 @@ func containsString(slice []string, str string) bool {
 	return false
 }
 
+func isMySQLIntegerType(dataType string) bool {
+	t := strings.ToUpper(strings.TrimSpace(dataType))
+	base := t
+	if idx := strings.Index(base, "("); idx >= 0 {
+		base = strings.TrimSpace(base[:idx])
+	}
+	return base == "TINYINT" ||
+		base == "SMALLINT" ||
+		base == "MEDIUMINT" ||
+		base == "INT" ||
+		base == "INTEGER" ||
+		base == "BIGINT"
+}
+
+func shouldNormalizeZeroFillInteger(dataType string) bool {
+	t := strings.ToUpper(strings.TrimSpace(dataType))
+	return strings.Contains(t, "ZEROFILL") && isMySQLIntegerType(t)
+}
+
+func isMySQLTimeOnlyType(dataType string) bool {
+	t := strings.ToUpper(strings.TrimSpace(dataType))
+	return t == "TIME" || strings.HasPrefix(t, "TIME(")
+}
+
+func formatComparableColumnExpr(columnExpr, dataType string) string {
+	t := strings.ToUpper(strings.TrimSpace(dataType))
+	formatted := columnExpr
+	if t == "DATE" {
+		formatted = fmt.Sprintf("date_format(%s,'%%Y-%%m-%%d 00:00:00')", formatted)
+	}
+	if isMySQLTimeOnlyType(t) {
+		formatted = fmt.Sprintf("time_format(%s,'%%H:%%i:%%s')", formatted)
+	}
+	if t == "DATETIME" {
+		formatted = fmt.Sprintf("date_format(%s,'%%Y-%%m-%%d %%H:%%i:%%s')", formatted)
+	}
+	if strings.Contains(t, "TIMESTAMP") {
+		formatted = fmt.Sprintf("date_format(%s,'%%Y-%%m-%%d %%H:%%i:%%s')", formatted)
+	}
+	if strings.HasPrefix(t, "DOUBLE(") {
+		dianAfter := strings.ReplaceAll(strings.Split(t, ",")[1], ")", "")
+		bb, _ := strconv.Atoi(dianAfter)
+		dianBefer := strings.Split(strings.Split(t, ",")[0], "(")[1]
+		bbc, _ := strconv.Atoi(dianBefer)
+		formatted = fmt.Sprintf("CAST(%s AS DECIMAL(%d,%d))", formatted, bbc, bb)
+	}
+	if shouldNormalizeZeroFillInteger(t) {
+		// Ignore display-only leading zeros from ZEROFILL when comparing data.
+		formatted = fmt.Sprintf("CAST(%s AS DECIMAL(65,0))", formatted)
+	}
+	return formatted
+}
+
 /*
 MySQL 生成查询数据的sql语句
 */
@@ -1127,7 +1163,7 @@ func (my *QueryTable) GeneratingQuerySql(db *sql.DB, logThreadSeq int64) (string
 			global.Wlog.Debug(vlog)
 
 			// 查询表的所有列信息
-			query := fmt.Sprintf("SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s'", my.Schema, my.Table)
+			query := fmt.Sprintf("SELECT COLUMN_NAME, COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s'", my.Schema, my.Table)
 			rows, err := db.Query(query)
 			if err != nil {
 				vlog = fmt.Sprintf("(%d) [%s] Failed to query column info for table %s.%s: %v", logThreadSeq, Event, my.Schema, my.Table, err)
@@ -1169,20 +1205,11 @@ func (my *QueryTable) GeneratingQuerySql(db *sql.DB, logThreadSeq int64) (string
 
 	//处理mysql查询时间列时数据带时区问题  2021-01-23 10:16:29 +0800 CST
 	for _, i := range my.TableColumn {
-		var tmpcolumnName string
-		tmpcolumnName = fmt.Sprintf("`%s`", i["columnName"])
-		if strings.ToUpper(i["dataType"]) == "DATETIME" {
-			tmpcolumnName = fmt.Sprintf("date_format(%s,'%%Y-%%m-%%d %%H:%%i:%%s')", tmpcolumnName)
-		}
-		if strings.Contains(strings.ToUpper(i["dataType"]), "TIMESTAMP") {
-			tmpcolumnName = fmt.Sprintf("date_format(%s,'%%Y-%%m-%%d %%H:%%i:%%s')", tmpcolumnName)
-		}
-		if strings.HasPrefix(strings.ToUpper(i["dataType"]), "DOUBLE(") {
-			dianAfter := strings.ReplaceAll(strings.Split(i["dataType"], ",")[1], ")", "")
-			bb, _ := strconv.Atoi(dianAfter)
-			dianBefer := strings.Split(strings.Split(i["dataType"], ",")[0], "(")[1]
-			bbc, _ := strconv.Atoi(dianBefer)
-			tmpcolumnName = fmt.Sprintf("CAST(%s AS DECIMAL(%d,%d))", tmpcolumnName, bbc, bb)
+		tmpcolumnName := fmt.Sprintf("`%s`", i["columnName"])
+		tmpcolumnName = formatComparableColumnExpr(tmpcolumnName, i["dataType"])
+		if shouldNormalizeZeroFillInteger(i["dataType"]) {
+			global.Wlog.Info(fmt.Sprintf("(%d) [%s] Apply ZEROFILL normalization for %s.%s.%s",
+				logThreadSeq, Event, my.Schema, my.Table, i["columnName"]))
 		}
 		columnNameSeq = append(columnNameSeq, tmpcolumnName)
 	}

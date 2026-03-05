@@ -149,7 +149,10 @@ func (my *QueryTable) DatabaseNameList(db *sql.DB, logThreadSeq int64) (map[stri
 	for i := range tableData {
 		var ga string
 		gd, gt := fmt.Sprintf("%v", tableData[i]["databaseName"]), fmt.Sprintf("%v", tableData[i]["tableName"])
-		// 保持原始大小写，不进行转换，以便正确匹配数据库中的实际表名
+		if strings.ToLower(my.CaseSensitiveObjectName) == "no" {
+			gd = strings.ToLower(gd)
+			gt = strings.ToLower(gt)
+		}
 		ga = fmt.Sprintf("%v/*schema&table*/%v", gd, gt)
 		A[ga]++
 	}

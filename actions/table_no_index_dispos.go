@@ -22,6 +22,54 @@ type rowCountCacheEntry struct {
 
 var tableRowCountCache sync.Map
 
+func isOracleDriveForRowCount(drive string) bool {
+	d := strings.ToLower(strings.TrimSpace(drive))
+	return d == "godror" || d == "oracle"
+}
+
+func isOracleSimpleIdentifier(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i, r := range name {
+		if i == 0 {
+			if !((r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z')) {
+				return false
+			}
+			continue
+		}
+		if !((r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '$' || r == '#') {
+			return false
+		}
+	}
+	return true
+}
+
+func oracleIdentifierForCount(name string) string {
+	trimmed := strings.TrimSpace(name)
+	if len(trimmed) >= 2 && strings.HasPrefix(trimmed, "\"") && strings.HasSuffix(trimmed, "\"") {
+		return trimmed
+	}
+	if isOracleSimpleIdentifier(trimmed) {
+		return strings.ToUpper(trimmed)
+	}
+	return fmt.Sprintf("\"%s\"", strings.ReplaceAll(trimmed, "\"", "\"\""))
+}
+
+func buildExactRowCountQuery(drive, schema, table, whereClause string) string {
+	if isOracleDriveForRowCount(drive) {
+		qualifiedTable := fmt.Sprintf("%s.%s", oracleIdentifierForCount(schema), oracleIdentifierForCount(table))
+		if strings.TrimSpace(whereClause) != "" {
+			return fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s", qualifiedTable, adaptWhereForDrive(whereClause, "godror"))
+		}
+		return fmt.Sprintf("SELECT COUNT(*) FROM %s", qualifiedTable)
+	}
+	if strings.TrimSpace(whereClause) != "" {
+		return fmt.Sprintf("SELECT COUNT(*) FROM `%s`.`%s` WHERE %s", schema, table, whereClause)
+	}
+	return fmt.Sprintf("SELECT COUNT(*) FROM `%s`.`%s`", schema, table)
+}
+
 /*
 Perform MD5 verification on different data rows without removing duplicate values
 */
@@ -78,7 +126,7 @@ func (sp *SchedulePlan) NoIndexTableCount(logThreadSeq int64) int64 {
 		columnNames = []string{"0"}
 	}
 
-	idxc := dbExec.IndexColumnStruct{Drivce: sp.sdrive, Schema: sp.sourceSchema, Table: sp.table, ColumnName: columnNames, ChanrowCount: sp.chanrowCount}
+	idxc := dbExec.IndexColumnStruct{Drivce: sp.sdrive, Schema: sp.sourceSchema, Table: sp.table, ColumnName: columnNames, ChanrowCount: sp.chanrowCount, CaseSensitiveObjectName: sp.caseSensitiveObjectName}
 
 	sdb := sp.sdbPool.Get(int64(logThreadSeq))
 	A, err = idxc.TableIndexColumn().TableRows(sdb, int64(logThreadSeq))
@@ -88,7 +136,7 @@ func (sp *SchedulePlan) NoIndexTableCount(logThreadSeq int64) int64 {
 	sp.sdbPool.Put(sdb, int64(logThreadSeq))
 
 	ddb := sp.ddbPool.Get(int64(logThreadSeq))
-	idxcDest := dbExec.IndexColumnStruct{Drivce: sp.ddrive, Schema: sp.destSchema, Table: sp.table, ColumnName: columnNames, ChanrowCount: sp.chanrowCount}
+	idxcDest := dbExec.IndexColumnStruct{Drivce: sp.ddrive, Schema: sp.destSchema, Table: sp.table, ColumnName: columnNames, ChanrowCount: sp.chanrowCount, CaseSensitiveObjectName: sp.caseSensitiveObjectName}
 
 	B, err = idxcDest.TableIndexColumn().TableRows(ddb, int64(logThreadSeq))
 	if err != nil {
@@ -430,7 +478,7 @@ func (sp *SchedulePlan) QueryTableData(beginSeq uint64, chunkSeq uint64, chanrow
 	sourceTableCol := sp.tableAllCol[fmt.Sprintf("%s_gtchecksum_%s", sp.sourceSchema, sp.table)]
 	// 获取目标端表列信息
 	destTableCol := sp.tableAllCol[fmt.Sprintf("%s_gtchecksum_%s", sp.destSchema, sp.table)]
-	idxc := dbExec.IndexColumnStruct{Drivce: sp.sdrive, Schema: sp.sourceSchema, Table: sp.table, TableColumn: sourceTableCol.SColumnInfo, ChanrowCount: chanrowCount}
+	idxc := dbExec.IndexColumnStruct{Drivce: sp.sdrive, Schema: sp.sourceSchema, Table: sp.table, TableColumn: sourceTableCol.SColumnInfo, ChanrowCount: chanrowCount, CaseSensitiveObjectName: sp.caseSensitiveObjectName}
 	//allColumns := idxc.TableIndexColumn().NoIndexOrderBySingerColumn(noIndexOrderCol.SColumnInfo)
 	sdb := sp.sdbPool.Get(logThreadSeq)
 	stt, err = idxc.TableIndexColumn().NoIndexGeneratingQueryCriteria(sdb, beginSeq, chanrowCount, logThreadSeq)
@@ -438,7 +486,7 @@ func (sp *SchedulePlan) QueryTableData(beginSeq uint64, chunkSeq uint64, chanrow
 	if err != nil {
 		return "", "", err
 	}
-	idxcDest := dbExec.IndexColumnStruct{Drivce: sp.ddrive, Schema: sp.destSchema, Table: sp.table, TableColumn: destTableCol.DColumnInfo, ChanrowCount: chanrowCount}
+	idxcDest := dbExec.IndexColumnStruct{Drivce: sp.ddrive, Schema: sp.destSchema, Table: sp.table, TableColumn: destTableCol.DColumnInfo, ChanrowCount: chanrowCount, CaseSensitiveObjectName: sp.caseSensitiveObjectName}
 	ddb := sp.ddbPool.Get(logThreadSeq)
 	dtt, err = idxcDest.TableIndexColumn().NoIndexGeneratingQueryCriteria(ddb, beginSeq, chanrowCount, logThreadSeq)
 	if err != nil {
@@ -650,8 +698,16 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 }
 
 // getExactRowCount Query the exact number of rows in a table
-func (sp *SchedulePlan) queryEstimatedTableRows(db *sql.DB, schema, table string) (int64, bool) {
-	query := fmt.Sprintf("SELECT TABLE_ROWS FROM information_schema.tables WHERE table_schema = '%s' AND table_name = '%s' LIMIT 1", schema, table)
+func (sp *SchedulePlan) queryEstimatedTableRows(db *sql.DB, schema, table, drive string) (int64, bool) {
+	query := ""
+	if isOracleDriveForRowCount(drive) {
+		query = fmt.Sprintf("SELECT NVL(MAX(NUM_ROWS),0) FROM all_tables WHERE %s AND %s",
+			oracleMetadataMatchExpr("owner", schema),
+			oracleMetadataMatchExpr("table_name", table),
+		)
+	} else {
+		query = fmt.Sprintf("SELECT TABLE_ROWS FROM information_schema.tables WHERE table_schema = '%s' AND table_name = '%s' LIMIT 1", schema, table)
+	}
 	var tableRows sql.NullInt64
 	if err := db.QueryRow(query).Scan(&tableRows); err == nil && tableRows.Valid && tableRows.Int64 >= 0 {
 		return tableRows.Int64, true
@@ -659,8 +715,16 @@ func (sp *SchedulePlan) queryEstimatedTableRows(db *sql.DB, schema, table string
 	return 0, false
 }
 
-func (sp *SchedulePlan) queryEstimatedIndexCardinality(db *sql.DB, schema, table string) (int64, bool) {
-	query := fmt.Sprintf("SELECT MAX(CARDINALITY) FROM information_schema.statistics WHERE table_schema = '%s' AND table_name = '%s' AND seq_in_index = 1", schema, table)
+func (sp *SchedulePlan) queryEstimatedIndexCardinality(db *sql.DB, schema, table, drive string) (int64, bool) {
+	query := ""
+	if isOracleDriveForRowCount(drive) {
+		query = fmt.Sprintf("SELECT NVL(MAX(DISTINCT_KEYS),0) FROM all_indexes WHERE %s AND %s",
+			oracleMetadataMatchExpr("owner", schema),
+			oracleMetadataMatchExpr("table_name", table),
+		)
+	} else {
+		query = fmt.Sprintf("SELECT MAX(CARDINALITY) FROM information_schema.statistics WHERE table_schema = '%s' AND table_name = '%s' AND seq_in_index = 1", schema, table)
+	}
 	var card sql.NullInt64
 	if err := db.QueryRow(query).Scan(&card); err == nil && card.Valid && card.Int64 > 0 {
 		return card.Int64, true
@@ -717,6 +781,10 @@ func (sp *SchedulePlan) getExactRowCount(dbPool *global.Pool, schema, table stri
 		whereClause = strings.TrimSpace(globalConfig.SecondaryL.SchemaV.SqlWhere)
 	}
 	showActualRows := inputArg.IsShowActualRowsEnabled()
+	effectiveDrive := sp.sdrive
+	if dbPool == sp.ddbPool {
+		effectiveDrive = sp.ddrive
+	}
 
 	cacheKey := fmt.Sprintf("%p.%s.%s.%s.%t", db, targetSchema, table, whereClause, showActualRows)
 	if cached, ok := tableRowCountCache.Load(cacheKey); ok {
@@ -727,14 +795,14 @@ func (sp *SchedulePlan) getExactRowCount(dbPool *global.Pool, schema, table stri
 
 	// showActualRows=OFF: always use metadata estimates and avoid heavy COUNT(*) scans.
 	if !showActualRows {
-		if estimatedRows, ok := sp.queryEstimatedTableRows(db, targetSchema, table); ok {
+		if estimatedRows, ok := sp.queryEstimatedTableRows(db, targetSchema, table, effectiveDrive); ok {
 			vlog = fmt.Sprintf("(%d) showActualRows=OFF, using TABLE_ROWS estimate for %s.%s: %d", logThreadSeq, targetSchema, table, estimatedRows)
 			global.Wlog.Debug(vlog)
 			entry := rowCountCacheEntry{Count: estimatedRows, Exact: false}
 			tableRowCountCache.Store(cacheKey, entry)
 			return entry.Count, entry.Exact
 		}
-		if cardRows, ok := sp.queryEstimatedIndexCardinality(db, targetSchema, table); ok {
+		if cardRows, ok := sp.queryEstimatedIndexCardinality(db, targetSchema, table, effectiveDrive); ok {
 			vlog = fmt.Sprintf("(%d) showActualRows=OFF, using index cardinality estimate for %s.%s: %d", logThreadSeq, targetSchema, table, cardRows)
 			global.Wlog.Debug(vlog)
 			entry := rowCountCacheEntry{Count: cardRows, Exact: false}
@@ -758,7 +826,16 @@ func (sp *SchedulePlan) getExactRowCount(dbPool *global.Pool, schema, table stri
 			allColumnsExist := true
 			for _, column := range columns {
 				// 构建查询检查列是否存在
-				checkQuery := fmt.Sprintf("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = '%s' AND table_name = '%s' AND column_name = '%s'", targetSchema, table, column)
+				checkQuery := ""
+				if isOracleDriveForRowCount(effectiveDrive) {
+					checkQuery = fmt.Sprintf("SELECT COUNT(*) FROM all_tab_columns WHERE %s AND %s AND %s",
+						oracleMetadataMatchExpr("owner", targetSchema),
+						oracleMetadataMatchExpr("table_name", table),
+						oracleMetadataMatchExpr("column_name", column),
+					)
+				} else {
+					checkQuery = fmt.Sprintf("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = '%s' AND table_name = '%s' AND column_name = '%s'", targetSchema, table, column)
+				}
 				var count int
 				err := db.QueryRow(checkQuery).Scan(&count)
 				if err != nil {
@@ -786,9 +863,9 @@ func (sp *SchedulePlan) getExactRowCount(dbPool *global.Pool, schema, table stri
 			}
 		}
 
-		query = fmt.Sprintf("SELECT COUNT(*) FROM `%s`.`%s` WHERE %s", targetSchema, table, whereClause)
+		query = buildExactRowCountQuery(effectiveDrive, targetSchema, table, whereClause)
 	} else {
-		query = fmt.Sprintf("SELECT COUNT(*) FROM `%s`.`%s`", targetSchema, table)
+		query = buildExactRowCountQuery(effectiveDrive, targetSchema, table, "")
 	}
 
 	vlog = fmt.Sprintf("(%d) Executing row count query: %s", logThreadSeq, query)

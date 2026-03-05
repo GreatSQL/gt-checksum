@@ -20,7 +20,7 @@ func (or *QueryTable) QueryTableIndexColumnInfo(db *sql.DB, logThreadSeq int64) 
 		tableData []map[string]interface{}
 		err       error
 	)
-	strsql = fmt.Sprintf("SELECT c.COLUMN_NAME AS \"columnName\", DECODE(c.DATA_TYPE, 'DATE', c.data_type, c.DATA_TYPE || '(' || c.data_LENGTH || ')') AS \"columnType\", DECODE(co.constraint_type, 'P', '1', '0') AS \"columnKey\", i.UNIQUENESS AS \"nonUnique\", ic.INDEX_NAME AS \"indexName\", ic.COLUMN_POSITION AS \"IndexSeq\", c.COLUMN_ID AS \"columnSeq\" FROM all_tab_cols c INNER JOIN all_ind_columns ic ON c.TABLE_NAME=ic.TABLE_NAME AND c.OWNER=ic.INDEX_OWNER AND c.COLUMN_NAME=ic.COLUMN_NAME INNER JOIN all_indexes i ON ic.INDEX_OWNER=i.OWNER AND ic.INDEX_NAME=i.INDEX_NAME AND ic.TABLE_NAME=i.TABLE_NAME LEFT JOIN all_constraints co ON co.owner=c.owner AND co.table_name=c.table_name AND co.index_name=i.index_name WHERE c.OWNER='%s' AND c.TABLE_NAME='%s' ORDER BY I.INDEX_NAME, ic.COLUMN_POSITION", strings.ToUpper(or.Schema), or.Table)
+	strsql = fmt.Sprintf("SELECT c.COLUMN_NAME AS \"columnName\", DECODE(c.DATA_TYPE, 'DATE', c.data_type, c.DATA_TYPE || '(' || c.data_LENGTH || ')') AS \"columnType\", DECODE(co.constraint_type, 'P', '1', '0') AS \"columnKey\", i.UNIQUENESS AS \"nonUnique\", ic.INDEX_NAME AS \"indexName\", ic.COLUMN_POSITION AS \"IndexSeq\", c.COLUMN_ID AS \"columnSeq\" FROM all_tab_cols c INNER JOIN all_ind_columns ic ON c.TABLE_NAME=ic.TABLE_NAME AND c.OWNER=ic.INDEX_OWNER AND c.COLUMN_NAME=ic.COLUMN_NAME INNER JOIN all_indexes i ON ic.INDEX_OWNER=i.OWNER AND ic.INDEX_NAME=i.INDEX_NAME AND ic.TABLE_NAME=i.TABLE_NAME LEFT JOIN all_constraints co ON co.owner=c.owner AND co.table_name=c.table_name AND co.index_name=i.index_name WHERE %s AND %s ORDER BY I.INDEX_NAME, ic.COLUMN_POSITION", oracleMetadataMatchExpr("c.OWNER", or.Schema), oracleMetadataMatchExpr("c.TABLE_NAME", or.Table))
 	vlog = fmt.Sprintf("(%d) [%s] Generate a sql statement to query the index statistics of table %s.%s under the %s database.sql messige is {%s}", logThreadSeq, Event, or.Schema, or.Table, DBType, strsql)
 	global.Wlog.Debug(vlog)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
@@ -173,7 +173,7 @@ func (or *QueryTable) TmpTableIndexColumnRowsCount(db *sql.DB, logThreadSeq int6
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start to query the total number of rows in the following table %s.%s of the %s database.", logThreadSeq, Event, or.Schema, or.Table, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("SELECT COUNT(1) AS \"sum\" FROM \"%s\".\"%s\"", or.Schema, or.Table)
+	strsql = fmt.Sprintf("SELECT COUNT(1) AS \"sum\" FROM %s", oracleQualifiedTable(or.Schema, or.Table))
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return 0, err
@@ -206,7 +206,8 @@ func (or *QueryTable) TmpTableColumnGroupDataDispos(db *sql.DB, where string, co
 	if where != "" {
 		whereExist = fmt.Sprintf("where %s ", where)
 	}
-	strsql = fmt.Sprintf("SELECT %s AS \"columnName\", COUNT(1) AS \"count\" FROM \"%s\".\"%s\" %s GROUP BY %s ORDER BY %s", columnName, or.Schema, or.Table, whereExist, columnName, columnName)
+	columnRef := oracleColumnIdentifier(columnName)
+	strsql = fmt.Sprintf("SELECT %s AS \"columnName\", COUNT(1) AS \"count\" FROM %s %s GROUP BY %s ORDER BY %s", columnRef, oracleQualifiedTable(or.Schema, or.Table), whereExist, columnRef, columnRef)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return nil, err
@@ -227,7 +228,7 @@ func (or *QueryTable) TableRows(db *sql.DB, logThreadSeq int64) (uint64, error) 
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start to query the total number of rows in the following table %s.%s of the %s database.", logThreadSeq, Event, or.Schema, or.Table, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("SELECT COUNT(1) AS \"sum\" FROM \"%s\".\"%s\"", or.Schema, or.Table)
+	strsql = fmt.Sprintf("SELECT COUNT(1) AS \"sum\" FROM %s", oracleQualifiedTable(or.Schema, or.Table))
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return 0, err
@@ -273,39 +274,15 @@ func (or *QueryTable) NoIndexGeneratingQueryCriteria(db *sql.DB, beginSeq uint64
 		columnNameSeq []string
 		Event         = "Q_table_Data"
 	)
-	//处理oracle查询时间列时数据带时区问题  2021-01-23 10:16:29 +0800 CST
+	// 统一Oracle可比较表达式，规避跨库日期/时间/间隔类型格式差异
 	for _, i := range or.TableColumn {
-		mu := "9"
-		nu := "0"
-		var tmpcolumnName string
-		tmpcolumnName = i["columnName"]
-		if strings.ToUpper(i["dataType"]) == "DATE" {
-			tmpcolumnName = fmt.Sprintf("to_char(%s,'YYYY-MM-DD HH24:MI:SS')", i["columnName"])
-		}
-		if strings.Contains(strings.ToUpper(i["dataType"]), "TIMESTAMP") {
-			tmpcolumnName = fmt.Sprintf("to_char(%s,'YYYY-MM-DD HH24:MI:SS')", i["columnName"])
-		}
-		if strings.HasPrefix(strings.ToUpper(i["dataType"]), "NUMBER(") {
-			dianAfter := strings.ReplaceAll(strings.Split(i["dataType"], ",")[1], ")", "")
-			bb, _ := strconv.Atoi(dianAfter)
-			dianBefer := strings.Split(strings.Split(i["dataType"], ",")[0], "(")[1]
-			bbc, _ := strconv.Atoi(dianBefer)
-			var tmpa, tmpb []string
-			for ii := 0; ii < bb; ii++ {
-				tmpa = append(tmpa, nu)
-			}
-			for ii := 1; ii < bbc-bb; ii++ {
-				tmpb = append(tmpb, mu)
-			}
-			if bb == 0 {
-				tmpcolumnName = fmt.Sprintf("to_char(%s,'FM%s0')", i["columnName"], strings.Join(tmpb, ""))
-			} else {
-				tmpcolumnName = fmt.Sprintf("to_char(%s,'FM%s0.%s')", i["columnName"], strings.Join(tmpb, ""), strings.Join(tmpa, ""))
-			}
-		}
-		columnNameSeq = append(columnNameSeq, tmpcolumnName)
+		columnNameSeq = append(columnNameSeq, oracleComparableColumnExpr(i["columnName"], i["dataType"]))
 	}
-	strsql = fmt.Sprintf("SELECT %s FROM ( SELECT A.*, ROWNUM RN FROM (SELECT * FROM \"%s\".\"%s\") A WHERE ROWNUM <= %d) WHERE RN > %d", strings.Join(columnNameSeq, ","), strings.ToUpper(or.Schema), or.Table, beginSeq+uint64(chanrowCount), beginSeq)
+	queryColumn := strings.Join(columnNameSeq, ",")
+	if queryColumn == "" {
+		queryColumn = "*"
+	}
+	strsql = fmt.Sprintf("SELECT %s FROM ( SELECT A.*, ROWNUM RN FROM (SELECT * FROM %s) A WHERE ROWNUM <= %d) WHERE RN > %d", queryColumn, oracleQualifiedTable(or.Schema, or.Table), beginSeq+uint64(chanrowCount), beginSeq)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return "", err
@@ -351,40 +328,61 @@ func (or *QueryTable) GeneratingQuerySql(db *sql.DB, logThreadSeq int64) (string
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start to generate the data query sql of table %s.%s in the %s database", logThreadSeq, Event, or.Schema, or.Table, DBType)
 	global.Wlog.Debug(vlog)
-	//处理oracle查询时间列时数据带时区问题  2021-01-23 10:16:29 +0800 CST
+	// 统一Oracle可比较表达式，规避跨库日期/时间/间隔类型格式差异
 	for _, i := range or.TableColumn {
-		mu := "9"
-		nu := "0"
-		tmpcolumnName := fmt.Sprintf("\"%s\"", i["columnName"])
-		if strings.ToUpper(i["dataType"]) == "DATE" {
-			tmpcolumnName = fmt.Sprintf("TO_CHAR(%s,'YYYY-MM-DD HH24:MI:SS')", tmpcolumnName)
-		}
-		if strings.Contains(strings.ToUpper(i["dataType"]), "TIMESTAMP") {
-			tmpcolumnName = fmt.Sprintf("TO_CHAR(%s,'YYYY-MM-DD HH24:MI:SS')", tmpcolumnName)
-		}
-		if strings.HasPrefix(strings.ToUpper(i["dataType"]), "NUMBER(") {
-			dianAfter := strings.ReplaceAll(strings.Split(i["dataType"], ",")[1], ")", "")
-			bb, _ := strconv.Atoi(dianAfter)
-			dianBefer := strings.Split(strings.Split(i["dataType"], ",")[0], "(")[1]
-			bbc, _ := strconv.Atoi(dianBefer)
-			var tmpa, tmpb []string
-			for ii := 0; ii < bb; ii++ {
-				tmpa = append(tmpa, nu)
-			}
-			for ii := 1; ii < bbc-bb; ii++ {
-				tmpb = append(tmpb, mu)
-			}
-			if bb == 0 {
-				tmpcolumnName = fmt.Sprintf("TO_CHAR(%s,'FM%s0')", tmpcolumnName, strings.Join(tmpb, ""))
-			} else {
-				tmpcolumnName = fmt.Sprintf("TO_CHAR(%s,'FM%s0.%s')", tmpcolumnName, strings.Join(tmpb, ""), strings.Join(tmpa, ""))
-			}
-		}
-		columnNameSeq = append(columnNameSeq, tmpcolumnName)
+		columnNameSeq = append(columnNameSeq, oracleComparableColumnExpr(i["columnName"], i["dataType"]))
 	}
 	queryColumn := strings.Join(columnNameSeq, ",")
-	selectSql = fmt.Sprintf("SELECT %s FROM \"%s\".\"%s\" WHERE %s", queryColumn, strings.ToUpper(or.Schema), or.Table, or.Sqlwhere)
+	if queryColumn == "" {
+		queryColumn = "*"
+	}
+	selectSql = fmt.Sprintf("SELECT %s FROM %s WHERE %s", queryColumn, oracleQualifiedTable(or.Schema, or.Table), or.Sqlwhere)
 	vlog = fmt.Sprintf("(%d) [%s] Complete the data query sql of table %s.%s in the %s database.", logThreadSeq, Event, or.Schema, or.Table, DBType)
 	global.Wlog.Debug(vlog)
 	return selectSql, nil
+}
+
+func oracleComparableColumnExpr(columnName, dataType string) string {
+	columnExpr := oracleColumnIdentifier(columnName)
+	t := strings.ToUpper(strings.TrimSpace(dataType))
+
+	if t == "DATE" {
+		return fmt.Sprintf("TO_CHAR(%s,'YYYY-MM-DD HH24:MI:SS')", columnExpr)
+	}
+	if strings.Contains(t, "TIMESTAMP") {
+		return fmt.Sprintf("TO_CHAR(%s,'YYYY-MM-DD HH24:MI:SS')", columnExpr)
+	}
+	if strings.HasPrefix(t, "INTERVAL DAY") {
+		// Normalize Oracle INTERVAL DAY TO SECOND to textual form first,
+		// then parse to HH:MM:SS in Go comparison layer.
+		// This avoids driver-dependent binary/nanosecond representations.
+		return fmt.Sprintf("CASE WHEN %s IS NULL THEN NULL ELSE TRIM(TO_CHAR(%s)) END", columnExpr, columnExpr)
+	}
+	if strings.HasPrefix(t, "NUMBER(") {
+		parts := strings.Split(t, ",")
+		if len(parts) == 2 {
+			dianAfter := strings.ReplaceAll(parts[1], ")", "")
+			bb, bbErr := strconv.Atoi(dianAfter)
+			dianBefore := strings.Split(parts[0], "(")
+			if len(dianBefore) == 2 {
+				bbc, bbcErr := strconv.Atoi(dianBefore[1])
+				if bbErr == nil && bbcErr == nil {
+					mu := "9"
+					nu := "0"
+					var tmpa, tmpb []string
+					for ii := 0; ii < bb; ii++ {
+						tmpa = append(tmpa, nu)
+					}
+					for ii := 1; ii < bbc-bb; ii++ {
+						tmpb = append(tmpb, mu)
+					}
+					if bb == 0 {
+						return fmt.Sprintf("TO_CHAR(%s,'FM%s0')", columnExpr, strings.Join(tmpb, ""))
+					}
+					return fmt.Sprintf("TO_CHAR(%s,'FM%s0.%s')", columnExpr, strings.Join(tmpb, ""), strings.Join(tmpa, ""))
+				}
+			}
+		}
+	}
+	return columnExpr
 }

@@ -4,22 +4,24 @@ import (
 	"database/sql"
 	mysql "gt-checksum/MySQL"
 	oracle "gt-checksum/Oracle"
+	"strings"
 )
 
 // IndexColumnStruct carries metadata required to build index-based query chunks.
 type IndexColumnStruct struct {
-	Drivce           string
-	Schema           string
-	Table            string
-	TmpTableFileName string
-	ColumnName       []string
-	ChanrowCount     int
-	TableColumn      []map[string]string
-	Sqlwhere         string
-	ColData          []map[string]string
-	BeginSeq         string
-	RowDataCh        int64
-	SelectColumn     map[string]string
+	Drivce                  string
+	Schema                  string
+	Table                   string
+	CaseSensitiveObjectName string
+	TmpTableFileName        string
+	ColumnName              []string
+	ChanrowCount            int
+	TableColumn             []map[string]string
+	Sqlwhere                string
+	ColData                 []map[string]string
+	BeginSeq                string
+	RowDataCh               int64
+	SelectColumn            map[string]string
 }
 
 type TableIndexColumner interface {
@@ -39,17 +41,24 @@ type TableIndexColumner interface {
 func (qticis *IndexColumnStruct) TableIndexColumn() TableIndexColumner {
 	var aa TableIndexColumner
 	if qticis.Drivce == "mysql" {
+		schemaName := qticis.Schema
+		tableName := qticis.Table
+		if strings.ToLower(qticis.CaseSensitiveObjectName) == "no" {
+			schemaName = strings.ToLower(schemaName)
+			tableName = strings.ToLower(tableName)
+		}
 		aa = &mysql.QueryTable{
-			Schema:       qticis.Schema,
-			Table:        qticis.Table,
-			ColumnName:   qticis.ColumnName,
-			ChanrowCount: qticis.ChanrowCount,
-			TableColumn:  qticis.TableColumn,
-			Sqlwhere:     qticis.Sqlwhere,
-			ColData:      qticis.ColData,
-			SelectColumn: qticis.SelectColumn,
-			BeginSeq:     qticis.BeginSeq,
-			RowDataCh:    qticis.RowDataCh,
+			Schema:                  schemaName,
+			Table:                   tableName,
+			CaseSensitiveObjectName: qticis.CaseSensitiveObjectName,
+			ColumnName:              qticis.ColumnName,
+			ChanrowCount:            qticis.ChanrowCount,
+			TableColumn:             qticis.TableColumn,
+			Sqlwhere:                qticis.Sqlwhere,
+			ColData:                 qticis.ColData,
+			SelectColumn:            qticis.SelectColumn,
+			BeginSeq:                qticis.BeginSeq,
+			RowDataCh:               qticis.RowDataCh,
 		}
 	}
 	if qticis.Drivce == "godror" {

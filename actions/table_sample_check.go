@@ -29,7 +29,7 @@ func (sp *SchedulePlan) sampSingleTableCheckProcessing(chanrowCount int, logThre
 	fmt.Printf("Starting checksum for table without index %s.%s\n", sp.schema, sp.table)
 	vlog = fmt.Sprintf("(%d) Verifying data for table without index %s.%s", logThreadSeq, sp.schema, sp.table)
 	global.Wlog.Info(vlog)
-	idxc := dbExec.IndexColumnStruct{Drivce: sp.sdrive, Schema: sp.schema, Table: sp.table, ColumnName: sp.columnName, ChanrowCount: chanrowCount}
+	idxc := dbExec.IndexColumnStruct{Drivce: sp.sdrive, Schema: sp.schema, Table: sp.table, ColumnName: sp.columnName, ChanrowCount: chanrowCount, CaseSensitiveObjectName: sp.caseSensitiveObjectName}
 	sdb := sp.sdbPool.Get(int64(logThreadSeq))
 	_, err = idxc.TableIndexColumn().TableRows(sdb, int64(logThreadSeq))
 	sp.sdbPool.Put(sdb, int64(logThreadSeq))
@@ -279,7 +279,7 @@ func (sp *SchedulePlan) DoSampleDataCheck() {
 		//统计表的总行数
 		sdb := sp.sdbPool.Get(logThreadSeq)
 		//查询源端的表总行数
-		idxc := dbExec.IndexColumnStruct{Schema: sourceSchema, Table: sourceTable, ColumnName: sp.columnName, Drivce: sp.sdrive}
+		idxc := dbExec.IndexColumnStruct{Schema: sourceSchema, Table: sourceTable, ColumnName: sp.columnName, Drivce: sp.sdrive, CaseSensitiveObjectName: sp.caseSensitiveObjectName}
 		stmpTableCount, err = idxc.TableIndexColumn().TmpTableIndexColumnRowsCount(sdb, logThreadSeq)
 		sp.sdbPool.Put(sdb, logThreadSeq)
 		if err != nil {
@@ -290,7 +290,7 @@ func (sp *SchedulePlan) DoSampleDataCheck() {
 
 		ddb := sp.ddbPool.Get(logThreadSeq)
 		//查询目标端的表总行数
-		idxcDest := dbExec.IndexColumnStruct{Schema: destSchema, Table: destTable, ColumnName: sp.columnName, Drivce: sp.ddrive}
+		idxcDest := dbExec.IndexColumnStruct{Schema: destSchema, Table: destTable, ColumnName: sp.columnName, Drivce: sp.ddrive, CaseSensitiveObjectName: sp.caseSensitiveObjectName}
 		dtmpTableCount, err = idxcDest.TableIndexColumn().TmpTableIndexColumnRowsCount(ddb, logThreadSeq)
 		if err != nil {
 			vlog = fmt.Sprintf("(%d) Failed to retrieve target table row count: %v", logThreadSeq, err)
@@ -342,22 +342,24 @@ func (sp *SchedulePlan) DoSampleDataCheck() {
 		sp.pods.IndexColumn = strings.TrimLeft(strings.Join(sp.columnName, ","), ",")
 		//获取索引列数据长度，处理索引列数据中有null或空字符串的问题
 		idxc = dbExec.IndexColumnStruct{
-			Schema:       sourceSchema,
-			Table:        sourceTable,
-			ColumnName:   sp.columnName,
-			ChanrowCount: chanrowCount,
-			Drivce:       sp.sdrive,
-			ColData:      tableColumn.SColumnInfo,
+			Schema:                  sourceSchema,
+			Table:                   sourceTable,
+			ColumnName:              sp.columnName,
+			ChanrowCount:            chanrowCount,
+			Drivce:                  sp.sdrive,
+			CaseSensitiveObjectName: sp.caseSensitiveObjectName,
+			ColData:                 tableColumn.SColumnInfo,
 		}
 		selectColumnStringM[sp.sdrive] = idxc.TableIndexColumn().TmpTableIndexColumnSelectDispos(logThreadSeq)
 
 		idxcDest = dbExec.IndexColumnStruct{
-			Schema:       destSchema,
-			Table:        destTable,
-			ColumnName:   sp.columnName,
-			ChanrowCount: chanrowCount,
-			Drivce:       sp.ddrive,
-			ColData:      tableColumn.DColumnInfo,
+			Schema:                  destSchema,
+			Table:                   destTable,
+			ColumnName:              sp.columnName,
+			ChanrowCount:            chanrowCount,
+			Drivce:                  sp.ddrive,
+			CaseSensitiveObjectName: sp.caseSensitiveObjectName,
+			ColData:                 tableColumn.DColumnInfo,
 		}
 		selectColumnStringM[sp.ddrive] = idxcDest.TableIndexColumn().TmpTableIndexColumnSelectDispos(logThreadSeq)
 

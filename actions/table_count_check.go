@@ -101,7 +101,7 @@ func (sp *SchedulePlan) DoCountDataCheck() {
 
 		sdb := sp.sdbPool.Get(logThreadSeq)
 		//查询源端的表总行数
-		idxc := dbExec.IndexColumnStruct{Schema: sourceSchema, Table: sourceTable, ColumnName: sp.columnName, Drivce: sp.sdrive}
+		idxc := dbExec.IndexColumnStruct{Schema: sourceSchema, Table: sourceTable, ColumnName: sp.columnName, Drivce: sp.sdrive, CaseSensitiveObjectName: sp.caseSensitiveObjectName}
 		stmpTableCount, err = idxc.TableIndexColumn().TmpTableIndexColumnRowsCount(sdb, logThreadSeq)
 		if err != nil {
 			vlog = fmt.Sprintf("(%d) Failed to retrieve source table row count: %v", logThreadSeq, err)
@@ -112,7 +112,7 @@ func (sp *SchedulePlan) DoCountDataCheck() {
 
 		ddb := sp.ddbPool.Get(logThreadSeq)
 		//查询目标端的表总行数
-		idxcDest := dbExec.IndexColumnStruct{Schema: destSchema, Table: destTable, ColumnName: sp.columnName, Drivce: sp.ddrive}
+		idxcDest := dbExec.IndexColumnStruct{Schema: destSchema, Table: destTable, ColumnName: sp.columnName, Drivce: sp.ddrive, CaseSensitiveObjectName: sp.caseSensitiveObjectName}
 		dtmpTableCount, err = idxcDest.TableIndexColumn().TmpTableIndexColumnRowsCount(ddb, logThreadSeq)
 		if err != nil {
 			vlog = fmt.Sprintf("(%d) Failed to retrieve target table row count: %v", logThreadSeq, err)
