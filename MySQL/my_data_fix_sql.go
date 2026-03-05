@@ -79,6 +79,7 @@ func escapeSQLString(str string) string {
 
 var mysqlDateTimePrefixPattern = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(\.\d{1,6})?`)
 var floatScalePattern = regexp.MustCompile(`(?i)^FLOAT\s*\(\s*\d+\s*,\s*(\d+)\s*\)`)
+var integerLiteralPattern = regexp.MustCompile(`^[+-]?\d+$`)
 
 // normalizeMySQLDateTimeLiteral converts common Oracle/Golang datetime string forms
 // (e.g. "2026-02-17 16:04:25 +0800 CST") to MySQL DATETIME/TIMESTAMP literal
@@ -127,7 +128,36 @@ func floatDeleteScaleByType(dataType string) (int, bool) {
 	return 0, false
 }
 
+func isFloatDeleteType(dataType string) bool {
+	t := strings.ToUpper(strings.TrimSpace(dataType))
+	return strings.HasPrefix(t, "FLOAT") || strings.HasPrefix(t, "DOUBLE") || strings.HasPrefix(t, "REAL")
+}
+
+func isIntegerDeleteType(dataType string) bool {
+	t := strings.ToUpper(strings.TrimSpace(dataType))
+	return strings.HasPrefix(t, "TINYINT") ||
+		strings.HasPrefix(t, "SMALLINT") ||
+		strings.HasPrefix(t, "MEDIUMINT") ||
+		strings.HasPrefix(t, "INT") ||
+		strings.HasPrefix(t, "INTEGER") ||
+		strings.HasPrefix(t, "BIGINT")
+}
+
+func buildIntegerDeletePredicate(columnName, value, dataType string) (string, bool) {
+	if !isIntegerDeleteType(dataType) {
+		return "", false
+	}
+	v := strings.TrimSpace(value)
+	if !integerLiteralPattern.MatchString(v) {
+		return "", false
+	}
+	return fmt.Sprintf("`%s` = %s", columnName, v), true
+}
+
 func buildFloatDeletePredicate(columnName, value, dataType string) (string, bool) {
+	if !isFloatDeleteType(dataType) {
+		return "", false
+	}
 	fv, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
 	if err != nil {
 		return "", false
@@ -136,8 +166,9 @@ func buildFloatDeletePredicate(columnName, value, dataType string) (string, bool
 	if scale, ok := floatDeleteScaleByType(dataType); ok {
 		return fmt.Sprintf("ROUND(`%s`, %d) = ROUND(%s, %d)", columnName, scale, floatLiteral, scale), true
 	}
-	// Safe fallback for FLOAT without declared scale: avoid broad epsilon range that may over-delete.
-	return fmt.Sprintf("CAST(`%s` AS DOUBLE) = CAST(%s AS DOUBLE)", columnName, floatLiteral), true
+	// Fallback for FLOAT without declared scale:
+	// keep both sides as plain numeric comparison to avoid unnecessary CAST in fix SQL.
+	return fmt.Sprintf("`%s` = %s", columnName, floatLiteral), true
 }
 
 func (my *MysqlDataAbnormalFixStruct) FixInsertSqlExec(db *sql.DB, sourceDrive string, logThreadSeq int64) (string, error) {
@@ -545,6 +576,8 @@ func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive s
 					AS = append(AS, fmt.Sprintf("`%s` IS NULL", colName))
 				} else if value == "<entry>" {
 					AS = append(AS, fmt.Sprintf("`%s` = ''", colName))
+				} else if predicate, ok := buildIntegerDeletePredicate(colName, value, dataType); ok {
+					AS = append(AS, predicate)
 				} else if predicate, ok := buildFloatDeletePredicate(colName, value, dataType); ok {
 					AS = append(AS, predicate)
 				} else if value == acc["double"] {
@@ -599,6 +632,8 @@ func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive s
 					AS = append(AS, fmt.Sprintf("`%s` IS NULL", colName))
 				} else if value == "<entry>" {
 					AS = append(AS, fmt.Sprintf("`%s` = ''", colName))
+				} else if predicate, ok := buildIntegerDeletePredicate(colName, value, dataType); ok {
+					AS = append(AS, predicate)
 				} else if predicate, ok := buildFloatDeletePredicate(colName, value, dataType); ok {
 					AS = append(AS, predicate)
 				} else if value == acc["double"] {
