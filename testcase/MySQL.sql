@@ -8,8 +8,8 @@ CREATE DATABASE IF NOT EXISTS gt_checksum;
 USE gt_checksum;
 
 -- 测试几个基本数据类型
-DROP TABLE IF EXISTS testInt;
-CREATE TABLE testInt(
+DROP TABLE IF EXISTS testint;
+CREATE TABLE testint(
     f1 TINYINT,
     f2 SMALLINT,
     f3 MEDIUMINT,
@@ -18,30 +18,30 @@ CREATE TABLE testInt(
     f6 INT UNSIGNED,
     f7 BIGINT
 );
-ALTER TABLE testInt ADD INDEX idx_testInt_1(f1);
-INSERT INTO testInt(f1,f2,f3,f4,f5,f6,f7) VALUES(1,2,3,4,5,6,7);
+ALTER TABLE testint ADD INDEX idx_testint_1(f1);
+INSERT INTO testint(f1,f2,f3,f4,f5,f6,f7) VALUES(1,2,3,4,5,6,7);
 
-DROP TABLE IF EXISTS testFloat;
-CREATE TABLE testFloat(
+DROP TABLE IF EXISTS testfloat;
+CREATE TABLE testfloat(
   f1 FLOAT,
   f2 FLOAT(5,2),
   f3 DOUBLE,
   f4 DOUBLE(5,3)
 );
-ALTER TABLE testFloat ADD INDEX idx_testFloat_1(f1);
-INSERT INTO testFloat(f1,f2,f3,f4) VALUES(123.45,123.45,123.45,12.456);
+ALTER TABLE testfloat ADD INDEX idx_testfloat_1(f1);
+INSERT INTO testfloat(f1,f2,f3,f4) VALUES(123.45,123.45,123.45,12.456);
 
-DROP TABLE IF EXISTS testBit;
-CREATE TABLE testBit(
+DROP TABLE IF EXISTS testbit;
+CREATE TABLE testbit(
     f1 BIT,
     f2 BIT(5),
     f3 BIT(64)
 );
-ALTER TABLE testBit ADD INDEX idx_testBit_1(f1);
-INSERT INTO testBit VALUES(1,31,65);
+ALTER TABLE testbit ADD INDEX idx_testbit_1(f1);
+INSERT INTO testbit VALUES(1,31,65);
 
-DROP TABLE IF EXISTS testTime;
-CREATE TABLE testTime(
+DROP TABLE IF EXISTS testtime;
+CREATE TABLE testtime(
      f1 YEAR,
      f2 YEAR(4),
      f3 DATE,
@@ -49,11 +49,12 @@ CREATE TABLE testTime(
      f5 DATETIME,
      f6 TIMESTAMP
 );
-ALTER TABLE testTime ADD INDEX idx_testTime_1(f1);
-INSERT INTO testTime(f1,f2,f3,f4,f5,f6) VALUES('2022',2022,'2022-07-12','2 12:30:29','2022-07-12 14:53:00','2022-07-12 14:54:00');
+ALTER TABLE testtime ADD INDEX idx_testtime_1(f1);
+INSERT INTO testtime(f1,f2,f3,f4,f5,f6) VALUES('2022',2022,'2022-07-12','12:30:29','2022-07-12 14:53:00','2022-07-12 14:54:00');
+INSERT INTO testtime(f1,f2,f3,f4,f5,f6) VALUES('2026',2026,'2026-02-12','15:15:30','2026-02-12 14:53:00','2026-02-12 14:54:00');
 
-DROP TABLE IF EXISTS testString;
-CREATE TABLE testString(
+DROP TABLE IF EXISTS teststring;
+CREATE TABLE teststring(
    f1 CHAR,
    f2 CHAR(5),
    f3 VARCHAR(10),
@@ -64,13 +65,13 @@ CREATE TABLE testString(
    f8 ENUM('a','b','c','d'),
    f9 SET('aa','bb','cc','dd')
 );
-ALTER TABLE testString ADD INDEX idx_testString_1(f1);
-INSERT INTO testString(f1,f2,f3,f4,f5,f6,f7,f8,f9) VALUES('1','abcde','abc123','abcd.1234','hello gt-checksum','hello ','hello gt-checksum','a','aa,bb');
-INSERT INTO testString(f1,f2,f3,f4,f5,f6,f7,f8,f9) VALUES('2','fghij','def456','efgh.5678',"hello, i\'m gt-checksum",'hello ','hello gt-checksum','b','cc,dd');
-INSERT INTO testString(f1,f2,f3,f4,f5,f6,f7,f8,f9) VALUES('3','klmno','ghi789','ijkl.9012',concat("a\\\b\\'c",repeat(chr(rand()*102),5)),'hello ','hello gt-checksum','c','cc,dd');
+ALTER TABLE teststring ADD INDEX idx_teststring_1(f1);
+INSERT INTO teststring(f1,f2,f3,f4,f5,f6,f7,f8,f9) VALUES('1','abcde','abc123','abcd.1234','hello gt-checksum','hello ','hello gt-checksum','a','aa,bb');
+INSERT INTO teststring(f1,f2,f3,f4,f5,f6,f7,f8,f9) VALUES('2','fghij','def456','efgh.5678',"hello, i\'m gt-checksum",'hello ','hello gt-checksum','b','cc,dd');
+INSERT INTO teststring(f1,f2,f3,f4,f5,f6,f7,f8,f9) VALUES('3','klmno','ghi789','ijkl.9012',"a\\\b\\'c",'hello ','hello gt-checksum','c','cc,dd');
 
-DROP TABLE IF EXISTS testBin;
-CREATE TABLE testBin(
+DROP TABLE IF EXISTS testbin;
+CREATE TABLE testbin(
     f1 BINARY,
     f2 BINARY(3),
     f3 VARBINARY(10),
@@ -79,8 +80,8 @@ CREATE TABLE testBin(
     f6 MEDIUMBLOB,
     f7 LONGBLOB
 );
-ALTER TABLE testBin ADD INDEX idx_testBin_1(f1);
-INSERT INTO testBin(f1,f2,f3,f4,f5,f6,f7) VALUES('a','abc','abcd.1234','01010101','0x9023123123','hello gt-checksum','hello gt-checksum');
+ALTER TABLE testbin ADD INDEX idx_testbin_1(f1);
+INSERT INTO testbin(f1,f2,f3,f4,f5,f6,f7) VALUES('a','abc','abcd.1234','01010101','0x9023123123','hello gt-checksum','hello gt-checksum');
 
 -- 测试触发器的处理
 DROP TABLE IF EXISTS account;
@@ -136,61 +137,67 @@ INSERT INTO account VALUES(300,14.23);
 DELETE FROM account WHERE acct_num = 300;
 
 -- 测试分区
-DROP TABLE IF EXISTS range_Partition_Table;
-CREATE TABLE range_Partition_Table(
+DROP TABLE IF EXISTS range_partition_table;
+CREATE TABLE range_partition_table(
     range_key_column DATETIME,
-    NAME VARCHAR(20),
-    ID INT
+    name VARCHAR(20),
+    id INT
 ) PARTITION BY RANGE(to_days(range_key_column))(
     PARTITION PART_202007 VALUES LESS THAN (to_days('2020-07-1')),
     PARTITION PART_202008 VALUES LESS THAN (to_days('2020-08-1')),
     PARTITION PART_202009 VALUES LESS THAN (to_days('2020-09-1'))
 );
 
-DROP TABLE IF EXISTS gt_checksum.CUSTOMER;
-CREATE TABLE gt_checksum.CUSTOMER(
-    CUSTOMER_ID INT NOT NULL PRIMARY KEY,
-    FIRST_NAME  VARCHAR(30) NOT NULL,
-    LAST_NAME   VARCHAR(30) NOT NULL,
-    PHONE       VARCHAR(15) NOT NULL,
-    EMAIL       VARCHAR(80),
-    STATUS      CHAR(1)
-)PARTITION BY RANGE (CUSTOMER_ID)(
+DROP TABLE IF EXISTS gt_checksum.customer;
+CREATE TABLE gt_checksum.customer(
+    customer_id INT NOT NULL PRIMARY KEY,
+    first_name  VARCHAR(30) NOT NULL,
+    last_name   VARCHAR(30) NOT NULL,
+    phone       VARCHAR(15) NOT NULL,
+    email       VARCHAR(80),
+    status      CHAR(1)
+)PARTITION BY RANGE (customer_id)(
  PARTITION CUS_PART1 VALUES LESS THAN (100000),
  PARTITION CUS_PART2 VALUES LESS THAN (200000)
 );
 
-DROP TABLE IF EXISTS gt_checksum.CUSTOMER1;
-CREATE TABLE gt_checksum.CUSTOMER1(
-    CUSTOMER_ID BIGINT NOT NULL,
-    FIRST_NAME  VARCHAR(30) NOT NULL,
-    LAST_NAME   VARCHAR(30) NOT NULL,
-    PHONE       VARCHAR(15) NOT NULL,
-    EMAIL       VARCHAR(80),
-    STATUS      CHAR(1)
-) PARTITION BY RANGE COLUMNS (CUSTOMER_ID)(
+DROP TABLE IF EXISTS gt_checksum.customer1;
+CREATE TABLE gt_checksum.customer1(
+    customer_id BIGINT NOT NULL,
+    first_name  VARCHAR(30) NOT NULL,
+    last_name   VARCHAR(30) NOT NULL,
+    phone       VARCHAR(15) NOT NULL,
+    email       VARCHAR(80),
+    status      CHAR(1)
+) PARTITION BY RANGE COLUMNS (customer_id)(
     PARTITION CUS_PART1 VALUES LESS THAN (100000),
     PARTITION CUS_PART2 VALUES LESS THAN (200000)
 );
 
-DROP TABLE IF EXISTS list_Partition_Table;
-CREATE TABLE list_Partition_Table(
-    NAME VARCHAR(10),
-    DATA VARCHAR(20)
-)PARTITION BY LIST COLUMNS (NAME)(
+DROP TABLE IF EXISTS list_partition_table;
+CREATE TABLE list_partition_table(
+    name VARCHAR(10),
+    data VARCHAR(20)
+)PARTITION BY LIST COLUMNS (name)(
     PARTITION PART_01 VALUES IN ('ME','PE','QC','RD'),
     PARTITION PART_02 VALUES IN ('SMT','SALE')
 );
 
-DROP TABLE IF EXISTS hash_Partition_Table;
-CREATE TABLE hash_Partition_Table(
+DROP TABLE IF EXISTS hash_partition_table;
+CREATE TABLE hash_partition_table(
     hash_key_column INT(30),
-    DATA VARCHAR(20)
+    data VARCHAR(20)
 ) PARTITION BY HASH (hash_key_column)
 PARTITIONS 4;
 
-DROP TABLE IF EXISTS range_hash_Partition_Table;
-CREATE TABLE range_hash_Partition_Table (id INT, purchased DATE)
+DROP TABLE IF EXISTS range_hash_partition_table;
+CREATE TABLE range_hash_partition_table (
+    id INT,
+    purchased DATE,
+    data VARCHAR(20),
+    purchase_year NUMBER,
+    purchase_day_of_year VARCHAR(3)
+    )
     PARTITION BY RANGE( YEAR(purchased) )
     SUBPARTITION BY HASH( TO_DAYS(purchased) )
     SUBPARTITIONS 2 (
@@ -211,10 +218,10 @@ DROP TABLE IF EXISTS tb_emp6;
 CREATE TABLE tb_emp6(
     id INT(11) PRIMARY KEY,
     name VARCHAR(25),
-    deptId INT(11),
+    deptid INT(11),
     salary FLOAT,
     CONSTRAINT fk_emp_dept1
-    FOREIGN KEY(deptId) REFERENCES tb_dept1(id)
+    FOREIGN KEY(deptid) REFERENCES tb_dept1(id)
 );
 
 -- 测试存储程序
@@ -259,8 +266,8 @@ END ||
 DELIMITER ;
 
 -- 测试索引
-DROP TABLE IF EXISTS IndexT;
-CREATE TABLE IndexT(
+DROP TABLE IF EXISTS indext;
+CREATE TABLE indext(
     `id` INT(11) NOT NULL,
     `tenantry_id` BIGINT(20) NOT NULL,
     `code` VARCHAR(64) NOT NULL,
@@ -275,3 +282,59 @@ CREATE TABLE IndexT(
     KEY `idx_2` (`tenantry_id`,`code`),
     KEY `idx_3` (`code`,`tenantry_id`)
 ) ENGINE=InnoDB;
+INSERT INTO indext VALUES ('583532949','8674665223082153551','aut','animi','eum','1.99','fugit','2026-02-17 16:04:25','2025-06-20 22:10:41','1');
+INSERT INTO indext VALUES ('914246705','2020683354385918016','quam','aut','cumque','0.00','nihil','2025-03-20 01:01:33','2025-07-27 22:10:28','2');
+
+-- 测试从Oracle=>MySQL数据同步
+CREATE TABLE t1 (
+    id BIGINT NOT NULL,
+    c_varchar2 VARCHAR(4000),
+    c_char VARCHAR(10),
+    c_nchar VARCHAR(10),
+    c_nvarchar2 VARCHAR(1000),
+    c_number DECIMAL(38,5),
+    c_float DOUBLE,
+    c_decimal DECIMAL(10,2),
+    c_date DATETIME,
+    c_timestamp DATETIME(6),
+    c_clob LONGTEXT,
+    c_boolean TINYINT(1),
+    PRIMARY KEY (id)
+);
+
+-- 1. 常规标准数据
+INSERT INTO t1 VALUES (
+    1,
+    'Standard English Text',
+    'A',
+    'NCHAR值',
+    'NVARCHAR2标准文本',
+    12345.6789,
+    123.456,
+    99.99,
+    '2023-10-01 12:30:00',
+    '2023-10-01 12:30:00.123456',
+    'Standard CLOB text data.',
+    1
+);
+
+-- 2. 边界值与特殊字符 (包含Emoji、极大极小值、年份极值)
+INSERT INTO t1 VALUES(
+    2,
+    'Special chars: ~!@#$%^&*()_+{}|:"<>? / 汉字 / 🚀',
+    'CHAR10    ',
+    '测试        ',
+    '多语言: こんにちは, 안녕하세요, 🚀',
+    '999999999999999999999999999999999.99999',
+    '123456788999999994901752384638776796929370637168124949325214122442045721958041896028585083862128281682169991410291033767936000',
+    '-99999999.99',
+    '9999-12-31 23:59:59',
+    '1970-01-01 00:00:00',
+    'AAAAAAAAAABBBBBBBBBB',
+    0
+);
+
+-- 3. 全 NULL 值测试 (主键除外)
+-- 这条语句的语法在 Oracle 和 MySQL 中是完全一致的
+INSERT INTO t1 (id) VALUES (3);
+COMMIT;
