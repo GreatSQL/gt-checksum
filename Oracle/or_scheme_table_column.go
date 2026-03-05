@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"gt-checksum/dataDispos"
 	"gt-checksum/global"
+	"sort"
 	"strings"
 )
 
@@ -44,7 +45,20 @@ func (or *QueryTable) DatabaseNameList(db *sql.DB, logThreadSeq int64) (map[stri
 	excludeSchema = fmt.Sprintf("'SYS','OUTLN','SYSTEM','DBSNMP','APPQOSSYS','WMSYS','EXFSYS','CTXSYS','XDB','ORDDATA','ORDSYS','MDSYS','OLAPSYS','SYSMAN','FLOWS_FILES','APEX_030200','OWBSYS','HR','OE','SH','IX','PM'")
 	vlog = fmt.Sprintf("(%d) [%s] Start to query the metadata of the %s database and obtain library and table information.", logThreadSeq, Event, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("SELECT owner AS \"databaseName\", table_name AS \"tableName\" FROM DBA_TABLES WHERE OWNER NOT IN(%s)", excludeSchema)
+	schemaFilter, tableFilter := buildOracleMetadataFilters(or.Table)
+	filterParts := []string{fmt.Sprintf("OWNER NOT IN(%s)", excludeSchema)}
+	if schemaFilter != "" {
+		filterParts = append(filterParts, schemaFilter)
+	}
+	if tableFilter != "" {
+		filterParts = append(filterParts, tableFilter)
+	}
+	strsql = fmt.Sprintf("SELECT owner AS \"databaseName\", table_name AS \"tableName\" FROM DBA_TABLES WHERE %s",
+		strings.Join(filterParts, " AND "))
+	if schemaFilter != "" || tableFilter != "" {
+		global.Wlog.Debug(fmt.Sprintf("(%d) [%s] Apply metadata filter for Oracle source tables. schemaFilter=%q tableFilter=%q",
+			logThreadSeq, Event, schemaFilter, tableFilter))
+	}
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	rows, err := dispos.DBSQLforExec(strsql)
 	if err != nil {
@@ -69,6 +83,83 @@ func (or *QueryTable) DatabaseNameList(db *sql.DB, logThreadSeq int64) (map[stri
 	global.Wlog.Debug(vlog)
 	defer rows.Close()
 	return A, nil
+}
+
+func buildOracleMetadataFilters(tablePattern string) (string, string) {
+	if strings.TrimSpace(tablePattern) == "" {
+		return "", ""
+	}
+	patterns := strings.Split(tablePattern, ",")
+	exactSchemas := make(map[string]struct{})
+	exactTables := make(map[string]struct{})
+	hasSchemaWildcard := false
+	hasTableWildcard := false
+	for _, pattern := range patterns {
+		p := strings.TrimSpace(pattern)
+		if p == "" {
+			continue
+		}
+		if strings.Contains(p, ":") {
+			p = strings.TrimSpace(strings.SplitN(p, ":", 2)[0])
+		}
+		if p == "" {
+			continue
+		}
+		schemaPart := p
+		tablePart := "*"
+		if dot := strings.Index(p, "."); dot >= 0 {
+			schemaPart = strings.TrimSpace(p[:dot])
+			tablePart = strings.TrimSpace(p[dot+1:])
+			if tablePart == "" {
+				tablePart = "*"
+			}
+		}
+		schemaPart = trimOracleIdentifierQuote(schemaPart)
+		tablePart = trimOracleIdentifierQuote(tablePart)
+
+		if hasWildcardPattern(schemaPart) || schemaPart == "" {
+			hasSchemaWildcard = true
+		} else {
+			exactSchemas[strings.ToUpper(schemaPart)] = struct{}{}
+		}
+		if hasWildcardPattern(tablePart) || tablePart == "" || tablePart == "*" {
+			hasTableWildcard = true
+		} else {
+			exactTables[strings.ToUpper(tablePart)] = struct{}{}
+		}
+	}
+
+	schemaExpr := ""
+	tableExpr := ""
+	if !hasSchemaWildcard && len(exactSchemas) > 0 {
+		var schemas []string
+		for schema := range exactSchemas {
+			schemas = append(schemas, fmt.Sprintf("'%s'", strings.ReplaceAll(schema, "'", "''")))
+		}
+		sort.Strings(schemas)
+		schemaExpr = fmt.Sprintf("UPPER(OWNER) IN (%s)", strings.Join(schemas, ","))
+	}
+	if !hasTableWildcard && len(exactTables) > 0 {
+		var tables []string
+		for table := range exactTables {
+			tables = append(tables, fmt.Sprintf("'%s'", strings.ReplaceAll(table, "'", "''")))
+		}
+		sort.Strings(tables)
+		tableExpr = fmt.Sprintf("UPPER(TABLE_NAME) IN (%s)", strings.Join(tables, ","))
+	}
+	return schemaExpr, tableExpr
+}
+
+func hasWildcardPattern(s string) bool {
+	return strings.Contains(s, "*") || strings.Contains(s, "%")
+}
+
+func trimOracleIdentifierQuote(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) >= 2 && strings.HasPrefix(s, "\"") && strings.HasSuffix(s, "\"") {
+		return strings.TrimSpace(s[1 : len(s)-1])
+	}
+	return s
 }
 
 /*
@@ -495,7 +586,7 @@ func (or *QueryTable) TableIndexChoice(queryData []map[string]interface{}, logTh
 			indexChoice[k] = v
 		}
 	}
-	vlog = fmt.Sprintf("(%s) [%s] Complete the selection of the appropriate index column in the following table %s.%s of the %s database.", logThreadSeq, Event, or.Schema, or.Table, DBType)
+	vlog = fmt.Sprintf("(%d) [%s] Complete the selection of the appropriate index column in the following table %s.%s of the %s database.", logThreadSeq, Event, or.Schema, or.Table, DBType)
 	global.Wlog.Debug(vlog)
 	return indexChoice
 }
@@ -559,7 +650,7 @@ func (or *QueryTable) Trigger(db *sql.DB, logThreadSeq int64) (map[string]string
 		}
 
 	}
-	vlog = fmt.Sprintf("(%s) [%s] Complete the trigger information query under the %s database.", logThreadSeq, Event, DBType)
+	vlog = fmt.Sprintf("(%d) [%s] Complete the trigger information query under the %s database.", logThreadSeq, Event, DBType)
 	global.Wlog.Debug(vlog)
 	defer dispos.SqlRows.Close()
 	return tmpb, nil
