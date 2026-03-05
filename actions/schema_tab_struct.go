@@ -1206,6 +1206,7 @@ func (stcls *schemaTable) FuzzyMatchingDispos(dbCheckNameList map[string]int, Ft
 	)
 	b := make(map[string]int)
 	f := make(map[string]int)
+	sourceSchemas := extractSchemaNamesFromCacheKeys(dbCheckNameList)
 	if strings.TrimSpace(Ftable) == "" || strings.EqualFold(strings.TrimSpace(Ftable), "nil") {
 		return f
 	}
@@ -1241,35 +1242,35 @@ func (stcls *schemaTable) FuzzyMatchingDispos(dbCheckNameList map[string]int, Ft
 
 		// 处理通配符模式
 		if schema == "*" { //处理*库
-			for k, _ := range dbCheckNameList {
-				b[k]++
-				vlog = fmt.Sprintf("Added wildcard schema: %s", k)
+			for _, schemaName := range sourceSchemas {
+				b[schemaName]++
+				vlog = fmt.Sprintf("Added wildcard schema: %s", schemaName)
 				global.Wlog.Debug(vlog)
 			}
 		} else if strings.HasPrefix(schema, "%") && strings.HasSuffix(schema, "%") { //处理%schema%
 			tmpschema := strings.ReplaceAll(schema, "%", "")
-			for k, _ := range dbCheckNameList {
-				if strings.Contains(k, tmpschema) {
-					b[k]++
-					vlog = fmt.Sprintf("Added %%schema%% match: %s", k)
+			for _, schemaName := range sourceSchemas {
+				if strings.Contains(schemaName, tmpschema) {
+					b[schemaName]++
+					vlog = fmt.Sprintf("Added %%schema%% match: %s", schemaName)
 					global.Wlog.Debug(vlog)
 				}
 			}
 		} else if strings.HasPrefix(schema, "%") && !strings.HasSuffix(schema, "%") { //处理%schema
 			tmpschema := strings.ReplaceAll(schema, "%", "")
-			for k, _ := range dbCheckNameList {
-				if strings.HasSuffix(k, tmpschema) {
-					b[k]++
-					vlog = fmt.Sprintf("Added %%schema match: %s", k)
+			for _, schemaName := range sourceSchemas {
+				if strings.HasSuffix(schemaName, tmpschema) {
+					b[schemaName]++
+					vlog = fmt.Sprintf("Added %%schema match: %s", schemaName)
 					global.Wlog.Debug(vlog)
 				}
 			}
 		} else if !strings.HasPrefix(schema, "%") && strings.HasSuffix(schema, "%") { //处理schema%
 			tmpschema := strings.ReplaceAll(schema, "%", "")
-			for k, _ := range dbCheckNameList {
-				if strings.HasPrefix(k, tmpschema) {
-					b[k]++
-					vlog = fmt.Sprintf("Added schema%% match: %s", k)
+			for _, schemaName := range sourceSchemas {
+				if strings.HasPrefix(schemaName, tmpschema) {
+					b[schemaName]++
+					vlog = fmt.Sprintf("Added schema%% match: %s", schemaName)
 					global.Wlog.Debug(vlog)
 				}
 			}
@@ -1277,15 +1278,11 @@ func (stcls *schemaTable) FuzzyMatchingDispos(dbCheckNameList map[string]int, Ft
 			// 检查是否在映射规则中存在（Oracle源端按不区分大小写匹配）
 			if _, exists := stcls.findMappedSchema(schema); exists {
 				added := false
-				for dbName := range dbCheckNameList {
-					dbSchemaName, _, ok := splitSchemaTableCacheKey(dbName)
-					if !ok {
-						continue
-					}
-					if stcls.sourceObjectNameEqual(dbSchemaName, schema) {
-						b[dbSchemaName]++
+				for _, schemaName := range sourceSchemas {
+					if stcls.sourceObjectNameEqual(schemaName, schema) {
+						b[schemaName]++
 						added = true
-						vlog = fmt.Sprintf("Added source schema from mapping: %s (pattern: %s)", dbSchemaName, schema)
+						vlog = fmt.Sprintf("Added source schema from mapping: %s (pattern: %s)", schemaName, schema)
 						global.Wlog.Debug(vlog)
 					}
 				}
@@ -1304,14 +1301,10 @@ func (stcls *schemaTable) FuzzyMatchingDispos(dbCheckNameList map[string]int, Ft
 				}
 
 				// 检查源schema是否存在于数据库列表中（大小写兼容）
-				for dbName := range dbCheckNameList {
-					dbSchemaName, _, ok := splitSchemaTableCacheKey(dbName)
-					if !ok {
-						continue
-					}
-					if stcls.sourceObjectNameEqual(dbSchemaName, schema) {
-						b[dbSchemaName]++
-						vlog = fmt.Sprintf("Added explicit mapping source schema: %s -> %s", dbSchemaName, dstSchema)
+				for _, schemaName := range sourceSchemas {
+					if stcls.sourceObjectNameEqual(schemaName, schema) {
+						b[schemaName]++
+						vlog = fmt.Sprintf("Added explicit mapping source schema: %s -> %s", schemaName, dstSchema)
 						global.Wlog.Debug(vlog)
 					}
 				}
@@ -1331,14 +1324,10 @@ func (stcls *schemaTable) FuzzyMatchingDispos(dbCheckNameList map[string]int, Ft
 				// 如果没有映射关系，则按常规处理
 				if !found {
 					// 检查schema是否存在于数据库列表中（大小写兼容）
-					for dbName := range dbCheckNameList {
-						dbSchemaName, _, ok := splitSchemaTableCacheKey(dbName)
-						if !ok {
-							continue
-						}
-						if stcls.sourceObjectNameEqual(dbSchemaName, schema) {
-							b[dbSchemaName]++
-							vlog = fmt.Sprintf("Added direct schema (no mapping): %s", dbSchemaName)
+					for _, schemaName := range sourceSchemas {
+						if stcls.sourceObjectNameEqual(schemaName, schema) {
+							b[schemaName]++
+							vlog = fmt.Sprintf("Added direct schema (no mapping): %s", schemaName)
 							global.Wlog.Debug(vlog)
 						}
 					}
@@ -1447,6 +1436,24 @@ func (stcls *schemaTable) FuzzyMatchingDispos(dbCheckNameList map[string]int, Ft
 	return f
 }
 
+func extractSchemaNamesFromCacheKeys(dbCheckNameList map[string]int) []string {
+	schemaSet := make(map[string]struct{}, len(dbCheckNameList))
+	for cacheKey := range dbCheckNameList {
+		schemaName, _, ok := splitSchemaTableCacheKey(cacheKey)
+		if !ok {
+			// fallback for legacy key format
+			schemaName = cacheKey
+		}
+		schemaSet[schemaName] = struct{}{}
+	}
+	result := make([]string, 0, len(schemaSet))
+	for schemaName := range schemaSet {
+		result = append(result, schemaName)
+	}
+	sort.Strings(result)
+	return result
+}
+
 /*
 处理需要校验的库表
 将忽略的库表从校验列表中去除，如果校验列表为空则退出
@@ -1490,7 +1497,20 @@ func (stcls *schemaTable) SchemaTableFilter(logThreadSeq1, logThreadSeq2 int64) 
 	if dbCheckNameList, err = tc.Query().DatabaseNameList(stcls.sourceDB, logThreadSeq2); err != nil {
 		return f, err
 	}
-	vlog = fmt.Sprintf("(%d) Source databases list: %v", logThreadSeq1, dbCheckNameList)
+	sampleLimit := 8
+	if len(dbCheckNameList) <= sampleLimit {
+		vlog = fmt.Sprintf("(%d) Source databases list(size=%d): %v", logThreadSeq1, len(dbCheckNameList), dbCheckNameList)
+	} else {
+		sample := make([]string, 0, sampleLimit)
+		for k := range dbCheckNameList {
+			sample = append(sample, k)
+			if len(sample) >= sampleLimit {
+				break
+			}
+		}
+		sort.Strings(sample)
+		vlog = fmt.Sprintf("(%d) Source databases list(size=%d, sample=%v)", logThreadSeq1, len(dbCheckNameList), sample)
+	}
 	global.Wlog.Debug(vlog)
 
 	// 判断源库是否为空
@@ -1532,7 +1552,19 @@ func (stcls *schemaTable) SchemaTableFilter(logThreadSeq1, logThreadSeq2 int64) 
 			global.Wlog.Error(vlog)
 		} else {
 			destDbCheckNameList = destDbList
-			vlog = fmt.Sprintf("(%d) Destination databases list: %v", logThreadSeq1, destDbCheckNameList)
+			if len(destDbCheckNameList) <= sampleLimit {
+				vlog = fmt.Sprintf("(%d) Destination databases list(size=%d): %v", logThreadSeq1, len(destDbCheckNameList), destDbCheckNameList)
+			} else {
+				sample := make([]string, 0, sampleLimit)
+				for k := range destDbCheckNameList {
+					sample = append(sample, k)
+					if len(sample) >= sampleLimit {
+						break
+					}
+				}
+				sort.Strings(sample)
+				vlog = fmt.Sprintf("(%d) Destination databases list(size=%d, sample=%v)", logThreadSeq1, len(destDbCheckNameList), sample)
+			}
 			global.Wlog.Debug(vlog)
 		}
 	}
