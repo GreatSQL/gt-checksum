@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"gt-checksum/global"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -76,6 +77,69 @@ func escapeSQLString(str string) string {
 	return result.String()
 }
 
+var mysqlDateTimePrefixPattern = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(\.\d{1,6})?`)
+var floatScalePattern = regexp.MustCompile(`(?i)^FLOAT\s*\(\s*\d+\s*,\s*(\d+)\s*\)`)
+
+// normalizeMySQLDateTimeLiteral converts common Oracle/Golang datetime string forms
+// (e.g. "2026-02-17 16:04:25 +0800 CST") to MySQL DATETIME/TIMESTAMP literal
+// "YYYY-MM-DD HH:MM:SS[.ffffff]".
+func normalizeMySQLDateTimeLiteral(value string) string {
+	s := strings.TrimSpace(value)
+	if s == "" {
+		return s
+	}
+	matches := mysqlDateTimePrefixPattern.FindStringSubmatch(s)
+	if len(matches) >= 3 {
+		frac := ""
+		if len(matches) >= 4 {
+			frac = matches[3]
+		}
+		return matches[1] + " " + matches[2] + frac
+	}
+	// Fallback: replace ISO T separator if present.
+	if len(s) >= 19 && s[10] == 'T' {
+		return s[:10] + " " + s[11:]
+	}
+	return s
+}
+
+func lookupColumnDataType(colData []map[string]string, columnName string) string {
+	for _, col := range colData {
+		if strings.EqualFold(col["columnName"], columnName) {
+			return col["dataType"]
+		}
+	}
+	return ""
+}
+
+func floatDeleteScaleByType(dataType string) (int, bool) {
+	t := strings.ToUpper(strings.TrimSpace(dataType))
+	if !strings.HasPrefix(t, "FLOAT") {
+		return 0, false
+	}
+	matches := floatScalePattern.FindStringSubmatch(t)
+	if len(matches) == 2 {
+		scale, err := strconv.Atoi(matches[1])
+		if err == nil && scale >= 0 && scale <= 30 {
+			return scale, true
+		}
+	}
+	return 0, false
+}
+
+func buildFloatDeletePredicate(columnName, value, dataType string) (string, bool) {
+	fv, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+	if err != nil {
+		return "", false
+	}
+	floatLiteral := strconv.FormatFloat(fv, 'f', -1, 64)
+	if scale, ok := floatDeleteScaleByType(dataType); ok {
+		return fmt.Sprintf("ROUND(`%s`, %d) = ROUND(%s, %d)", columnName, scale, floatLiteral, scale), true
+	}
+	// Safe fallback for FLOAT without declared scale: avoid broad epsilon range that may over-delete.
+	return fmt.Sprintf("CAST(`%s` AS DOUBLE) = CAST(%s AS DOUBLE)", columnName, floatLiteral), true
+}
+
 func (my *MysqlDataAbnormalFixStruct) FixInsertSqlExec(db *sql.DB, sourceDrive string, logThreadSeq int64) (string, error) {
 	//查询该表的列名和列信息
 	var (
@@ -95,8 +159,8 @@ func (my *MysqlDataAbnormalFixStruct) FixInsertSqlExec(db *sql.DB, sourceDrive s
 		global.Wlog.Warn(vlog)
 
 		// 从INFORMATION_SCHEMA.COLUMNS中查询表的列信息
-		query := fmt.Sprintf("SELECT COLUMN_NAME AS columnName, ORDINAL_POSITION AS columnSeq, COLUMN_TYPE AS dataType FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = '%s' AND TABLE_NAME = '%s' ORDER BY ORDINAL_POSITION", targetSchema, my.Table)
-		rows, err := db.Query(query)
+		query := "SELECT COLUMN_NAME AS columnName, ORDINAL_POSITION AS columnSeq, COLUMN_TYPE AS dataType FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION"
+		rows, err := db.Query(query, targetSchema, my.Table)
 		if err != nil {
 			vlog = fmt.Sprintf("(%d) Error: Failed to query column information from database: %v", logThreadSeq, err)
 			global.Wlog.Error(vlog)
@@ -118,8 +182,6 @@ func (my *MysqlDataAbnormalFixStruct) FixInsertSqlExec(db *sql.DB, sourceDrive s
 			}
 			my.ColData = tempColData
 		} else {
-			defer rows.Close()
-
 			// 解析查询结果
 			var columns []map[string]string
 			for rows.Next() {
@@ -135,6 +197,11 @@ func (my *MysqlDataAbnormalFixStruct) FixInsertSqlExec(db *sql.DB, sourceDrive s
 					"dataType":   dataType,
 				})
 			}
+			if rowsErr := rows.Err(); rowsErr != nil {
+				vlog = fmt.Sprintf("(%d) Error: Failed to iterate column information: %v", logThreadSeq, rowsErr)
+				global.Wlog.Warn(vlog)
+			}
+			_ = rows.Close()
 
 			if len(columns) > 0 {
 				my.ColData = columns
@@ -180,9 +247,9 @@ func (my *MysqlDataAbnormalFixStruct) FixInsertSqlExec(db *sql.DB, sourceDrive s
 			if k < len(my.ColData) {
 				if dataType, ok := my.ColData[k]["dataType"]; ok {
 					if strings.ToUpper(dataType) == "DATETIME" {
-						tmpcolumnName = fmt.Sprintf("DATE_FORMAT('%s','%%Y-%%m-%%d %%H:%%i:%%s')", v)
+						tmpcolumnName = fmt.Sprintf("'%s'", escapeSQLString(normalizeMySQLDateTimeLiteral(v)))
 					} else if strings.Contains(strings.ToUpper(dataType), "TIMESTAMP") {
-						tmpcolumnName = fmt.Sprintf("DATE_FORMAT('%s','%%Y-%%m-%%d %%H:%%i:%%s')", v)
+						tmpcolumnName = fmt.Sprintf("'%s'", escapeSQLString(normalizeMySQLDateTimeLiteral(v)))
 					} else {
 						// 对于INSERT语句，使用源端的原始数据格式
 						// 保留源端数据的原始格式，包括尾部空格，不做任何修改
@@ -254,10 +321,9 @@ func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive s
 	} else {
 		tablePrimaryKeyMutex.RUnlock()
 		// 查询表的主键信息
-		query := fmt.Sprintf("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA = '%s' AND TABLE_NAME = '%s' AND CONSTRAINT_NAME = 'PRIMARY' ORDER BY ORDINAL_POSITION", targetSchema, my.Table)
-		rows, err := db.Query(query)
+		query := "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND CONSTRAINT_NAME = 'PRIMARY' ORDER BY ORDINAL_POSITION"
+		rows, err := db.Query(query, targetSchema, my.Table)
 		if err == nil {
-			defer rows.Close()
 			for rows.Next() {
 				var columnName string
 				if err := rows.Scan(&columnName); err == nil {
@@ -265,6 +331,11 @@ func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive s
 					primaryKeyColumns = append(primaryKeyColumns, columnName)
 				}
 			}
+			if rowsErr := rows.Err(); rowsErr != nil {
+				vlog = fmt.Sprintf("(%d) Failed to iterate primary key rows for %s.%s: %v", logThreadSeq, targetSchema, my.Table, rowsErr)
+				global.Wlog.Warn(vlog)
+			}
+			_ = rows.Close()
 		}
 		// 缓存结果（使用写锁）
 		tablePrimaryKeyMutex.Lock()
@@ -284,11 +355,9 @@ func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive s
 		uniqueKeyColumns := []string{}
 
 		// 查询表的唯一键信息
-		uniqueQuery := fmt.Sprintf("SELECT INDEX_NAME, COLUMN_NAME FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = '%s' AND TABLE_NAME = '%s' AND NON_UNIQUE = 0 AND INDEX_NAME != 'PRIMARY' ORDER BY INDEX_NAME, SEQ_IN_INDEX", targetSchema, my.Table)
-		uniqueRows, uniqueErr := db.Query(uniqueQuery)
+		uniqueQuery := "SELECT INDEX_NAME, COLUMN_NAME FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND NON_UNIQUE = 0 AND INDEX_NAME != 'PRIMARY' ORDER BY INDEX_NAME, SEQ_IN_INDEX"
+		uniqueRows, uniqueErr := db.Query(uniqueQuery, targetSchema, my.Table)
 		if uniqueErr == nil {
-			defer uniqueRows.Close()
-
 			// 使用map来按索引名称分组列
 			uniqueIndices := make(map[string][]string)
 
@@ -297,6 +366,10 @@ func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive s
 				if uniqueErr := uniqueRows.Scan(&indexName, &columnName); uniqueErr == nil {
 					uniqueIndices[indexName] = append(uniqueIndices[indexName], columnName)
 				}
+			}
+			if rowsErr := uniqueRows.Err(); rowsErr != nil {
+				vlog = fmt.Sprintf("(%d) Failed to iterate unique index rows for %s.%s: %v", logThreadSeq, targetSchema, my.Table, rowsErr)
+				global.Wlog.Warn(vlog)
 			}
 
 			// 如果有唯一键，使用第一个唯一键
@@ -307,6 +380,7 @@ func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive s
 				global.Wlog.Debug(vlog)
 				break // 只使用第一个唯一键
 			}
+			_ = uniqueRows.Close()
 		}
 
 		// 如果表有唯一键，强制使用唯一键作为条件
@@ -318,11 +392,9 @@ func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive s
 			my.IndexType = "mul"
 
 			// 获取表的所有列名
-			allColumnsQuery := fmt.Sprintf("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = '%s' AND TABLE_NAME = '%s' ORDER BY ORDINAL_POSITION", targetSchema, my.Table)
-			allColumnsRows, allColumnsErr := db.Query(allColumnsQuery)
+			allColumnsQuery := "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION"
+			allColumnsRows, allColumnsErr := db.Query(allColumnsQuery, targetSchema, my.Table)
 			if allColumnsErr == nil {
-				defer allColumnsRows.Close()
-
 				allColumns := []string{}
 				for allColumnsRows.Next() {
 					var columnName string
@@ -330,12 +402,17 @@ func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive s
 						allColumns = append(allColumns, columnName)
 					}
 				}
+				if rowsErr := allColumnsRows.Err(); rowsErr != nil {
+					vlog = fmt.Sprintf("(%d) Failed to iterate all columns for %s.%s: %v", logThreadSeq, targetSchema, my.Table, rowsErr)
+					global.Wlog.Warn(vlog)
+				}
 
 				if len(allColumns) > 0 {
 					my.IndexColumn = allColumns
 					vlog = fmt.Sprintf("(%d) No primary or unique key found for table %s.%s, using all columns as conditions: %v", logThreadSeq, targetSchema, my.Table, allColumns)
 					global.Wlog.Debug(vlog)
 				}
+				_ = allColumnsRows.Close()
 			}
 		}
 	}
@@ -463,10 +540,13 @@ func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive s
 		// 生成WHERE条件
 		for _, colName := range FB {
 			if value, ok := columnMap[colName]; ok {
+				dataType := lookupColumnDataType(colData, colName)
 				if value == "<nil>" {
 					AS = append(AS, fmt.Sprintf("`%s` IS NULL", colName))
 				} else if value == "<entry>" {
 					AS = append(AS, fmt.Sprintf("`%s` = ''", colName))
+				} else if predicate, ok := buildFloatDeletePredicate(colName, value, dataType); ok {
+					AS = append(AS, predicate)
 				} else if value == acc["double"] {
 					AS = append(AS, fmt.Sprintf("CONCAT(`%s`,'') = '%s'", colName, value))
 				} else {
@@ -514,10 +594,13 @@ func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive s
 		var AS []string
 		for _, colName := range my.IndexColumn {
 			if value, ok := columnMap[colName]; ok {
+				dataType := lookupColumnDataType(colData, colName)
 				if value == "<nil>" {
 					AS = append(AS, fmt.Sprintf("`%s` IS NULL", colName))
 				} else if value == "<entry>" {
 					AS = append(AS, fmt.Sprintf("`%s` = ''", colName))
+				} else if predicate, ok := buildFloatDeletePredicate(colName, value, dataType); ok {
+					AS = append(AS, predicate)
 				} else if value == acc["double"] {
 					AS = append(AS, fmt.Sprintf("CONCAT(`%s`,'') = '%s'", colName, value))
 				} else {
@@ -686,7 +769,6 @@ func (my *MysqlDataAbnormalFixStruct) LoadForeignKeyDefinitions(db *sql.DB, logT
 		global.Wlog.Warn(vlog)
 		return err
 	}
-	defer rows.Close()
 
 	// 按约束名称分组外键信息
 	fkInfoMap := make(map[string]struct {
@@ -727,6 +809,11 @@ func (my *MysqlDataAbnormalFixStruct) LoadForeignKeyDefinitions(db *sql.DB, logT
 			referencedColumn: referencedColumnStr,
 		}
 	}
+	if rowsErr := rows.Err(); rowsErr != nil {
+		_ = rows.Close()
+		return rowsErr
+	}
+	_ = rows.Close()
 
 	// 构建完整的外键DDL定义
 	for fkName, info := range fkInfoMap {
@@ -858,9 +945,9 @@ func (my *MysqlDataAbnormalFixStruct) CheckDestTableHasPrimaryKey(db *sql.DB, lo
 	tablePrimaryKeyMutex.RUnlock()
 
 	// 查询表的主键信息
-	query := fmt.Sprintf("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA = '%s' AND TABLE_NAME = '%s' AND CONSTRAINT_NAME = 'PRIMARY' LIMIT 1", my.Schema, my.Table)
+	query := "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND CONSTRAINT_NAME = 'PRIMARY' LIMIT 1"
 	var columnName string
-	err := db.QueryRow(query).Scan(&columnName)
+	err := db.QueryRow(query, my.Schema, my.Table).Scan(&columnName)
 	hasPK := err == nil && columnName != ""
 
 	// 更新映射（使用写锁）

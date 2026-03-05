@@ -13,6 +13,7 @@ import (
 	"gt-checksum/utils"
 	"hash/fnv"
 	"io"
+	"math"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -45,11 +46,18 @@ var (
 	deleteMutex       sync.Mutex                  // 保护并发访问deletePrimaryKeys map的互斥锁
 	deletePrimaryKeys = make(map[uint64]struct{}) // 全局已处理的DELETE主键值去重（hash key）
 
-	insertMutex         sync.Mutex                  // 保护并发访问insertedPrimaryKeys map的互斥锁
-	insertedPrimaryKeys = make(map[uint64]struct{}) // 全局已处理的INSERT主键值跟踪（hash key）
-	tableMemoryPeaks    sync.Map
-	forcedGCMutex       sync.Mutex
-	lastForcedGCAt      time.Time
+	insertMutex              sync.Mutex                  // 保护并发访问insertedPrimaryKeys map的互斥锁
+	insertedPrimaryKeys      = make(map[uint64]struct{}) // 全局已处理的INSERT主键值跟踪（hash key）
+	tableMemoryPeaks         sync.Map
+	forcedGCMutex            sync.Mutex
+	lastForcedGCAt           time.Time
+	temporalDatetimePrefixRe = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})`)
+	temporalNumericSecondsRe = regexp.MustCompile(`^[+-]?\d+(?:\.\d+)?$`)
+	temporalIntervalRe       = regexp.MustCompile(`^([+-]?\d+)\s+(\d{1,2}):(\d{2}):(\d{2})(?:\.\d+)?$`)
+	temporalTimeTokenRe      = regexp.MustCompile(`\b(\d{1,3}:\d{2}:\d{2})\b`)
+	temporalGoDurationRe     = regexp.MustCompile(`^(-?\d+)h(\d+)m(\d+(?:\.\d+)?)s$`)
+	temporalDateOnlyRe       = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
+	temporalDateTimeRe       = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})`)
 )
 
 type tableMemoryPeak struct {
@@ -58,6 +66,18 @@ type tableMemoryPeak struct {
 	HeapInuseMB uint64
 	HeapObjects uint64
 	NumGC       uint32
+}
+
+func adaptWhereForDrive(where, drive string) string {
+	if drive == "godror" {
+		return strings.ReplaceAll(where, "`", "\"")
+	}
+	return where
+}
+
+func oracleMetadataMatchExpr(column, value string) string {
+	escaped := strings.ReplaceAll(value, "'", "''")
+	return fmt.Sprintf("UPPER(%s)=UPPER('%s')", column, escaped)
 }
 
 // ResetMemoryPeakStats clears per-table peak memory metrics for a new checksum run.
@@ -412,6 +432,24 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 		curryCount     int64
 	)
 
+	// Floating-point indexed columns are unsafe for range-bound chunk predicates
+	// (e.g. WHERE f1 >= '123.45') due binary representation drift.
+	// Fall back to a safe single chunk predicate to preserve correctness.
+	if level < len(sp.columnName) && sp.isFloatingIndexColumn(sp.columnName[level]) {
+		safeWhere := strings.TrimSpace(where)
+		if safeWhere == "" {
+			safeWhere = "1=1"
+		}
+		vlog = fmt.Sprintf("(%d) Floating index fallback enabled for %s.%s column %s at level %d, using safe where: %s",
+			logThreadSeq, sp.schema, sp.table, sp.columnName[level], level, safeWhere)
+		global.Wlog.Warn(vlog)
+		sqlWhere <- safeWhere
+		if level == 0 {
+			close(sqlWhere)
+		}
+		return
+	}
+
 	// Fast path for large MySQL integer leading columns:
 	// build chunk ranges from min/max + table_rows estimate and skip full GROUP BY key materialization.
 	if clauses, ok := sp.generateFirstLevelNumericChunks(sdb, ddb, level, queryNum, where, logThreadSeq); ok {
@@ -432,22 +470,24 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 	a := sp.tableAllCol[fmt.Sprintf("%s_gtchecksum_%s", sp.schema, sp.table)].SColumnInfo
 	//查询源目标端索引列数据
 	idxc := dbExec.IndexColumnStruct{Schema: sp.sourceSchema, Table: sp.table, ColumnName: sp.columnName,
-		ChanrowCount: sp.chanrowCount, Drivce: sp.sdrive, SelectColumn: selectColumn[sp.sdrive], ColData: a}
+		ChanrowCount: sp.chanrowCount, Drivce: sp.sdrive, CaseSensitiveObjectName: sp.caseSensitiveObjectName, SelectColumn: selectColumn[sp.sdrive], ColData: a}
 	vlog = fmt.Sprintf("(%d) Querying source table %s.%s index column %s with WHERE: %s", logThreadSeq, sp.sourceSchema, sp.table, sp.columnName[level], where)
 	global.Wlog.Debug(vlog)
 	// 对于复合主键，查询符合前一个索引列条件的索引值，而不是所有可能的值
 	// 这确保了递归查询的效率
-	SdataChan1, err := idxc.TableIndexColumn().TmpTableColumnGroupDataDispos(sdb, where, sp.columnName[level], logThreadSeq)
+	sourceWhereForGroup := adaptWhereForDrive(where, sp.sdrive)
+	SdataChan1, err := idxc.TableIndexColumn().TmpTableColumnGroupDataDispos(sdb, sourceWhereForGroup, sp.columnName[level], logThreadSeq)
 	if err != nil {
 		return
 	}
 	idxcDest := dbExec.IndexColumnStruct{Schema: sp.destSchema, Table: sp.table, ColumnName: sp.columnName,
-		ChanrowCount: sp.chanrowCount, Drivce: sp.ddrive, SelectColumn: selectColumn[sp.ddrive], ColData: a}
+		ChanrowCount: sp.chanrowCount, Drivce: sp.ddrive, CaseSensitiveObjectName: sp.caseSensitiveObjectName, SelectColumn: selectColumn[sp.ddrive], ColData: a}
 	vlog = fmt.Sprintf("(%d) Querying target table %s.%s index column %s with WHERE: %s", logThreadSeq, sp.destSchema, sp.table, sp.columnName[level], where)
 	global.Wlog.Debug(vlog)
 	// 对于复合主键，查询符合前一个索引列条件的索引值，而不是所有可能的值
 	// 这确保了递归查询的效率
-	DdataChan1, err := idxcDest.TableIndexColumn().TmpTableColumnGroupDataDispos(ddb, where, sp.columnName[level], logThreadSeq)
+	destWhereForGroup := adaptWhereForDrive(where, sp.ddrive)
+	DdataChan1, err := idxcDest.TableIndexColumn().TmpTableColumnGroupDataDispos(ddb, destWhereForGroup, sp.columnName[level], logThreadSeq)
 	if err != nil {
 		return
 	}
@@ -698,7 +738,16 @@ func (sp *SchedulePlan) checkColumnsExistInWhere(db *sql.DB, schema, table, wher
 	// 检查每个列是否在表中存在
 	for _, column := range columns {
 		// 构建查询检查列是否存在
-		query := fmt.Sprintf("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = '%s' AND table_name = '%s' AND column_name = '%s'", schema, table, column)
+		query := ""
+		if sp.sdrive == "godror" {
+			query = fmt.Sprintf("SELECT COUNT(*) FROM all_tab_columns WHERE %s AND %s AND %s",
+				oracleMetadataMatchExpr("owner", schema),
+				oracleMetadataMatchExpr("table_name", table),
+				oracleMetadataMatchExpr("column_name", column),
+			)
+		} else {
+			query = fmt.Sprintf("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = '%s' AND table_name = '%s' AND column_name = '%s'", schema, table, column)
+		}
 		var count int
 		err := db.QueryRow(query).Scan(&count)
 		if err != nil {
@@ -838,15 +887,17 @@ func (sp *SchedulePlan) queryTableSql(sqlWhere chanString, selectSql chanMap, cc
 					// 为源端生成WHERE条件
 					sourceWhere := strings.Replace(c1, fmt.Sprintf("%s.%s", sp.destSchema, sp.table), fmt.Sprintf("%s.%s", sp.sourceSchema, sp.table), -1)
 					sourceWhere = strings.Replace(sourceWhere, fmt.Sprintf("`%s`.`%s`", sp.destSchema, sp.table), fmt.Sprintf("`%s`.`%s`", sp.sourceSchema, sp.table), -1)
+					sourceWhere = adaptWhereForDrive(sourceWhere, sp.sdrive)
 
 					// 源端使用sourceSchema和sourceTable
 					idxc := dbExec.IndexColumnStruct{
-						Schema:      sp.sourceSchema,
-						Table:       sp.table,
-						TableColumn: cc1.SColumnInfo,
-						Sqlwhere:    sourceWhere,
-						Drivce:      sp.sdrive,
-						ColData:     cc1.SColumnInfo,
+						Schema:                  sp.sourceSchema,
+						Table:                   sp.table,
+						TableColumn:             cc1.SColumnInfo,
+						Sqlwhere:                sourceWhere,
+						Drivce:                  sp.sdrive,
+						CaseSensitiveObjectName: sp.caseSensitiveObjectName,
+						ColData:                 cc1.SColumnInfo,
 					}
 					lock.Lock()
 					selectSqlMap[sp.sdrive], err = idxc.TableIndexColumn().GeneratingQuerySql(sd, logThreadSeq)
@@ -872,15 +923,17 @@ func (sp *SchedulePlan) queryTableSql(sqlWhere chanString, selectSql chanMap, cc
 					// 为目标端生成WHERE条件
 					destWhere := strings.Replace(c1, fmt.Sprintf("%s.%s", sp.sourceSchema, sp.table), fmt.Sprintf("%s.%s", sp.destSchema, sp.table), -1)
 					destWhere = strings.Replace(destWhere, fmt.Sprintf("`%s`.`%s`", sp.sourceSchema, sp.table), fmt.Sprintf("`%s`.`%s`", sp.destSchema, sp.table), -1)
+					destWhere = adaptWhereForDrive(destWhere, sp.ddrive)
 
 					// 目标端使用destSchema和destTable
 					idxcDest := dbExec.IndexColumnStruct{
-						Schema:      sp.destSchema,
-						Table:       sp.table,
-						TableColumn: cc1.DColumnInfo,
-						Sqlwhere:    destWhere,
-						Drivce:      sp.ddrive,
-						ColData:     cc1.DColumnInfo,
+						Schema:                  sp.destSchema,
+						Table:                   sp.table,
+						TableColumn:             cc1.DColumnInfo,
+						Sqlwhere:                destWhere,
+						Drivce:                  sp.ddrive,
+						CaseSensitiveObjectName: sp.caseSensitiveObjectName,
+						ColData:                 cc1.DColumnInfo,
 					}
 					// 添加对目标表存在的检查
 					ddb = sp.ddbPool.Get(logThreadSeq)
@@ -969,12 +1022,13 @@ func (sp *SchedulePlan) queryTableData(selectSql chanMap, diffQueryData chanDiff
 				autoSeq1++
 				// 源端检查使用sourceSchema
 				idxc := dbExec.IndexColumnStruct{
-					Schema:      sp.sourceSchema,
-					Table:       sp.table,
-					TableColumn: cc1.SColumnInfo,
-					Sqlwhere:    c[sp.sdrive],
-					Drivce:      sp.sdrive,
-					ColData:     cc1.SColumnInfo,
+					Schema:                  sp.sourceSchema,
+					Table:                   sp.table,
+					TableColumn:             cc1.SColumnInfo,
+					Sqlwhere:                c[sp.sdrive],
+					Drivce:                  sp.sdrive,
+					CaseSensitiveObjectName: sp.caseSensitiveObjectName,
+					ColData:                 cc1.SColumnInfo,
 				}
 				curry <- struct{}{}
 				go func(c1 map[string]string, cc1 global.TableAllColumnInfoS) {
@@ -997,12 +1051,13 @@ func (sp *SchedulePlan) queryTableData(selectSql chanMap, diffQueryData chanDiff
 
 					// 目标端检查使用destSchema
 					idxcDest := dbExec.IndexColumnStruct{
-						Schema:      sp.destSchema,
-						Table:       sp.table,
-						Sqlwhere:    c1[sp.ddrive],
-						TableColumn: cc1.DColumnInfo,
-						Drivce:      sp.ddrive,
-						ColData:     cc1.DColumnInfo,
+						Schema:                  sp.destSchema,
+						Table:                   sp.table,
+						Sqlwhere:                c1[sp.ddrive],
+						TableColumn:             cc1.DColumnInfo,
+						Drivce:                  sp.ddrive,
+						CaseSensitiveObjectName: sp.caseSensitiveObjectName,
+						ColData:                 cc1.DColumnInfo,
 					}
 					ddb := sp.ddbPool.Get(logThreadSeq)
 					dtt, err := idxcDest.TableIndexColumn().GeneratingQueryCriteria(ddb, logThreadSeq)
@@ -1151,11 +1206,12 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 						err      error
 					)
 					idxc := dbExec.IndexColumnStruct{
-						Schema:      sourceSchema,
-						Table:       table,
-						TableColumn: colData.SColumnInfo,
-						Drivce:      sp.sdrive,
-						Sqlwhere:    sourceSqlWhere, // 使用处理后的源端SQL条件
+						Schema:                  sourceSchema,
+						Table:                   table,
+						TableColumn:             colData.SColumnInfo,
+						Drivce:                  sp.sdrive,
+						CaseSensitiveObjectName: sp.caseSensitiveObjectName,
+						Sqlwhere:                sourceSqlWhere, // 使用处理后的源端SQL条件
 					}
 					stt, err = idxc.TableIndexColumn().GeneratingQueryCriteria(sdb, logThreadSeq)
 					if err != nil {
@@ -1187,11 +1243,12 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 					// 目标端查询使用destSchema和table
 					destTable := sp.getDestTableName()
 					idxcDest := dbExec.IndexColumnStruct{
-						Schema:      destSchema,
-						Table:       destTable,
-						TableColumn: colData.DColumnInfo,
-						Drivce:      sp.ddrive,
-						Sqlwhere:    destSqlWhere, // 使用处理后的目标端SQL条件
+						Schema:                  destSchema,
+						Table:                   destTable,
+						TableColumn:             colData.DColumnInfo,
+						Drivce:                  sp.ddrive,
+						CaseSensitiveObjectName: sp.caseSensitiveObjectName,
+						Sqlwhere:                destSqlWhere, // 使用处理后的目标端SQL条件
 					}
 					dtt, err = idxcDest.TableIndexColumn().GeneratingQueryCriteria(ddb, logThreadSeq)
 					if err != nil {
@@ -1298,7 +1355,27 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 						}
 
 						// 4. 使用Arrcmp进行精确比较
+						floatCompareScales := buildFloatComparisonScales(colData.SColumnInfo, colData.DColumnInfo)
+						if len(floatCompareScales) > 0 {
+							cleanSourceData = normalizeRowsForFloatComparison(cleanSourceData, floatCompareScales)
+							cleanDestData = normalizeRowsForFloatComparison(cleanDestData, floatCompareScales)
+							global.Wlog.Debugf("(%d) Applied float normalization for %s.%s before Arrcmp", logThreadSeq, c1.Schema, c1.Table)
+						}
+						temporalCompareKinds := buildTemporalCompareKinds(colData.SColumnInfo, colData.DColumnInfo)
+						if len(temporalCompareKinds) > 0 {
+							cleanSourceData = normalizeRowsForTemporalComparison(cleanSourceData, temporalCompareKinds)
+							cleanDestData = normalizeRowsForTemporalComparison(cleanDestData, temporalCompareKinds)
+							global.Wlog.Debugf("(%d) Applied temporal normalization for %s.%s before Arrcmp", logThreadSeq, c1.Schema, c1.Table)
+						}
 						add, del := aa.Arrcmp(cleanSourceData, cleanDestData)
+						if len(add) > 0 && len(del) > 0 && len(temporalCompareKinds) > 0 {
+							var healed int
+							add, del, healed = reconcileTemporalNullArtifacts(add, del, temporalCompareKinds, colData.SColumnInfo, colData.DColumnInfo)
+							if healed > 0 {
+								global.Wlog.Warnf("(%d) Reconciled %d temporal null artifacts for %s.%s (INTERVAL/TIME scan compatibility)",
+									logThreadSeq, healed, c1.Schema, c1.Table)
+							}
+						}
 						stt, dtt = "", ""
 
 						// 5. 记录发现的差异数量 — 使用Info级别确保输出
@@ -1319,6 +1396,10 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 						if len(add) > expectedAddCount+10 {
 							global.Wlog.Debugf("DEBUG_ADD_DATA_%d: addCount=%d expected=%d (sample suppressed)",
 								logThreadSeq, len(add), expectedAddCount)
+						}
+						if len(cleanSourceData) == 1 && len(cleanDestData) == 1 && len(add) == 1 && len(del) == 1 {
+							global.Wlog.Warnf("ROW_COMPARE_SAMPLE_%d table=%s.%s sourceRow=%q destRow=%q addRow=%q delRow=%q",
+								logThreadSeq, c1.Schema, c1.Table, cleanSourceData[0], cleanDestData[0], add[0], del[0])
 						}
 
 						// 6. 比较记录数量差异的日志记录
@@ -2513,11 +2594,11 @@ func (sp SchedulePlan) doIndexDataCheck() {
 		destColInfo = mappedDestCols.DColumnInfo
 	}
 	idxc = dbExec.IndexColumnStruct{Schema: sp.sourceSchema, Table: sp.table, ColumnName: sp.columnName,
-		ChanrowCount: sp.chanrowCount, Drivce: sp.sdrive,
+		ChanrowCount: sp.chanrowCount, Drivce: sp.sdrive, CaseSensitiveObjectName: sp.caseSensitiveObjectName,
 		ColData: sp.tableAllCol[fmt.Sprintf("%s_gtchecksum_%s", sp.sourceSchema, sp.table)].SColumnInfo}
 	selectColumnStringM[sp.sdrive] = idxc.TableIndexColumn().TmpTableIndexColumnSelectDispos(logThreadSeq)
 	idxcDest = dbExec.IndexColumnStruct{Schema: sp.destSchema, Table: destTable, ColumnName: sp.columnName,
-		ChanrowCount: sp.chanrowCount, Drivce: sp.ddrive,
+		ChanrowCount: sp.chanrowCount, Drivce: sp.ddrive, CaseSensitiveObjectName: sp.caseSensitiveObjectName,
 		ColData: destColInfo}
 	selectColumnStringM[sp.ddrive] = idxcDest.TableIndexColumn().TmpTableIndexColumnSelectDispos(logThreadSeq)
 
@@ -2562,12 +2643,12 @@ func (sp SchedulePlan) doIndexDataCheck() {
 				colName, sp.sourceSchema, sp.table, sp.destSchema, destTable)
 
 			// 获取行数用于报告
-			idxc = dbExec.IndexColumnStruct{Schema: sp.sourceSchema, Table: sp.table, Drivce: sp.sdrive}
+			idxc = dbExec.IndexColumnStruct{Schema: sp.sourceSchema, Table: sp.table, Drivce: sp.sdrive, CaseSensitiveObjectName: sp.caseSensitiveObjectName}
 			sdb := sp.sdbPool.Get(logThreadSeq)
 			srcRows, _ := idxc.TableIndexColumn().TableRows(sdb, int64(logThreadSeq))
 			sp.sdbPool.Put(sdb, logThreadSeq)
 
-			idxcDest := dbExec.IndexColumnStruct{Schema: sp.destSchema, Table: destTable, Drivce: sp.ddrive}
+			idxcDest := dbExec.IndexColumnStruct{Schema: sp.destSchema, Table: destTable, Drivce: sp.ddrive, CaseSensitiveObjectName: sp.caseSensitiveObjectName}
 			ddb := sp.ddbPool.Get(logThreadSeq)
 			destRows, _ := idxcDest.TableIndexColumn().TableRows(ddb, int64(logThreadSeq))
 			sp.ddbPool.Put(ddb, logThreadSeq)
@@ -2581,7 +2662,7 @@ func (sp SchedulePlan) doIndexDataCheck() {
 	sp.ddbPool.Put(ddbCheck, logThreadSeq)
 
 	// 确保使用正确的源表和目标表的Schema
-	idxc = dbExec.IndexColumnStruct{Schema: sp.sourceSchema, Table: sp.table, Drivce: sp.sdrive}
+	idxc = dbExec.IndexColumnStruct{Schema: sp.sourceSchema, Table: sp.table, Drivce: sp.sdrive, CaseSensitiveObjectName: sp.caseSensitiveObjectName}
 	sdb := sp.sdbPool.Get(logThreadSeq)
 	var vlog string
 	vlog = fmt.Sprintf("(%d) [doIndexDataCheck] Querying source table rows for %s.%s", logThreadSeq, sp.sourceSchema, sp.table)
@@ -2594,7 +2675,7 @@ func (sp SchedulePlan) doIndexDataCheck() {
 		return
 	}
 
-	idxcDest = dbExec.IndexColumnStruct{Schema: sp.destSchema, Table: destTable, Drivce: sp.ddrive}
+	idxcDest = dbExec.IndexColumnStruct{Schema: sp.destSchema, Table: destTable, Drivce: sp.ddrive, CaseSensitiveObjectName: sp.caseSensitiveObjectName}
 	ddb := sp.ddbPool.Get(logThreadSeq)
 	vlog = fmt.Sprintf("(%d) [doIndexDataCheck] Querying destination table rows for %s.%s", logThreadSeq, sp.destSchema, destTable)
 	global.Wlog.Debug(vlog)
@@ -2651,13 +2732,16 @@ func (sp *SchedulePlan) queryTableSqlSeparate(sqlWhere chanString, sourceSelectS
 		// 源端查询SQL
 		sourceWhere := strings.Replace(c, fmt.Sprintf("%s.%s", sp.destSchema, destTable), fmt.Sprintf("%s.%s", sp.sourceSchema, sp.table), -1)
 		sourceWhere = strings.Replace(sourceWhere, fmt.Sprintf("`%s`.`%s`", sp.destSchema, destTable), fmt.Sprintf("`%s`.`%s`", sp.sourceSchema, sp.table), -1)
+		sourceWhere = adaptWhereForDrive(sourceWhere, sp.sdrive)
 
 		idxc := dbExec.IndexColumnStruct{
-			Schema:   sp.sourceSchema,
-			Table:    sp.table,
-			Drivce:   sp.sdrive,
-			Sqlwhere: sourceWhere,
-			ColData:  cc1.SColumnInfo,
+			Schema:                  sp.sourceSchema,
+			Table:                   sp.table,
+			Drivce:                  sp.sdrive,
+			CaseSensitiveObjectName: sp.caseSensitiveObjectName,
+			TableColumn:             cc1.SColumnInfo,
+			Sqlwhere:                sourceWhere,
+			ColData:                 cc1.SColumnInfo,
 		}
 		sdb := sp.sdbPool.Get(logThreadSeq)
 		sourceSql, err := idxc.TableIndexColumn().GeneratingQuerySql(sdb, logThreadSeq)
@@ -2669,13 +2753,16 @@ func (sp *SchedulePlan) queryTableSqlSeparate(sqlWhere chanString, sourceSelectS
 		// 目标端查询SQL
 		destWhere := strings.Replace(c, fmt.Sprintf("%s.%s", sp.sourceSchema, sp.table), fmt.Sprintf("%s.%s", sp.destSchema, destTable), -1)
 		destWhere = strings.Replace(destWhere, fmt.Sprintf("`%s`.`%s`", sp.sourceSchema, sp.table), fmt.Sprintf("`%s`.`%s`", sp.destSchema, destTable), -1)
+		destWhere = adaptWhereForDrive(destWhere, sp.ddrive)
 
 		idxcDest := dbExec.IndexColumnStruct{
-			Schema:   sp.destSchema,
-			Table:    destTable,
-			Drivce:   sp.ddrive,
-			Sqlwhere: destWhere,
-			ColData:  cc1.DColumnInfo,
+			Schema:                  sp.destSchema,
+			Table:                   destTable,
+			Drivce:                  sp.ddrive,
+			CaseSensitiveObjectName: sp.caseSensitiveObjectName,
+			TableColumn:             cc1.DColumnInfo,
+			Sqlwhere:                destWhere,
+			ColData:                 cc1.DColumnInfo,
 		}
 		ddb := sp.ddbPool.Get(logThreadSeq)
 		destSqlStr, err := idxcDest.TableIndexColumn().GeneratingQuerySql(ddb, logThreadSeq)
@@ -2940,14 +3027,14 @@ func queryRowsChecksumBySQL(db *sql.DB, query string, drive string, logThreadSeq
 		return "", err
 	}
 
-	valuePtrs := make([]interface{}, len(columns))
-	values := make([]interface{}, len(columns))
 	rowSep := "/*go actions rowData*/"
 	colSep := "/*go actions columnData*/"
 	driver := normalizedDrive(drive)
 	hasher := md5.New()
 	firstRow := true
 
+	valuePtrs := make([]interface{}, len(columns))
+	values := make([]interface{}, len(columns))
 	for rows.Next() {
 		for i := 0; i < len(columns); i++ {
 			valuePtrs[i] = &values[i]
@@ -2965,21 +3052,7 @@ func queryRowsChecksumBySQL(db *sql.DB, query string, drive string, logThreadSeq
 			if i > 0 {
 				_, _ = io.WriteString(hasher, colSep)
 			}
-			val := values[i]
-			var s string
-			if b, ok := val.([]byte); ok {
-				s = string(b)
-			} else if val == nil {
-				s = dataDispos.ValueNullPlaceholder
-			} else {
-				s = fmt.Sprintf("%v", val)
-			}
-			if driver == "godror" && s == "" {
-				s = dataDispos.ValueNullPlaceholder
-			}
-			if driver == "mysql" && s == "" {
-				s = dataDispos.ValueEmptyPlaceholder
-			}
+			s := normalizeChecksumValue(values[i], driver)
 			_, _ = io.WriteString(hasher, s)
 		}
 	}
@@ -2988,6 +3061,17 @@ func queryRowsChecksumBySQL(db *sql.DB, query string, drive string, logThreadSeq
 		return "", err
 	}
 	return hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+func normalizeChecksumValue(val interface{}, driver string) string {
+	switch normalizedDrive(driver) {
+	case "godror":
+		return dataDispos.NormalizeValueForComparison(val, "Oracle")
+	case "mysql":
+		return dataDispos.NormalizeValueForComparison(val, "MySQL")
+	default:
+		return dataDispos.NormalizeValueForComparison(val, "")
+	}
 }
 
 func waitForMemoryBudget(highWatermark float64) {
@@ -3057,4 +3141,473 @@ func minFloat64(a float64, b float64) float64 {
 		return a
 	}
 	return b
+}
+
+func isFloatingColumnType(dataType string) bool {
+	t := strings.ToUpper(strings.TrimSpace(dataType))
+	if t == "" {
+		return false
+	}
+	// Cover common Oracle/MySQL floating types.
+	return strings.HasPrefix(t, "FLOAT") ||
+		strings.HasPrefix(t, "DOUBLE") ||
+		strings.HasPrefix(t, "REAL") ||
+		strings.HasPrefix(t, "BINARY_FLOAT") ||
+		strings.HasPrefix(t, "BINARY_DOUBLE")
+}
+
+func parseNumericScale(dataType string) (int, bool) {
+	t := strings.ToUpper(strings.TrimSpace(dataType))
+	left := strings.Index(t, "(")
+	right := strings.LastIndex(t, ")")
+	if left == -1 || right <= left+1 {
+		return 0, false
+	}
+	args := strings.TrimSpace(t[left+1 : right])
+	parts := strings.Split(args, ",")
+	if len(parts) < 2 {
+		return 0, false
+	}
+	scale, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if err != nil || scale < 0 {
+		return 0, false
+	}
+	return scale, true
+}
+
+func resolveFloatComparisonScale(sourceType, destType string) int {
+	sourceFloat := isFloatComparisonType(sourceType)
+	destFloat := isFloatComparisonType(destType)
+	if !sourceFloat && !destFloat {
+		return -1
+	}
+	sourceScale, sourceOK := parseNumericScale(sourceType)
+	destScale, destOK := parseNumericScale(destType)
+	if sourceOK && destOK {
+		if sourceScale < destScale {
+			return sourceScale
+		}
+		return destScale
+	}
+	if sourceOK {
+		return sourceScale
+	}
+	if destOK {
+		return destScale
+	}
+	return 6
+}
+
+func isFloatComparisonType(dataType string) bool {
+	t := strings.ToUpper(strings.TrimSpace(dataType))
+	return strings.HasPrefix(t, "FLOAT") || strings.HasPrefix(t, "BINARY_FLOAT")
+}
+
+func buildFloatComparisonScales(sourceCols, destCols []map[string]string) []int {
+	colCount := len(sourceCols)
+	if len(destCols) < colCount {
+		colCount = len(destCols)
+	}
+	if colCount == 0 {
+		return nil
+	}
+	scales := make([]int, colCount)
+	hasFloatColumn := false
+	for i := 0; i < colCount; i++ {
+		scale := resolveFloatComparisonScale(sourceCols[i]["dataType"], destCols[i]["dataType"])
+		scales[i] = scale
+		if scale >= 0 {
+			hasFloatColumn = true
+		}
+	}
+	if !hasFloatColumn {
+		return nil
+	}
+	return scales
+}
+
+func normalizeFloatComparisonValue(raw string, scale int) string {
+	if scale < 0 {
+		return raw
+	}
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || trimmed == dataDispos.ValueNullPlaceholder || trimmed == dataDispos.ValueEmptyPlaceholder {
+		return raw
+	}
+	f, err := strconv.ParseFloat(trimmed, 64)
+	if err != nil {
+		return raw
+	}
+	if scale > 15 {
+		scale = 15
+	}
+	factor := math.Pow10(scale)
+	rounded := math.Round(f*factor) / factor
+	normalized := strconv.FormatFloat(rounded, 'f', scale, 64)
+	normalized = strings.TrimRight(strings.TrimRight(normalized, "0"), ".")
+	if normalized == "" || normalized == "-0" {
+		normalized = "0"
+	}
+	return normalized
+}
+
+func normalizeRowsForFloatComparison(rows []string, scales []int) []string {
+	if len(rows) == 0 || len(scales) == 0 {
+		return rows
+	}
+	const columnSep = "/*go actions columnData*/"
+	normalizedRows := make([]string, len(rows))
+	for rowIdx, row := range rows {
+		parts := strings.Split(row, columnSep)
+		limit := len(scales)
+		if len(parts) < limit {
+			limit = len(parts)
+		}
+		changed := false
+		for colIdx := 0; colIdx < limit; colIdx++ {
+			if scales[colIdx] < 0 {
+				continue
+			}
+			normalized := normalizeFloatComparisonValue(parts[colIdx], scales[colIdx])
+			if normalized != parts[colIdx] {
+				parts[colIdx] = normalized
+				changed = true
+			}
+		}
+		if changed {
+			normalizedRows[rowIdx] = strings.Join(parts, columnSep)
+		} else {
+			normalizedRows[rowIdx] = row
+		}
+	}
+	return normalizedRows
+}
+
+func isTemporalComparableType(dataType string) bool {
+	t := strings.ToUpper(strings.TrimSpace(dataType))
+	return t == "DATE" ||
+		strings.Contains(t, "TIMESTAMP") ||
+		strings.HasPrefix(t, "DATETIME") ||
+		strings.HasPrefix(t, "TIME") ||
+		strings.HasPrefix(t, "INTERVAL DAY") ||
+		strings.HasPrefix(t, "YEAR")
+}
+
+func isTimeOnlyType(dataType string) bool {
+	t := strings.ToUpper(strings.TrimSpace(dataType))
+	return t == "TIME" || strings.HasPrefix(t, "TIME(")
+}
+
+func classifyTemporalCompareKind(sourceType, destType string) string {
+	s := strings.ToUpper(strings.TrimSpace(sourceType))
+	d := strings.ToUpper(strings.TrimSpace(destType))
+
+	if strings.HasPrefix(s, "INTERVAL DAY") && strings.HasPrefix(d, "TIME") {
+		return "time"
+	}
+	if strings.HasPrefix(d, "INTERVAL DAY") && strings.HasPrefix(s, "TIME") {
+		return "time"
+	}
+	if isTimeOnlyType(s) && isTimeOnlyType(d) {
+		return "time"
+	}
+	if strings.HasPrefix(s, "YEAR") || strings.HasPrefix(d, "YEAR") {
+		return "year"
+	}
+	if isTemporalComparableType(s) && isTemporalComparableType(d) {
+		return "datetime"
+	}
+	return ""
+}
+
+func buildTemporalCompareKinds(sourceCols, destCols []map[string]string) []string {
+	colCount := len(sourceCols)
+	if len(destCols) < colCount {
+		colCount = len(destCols)
+	}
+	if colCount == 0 {
+		return nil
+	}
+	kinds := make([]string, colCount)
+	hasTemporal := false
+	for i := 0; i < colCount; i++ {
+		kind := classifyTemporalCompareKind(sourceCols[i]["dataType"], destCols[i]["dataType"])
+		kinds[i] = kind
+		if kind != "" {
+			hasTemporal = true
+		}
+	}
+	if !hasTemporal {
+		return nil
+	}
+	return kinds
+}
+
+func normalizeTemporalValue(raw, kind string) string {
+	if kind == "" {
+		return raw
+	}
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || trimmed == dataDispos.ValueNullPlaceholder || trimmed == dataDispos.ValueEmptyPlaceholder {
+		return raw
+	}
+
+	switch kind {
+	case "year":
+		i, err := strconv.ParseInt(trimmed, 10, 64)
+		if err != nil {
+			return raw
+		}
+		return strconv.FormatInt(i, 10)
+	case "time":
+		// Handle datetime-like string first to avoid misclassifying "YYYY-MM-DD HH:MM:SS" as interval.
+		if m := temporalDatetimePrefixRe.FindStringSubmatch(trimmed); len(m) == 3 {
+			return m[2]
+		}
+
+		// Oracle interval fallback path: value may be total seconds text.
+		if temporalNumericSecondsRe.MatchString(trimmed) {
+			secondsFloat, secErr := strconv.ParseFloat(trimmed, 64)
+			if secErr == nil {
+				// Defensive compatibility: some Oracle drivers expose INTERVAL as
+				// duration nanoseconds integer. Convert to seconds before HH:MM:SS.
+				if math.Abs(secondsFloat) >= 1e10 {
+					secondsFloat = secondsFloat / 1e9
+				}
+				totalSeconds := int64(math.Round(secondsFloat))
+				sign := ""
+				if totalSeconds < 0 {
+					sign = "-"
+					totalSeconds = -totalSeconds
+				}
+				hours := totalSeconds / 3600
+				minutes := (totalSeconds % 3600) / 60
+				seconds := totalSeconds % 60
+				return fmt.Sprintf("%s%02d:%02d:%02d", sign, hours, minutes, seconds)
+			}
+		}
+
+		if m := temporalIntervalRe.FindStringSubmatch(trimmed); len(m) == 5 {
+			dayPart, dayErr := strconv.Atoi(m[1])
+			hourPart, hourErr := strconv.Atoi(m[2])
+			if dayErr == nil && hourErr == nil {
+				totalHours := dayPart*24 + hourPart
+				sign := ""
+				if totalHours < 0 {
+					sign = "-"
+					totalHours = -totalHours
+				}
+				return fmt.Sprintf("%s%02d:%s:%s", sign, totalHours, m[3], m[4])
+			}
+		}
+
+		if m := temporalTimeTokenRe.FindStringSubmatch(trimmed); len(m) == 2 {
+			return m[1]
+		}
+		// Go duration style fallback, e.g. "12h30m29s".
+		if m := temporalGoDurationRe.FindStringSubmatch(trimmed); len(m) == 4 {
+			hours, hErr := strconv.Atoi(m[1])
+			minutes, mErr := strconv.Atoi(m[2])
+			secondsFloat, sErr := strconv.ParseFloat(m[3], 64)
+			if hErr == nil && mErr == nil && sErr == nil {
+				seconds := int(math.Round(secondsFloat))
+				sign := ""
+				if hours < 0 {
+					sign = "-"
+					hours = -hours
+				}
+				return fmt.Sprintf("%s%02d:%02d:%02d", sign, hours, minutes, seconds)
+			}
+		}
+		if len(trimmed) >= 19 && trimmed[10] == ' ' {
+			return trimmed[11:19]
+		}
+		return raw
+	case "datetime":
+		if temporalDateOnlyRe.MatchString(trimmed) {
+			return trimmed + " 00:00:00"
+		}
+		if m := temporalDateTimeRe.FindStringSubmatch(trimmed); len(m) == 3 {
+			return m[1] + " " + m[2]
+		}
+		return raw
+	default:
+		return raw
+	}
+}
+
+func normalizeRowsForTemporalComparison(rows []string, kinds []string) []string {
+	if len(rows) == 0 || len(kinds) == 0 {
+		return rows
+	}
+	const columnSep = "/*go actions columnData*/"
+	normalizedRows := make([]string, len(rows))
+	for rowIdx, row := range rows {
+		parts := strings.Split(row, columnSep)
+		limit := len(kinds)
+		if len(parts) < limit {
+			limit = len(parts)
+		}
+		changed := false
+		for colIdx := 0; colIdx < limit; colIdx++ {
+			kind := kinds[colIdx]
+			if kind == "" {
+				continue
+			}
+			normalized := normalizeTemporalValue(parts[colIdx], kind)
+			if normalized != parts[colIdx] {
+				parts[colIdx] = normalized
+				changed = true
+			}
+		}
+		if changed {
+			normalizedRows[rowIdx] = strings.Join(parts, columnSep)
+		} else {
+			normalizedRows[rowIdx] = row
+		}
+	}
+	return normalizedRows
+}
+
+func reconcileTemporalNullArtifacts(addRows, delRows []string, kinds []string, sourceCols, destCols []map[string]string) ([]string, []string, int) {
+	if len(addRows) == 0 || len(delRows) == 0 || len(kinds) == 0 {
+		return addRows, delRows, 0
+	}
+	artifactCols := buildIntervalTimeArtifactColumns(sourceCols, destCols, kinds)
+	if len(artifactCols) == 0 {
+		return addRows, delRows, 0
+	}
+	const colSep = "/*go actions columnData*/"
+	delUsed := make([]bool, len(delRows))
+	delParts := make([][]string, len(delRows))
+	delBuckets := make(map[string][]int, len(delRows))
+	for idx, delRow := range delRows {
+		parts := strings.Split(delRow, colSep)
+		delParts[idx] = parts
+		key := buildTemporalReconcileKey(parts, artifactCols)
+		delBuckets[key] = append(delBuckets[key], idx)
+	}
+	keepAdd := make([]string, 0, len(addRows))
+	healed := 0
+
+	for _, addRow := range addRows {
+		addParts := strings.Split(addRow, colSep)
+		key := buildTemporalReconcileKey(addParts, artifactCols)
+		matched := -1
+		for _, idx := range delBuckets[key] {
+			if delUsed[idx] {
+				continue
+			}
+			if rowsEqualWithTemporalArtifact(addParts, delParts[idx], artifactCols) {
+				matched = idx
+				break
+			}
+		}
+		if matched >= 0 {
+			delUsed[matched] = true
+			healed++
+			continue
+		}
+		keepAdd = append(keepAdd, addRow)
+	}
+
+	keepDel := make([]string, 0, len(delRows))
+	for i, delRow := range delRows {
+		if !delUsed[i] {
+			keepDel = append(keepDel, delRow)
+		}
+	}
+	return keepAdd, keepDel, healed
+}
+
+func buildTemporalReconcileKey(parts []string, artifactCols map[int]struct{}) string {
+	var b strings.Builder
+	for i, part := range parts {
+		if _, isArtifactCol := artifactCols[i]; isArtifactCol {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteString("|")
+		}
+		b.WriteString(strconv.Itoa(i))
+		b.WriteString("=")
+		b.WriteString(part)
+	}
+	return b.String()
+}
+
+func buildIntervalTimeArtifactColumns(sourceCols, destCols []map[string]string, kinds []string) map[int]struct{} {
+	cols := make(map[int]struct{})
+	limit := len(kinds)
+	if len(sourceCols) < limit {
+		limit = len(sourceCols)
+	}
+	if len(destCols) < limit {
+		limit = len(destCols)
+	}
+	for i := 0; i < limit; i++ {
+		if kinds[i] != "time" {
+			continue
+		}
+		sType := strings.ToUpper(strings.TrimSpace(sourceCols[i]["dataType"]))
+		dType := strings.ToUpper(strings.TrimSpace(destCols[i]["dataType"]))
+		if strings.HasPrefix(sType, "INTERVAL DAY") && isTimeOnlyType(dType) {
+			cols[i] = struct{}{}
+			continue
+		}
+		if strings.HasPrefix(dType, "INTERVAL DAY") && isTimeOnlyType(sType) {
+			cols[i] = struct{}{}
+		}
+	}
+	return cols
+}
+
+func rowsEqualWithTemporalArtifact(addParts, delParts []string, artifactCols map[int]struct{}) bool {
+	if len(addParts) != len(delParts) {
+		return false
+	}
+	for i := range addParts {
+		a := addParts[i]
+		d := delParts[i]
+		if a == d {
+			continue
+		}
+		if _, ok := artifactCols[i]; ok {
+			aNull := isNullPlaceholderValue(a)
+			dNull := isNullPlaceholderValue(d)
+			if aNull || dNull {
+				if aNull && dNull {
+					continue
+				}
+				return false
+			}
+			if normalizeTemporalValue(a, "time") == normalizeTemporalValue(d, "time") {
+				continue
+			}
+		}
+		return false
+	}
+	return true
+}
+
+func isNullPlaceholderValue(v string) bool {
+	return v == dataDispos.ValueNullPlaceholder || strings.EqualFold(strings.TrimSpace(v), "null")
+}
+
+func (sp *SchedulePlan) isFloatingIndexColumn(columnName string) bool {
+	colInfo, ok := sp.tableAllCol[fmt.Sprintf("%s_gtchecksum_%s", sp.schema, sp.table)]
+	if !ok {
+		return false
+	}
+	for _, col := range colInfo.SColumnInfo {
+		if strings.EqualFold(col["columnName"], columnName) {
+			return isFloatingColumnType(col["dataType"])
+		}
+	}
+	for _, col := range colInfo.DColumnInfo {
+		if strings.EqualFold(col["columnName"], columnName) {
+			return isFloatingColumnType(col["dataType"])
+		}
+	}
+	return false
 }

@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"fmt"
 	"gt-checksum/global"
+	"math"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -349,33 +351,9 @@ func (dbpos *DBdataDispos) DataRowsDispos(tableData []string) ([]string, error) 
 			global.Wlog.Error(errInfo)
 			return nil, err
 		}
-		entry := make(map[string]interface{})
 		for i, col := range columns {
-			var v interface{}
-			val := values[i]
-			b, ok := val.([]byte)
-			if ok {
-				// 保留原始字符串，但确保不会重复添加空格
-				v = string(b)
-			} else {
-				v = val
-			}
-			if v == nil {
-				v = ValueNullPlaceholder
-			}
-			//oracle只有null没有空值
-			if dbpos.DBType == "Oracle" {
-				if v == "" {
-					v = ValueNullPlaceholder
-				}
-			}
-			if dbpos.DBType == "MySQL" {
-				if v == "" {
-					v = ValueEmptyPlaceholder
-				}
-			}
-			entry[col] = v
-			tmpaaS = append(tmpaaS, fmt.Sprintf("%v", v))
+			_ = col
+			tmpaaS = append(tmpaaS, stringifyRowValue(values[i], dbpos.DBType))
 		}
 		tableData = append(tableData, strings.Join(tmpaaS, "/*go actions columnData*/"))
 	}
@@ -385,6 +363,174 @@ func (dbpos *DBdataDispos) DataRowsDispos(tableData []string) ([]string, error) 
 		return nil, err
 	}
 	return tableData, nil
+}
+
+func stringifyRowValue(val interface{}, dbType string) string {
+	if val == nil {
+		return ValueNullPlaceholder
+	}
+	if dbType == "Oracle" {
+		if interval, ok := tryFormatOracleInterval(val); ok {
+			return interval
+		}
+	}
+	// Keep concrete temporal handling before reflection fallback.
+	// time.Duration is an int64 alias; if reflection runs first it becomes
+	// nanoseconds text (e.g. 45029000000000) and breaks cross-DB time compare.
+	switch v := val.(type) {
+	case time.Duration:
+		return formatDurationToHMS(v)
+	case time.Time:
+		return v.Format("2006-01-02 15:04:05")
+	}
+	if primitive, ok := reflectPrimitiveString(val); ok {
+		if dbType == "Oracle" && strings.TrimSpace(primitive) == "" {
+			return ValueNullPlaceholder
+		}
+		if dbType == "MySQL" && primitive == "" {
+			return ValueEmptyPlaceholder
+		}
+		if primitive == "" {
+			return ValueNullPlaceholder
+		}
+		return primitive
+	}
+
+	var s string
+	switch v := val.(type) {
+	case []byte:
+		s = string(v)
+	case string:
+		s = v
+	default:
+		if stringer, ok := val.(fmt.Stringer); ok {
+			s = stringer.String()
+			if strings.TrimSpace(s) == "" {
+				s = fmt.Sprintf("%v", val)
+			}
+		} else {
+			s = fmt.Sprintf("%v", val)
+		}
+	}
+
+	if dbType == "Oracle" {
+		if strings.TrimSpace(s) == "" {
+			return ValueNullPlaceholder
+		}
+		return s
+	}
+	if dbType == "MySQL" {
+		if s == "" {
+			return ValueEmptyPlaceholder
+		}
+		return s
+	}
+	if s == "" {
+		return ValueNullPlaceholder
+	}
+	return s
+}
+
+// NormalizeValueForComparison provides a unified value normalization path for
+// both row diff and checksum hashing logic, preventing divergence between
+// different call sites.
+func NormalizeValueForComparison(val interface{}, dbType string) string {
+	return stringifyRowValue(val, dbType)
+}
+
+func formatDurationToHMS(d time.Duration) string {
+	secs := int64(math.Round(d.Seconds()))
+	sign := ""
+	if secs < 0 {
+		sign = "-"
+		secs = -secs
+	}
+	hours := secs / 3600
+	minutes := (secs % 3600) / 60
+	seconds := secs % 60
+	return fmt.Sprintf("%s%02d:%02d:%02d", sign, hours, minutes, seconds)
+}
+
+func reflectPrimitiveString(val interface{}) (string, bool) {
+	rv := reflect.ValueOf(val)
+	if !rv.IsValid() {
+		return "", false
+	}
+	for rv.Kind() == reflect.Ptr {
+		if rv.IsNil() {
+			return "", false
+		}
+		rv = rv.Elem()
+	}
+	switch rv.Kind() {
+	case reflect.String:
+		return rv.String(), true
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return strconv.FormatInt(rv.Int(), 10), true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return strconv.FormatUint(rv.Uint(), 10), true
+	case reflect.Float32, reflect.Float64:
+		return strconv.FormatFloat(rv.Float(), 'f', -1, 64), true
+	case reflect.Bool:
+		return strconv.FormatBool(rv.Bool()), true
+	default:
+		return "", false
+	}
+}
+
+func tryFormatOracleInterval(val interface{}) (string, bool) {
+	rv := reflect.ValueOf(val)
+	if !rv.IsValid() {
+		return "", false
+	}
+	for rv.Kind() == reflect.Ptr {
+		if rv.IsNil() {
+			return "", false
+		}
+		rv = rv.Elem()
+	}
+	if rv.Kind() != reflect.Struct {
+		return "", false
+	}
+
+	day, dayOK := structIntField(rv, "Days", "Day")
+	hour, hourOK := structIntField(rv, "Hours", "Hour")
+	minute, minuteOK := structIntField(rv, "Minutes", "Minute")
+	second, secondOK := structIntField(rv, "Seconds", "Second")
+	if !hourOK || !minuteOK || !secondOK {
+		return "", false
+	}
+	if !dayOK {
+		day = 0
+	}
+	totalSeconds := day*86400 + hour*3600 + minute*60 + second
+	sign := ""
+	if totalSeconds < 0 {
+		sign = "-"
+		totalSeconds = -totalSeconds
+	}
+	hours := totalSeconds / 3600
+	minutes := (totalSeconds % 3600) / 60
+	seconds := totalSeconds % 60
+	return fmt.Sprintf("%s%02d:%02d:%02d", sign, hours, minutes, seconds), true
+}
+
+func structIntField(rv reflect.Value, names ...string) (int64, bool) {
+	for _, name := range names {
+		f := rv.FieldByName(name)
+		if !f.IsValid() {
+			continue
+		}
+		switch f.Kind() {
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			return f.Int(), true
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+			return int64(f.Uint()), true
+		case reflect.Float32, reflect.Float64:
+			return int64(math.Round(f.Float())), true
+		}
+	}
+	return 0, false
 }
 
 /*
