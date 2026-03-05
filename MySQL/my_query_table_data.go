@@ -14,9 +14,26 @@ import (
 // 缓存“首列可用索引名”，避免高频场景重复查询information_schema.statistics
 var leadingIndexNameGlobalCache = make(map[string]string)
 
+// 缓存表的列集合，避免逐列执行information_schema查询
+var tableColumnSetGlobalCache = make(map[string]map[string]struct{})
+var dbScopeKeyGlobalCache = make(map[*sql.DB]string)
+var dbScopeKeySeq uint64
+
 // 在首层分组场景下，使用 `GROUP BY col, count=1` 的轻量模式阈值。
 // 当表行数/首列基数较低（重复度低）时，该模式通常明显快于 COUNT(*) 聚合。
 const fastGroupModeDupRatioThreshold = 8.0
+
+func getDBScopeKey(db *sql.DB) string {
+	cacheMutex.Lock()
+	defer cacheMutex.Unlock()
+	if scopeKey, ok := dbScopeKeyGlobalCache[db]; ok {
+		return scopeKey
+	}
+	dbScopeKeySeq++
+	scopeKey := fmt.Sprintf("dbscope-%d", dbScopeKeySeq)
+	dbScopeKeyGlobalCache[db] = scopeKey
+	return scopeKey
+}
 
 /*
 查询MySQL库下指定表的索引统计信息
@@ -241,7 +258,6 @@ func (my *QueryTable) TmpTableIndexColumnRowsCount(db *sql.DB, logThreadSeq int6
 func (my *QueryTable) checkColumnExists(db *sql.DB, columnName string, logThreadSeq int64) (bool, error) {
 	var (
 		Event = "Check_Column_Exists"
-		count int
 	)
 
 	// Generate cache key in format: dbPtr.schema.table.column
@@ -259,14 +275,25 @@ func (my *QueryTable) checkColumnExists(db *sql.DB, columnName string, logThread
 	}
 	cacheMutex.RUnlock()
 
-	// 直接使用一条SQL查询列是否存在，避免使用用户变量
-	strsql := fmt.Sprintf("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = '%s' AND table_name = '%s' AND column_name = '%s'", my.Schema, my.Table, columnName)
+	tableColumns, err := my.getTableColumnSet(db, logThreadSeq)
+	if err == nil {
+		_, exists := tableColumns[strings.ToLower(columnName)]
+		vlog := fmt.Sprintf("(%d) [%s] Column %s existence check result (table cache): %v", logThreadSeq, Event, columnName, exists)
+		global.Wlog.Debug(vlog)
+		cacheMutex.Lock()
+		columnExistsGlobalCache[cacheKey] = exists
+		cacheMutex.Unlock()
+		return exists, nil
+	}
 
-	vlog := fmt.Sprintf("(%d) [%s] Checking if column %s exists in table %s.%s", logThreadSeq, Event, columnName, my.Schema, my.Table)
+	// 兜底：使用单列查询（仅在表级缓存加载失败时触发）
+	count := 0
+	strsql := fmt.Sprintf("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = '%s' AND table_name = '%s' AND column_name = '%s'", my.Schema, my.Table, columnName)
+	vlog := fmt.Sprintf("(%d) [%s] Table cache unavailable, checking column %s via fallback SQL", logThreadSeq, Event, columnName)
 	global.Wlog.Debug(vlog)
 
 	// 直接使用db.QueryRow避免使用DBSQLforExec的重试机制，因为这个查询很简单
-	err := db.QueryRow(strsql).Scan(&count)
+	err = db.QueryRow(strsql).Scan(&count)
 	if err != nil {
 		// 如果查询失败，使用DESCRIBE语句作为备选方案
 		vlog = fmt.Sprintf("(%d) [%s] Failed to query information_schema, using DESCRIBE as fallback. Error: %s", logThreadSeq, Event, err)
@@ -303,6 +330,43 @@ func (my *QueryTable) checkColumnExists(db *sql.DB, columnName string, logThread
 	columnExistsGlobalCache[cacheKey] = exists
 	cacheMutex.Unlock()
 	return exists, nil
+}
+
+func (my *QueryTable) getTableColumnSet(db *sql.DB, logThreadSeq int64) (map[string]struct{}, error) {
+	scopeKey := getDBScopeKey(db)
+	cacheKey := fmt.Sprintf("%s.%s.%s.columns", scopeKey, my.Schema, my.Table)
+	cacheMutex.RLock()
+	if cached, ok := tableColumnSetGlobalCache[cacheKey]; ok {
+		cacheMutex.RUnlock()
+		return cached, nil
+	}
+	cacheMutex.RUnlock()
+
+	query := fmt.Sprintf("SELECT COLUMN_NAME FROM information_schema.columns WHERE table_schema = '%s' AND table_name = '%s'", my.Schema, my.Table)
+	rows, err := db.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	colSet := make(map[string]struct{}, 16)
+	for rows.Next() {
+		var colName string
+		if err = rows.Scan(&colName); err != nil {
+			return nil, err
+		}
+		colSet[strings.ToLower(colName)] = struct{}{}
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+
+	cacheMutex.Lock()
+	tableColumnSetGlobalCache[cacheKey] = colSet
+	cacheMutex.Unlock()
+	vlog = fmt.Sprintf("(%d) [Check_Column_Exists] Loaded table column cache for %s.%s, columns=%d", logThreadSeq, my.Schema, my.Table, len(colSet))
+	global.Wlog.Debug(vlog)
+	return colSet, nil
 }
 
 func (my *QueryTable) getLeadingIndexName(db *sql.DB, columnName string) string {
