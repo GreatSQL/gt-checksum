@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -31,8 +32,6 @@ type Config struct {
 // Global variables
 var (
 	config Config
-	wg     sync.WaitGroup
-	sem    chan struct{}
 )
 
 // Parse config file
@@ -107,38 +106,160 @@ func executeSQLFile(db *sql.DB, sqlFile string) error {
 		return fmt.Errorf("Failed to read SQL file: %v", err)
 	}
 
-	// Execute SQL statements using a transaction
-	tx, err := db.Begin()
+	statements := splitSQLStatements(string(content))
+	units, err := buildSQLExecutionUnits(statements)
 	if err != nil {
-		return fmt.Errorf("Failed to start transaction: %v", err)
+		return err
 	}
 
-	// Split SQL statements by semicolon, considering string literals
-	statements := splitSQLStatements(string(content))
+	// Keep one connection for the whole file so session-level SET statements
+	// (for example UNIQUE_CHECKS/FOREIGN_KEY_CHECKS) apply to all subsequent SQL.
+	conn, err := db.Conn(context.Background())
+	if err != nil {
+		return fmt.Errorf("Failed to get database connection: %v", err)
+	}
+	defer conn.Close()
 
-	// Execute each statement individually
-	for _, stmt := range statements {
-		// Trim whitespace and skip empty statements
+	for _, unit := range units {
+		err = executeUnitWithDeadlockRetry(conn, sqlFile, unit)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+type sqlExecutionUnit struct {
+	index         int
+	transactional bool
+	statements    []string
+}
+
+func buildSQLExecutionUnits(statements []string) ([]sqlExecutionUnit, error) {
+	var units []sqlExecutionUnit
+	unitIndex := 1
+	i := 0
+	for i < len(statements) {
+		stmt := strings.TrimSpace(statements[i])
+		if stmt == "" {
+			i++
+			continue
+		}
+
+		switch {
+		case isBeginStatement(stmt):
+			var txStatements []string
+			foundEnd := false
+			for j := i + 1; j < len(statements); j++ {
+				nextStmt := strings.TrimSpace(statements[j])
+				if nextStmt == "" {
+					continue
+				}
+				if isCommitOrRollbackStatement(nextStmt) {
+					units = append(units, sqlExecutionUnit{
+						index:         unitIndex,
+						transactional: true,
+						statements:    txStatements,
+					})
+					unitIndex++
+					i = j + 1
+					foundEnd = true
+					break
+				}
+				txStatements = append(txStatements, nextStmt)
+			}
+			if !foundEnd {
+				return nil, fmt.Errorf("SQL file contains BEGIN without matching COMMIT/ROLLBACK")
+			}
+		case isCommitOrRollbackStatement(stmt):
+			// Ignore standalone COMMIT/ROLLBACK to keep parser robust.
+			i++
+		default:
+			units = append(units, sqlExecutionUnit{
+				index:         unitIndex,
+				transactional: false,
+				statements:    []string{stmt},
+			})
+			unitIndex++
+			i++
+		}
+	}
+
+	return units, nil
+}
+
+func executeUnitWithDeadlockRetry(conn *sql.Conn, sqlFile string, unit sqlExecutionUnit) error {
+	var lastErr error
+	for retryRound := 0; retryRound <= maxDeadlockRetries; retryRound++ {
+		if retryRound > 0 {
+			backoff := time.Duration(1<<uint(retryRound)) * time.Second
+			log.Printf("Deadlock retry in SQL file %s unit #%d: round=%d wait=%v\n", sqlFile, unit.index, retryRound, backoff)
+			time.Sleep(backoff)
+		}
+
+		err := executeUnit(conn, unit)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+
+		if !isDeadlockError(err) {
+			return err
+		}
+
+		log.Printf("DEADLOCK detected in SQL file %s unit #%d (retry round %d): %v\n", sqlFile, unit.index, retryRound, err)
+	}
+	return fmt.Errorf("deadlock unresolved after %d retries in SQL file %s unit #%d: %v", maxDeadlockRetries, sqlFile, unit.index, lastErr)
+}
+
+func executeUnit(conn *sql.Conn, unit sqlExecutionUnit) error {
+	if unit.transactional {
+		tx, err := conn.BeginTx(context.Background(), nil)
+		if err != nil {
+			return fmt.Errorf("Failed to start transaction: %v", err)
+		}
+
+		for _, stmt := range unit.statements {
+			stmt = strings.TrimSpace(stmt)
+			if stmt == "" {
+				continue
+			}
+			stmt = normalizeMySQLDateFormatLiteralInSQLForExec(stmt)
+			_, err = tx.ExecContext(context.Background(), stmt)
+			if err != nil {
+				_ = tx.Rollback()
+				return fmt.Errorf("Failed to execute SQL statement: %v", err)
+			}
+		}
+
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("Failed to commit transaction: %v", err)
+		}
+		return nil
+	}
+
+	for _, stmt := range unit.statements {
 		stmt = strings.TrimSpace(stmt)
 		if stmt == "" {
 			continue
 		}
 		stmt = normalizeMySQLDateFormatLiteralInSQLForExec(stmt)
-
-		// Execute the statement
-		_, err = tx.Exec(stmt)
-		if err != nil {
-			tx.Rollback()
+		if _, err := conn.ExecContext(context.Background(), stmt); err != nil {
 			return fmt.Errorf("Failed to execute SQL statement: %v", err)
 		}
 	}
-
-	// Commit the transaction
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("Failed to commit transaction: %v", err)
-	}
-
 	return nil
+}
+
+func isBeginStatement(stmt string) bool {
+	s := strings.ToUpper(strings.TrimSpace(stmt))
+	return s == "BEGIN" || s == "START TRANSACTION"
+}
+
+func isCommitOrRollbackStatement(stmt string) bool {
+	s := strings.ToUpper(strings.TrimSpace(stmt))
+	return s == "COMMIT" || s == "ROLLBACK"
 }
 
 // splitSQLStatements splits SQL statements by semicolon, considering string literals
@@ -239,12 +360,6 @@ func isDeadlockError(err error) bool {
 	}
 	return strings.Contains(err.Error(), "Error 1213") ||
 		strings.Contains(err.Error(), "Deadlock found when trying to get lock")
-}
-
-// deadlockResult holds the result of executing a SQL file that may have deadlocked
-type deadlockResult struct {
-	file string
-	err  error
 }
 
 var deleteFileNameRegex = regexp.MustCompile(`^.+-DELETE-.+\.sql$`)
@@ -442,125 +557,71 @@ func logExecutionPlan(stageName string, files []string, fixFileDir string) {
 	}
 }
 
-// Execute SQL files in parallel with deadlock retry support
-func parallelExecuteSQLFiles(files []string, dsn, stageName string) {
+// Execute SQL files in random parallel mode with bounded concurrency.
+func parallelExecuteSQLFiles(files []string, dsn, stageName string) error {
 	// Create database connection pool
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
-		log.Printf("Failed to create database connection: %v\n", err)
-		return
+		return fmt.Errorf("Failed to create database connection: %v", err)
 	}
 	defer db.Close()
 
 	// Test database connection
 	err = db.Ping()
 	if err != nil {
-		log.Printf("Database connection failed: %v\n", err)
-		return
+		return fmt.Errorf("Database connection failed: %v", err)
 	}
 
-	// Execute files and collect deadlocked ones for retry
-	pendingFiles := files
-	retryRound := 0
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, config.ParallelThds)
+	errCh := make(chan error, len(files))
 	var executionSeq uint64
 
-	for len(pendingFiles) > 0 {
-		if retryRound > 0 {
-			// Exponential backoff: 2s, 4s, 8s, ...
-			backoff := time.Duration(1<<uint(retryRound)) * time.Second
-			log.Printf("Deadlock retry round %d: waiting %v before retrying %d file(s)\n",
-				retryRound, backoff, len(pendingFiles))
-			fmt.Printf("Deadlock retry round %d: waiting %v before retrying %d file(s)\n",
-				retryRound, backoff, len(pendingFiles))
-			time.Sleep(backoff)
-		}
+	for _, sqlFile := range files {
+		file := sqlFile
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
 
-		if retryRound > maxDeadlockRetries {
-			// Max retries exceeded — report and stop
-			log.Printf("ERROR: Max deadlock retry limit (%d) exceeded. The following %d file(s) still failed:\n",
-				maxDeadlockRetries, len(pendingFiles))
-			fmt.Printf("ERROR: Max deadlock retry limit (%d) exceeded. The following %d file(s) still failed:\n",
-				maxDeadlockRetries, len(pendingFiles))
-			for _, f := range pendingFiles {
-				log.Printf("  DEADLOCK_UNRESOLVED: %s\n", f)
-				fmt.Printf("  DEADLOCK_UNRESOLVED: %s\n", f)
+			startTime := time.Now()
+			seq := atomic.AddUint64(&executionSeq, 1)
+			log.Printf("[%s] execution sequence #%d: %s\n", stageName, seq, file)
+			fmt.Printf("Starting to execute SQL file: %s\n", file)
+
+			err := executeSQLFile(db, file)
+			if err != nil {
+				errCh <- fmt.Errorf("Failed to execute SQL file %s: %v", file, err)
+				log.Printf("Failed to execute SQL file %s: %v\n", file, err)
+				fmt.Printf("Failed to execute SQL file %s: %v\n", file, err)
+				return
 			}
-			log.Printf("Please manually execute these SQL files after resolving lock contention.\n")
-			fmt.Printf("Please manually execute these SQL files after resolving lock contention.\n")
-			return
-		}
 
-		// Channel to collect deadlock results
-		resultChan := make(chan deadlockResult, len(pendingFiles))
-
-		// Execute current batch
-		for _, file := range pendingFiles {
-			wg.Add(1)
-			sem <- struct{}{} // Acquire semaphore
-
-			go func(sqlFile string) {
-				defer wg.Done()
-				defer func() { <-sem }() // Release semaphore
-
-				// Record start time
-				startTime := time.Now()
-				seq := atomic.AddUint64(&executionSeq, 1)
-				log.Printf("[%s] execution sequence #%d (round %d): %s\n", stageName, seq, retryRound, sqlFile)
-				if retryRound == 0 {
-					log.Printf("Starting to execute SQL file: %s\n", sqlFile)
-					fmt.Printf("Starting to execute SQL file: %s\n", sqlFile)
-				} else {
-					log.Printf("Retrying SQL file (round %d): %s\n", retryRound, sqlFile)
-					fmt.Printf("Retrying SQL file (round %d): %s\n", retryRound, sqlFile)
-				}
-
-				// Execute SQL file
-				err := executeSQLFile(db, sqlFile)
-				if err != nil {
-					if isDeadlockError(err) {
-						log.Printf("DEADLOCK detected in SQL file %s (retry round %d): %v\n", sqlFile, retryRound, err)
-						fmt.Printf("DEADLOCK detected in SQL file %s, will retry\n", sqlFile)
-						resultChan <- deadlockResult{file: sqlFile, err: err}
-					} else {
-						log.Printf("Failed to execute SQL file %s: %v\n", sqlFile, err)
-						fmt.Printf("Failed to execute SQL file %s: %v\n", sqlFile, err)
-					}
-				} else {
-					elapsed := time.Since(startTime)
-					if retryRound > 0 {
-						log.Printf("Successfully executed SQL file %s on retry round %d, time taken: %v\n", sqlFile, retryRound, elapsed)
-						fmt.Printf("Successfully executed SQL file %s on retry round %d, time taken: %v\n", sqlFile, retryRound, elapsed)
-					} else {
-						log.Printf("Successfully executed SQL file %s, time taken: %v\n", sqlFile, elapsed)
-						fmt.Printf("Successfully executed SQL file %s, time taken: %v\n", sqlFile, elapsed)
-					}
-				}
-			}(file)
-		}
-
-		// Wait for all goroutines in this round to complete
-		wg.Wait()
-		close(resultChan)
-
-		// Collect deadlocked files for next retry round
-		var deadlockedFiles []string
-		for result := range resultChan {
-			deadlockedFiles = append(deadlockedFiles, result.file)
-		}
-
-		if len(deadlockedFiles) > 0 {
-			// Keep delete stage deterministic, but randomize non-delete stage on retry.
-			if stageName == "PHASE-2-OTHER" {
-				shuffleSQLFiles(deadlockedFiles)
-			} else {
-				sort.Strings(deadlockedFiles)
-			}
-			log.Printf("Round %d completed: %d file(s) deadlocked, will retry\n", retryRound, len(deadlockedFiles))
-		}
-
-		pendingFiles = deadlockedFiles
-		retryRound++
+			elapsed := time.Since(startTime)
+			log.Printf("Successfully executed SQL file %s, time taken: %v\n", file, elapsed)
+			fmt.Printf("Successfully executed SQL file %s, time taken: %v\n", file, elapsed)
+		}()
 	}
+
+	wg.Wait()
+	close(errCh)
+
+	var firstErr error
+	errCount := 0
+	for err := range errCh {
+		if err == nil {
+			continue
+		}
+		errCount++
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	if errCount > 0 {
+		return fmt.Errorf("%s failed: %d file(s) execution error, first error: %v", stageName, errCount, firstErr)
+	}
+	return nil
 }
 
 // Main function
@@ -731,9 +792,6 @@ func main() {
 		logExecutionPlan("PHASE-2-OTHER", otherFiles, config.FixFileDir)
 	}
 
-	// Initialize semaphore
-	sem = make(chan struct{}, config.ParallelThds)
-
 	// Start timing
 	startTime := time.Now()
 
@@ -742,7 +800,13 @@ func main() {
 		log.Printf("Starting parallel execution of DELETE files, concurrency: %d\n", config.ParallelThds)
 		fmt.Printf("Starting parallel execution of DELETE files, concurrency: %d\n", config.ParallelThds)
 		dsn := parseDSN(config.DstDSN)
-		parallelExecuteSQLFiles(deleteFiles, dsn, "PHASE-1-DELETE")
+		err = parallelExecuteSQLFiles(deleteFiles, dsn, "PHASE-1-DELETE")
+		if err != nil {
+			log.Printf("DELETE phase execution failed: %v\n", err)
+			fmt.Printf("DELETE phase execution failed: %v\n", err)
+			fmt.Println("repairDB execution failed")
+			os.Exit(1)
+		}
 		log.Printf("DELETE files execution completed\n")
 		fmt.Printf("DELETE files execution completed\n")
 	}
@@ -752,7 +816,13 @@ func main() {
 		log.Printf("Starting parallel execution of other SQL files, concurrency: %d\n", config.ParallelThds)
 		fmt.Printf("Starting parallel execution of other SQL files, concurrency: %d\n", config.ParallelThds)
 		dsn := parseDSN(config.DstDSN)
-		parallelExecuteSQLFiles(otherFiles, dsn, "PHASE-2-OTHER")
+		err = parallelExecuteSQLFiles(otherFiles, dsn, "PHASE-2-OTHER")
+		if err != nil {
+			log.Printf("OTHER phase execution failed: %v\n", err)
+			fmt.Printf("OTHER phase execution failed: %v\n", err)
+			fmt.Println("repairDB execution failed")
+			os.Exit(1)
+		}
 		log.Printf("Other SQL files execution completed\n")
 		fmt.Printf("Other SQL files execution completed\n")
 	}
