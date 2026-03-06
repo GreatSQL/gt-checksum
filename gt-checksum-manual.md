@@ -28,7 +28,7 @@ $ gt-checksum -c ./gc.conf
 
   2.全局权限
 
-    如果是MySQL 8.0及以上版本，需授予 `REPLICATION CLIENT`, `SESSION_VARIABLES_ADMIN`, `SHOW_ROUTINE`, `TRIGGER` 权限。如果MySQL 5.7级以下版本，则无需授予 `SESSION_VARIABLES_ADMIN` 权限。
+    如果是MySQL 8.0及以上版本，需授予 `REPLICATION CLIENT`, `SESSION_VARIABLES_ADMIN`, `SHOW_ROUTINE`, `TRIGGER` 权限。如果MySQL 5.7及以下版本，则无需授予 `SESSION_VARIABLES_ADMIN` 权限。
 
   3.校验数据对象
 
@@ -147,7 +147,7 @@ sbtest  F1              Function        no      no
 
 ## 配置参数详解
 
-**gt-checksum** 支持命令行传参及指定配置文件两种方式运行，但不支持两种方式同时指定。
+**gt-checksum** 支持命令行参数与配置文件方式运行，但命令行仅支持 `-c/-f`, `-h`, `-v` 等基础参数，其余参数通过配置文件指定。
 
 配置文件中所有参数的详解可参考模板文件 [gc-sample.conf](./gc-sample.conf)。
 
@@ -203,6 +203,7 @@ $ source /etc/profile
 $ git clone https://gitee.com/GreatSQL/gt-checksum.git
 $ cd gt-checksum
 $ go build -o gt-checksum gt-checksum.go
+$ CGO_ENABLED=0 go build -o repairDB repairDB.go
 ```
 
 编译完成后，将编译好的二进制文件拷贝到系统PATH路径下，即可使用：
@@ -228,7 +229,7 @@ $ mv gt-checksum /usr/local/bin
 ```bash
 $ git clone https://gitee.com/GreatSQL/gt-checksum.git
 $ cd gt-checksum
-$ go build -o repairDB repairDB.go
+$ CGO_ENABLED=0 go build -o repairDB repairDB.go
 ```
 
 编译完成后，将编译好的二进制文件拷贝到系统PATH路径下，即可使用：
@@ -279,7 +280,7 @@ $ ./repairDB
 3. 扫描指定目录下的所有 `.sql` 文件；
 4. 优先执行包含 `-DELETE.sql` 的文件；
 5. 然后执行其他SQL文件；
-6. 每个SQL文件在一个独立的事务中执行；；
+6. 每个SQL文件在一个独立的事务中执行；
 7. 执行完成后输出执行结果。
 
 ### 注意事项
@@ -331,6 +332,180 @@ repairDB executed successfully
 
 **注意**：由于是并行执行数据修复工作，所以修复过程中可能产生死锁冲突，建议在修复结束后检查repairDB.log日志文件，确认是否有死锁冲突错误，如果没有则可以再次执行数据校验，确认数据一致性。如果有死锁冲突错误，则需要再次手动执行发生错误的SQL文件。
 
+## oracle_random_data_load 工具使用说明
+
+### 工具定位
+
+`oracle_random_data_load` 是面向 Oracle 的随机数据写入工具，适用于以下场景：
+
+1. 构造测试数据（功能测试、回归测试）；
+2. 构造压测数据（并发写入、批量写入验证）；
+3. 在迁移校验前快速填充目标表，验证链路稳定性。
+
+该工具会读取目标表元数据，按字段类型自动生成随机值，并通过批量 `INSERT ALL` 提升大数据量写入效率。
+
+### 核心能力
+
+1. 自动识别列信息：通过 Oracle 元数据获取列名、类型、精度、是否可空、主键等信息；
+2. 主键优先唯一化：对主键列优先采用“唯一值计划”，降低 `ORA-00001` 冲突概率；
+3. 并发批量写入：多 worker 并发 + `INSERT ALL ... SELECT 1 FROM DUAL`；
+4. 失败自动降级：批次失败后重试，仍失败则自动退化为逐行写入；
+5. 进度与统计：周期输出进度，结束输出 summary（目标行数、成功/失败、重试次数、吞吐等）。
+
+### 使用前准备
+
+1. 准备好 Oracle Client（Instant Client）并确保 `godror` 可正常连接；
+2. 执行账号需至少具备目标表的写入权限（`INSERT`）以及读取表元数据的权限；
+3. 建议优先使用表 owner 账号执行，减少元数据可见性导致的问题；
+4. 若目标表已存在大量历史数据，建议先评估主键冲突风险（可先清空或使用独立测试表）。
+
+### 编译与运行
+
+```bash
+go build -o oracle_random_data_load oracle_random_data_load.go
+```
+
+```bash
+./oracle_random_data_load \
+  -dsn 'user="checksum" password="checksum" connectString="127.0.0.1:1521/gtchecksum" timezone="Asia/Shanghai" noTimezoneCheck="true"' \
+  -table gtchecksum.t1 \
+  -rows 10000
+```
+
+### 参数说明
+
+| 参数 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `-dsn` | string | 无 | Oracle 连接串（godror 格式，必填） |
+| `-schema` | string | 空 | schema 名，和 `-table` 组合使用 |
+| `-table` | string | 无 | 表名（支持 `TABLE` 或 `SCHEMA.TABLE`，必填） |
+| `-table-full` | string | 空 | `SCHEMA.TABLE` 别名参数，设置后覆盖 `-table` |
+| `-rows` | int64 | `10000` | 目标写入总行数 |
+| `-workers` | int | `4` | 并发 worker 数 |
+| `-batch-size` | int | `200` | 单批写入行数（上限 `100000`，并受 Oracle 绑定变量上限动态约束） |
+| `-max-retries` | int | `2` | 批次失败后的重试次数 |
+| `-null-rate` | float64 | `0.10` | 可空列写入 `NULL` 的比例，范围 `[0,1]` |
+| `-progress-interval` | int | `2` | 进度日志输出间隔（秒） |
+| `-exec-timeout` | int | `30` | 单批执行超时时间（秒） |
+| `-time-range-days` | int | `3650` | 日期时间随机范围（向前回溯天数） |
+| `-seed` | int64 | 当前时间戳 | 随机种子，固定后可复现同分布数据 |
+| `-log-file` | string | 空 | 日志输出文件（空则仅 stdout） |
+| `-continue-on-error` | bool | `true` | 出错后是否继续运行 |
+| `-exclude-columns` | string | 空 | 排除列列表（逗号分隔，如 `ID,CREATE_TIME`） |
+| `-print-sql` | bool | `false` | 打印生成的 `INSERT ALL` SQL 模板 |
+| `-db-max-open-conns` | int | `0` | 连接池最大连接数（`0` 表示自动） |
+| `-db-max-idle-conns` | int | `0` | 连接池最大空闲连接数（`0` 表示自动） |
+| `-db-conn-max-lifetime-minutes` | int | `30` | 连接最大生命周期（分钟） |
+
+> 说明：工具会将 schema/table 统一按 Oracle 规则处理（默认转大写）。如果使用 `-table SCHEMA.TABLE`，可不再单独设置 `-schema`。
+
+### 数据生成规则（按类型）
+
+1. `NUMBER`：按精度和小数位生成整数或小数；
+2. `FLOAT/BINARY_FLOAT/BINARY_DOUBLE`：生成随机浮点值；
+3. `CHAR/VARCHAR2/NCHAR/NVARCHAR2`：按字符语义或字节语义生成并自动裁剪，避免超长；
+4. `DATE/TIMESTAMP`：在 `time-range-days` 指定区间内生成随机时间；
+5. `CLOB`：生成随机文本段；
+6. `BLOB/RAW/LONG RAW`：生成随机字节并按列长度裁剪。
+
+对主键列会优先构建唯一值生成计划（如基于当前 `MAX(pk)` 加步长），显著减少主键冲突。
+
+### 执行流程
+
+1. 解析参数并校验；
+2. 连接 Oracle 并加载列元数据与主键信息；
+3. 过滤不可写/不支持列，构建随机值生成器；
+4. 按列数和 Oracle 绑定变量上限（`65535`）自动调整可用批大小；
+5. 多 worker 并发生成数据并执行批量写入；
+6. 批次失败时按重试策略执行，必要时降级逐行写入；
+7. 输出进度日志和最终 summary。
+
+### 快速案例
+
+#### 案例1：最小可用
+
+```bash
+./oracle_random_data_load \
+  -dsn 'user="checksum" password="checksum" connectString="127.0.0.1:1521/gtchecksum" timezone="Asia/Shanghai" noTimezoneCheck="true"' \
+  -table gtchecksum.t1 \
+  -rows 1000
+```
+
+#### 案例2：固定种子 + 排除列
+
+```bash
+./oracle_random_data_load \
+  -dsn 'user="checksum" password="checksum" connectString="127.0.0.1:1521/gtchecksum" timezone="Asia/Shanghai" noTimezoneCheck="true"' \
+  -schema gtchecksum \
+  -table t1 \
+  -rows 50000 \
+  -workers 4 \
+  -batch-size 300 \
+  -seed 20260306 \
+  -exclude-columns CREATED_AT,UPDATED_AT
+```
+
+#### 案例3：压测模式（严格失败即退出）
+
+```bash
+./oracle_random_data_load \
+  -dsn 'user="checksum" password="checksum" connectString="127.0.0.1:1521/gtchecksum" timezone="Asia/Shanghai" noTimezoneCheck="true"' \
+  -table gtchecksum.t1 \
+  -rows 2000000 \
+  -workers 8 \
+  -batch-size 800 \
+  -max-retries 3 \
+  -continue-on-error=false \
+  -db-max-open-conns 32 \
+  -db-max-idle-conns 16 \
+  -db-conn-max-lifetime-minutes 20 \
+  -log-file ./oracle_random_data_load.log
+```
+
+### 日志与结果解读
+
+执行过程中会看到类似进度日志：
+
+```text
+progress=62.50% generated=125000 inserted=124900 failed=100 ok_batches=312 fail_batches=2 retries=5(batch=4,row=1) rate=10234.5 rows/s
+```
+
+结束时会输出 summary：
+
+```text
+========== oracle_random_data_load summary ==========
+target: gtchecksum.t1
+rows target=200000 generated=200000 inserted=199998 failed=2
+batches ok=399 failed=1 retries=3(batch=2,row=1)
+elapsed=18.254s throughput=10956.4 rows/s
+result=PARTIAL_SUCCESS continue_on_error=true
+```
+
+### 常见问题与处理建议
+
+1. `ORA-12899`（字段超长）  
+   原因：随机字符串超过列长度（常见于 `NCHAR/NVARCHAR2`）。  
+   处理：检查列长度定义、确认字符语义，必要时用 `-exclude-columns` 排除特殊列，或降低字符串长度来源。
+
+2. `ORA-00001`（唯一约束冲突）  
+   原因：目标表已存在数据、主键生成范围重叠，或特殊主键类型被截断后冲突。  
+   处理：清理测试数据后重跑，或调整主键列设计/排除冲突列，必要时分表加载。
+
+3. `ORA-00257`（归档空间满）  
+   原因：Oracle FRA / archive log 空间不足。  
+   处理：联系 DBA 清理归档或扩容后重试。
+
+4. `godror WARNING: discrepancy between DBTIMEZONE and SYSTIMESTAMP`  
+   原因：数据库时区与会话时区不一致。  
+   处理：在 DSN 中显式设置 `timezone`，必要时设置 `noTimezoneCheck=true`。
+
+### 性能调优建议
+
+1. 优先调 `workers` 与 `batch-size`，再调连接池参数；
+2. 避免将 `batch-size` 设置过大，受 Oracle bind 变量上限影响会被自动降级；
+3. 压测时建议固定 `seed`，便于结果复现与横向对比；
+4. 对大量 LOB 列的表，建议分阶段加载或适度排除非关键列，降低 I/O 压力。
+
 ## 已知缺陷/问题
 
 截止最新的v1.2.4版本，已知存在以下几个约束/问题。
@@ -344,8 +519,6 @@ repairDB executed successfully
 - 因元数据间存在较多不一致，目前主要支持MySQL 8.0/GreatSQL 8.0版本，暂不支持跨5.7和8.0之间的校验。
 
 - 不支持对非InnoDB引擎表的数据校验。
-
-- 不支持数据库名、表名等数据对象名为**gtchecksum**。
 
 - 当添加的字段是主键/外键约束字段或包含索引时，会多一个额外的`ADD PRIMARY KEY/ADD CONSTRAINT/ADD KEY`操作，需要手动删掉，或者执行时加上"-f"强制忽略错误即可。
 

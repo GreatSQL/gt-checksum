@@ -1,8 +1,8 @@
 [![](https://img.shields.io/badge/GreatSQL-官网-orange.svg)](https://greatsql.cn/)
 [![](https://img.shields.io/badge/GreatSQL-论坛-brightgreen.svg)](https://greatsql.cn/forum.php)
 [![](https://img.shields.io/badge/GreatSQL-博客-brightgreen.svg)](https://greatsql.cn/home.php?mod=space&uid=10&do=blog&view=me&from=space)
-[![](https://img.shields.io/badge/License-Apache_v2.0-blue.svg)](https://gitee.com/yejr/gt-checksum/blob/master/LICENSE)
-[![](https://img.shields.io/badge/release-1.2.1-blue.svg)](https://gitee.com/GreatSQL/gt-checksum/releases/tag/1.2.1)
+[![](https://img.shields.io/badge/License-Apache_v2.0-blue.svg)](https://gitee.com/GreatSQL/gt-checksum/blob/master/LICENSE)
+[![](https://img.shields.io/badge/release-1.2.4-blue.svg)](https://gitee.com/GreatSQL/gt-checksum/releases)
 
 # gt-checksum
 **gt-checksum** 是GreatSQL社区开源的数据库校验及修复工具，支持MySQL、Oracle等主流数据库。
@@ -11,7 +11,7 @@
 
 MySQL DBA经常使用 **pt-table-checksum** 和 **pt-table-sync** 进行数据校验及修复，但这两个工具并不支持MySQL MGR架构，以及国内常见的上云下云业务场景，还有MySQL、Oracle间的异构数据库等多种场景。
 
-因此，我们开发了 **gt-checksum** 工具，旨在解决MySQL目标是支持更多业务需求场景，解决一些痛点。
+因此，我们开发了 **gt-checksum** 工具，旨在支持更多业务场景并解决现有痛点。
 
 **gt-checksum** 支持以下几种常见业务需求场景：
 1. **MySQL主从复制**：当主从复制中断较长时间后才发现，主从间数据差异太大。此时通常选择重建整个从库，如果利用 **pt-table-checksum**、**pt-table-sync** 先校验后修复，这个过程通常特别久，时间代价太大。而 **gt-checksum** 工作效率更高，可以更快校验出主从间数据差异并修复，这个过程时间代价小很多。
@@ -50,7 +50,7 @@ gt-checksum is reading configuration files
 
 ```bash
 $  gt-checksum -v
-gt-checksum version 1.2.3
+gt-checksum version 1.2.4
 ```
 
 - 查看使用帮助
@@ -98,7 +98,7 @@ Performance Metrics:
 Total execution time: 0.11s
 ```
 
-> 开始执行数据校验前，要先在源和目标数据库创建相应的专属账号并授权。详情参考：[**gt-checksum 手册**](./gt-checksum-manual.md#数据库授权)。
+> 开始执行数据校验前，要先在源和目标数据库创建相应的专属账号并授权。更多详情见手册中的 [**数据库授权**](./gt-checksum-manual.md#数据库授权) 章节。
 
 查看运行目录下是否生成修复SQL文件目录，例如：fixsql-20260129154514
 
@@ -116,13 +116,57 @@ $ ./repairDB ./fixsql-20260129154514 && cat ./repairDB.log
 
 **注意**：由于是并行执行数据修复工作，所以修复过程中可能产生死锁冲突，建议在修复结束后检查repairDB.log日志文件，确认是否有死锁冲突错误，如果没有则可以再次执行数据校验，确认数据一致性。如果有死锁冲突错误，则需要再次手动执行发生错误的SQL文件。
 
+## oracle_random_data_load
+
+`oracle_random_data_load` 是 Oracle 随机数据写入工具，适用于压测、功能验证、迁移前预填充等场景。其核心能力包括：
+
+1. 自动读取目标表元数据并按列类型生成随机值；
+2. 主键列优先按“唯一值计划”生成，降低唯一键冲突概率；
+3. 使用 `INSERT ALL ... SELECT 1 FROM DUAL` 批量写入，支持多 worker 并发；
+4. 失败批次自动重试，并在必要时退化为逐行插入；
+5. 提供实时进度日志和最终统计汇总。
+
+### 快速使用
+
+先编译：
+
+```bash
+go build -o oracle_random_data_load oracle_random_data_load.go
+```
+
+最小示例（写入 1000 行）：
+
+```bash
+./oracle_random_data_load \
+  -dsn 'user="checksum" password="checksum" connectString="127.0.0.1:1521/gtchecksum" timezone="Asia/Shanghai" noTimezoneCheck="true"' \
+  -table gtchecksum.t1 \
+  -rows 1000
+```
+
+并发批量示例（4 并发、每批 500 行、输出日志文件）：
+
+```bash
+./oracle_random_data_load \
+  -dsn 'user="checksum" password="checksum" connectString="127.0.0.1:1521/gtchecksum" timezone="Asia/Shanghai" noTimezoneCheck="true"' \
+  -schema gtchecksum \
+  -table t1 \
+  -rows 200000 \
+  -workers 4 \
+  -batch-size 500 \
+  -max-retries 2 \
+  -progress-interval 2 \
+  -log-file ./oracle_random_data_load.log
+```
+
+更多参数与完整案例见手册中的 [**oracle_random_data_load 工具使用说明**](./gt-checksum-manual.md) 章节。
+
 ## 手册
 
 [gt-checksum 手册](./gt-checksum-manual.md)
 
 ## 版本历史
 
-[版本历史](./CHANGELOG.zh-CN.md)
+[版本历史](./CHANGELOG.md)
 
 ## 配置参数
 
