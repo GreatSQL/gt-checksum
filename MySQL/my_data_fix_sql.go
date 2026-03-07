@@ -1045,10 +1045,14 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterColumnSqlDispos(alterType string, 
 		}
 	}
 
-	// 根据要求，不再添加COMMENT属性
-	// if columnDataType[5] != "empty" {
-	// 	attributes = append(attributes, fmt.Sprintf("COMMENT '%s'", columnDataType[5]))
-	// }
+	// 添加COMMENT属性（用于struct模式下列注释修复）
+	// 约定："null" 表示无值来源，不强制设置；空字符串会生成 COMMENT '' 以清空目标注释
+	if len(columnDataType) > 5 {
+		columnComment := columnDataType[5]
+		if !strings.EqualFold(columnComment, "null") {
+			attributes = append(attributes, fmt.Sprintf("COMMENT '%s'", escapeSQLString(columnComment)))
+		}
+	}
 
 	// 初始化AutoIncrementColumnsWithPrimaryKey映射
 	if AutoIncrementColumnsWithPrimaryKey == nil {

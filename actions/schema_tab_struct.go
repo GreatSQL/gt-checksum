@@ -311,6 +311,235 @@ func isOracleDrive(drive string) bool {
 	return drive == "godror" || strings.EqualFold(drive, "oracle")
 }
 
+func (stcls *schemaTable) isMySQLToMySQL() bool {
+	return strings.EqualFold(stcls.sourceDrive, "mysql") && strings.EqualFold(stcls.destDrive, "mysql")
+}
+
+func normalizeMetadataComment(v string) string {
+	s := strings.TrimSpace(v)
+	switch strings.ToLower(s) {
+	case "", "<entry>", "<nil>", "null":
+		return ""
+	default:
+		return s
+	}
+}
+
+func escapeMySQLCommentLiteral(v string) string {
+	s := strings.ReplaceAll(v, `\`, `\\`)
+	s = strings.ReplaceAll(s, `'`, `\'`)
+	return s
+}
+
+var mysqlCreateObjectCommentPattern = regexp.MustCompile(`(?is)\bCOMMENT\s+'((?:\\'|[^'])*)'`)
+var mysqlAlterTableStatementPattern = regexp.MustCompile("(?is)^\\s*ALTER\\s+TABLE\\s+((?:`[^`]+`\\.`[^`]+`)|(?:[^\\s]+))\\s+(.*?);?\\s*$")
+
+func extractMySQLObjectCommentFromCreate(createSQL string) string {
+	matches := mysqlCreateObjectCommentPattern.FindStringSubmatch(createSQL)
+	if len(matches) < 2 {
+		return ""
+	}
+	return normalizeMetadataComment(strings.ReplaceAll(matches[1], `\'`, `'`))
+}
+
+func loadMySQLRoutineComments(db *sql.DB, schema, routineType string, logThreadSeq int64) map[string]string {
+	result := make(map[string]string)
+	rows, err := db.Query(
+		`SELECT ROUTINE_NAME, ROUTINE_COMMENT FROM INFORMATION_SCHEMA.ROUTINES WHERE ROUTINE_SCHEMA = ? AND ROUTINE_TYPE = ?`,
+		schema, strings.ToUpper(strings.TrimSpace(routineType)),
+	)
+	if err != nil {
+		global.Wlog.Warn(fmt.Sprintf("(%d) [loadMySQLRoutineComments] failed to query %s.%s comments: %v", logThreadSeq, schema, routineType, err))
+		return result
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var routineName string
+		var routineComment sql.NullString
+		if err := rows.Scan(&routineName, &routineComment); err != nil {
+			global.Wlog.Warn(fmt.Sprintf("(%d) [loadMySQLRoutineComments] scan failed for %s.%s: %v", logThreadSeq, schema, routineType, err))
+			continue
+		}
+		comment := ""
+		if routineComment.Valid {
+			comment = normalizeMetadataComment(routineComment.String)
+		}
+		result[strings.ToUpper(routineName)] = comment
+	}
+	return result
+}
+
+func showCreateTriggerSQL(db *sql.DB, schema, triggerName string) (string, error) {
+	query := fmt.Sprintf("SHOW CREATE TRIGGER `%s`.`%s`", schema, triggerName)
+	rows, err := db.Query(query)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	if err != nil {
+		return "", err
+	}
+	if !rows.Next() {
+		return "", fmt.Errorf("no SHOW CREATE result for trigger %s.%s", schema, triggerName)
+	}
+
+	values := make([]sql.RawBytes, len(cols))
+	args := make([]interface{}, len(cols))
+	for i := range values {
+		args[i] = &values[i]
+	}
+	if err := rows.Scan(args...); err != nil {
+		return "", err
+	}
+
+	for i, col := range cols {
+		if strings.EqualFold(col, "SQL Original Statement") || strings.EqualFold(col, "SQL Statement") {
+			return string(values[i]), nil
+		}
+	}
+	return "", fmt.Errorf("SHOW CREATE TRIGGER missing statement column, cols=%v", cols)
+}
+
+func loadMySQLTriggerComments(db *sql.DB, schema string, logThreadSeq int64) map[string]string {
+	result := make(map[string]string)
+	rows, err := db.Query(`SELECT TRIGGER_NAME FROM INFORMATION_SCHEMA.TRIGGERS WHERE TRIGGER_SCHEMA = ?`, schema)
+	if err != nil {
+		global.Wlog.Warn(fmt.Sprintf("(%d) [loadMySQLTriggerComments] failed to list triggers for %s: %v", logThreadSeq, schema, err))
+		return result
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var triggerName string
+		if err := rows.Scan(&triggerName); err != nil {
+			global.Wlog.Warn(fmt.Sprintf("(%d) [loadMySQLTriggerComments] failed to scan trigger name for %s: %v", logThreadSeq, schema, err))
+			continue
+		}
+		createSQL, err := showCreateTriggerSQL(db, schema, triggerName)
+		if err != nil {
+			global.Wlog.Warn(fmt.Sprintf("(%d) [loadMySQLTriggerComments] failed to SHOW CREATE TRIGGER %s.%s: %v", logThreadSeq, schema, triggerName, err))
+			continue
+		}
+		key := strings.ToUpper(fmt.Sprintf("\"%s\".\"%s\"", schema, triggerName))
+		result[key] = extractMySQLObjectCommentFromCreate(createSQL)
+	}
+	return result
+}
+
+func buildMySQLRoutineCommentFixSQL(destSchema, name, routineType, comment string) string {
+	escapedComment := escapeMySQLCommentLiteral(normalizeMetadataComment(comment))
+	if strings.EqualFold(routineType, "PROCEDURE") {
+		return fmt.Sprintf("ALTER PROCEDURE `%s`.`%s` COMMENT '%s';", destSchema, name, escapedComment)
+	}
+	return fmt.Sprintf("ALTER FUNCTION `%s`.`%s` COMMENT '%s';", destSchema, name, escapedComment)
+}
+
+func shouldRecreateRoutineForCommentDiff(sourceComment string) bool {
+	return normalizeMetadataComment(sourceComment) == ""
+}
+
+func normalizeFixSQLForExec(stmt string) string {
+	s := strings.TrimSpace(stmt)
+	if s == "" {
+		return ""
+	}
+	if strings.HasPrefix(strings.ToUpper(s), "DELIMITER ") {
+		return ""
+	}
+	if strings.HasSuffix(s, "$$") {
+		s = strings.TrimSpace(strings.TrimSuffix(s, "$$"))
+	}
+	return s
+}
+
+type alterTableMergeBucket struct {
+	firstIndex int
+	tableExpr  string
+	clauses    []string
+}
+
+func parseAlterTableStatement(stmt string) (tableExpr string, clause string, ok bool) {
+	matches := mysqlAlterTableStatementPattern.FindStringSubmatch(strings.TrimSpace(stmt))
+	if len(matches) != 3 {
+		return "", "", false
+	}
+	tableExpr = strings.TrimSpace(matches[1])
+	clause = strings.TrimSpace(matches[2])
+	if tableExpr == "" || clause == "" {
+		return "", "", false
+	}
+	clause = strings.TrimSuffix(clause, ";")
+	clause = strings.TrimSpace(clause)
+	if clause == "" {
+		return "", "", false
+	}
+	return tableExpr, clause, true
+}
+
+func alterTableMergeKey(tableExpr string) string {
+	key := strings.ReplaceAll(strings.TrimSpace(tableExpr), "`", "")
+	return strings.ToLower(key)
+}
+
+// mergeAlterTableStatements merges ALTER TABLE statements targeting the same table.
+// It supports non-contiguous ALTER statements and keeps non-ALTER SQL ordering intact.
+func mergeAlterTableStatements(sqls []string, logThreadSeq int64) []string {
+	if len(sqls) <= 1 {
+		return sqls
+	}
+
+	buckets := make(map[string]*alterTableMergeBucket)
+	for idx, stmt := range sqls {
+		tableExpr, clause, ok := parseAlterTableStatement(stmt)
+		if !ok {
+			continue
+		}
+		key := alterTableMergeKey(tableExpr)
+		b, exists := buckets[key]
+		if !exists {
+			b = &alterTableMergeBucket{
+				firstIndex: idx,
+				tableExpr:  tableExpr,
+			}
+			buckets[key] = b
+		}
+		b.clauses = append(b.clauses, clause)
+	}
+
+	if len(buckets) == 0 {
+		return sqls
+	}
+
+	merged := make([]string, 0, len(sqls))
+	for idx, stmt := range sqls {
+		tableExpr, _, ok := parseAlterTableStatement(stmt)
+		if !ok {
+			merged = append(merged, stmt)
+			continue
+		}
+		key := alterTableMergeKey(tableExpr)
+		b, exists := buckets[key]
+		if !exists {
+			merged = append(merged, stmt)
+			continue
+		}
+		if idx != b.firstIndex {
+			continue
+		}
+		combined := fmt.Sprintf("ALTER TABLE %s %s;", b.tableExpr, strings.Join(b.clauses, ", "))
+		if len(b.clauses) > 1 {
+			if global.Wlog != nil {
+				global.Wlog.Debug(fmt.Sprintf("(%d) Merged %d ALTER TABLE statements for %s into one statement", logThreadSeq, len(b.clauses), b.tableExpr))
+			}
+		}
+		merged = append(merged, combined)
+	}
+	return merged
+}
+
 func (stcls *schemaTable) tableExistsByDrive(db *sql.DB, drive, schema, table string) (bool, error) {
 	var (
 		count int
@@ -978,6 +1207,24 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 					}
 				}
 
+				// 仅在 MySQL -> MySQL 场景比较列注释
+				if stcls.isMySQLToMySQL() {
+					sourceComment := ""
+					destComment := ""
+					if len(sourceColumnMap[v1]) > 5 {
+						sourceComment = normalizeMetadataComment(sourceColumnMap[v1][5])
+					}
+					if len(destColumnMap[v1]) > 5 {
+						destComment = normalizeMetadataComment(destColumnMap[v1][5])
+					}
+					if sourceComment != destComment {
+						tableAbnormalBool = true
+						vlog = fmt.Sprintf("(%d) %s Column %s comment mismatch: source=%q, dest=%q",
+							logThreadSeq, event, originalColName, sourceComment, destComment)
+						global.Wlog.Warn(vlog)
+					}
+				}
+
 				// 比较列顺序
 				// 注意：当添加一个自增列作为主键并使用FIRST关键字时，其他列的顺序自然会被调整
 				// 因此需要检查是否有添加自增列的操作，如果有，跳过因为这个原因导致的列顺序不匹配
@@ -1106,21 +1353,27 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 			sqlS = append(sqlS, convertSqlS...)
 		}
 
-		// 检查表注释是否一致并生成修复SQL
+		// 检查表注释是否一致并生成修复SQL（仅 MySQL -> MySQL）
 		var sourceTableComment, destTableComment string
 		var errTableComment error
+		tableCommentDifferent := false
 
 		// 根据数据库类型创建相应的查询实例
-		if stcls.sourceDrive == "mysql" {
-			mysqlQuery := &mysql.QueryTable{Schema: stcls.schema, Table: stcls.table}
+		if stcls.isMySQLToMySQL() {
+			mysqlQuery := &mysql.QueryTable{Schema: sourceSchema, Table: stcls.table}
 			sourceTableComment, errTableComment = mysqlQuery.TableComment(stcls.sourceDB, logThreadSeq)
-			if errTableComment == nil && sourceTableComment != "" {
+			if errTableComment == nil {
+				sourceTableComment = normalizeMetadataComment(sourceTableComment)
 				mysqlQuery.Schema = destSchema
 				destTableComment, errTableComment = mysqlQuery.TableComment(stcls.destDB, logThreadSeq)
+				if errTableComment == nil {
+					destTableComment = normalizeMetadataComment(destTableComment)
+				}
 				if errTableComment == nil && sourceTableComment != destTableComment {
+					tableCommentDifferent = true
 					// 生成修改表注释的SQL语句
-					escapedComment := strings.ReplaceAll(sourceTableComment, "'", "\\'")
-					tableCommentSql := fmt.Sprintf("ALTER TABLE `%s`.`%s` COMMENT = '%s';", destSchema, stcls.table, escapedComment)
+					escapedComment := escapeMySQLCommentLiteral(sourceTableComment)
+					tableCommentSql := fmt.Sprintf("ALTER TABLE `%s`.`%s` COMMENT = '%s';", destSchema, stcls.destTable, escapedComment)
 					vlog = fmt.Sprintf("(%d) %s Table comment mismatch: source='%s', dest='%s', generating fix SQL", logThreadSeq, event, sourceTableComment, destTableComment)
 					global.Wlog.Warn(vlog)
 					sqlS = append(sqlS, tableCommentSql)
@@ -1128,7 +1381,8 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 			}
 		}
 
-		if len(alterSlice) > 0 {
+		hasTableLevelDiff := tableCharsetDifferent || tableCollationDifferent || tableCommentDifferent
+		if len(alterSlice) > 0 || hasTableLevelDiff {
 			abnormalTableList = append(abnormalTableList, fmt.Sprintf("%s.%s", destSchema, stcls.table))
 		} else {
 			newCheckTableList = append(newCheckTableList, fmt.Sprintf("%s.%s", destSchema, stcls.table))
@@ -2522,6 +2776,13 @@ func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 in
 		vlog = fmt.Sprintf("(%d) dstDSN {%s} databases %s message is {%s}", logThreadSeq, stcls.destDrive, schema, destTrigger)
 		global.Wlog.Debug(vlog)
 
+		sourceTriggerComments := make(map[string]string)
+		destTriggerComments := make(map[string]string)
+		if stcls.isMySQLToMySQL() {
+			sourceTriggerComments = loadMySQLTriggerComments(stcls.sourceDB, schema, logThreadSeq)
+			destTriggerComments = loadMySQLTriggerComments(stcls.destDB, schema, logThreadSeq)
+		}
+
 		if len(sourceTrigger) == 0 && len(destTrigger) == 0 {
 			vlog = fmt.Sprintf("(%d) The current original target data is empty, and the verification of this databases %s will be skipped", logThreadSeq, schema)
 			global.Wlog.Debug(vlog)
@@ -2541,7 +2802,19 @@ func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 in
 		global.Wlog.Debug(vlog)
 		for k, _ := range tmpM {
 			pods.TriggerName = strings.ReplaceAll(strings.Split(k, ".")[1], "\"", "")
-			if sourceTrigger[k] != destTrigger[k] {
+			definitionDiff := sourceTrigger[k] != destTrigger[k]
+			commentDiff := false
+			if stcls.isMySQLToMySQL() {
+				sourceComment := normalizeMetadataComment(sourceTriggerComments[k])
+				destComment := normalizeMetadataComment(destTriggerComments[k])
+				if sourceComment != destComment {
+					commentDiff = true
+					vlog = fmt.Sprintf("(%d) Trigger comment mismatch %s: source=%q, dest=%q", logThreadSeq, k, sourceComment, destComment)
+					global.Wlog.Warn(vlog)
+				}
+			}
+
+			if definitionDiff || commentDiff {
 				pods.DIFFS = "yes"
 				d = append(d, k)
 
@@ -2772,6 +3045,31 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 	schemaMap := make(map[string]int)
 	procMap := make(map[string]string)
 	funcMap := make(map[string]string)
+	// 收集 routine 修复 SQL，统一仅在末尾输出 DELIMITER ;
+	// 避免多次写入时被去重逻辑打乱 DELIMITER 的位置。
+	routineDefFixSQLs := make([]string, 0)
+	routineCommentFixSQLs := make([]string, 0)
+
+	appendRoutineDefinitionFixSQLs := func(sqls []string) {
+		for _, s := range sqls {
+			ts := strings.TrimSpace(s)
+			if ts == "" {
+				continue
+			}
+			if strings.HasPrefix(strings.ToUpper(ts), "DROP ") && !strings.HasSuffix(ts, ";") {
+				ts += ";"
+			}
+			routineDefFixSQLs = append(routineDefFixSQLs, ts)
+		}
+	}
+
+	appendRoutineCommentFixSQL := func(sql string) {
+		ts := strings.TrimSpace(sql)
+		if ts == "" {
+			return
+		}
+		routineCommentFixSQLs = append(routineCommentFixSQLs, ts)
+	}
 
 	if stcls.caseSensitiveObjectName == "no" {
 		// 统一转小写的辅助闭包
@@ -2870,6 +3168,13 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 				global.Wlog.Error(vlog)
 			}
 
+			sourceProcComments := make(map[string]string)
+			destProcComments := make(map[string]string)
+			if stcls.isMySQLToMySQL() {
+				sourceProcComments = loadMySQLRoutineComments(stcls.sourceDB, schema, "PROCEDURE", logThreadSeq)
+				destProcComments = loadMySQLRoutineComments(stcls.destDB, schema, "PROCEDURE", logThreadSeq)
+			}
+
 			// 过滤或通配填充 procMap
 			if len(procMap) > 0 {
 				filteredSource := make(map[string]string)
@@ -2955,6 +3260,10 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 				}
 
 				for k, v := range tmpM {
+					definitionDiff := false
+					commentDiff := false
+					sourceComment := ""
+
 					if v == 2 {
 						// 同时存在：比较过程体
 						srcBody := strings.Join(strings.Fields(sourceProc[k+"_BODY"]), "")
@@ -2965,36 +3274,58 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 							dstDef := strings.Join(strings.Fields(destProc[k]), "")
 							if srcDef == "" && dstDef == "" {
 								// 两侧都缺失可比较内容，视为差异，避免漏报
-								pods.ProcName = k
-								pods.DIFFS = "yes"
-								d = append(d, k)
+								definitionDiff = true
 							} else if srcDef != dstDef {
-								pods.ProcName = k
-								pods.DIFFS = "yes"
-								d = append(d, k)
-							} else {
-								pods.ProcName = k
-								pods.DIFFS = "no"
-								c = append(c, k)
+								definitionDiff = true
 							}
 						} else if srcBody != dstBody {
-							pods.ProcName = k
-							pods.DIFFS = "yes"
-							d = append(d, k)
-						} else {
-							pods.ProcName = k
-							pods.DIFFS = "no"
-							c = append(c, k)
+							definitionDiff = true
 						}
 					} else {
 						// 仅一侧存在
-						pods.ProcName = k
+						definitionDiff = true
+					}
+
+					if stcls.isMySQLToMySQL() {
+						sourceComment = normalizeMetadataComment(sourceProcComments[strings.ToUpper(k)])
+						destComment := normalizeMetadataComment(destProcComments[strings.ToUpper(k)])
+						if sourceComment != destComment {
+							commentDiff = true
+							vlog = fmt.Sprintf("(%d) Procedure comment mismatch %s.%s: source=%q, dest=%q", logThreadSeq, schema, k, sourceComment, destComment)
+							global.Wlog.Warn(vlog)
+						}
+					}
+
+					pods.ProcName = k
+					if definitionDiff || commentDiff {
 						pods.DIFFS = "yes"
 						d = append(d, k)
+					} else {
+						pods.DIFFS = "no"
+						c = append(c, k)
 					}
 					stcls.appendPod(pods)
-					// Generate and write fix SQL for PROCEDURE differences (use SHOW CREATE for full definition)
+
+					// Generate and write fix SQL for PROCEDURE differences
 					if pods.DIFFS == "yes" && pods.CheckObject == "Procedure" {
+						// 确定目标schema
+						destSchema := schema
+						if mappedSchema, exists := stcls.tableMappings[schema]; exists {
+							destSchema = mappedSchema
+						}
+
+						// When source comment is empty, ALTER ... COMMENT '' does not reliably
+						// clear routine comments in MySQL. Recreate the routine instead.
+						if commentDiff && !definitionDiff && stcls.isMySQLToMySQL() {
+							if !shouldRecreateRoutineForCommentDiff(sourceComment) {
+								commentSQL := buildMySQLRoutineCommentFixSQL(destSchema, k, "PROCEDURE", sourceComment)
+								global.Wlog.Warn(fmt.Sprintf("(%d) Generating PROCEDURE comment fix SQL: %s", logThreadSeq, commentSQL))
+								appendRoutineCommentFixSQL(commentSQL)
+								continue
+							}
+							global.Wlog.Warn(fmt.Sprintf("(%d) PROCEDURE %s.%s source comment is empty, recreating routine instead of ALTER COMMENT", logThreadSeq, schema, k))
+						}
+
 						sourceDef, err := showCreateRoutine(stcls.sourceDB, schema, k, "PROCEDURE")
 						if err != nil || len(strings.TrimSpace(sourceDef)) == 0 {
 							// 回退：使用之前采集到的定义
@@ -3002,25 +3333,8 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 								sourceDef = def
 							}
 						}
-						// 确定目标schema
-						destSchema := schema
-						if mappedSchema, exists := stcls.tableMappings[schema]; exists {
-							destSchema = mappedSchema
-						}
 						sqls := mysql.GenerateRoutineFixSQL(schema, destSchema, k, "PROCEDURE", sourceDef)
-						// wrap with DELIMITER for routine definitions
-						var out []string
-						out = append(out, "DELIMITER $$")
-						for _, s := range sqls {
-							ts := strings.TrimSpace(s)
-							// ensure DROP has trailing ';' before delimiter
-							if strings.HasPrefix(strings.ToUpper(ts), "DROP ") && !strings.HasSuffix(ts, ";") {
-								ts = ts + ";"
-							}
-							out = append(out, ts+"\n$$")
-						}
-						out = append(out, "DELIMITER ;")
-						_ = stcls.writeFixSql(out, logThreadSeq)
+						appendRoutineDefinitionFixSQLs(sqls)
 					}
 				}
 			}
@@ -3053,6 +3367,13 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 			if destFunc, err = tc.Query().Func(stcls.destDB, logThreadSeq2); err != nil {
 				vlog = fmt.Sprintf("(%d) Error querying destination functions: %v", logThreadSeq, err)
 				global.Wlog.Error(vlog)
+			}
+
+			sourceFuncComments := make(map[string]string)
+			destFuncComments := make(map[string]string)
+			if stcls.isMySQLToMySQL() {
+				sourceFuncComments = loadMySQLRoutineComments(stcls.sourceDB, schema, "FUNCTION", logThreadSeq)
+				destFuncComments = loadMySQLRoutineComments(stcls.destDB, schema, "FUNCTION", logThreadSeq)
 			}
 
 			// 过滤或通配填充 funcMap
@@ -3109,6 +3430,10 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 					tmpM[k]++
 				}
 				for k, v := range tmpM {
+					definitionDiff := false
+					commentDiff := false
+					sourceComment := ""
+
 					if v == 2 {
 						sv := sourceFunc[k]
 						dv := destFunc[k]
@@ -3136,22 +3461,52 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 						cleanDestFunc = strings.Join(strings.Fields(cleanDestFunc), "")
 
 						if cleanSourceFunc != cleanDestFunc {
-							pods.ProcName = k
-							pods.DIFFS = "yes"
-							d = append(d, k)
-						} else {
-							pods.ProcName = k
-							pods.DIFFS = "no"
-							c = append(c, k)
+							definitionDiff = true
 						}
 					} else {
-						pods.ProcName = k
+						definitionDiff = true
+					}
+
+					if stcls.isMySQLToMySQL() {
+						sourceComment = normalizeMetadataComment(sourceFuncComments[strings.ToUpper(k)])
+						destComment := normalizeMetadataComment(destFuncComments[strings.ToUpper(k)])
+						if sourceComment != destComment {
+							commentDiff = true
+							vlog = fmt.Sprintf("(%d) Function comment mismatch %s.%s: source=%q, dest=%q", logThreadSeq, schema, k, sourceComment, destComment)
+							global.Wlog.Warn(vlog)
+						}
+					}
+
+					pods.ProcName = k
+					if definitionDiff || commentDiff {
 						pods.DIFFS = "yes"
 						d = append(d, k)
+					} else {
+						pods.DIFFS = "no"
+						c = append(c, k)
 					}
 					stcls.appendPod(pods)
-					// Generate and write fix SQL for FUNCTION differences (use SHOW CREATE for full definition)
+
+					// Generate and write fix SQL for FUNCTION differences
 					if pods.DIFFS == "yes" && pods.CheckObject == "Function" {
+						// 确定目标schema
+						destSchema := schema
+						if mappedSchema, exists := stcls.tableMappings[schema]; exists {
+							destSchema = mappedSchema
+						}
+
+						// When source comment is empty, ALTER ... COMMENT '' does not reliably
+						// clear routine comments in MySQL. Recreate the routine instead.
+						if commentDiff && !definitionDiff && stcls.isMySQLToMySQL() {
+							if !shouldRecreateRoutineForCommentDiff(sourceComment) {
+								commentSQL := buildMySQLRoutineCommentFixSQL(destSchema, k, "FUNCTION", sourceComment)
+								global.Wlog.Warn(fmt.Sprintf("(%d) Generating FUNCTION comment fix SQL: %s", logThreadSeq, commentSQL))
+								appendRoutineCommentFixSQL(commentSQL)
+								continue
+							}
+							global.Wlog.Warn(fmt.Sprintf("(%d) FUNCTION %s.%s source comment is empty, recreating routine instead of ALTER COMMENT", logThreadSeq, schema, k))
+						}
+
 						funcSource, err := showCreateRoutine(stcls.sourceDB, schema, k, "FUNCTION")
 						if err != nil || len(strings.TrimSpace(funcSource)) == 0 {
 							// 回退：使用之前采集到的定义
@@ -3159,24 +3514,8 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 								funcSource = def
 							}
 						}
-						// 确定目标schema
-						destSchema := schema
-						if mappedSchema, exists := stcls.tableMappings[schema]; exists {
-							destSchema = mappedSchema
-						}
 						funcSqls := mysql.GenerateRoutineFixSQL(schema, destSchema, k, "FUNCTION", funcSource)
-						// wrap with DELIMITER for routine definitions
-						var fout []string
-						fout = append(fout, "DELIMITER $$")
-						for _, s := range funcSqls {
-							ts := strings.TrimSpace(s)
-							if strings.HasPrefix(strings.ToUpper(ts), "DROP ") && !strings.HasSuffix(ts, ";") {
-								ts = ts + ";"
-							}
-							fout = append(fout, ts+"\n$$")
-						}
-						fout = append(fout, "DELIMITER ;")
-						_ = stcls.writeFixSql(fout, logThreadSeq)
+						appendRoutineDefinitionFixSQLs(funcSqls)
 					}
 				}
 			}
@@ -3184,6 +3523,25 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 			vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment databases %s Stored Function. normal databases message is {%s} num [%d] abnormal databases message is {%s} num [%d]", logThreadSeq, schema, c, len(c), d, len(d))
 			global.Wlog.Debug(vlog)
 			stcls.flushPods()
+		}
+	}
+
+	// 先写 comment-only 修复 SQL，再写 routine 定义 SQL。
+	// routine 定义统一包裹一次 DELIMITER，确保 DELIMITER ; 始终在末尾。
+	if len(routineCommentFixSQLs) > 0 {
+		if err := stcls.writeFixSql(routineCommentFixSQLs, logThreadSeq); err != nil {
+			global.Wlog.Error(fmt.Sprintf("(%d) failed to write routine comment fix SQLs: %v", logThreadSeq, err))
+		}
+	}
+	if len(routineDefFixSQLs) > 0 {
+		out := make([]string, 0, len(routineDefFixSQLs)+2)
+		out = append(out, "DELIMITER $$")
+		for _, stmt := range routineDefFixSQLs {
+			out = append(out, stmt+"\n$$")
+		}
+		out = append(out, "DELIMITER ;")
+		if err := stcls.writeFixSql(out, logThreadSeq); err != nil {
+			global.Wlog.Error(fmt.Sprintf("(%d) failed to write routine definition fix SQLs: %v", logThreadSeq, err))
 		}
 	}
 }
@@ -4311,7 +4669,34 @@ func SchemaTableInit(m *inputArg.ConfigParameter) *schemaTable {
 writeFixSql 处理不同的修复SQL文件写入逻辑，支持 fixFilePerTable 设置为 ON 的独立文件情况
 */
 func (stcls *schemaTable) writeFixSql(sqls []string, logThreadSeq int64) error {
-	if stcls.datafix != "file" || len(sqls) == 0 {
+	if len(sqls) == 0 {
+		return nil
+	}
+
+	// Merge ALTER TABLE statements for the same table (including non-contiguous ones)
+	// to reduce metadata lock overhead and shorten DDL execution time.
+	sqls = mergeAlterTableStatements(sqls, logThreadSeq)
+
+	// 执行模式：直接在目标库执行（用于 comment 修复等场景）
+	if strings.EqualFold(stcls.datafix, "table") {
+		if stcls.destDB == nil {
+			return fmt.Errorf("destination DB is nil in datafix=table mode")
+		}
+		for _, raw := range sqls {
+			stmt := normalizeFixSQLForExec(raw)
+			if stmt == "" {
+				continue
+			}
+			if _, err := stcls.destDB.Exec(stmt); err != nil {
+				return fmt.Errorf("failed to execute fix SQL in table mode: %v, sql: %s", err, stmt)
+			}
+			global.Wlog.Debug(fmt.Sprintf("(%d) Executed fix SQL in table mode: %s", logThreadSeq, stmt))
+		}
+		return nil
+	}
+
+	// 预览模式：仅写入修复文件
+	if !strings.EqualFold(stcls.datafix, "file") {
 		return nil
 	}
 
