@@ -17,7 +17,7 @@ CREATE TABLE testint(
     f5 INT(5) ZEROFILL,
     f6 INT UNSIGNED,
     f7 BIGINT
-);
+) COMMENT='table testint' ;
 ALTER TABLE testint ADD INDEX idx_testint_1(f1);
 INSERT INTO testint(f1,f2,f3,f4,f5,f6,f7) VALUES(1,2,3,4,5,6,7);
 
@@ -231,6 +231,7 @@ CREATE FUNCTION getAgeStr(age INT)
 RETURNS VARCHAR(20)
 DETERMINISTIC
 NO SQL
+COMMENT 'FUNCTION getAgeStr'
 BEGIN
 	DECLARE results VARCHAR(20);
 	IF age<=14 then
@@ -245,6 +246,15 @@ ELSE
 		SET results = 'Elderly';
 END IF;
 RETURN results;
+END ||
+DELIMITER ;
+
+DELIMITER ||
+DROP PROCEDURE IF EXISTS myAdd;
+CREATE PROCEDURE myAdd(IN n1 INT, IN n2 INT, OUT s INT)
+COMMENT 'PROCEDURE myAdd'
+BEGIN
+    SET s = n1 + n2;
 END ||
 DELIMITER ;
 
