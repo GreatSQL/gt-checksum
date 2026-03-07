@@ -34,6 +34,8 @@ var (
 	config Config
 )
 
+var delimiterDirectivePattern = regexp.MustCompile(`(?i)^\s*DELIMITER\s+(.+?)\s*;?\s*$`)
+
 // Parse config file
 func parseConfig(confFile string) error {
 	// Read config file content
@@ -262,49 +264,236 @@ func isCommitOrRollbackStatement(stmt string) bool {
 	return s == "COMMIT" || s == "ROLLBACK"
 }
 
-// splitSQLStatements splits SQL statements by semicolon, considering string literals
-func splitSQLStatements(content string) []string {
+func isMySQLDashCommentStart(content string, idx int) bool {
+	if idx+1 >= len(content) || content[idx] != '-' || content[idx+1] != '-' {
+		return false
+	}
+	// MySQL treats "--" as a comment starter only when the second dash is
+	// followed by at least one whitespace/control character.
+	if idx+2 >= len(content) {
+		return false
+	}
+	switch content[idx+2] {
+	case ' ', '\t', '\n', '\r', '\f', '\v':
+		return true
+	default:
+		return false
+	}
+}
+
+func trimLeadingSQLWhitespaceAndComments(content string) string {
+	i := 0
+	for i < len(content) {
+		switch {
+		case content[i] == ' ' || content[i] == '\t' || content[i] == '\n' || content[i] == '\r' || content[i] == '\f' || content[i] == '\v':
+			i++
+		case isMySQLDashCommentStart(content, i):
+			i += 2
+			for i < len(content) && content[i] != '\n' {
+				i++
+			}
+		case content[i] == '#':
+			i++
+			for i < len(content) && content[i] != '\n' {
+				i++
+			}
+		case i+1 < len(content) && content[i] == '/' && content[i+1] == '*':
+			i += 2
+			for i+1 < len(content) && !(content[i] == '*' && content[i+1] == '/') {
+				i++
+			}
+			if i+1 < len(content) {
+				i += 2
+			}
+		default:
+			return content[i:]
+		}
+	}
+	return ""
+}
+
+// parseDelimiterDirective parses lines like:
+// DELIMITER $$
+// DELIMITER $$;
+func parseDelimiterDirective(line string) (string, bool) {
+	matches := delimiterDirectivePattern.FindStringSubmatch(strings.TrimSpace(line))
+	if len(matches) != 2 {
+		return "", false
+	}
+	raw := strings.TrimSpace(matches[1])
+	if raw == "" {
+		return "", false
+	}
+	// Special case: DELIMITER ; means switch back to default semicolon.
+	if raw == ";" {
+		return ";", true
+	}
+
+	delimiter := raw
+	// Compatibility: allow DELIMITER $$; style with trailing statement terminator.
+	delimiter = strings.TrimSuffix(delimiter, ";")
+	delimiter = strings.TrimSpace(delimiter)
+	if delimiter == "" {
+		return "", false
+	}
+	return delimiter, true
+}
+
+// extractStatementsByDelimiter extracts completed SQL statements from content
+// with the provided delimiter, skipping delimiters inside literals/comments.
+func extractStatementsByDelimiter(content, delimiter string) ([]string, string) {
+	if delimiter == "" {
+		delimiter = ";"
+	}
+
 	var statements []string
-	var currentStmt strings.Builder
+	start := 0
 	inSingleQuote := false
 	inDoubleQuote := false
+	inBacktick := false
+	inLineComment := false
+	inBlockComment := false
 	escaped := false
 
-	for _, c := range content {
-		if escaped {
-			currentStmt.WriteRune(c)
-			escaped = false
+	for i := 0; i < len(content); {
+		c := content[i]
+		var next byte
+		if i+1 < len(content) {
+			next = content[i+1]
+		}
+
+		if inLineComment {
+			if c == '\n' {
+				inLineComment = false
+			}
+			i++
+			continue
+		}
+		if inBlockComment {
+			if c == '*' && next == '/' {
+				inBlockComment = false
+				i += 2
+				continue
+			}
+			i++
 			continue
 		}
 
-		switch c {
-		case '\\':
-			escaped = true
-			currentStmt.WriteRune(c)
-		case '\'':
-			if !inDoubleQuote {
-				inSingleQuote = !inSingleQuote
+		if escaped {
+			escaped = false
+			i++
+			continue
+		}
+		if inSingleQuote {
+			if c == '\\' {
+				escaped = true
+				i++
+				continue
 			}
-			currentStmt.WriteRune(c)
-		case '"':
-			if !inSingleQuote {
-				inDoubleQuote = !inDoubleQuote
+			if c == '\'' {
+				inSingleQuote = false
 			}
-			currentStmt.WriteRune(c)
-		case ';':
-			if !inSingleQuote && !inDoubleQuote {
-				statements = append(statements, currentStmt.String())
-				currentStmt.Reset()
-			} else {
-				currentStmt.WriteRune(c)
+			i++
+			continue
+		}
+		if inDoubleQuote {
+			if c == '\\' {
+				escaped = true
+				i++
+				continue
 			}
-		default:
-			currentStmt.WriteRune(c)
+			if c == '"' {
+				inDoubleQuote = false
+			}
+			i++
+			continue
+		}
+		if inBacktick {
+			if c == '`' {
+				inBacktick = false
+			}
+			i++
+			continue
+		}
+
+		switch {
+		case isMySQLDashCommentStart(content, i):
+			inLineComment = true
+			i += 2
+			continue
+		case c == '#':
+			inLineComment = true
+			i++
+			continue
+		case c == '/' && next == '*':
+			inBlockComment = true
+			i += 2
+			continue
+		case c == '\'':
+			inSingleQuote = true
+			i++
+			continue
+		case c == '"':
+			inDoubleQuote = true
+			i++
+			continue
+		case c == '`':
+			inBacktick = true
+			i++
+			continue
+		}
+
+		if strings.HasPrefix(content[i:], delimiter) {
+			stmt := strings.TrimSpace(content[start:i])
+			if stmt != "" {
+				statements = append(statements, stmt)
+			}
+			i += len(delimiter)
+			// Compatibility: some generated files use "$$;" instead of "$$".
+			if i < len(content) && content[i] == ';' {
+				i++
+			}
+			start = i
+			continue
+		}
+
+		i++
+	}
+
+	return statements, trimLeadingSQLWhitespaceAndComments(content[start:])
+}
+
+// splitSQLStatements splits SQL statements and supports MySQL DELIMITER directive.
+func splitSQLStatements(content string) []string {
+	var statements []string
+	delimiter := ";"
+	var currentStmt strings.Builder
+	lines := strings.Split(content, "\n")
+
+	for i, line := range lines {
+		if newDelimiter, ok := parseDelimiterDirective(line); ok {
+			ready, rest := extractStatementsByDelimiter(currentStmt.String(), delimiter)
+			statements = append(statements, ready...)
+			currentStmt.Reset()
+			currentStmt.WriteString(rest)
+			delimiter = newDelimiter
+			continue
+		}
+
+		currentStmt.WriteString(line)
+		if i < len(lines)-1 {
+			currentStmt.WriteString("\n")
+		}
+
+		ready, rest := extractStatementsByDelimiter(currentStmt.String(), delimiter)
+		if len(ready) > 0 {
+			statements = append(statements, ready...)
+			currentStmt.Reset()
+			currentStmt.WriteString(rest)
 		}
 	}
 
-	// Add the last statement if it's not empty
-	lastStmt := strings.TrimSpace(currentStmt.String())
+	lastStmt := strings.TrimSpace(trimLeadingSQLWhitespaceAndComments(currentStmt.String()))
 	if lastStmt != "" {
 		statements = append(statements, lastStmt)
 	}
