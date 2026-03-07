@@ -130,7 +130,7 @@ db1     testbin                         NULL            data            1,1     
 
 输出结果中，除了 **sbtest.sbtest2** 这个表所在行中 **Mapping** 列的值为 **-** 外，其他表的 **Mapping** 列的值都为 **Schema: db1:db2**，表示该表在源端和目标端的映射关系为 **db1.test2** 和 **db2.test2**。
 
-如果参数 `checkObject` 设置为 **routine** 或 **trigger**，则只能判断是否不一致，但无法生成fixSQL或直接完成修复，例如：
+如果参数 `checkObject` 设置为 **routine** 或 **trigger**，则会输出对应对象的差异结果；在 MySQL -> MySQL 场景下，当前版本也支持生成对应的 fixSQL，但这类 fixSQL 通常包含 `DROP + CREATE PROCEDURE/FUNCTION/TRIGGER` 语句，因此执行前需要额外关注目标库中的 `DEFINER` 账号与权限是否满足要求，例如：
 
 ```bash
 ...
@@ -143,7 +143,14 @@ sbtest  F1              Function        no      no
 ...
 ```
 
-虽然在 Diffs 列中提示部分存储函数存在差异，但却都无法生成修复SQL，需要DBA介入判断后进行修复。
+虽然在 Diffs 列中可以看到部分存储程序存在差异，但对这类对象的修复不能只关注定义文本本身，还必须同时关注执行环境。尤其是当生成的 fixSQL 中包含 `DROP + CREATE PROCEDURE/FUNCTION/TRIGGER` 时，目标库必须预先存在源端定义中的 `DEFINER` 账号，并且该账号具备相应对象权限，否则执行 fixSQL 时会失败。这是运行环境约束，不是程序实现错误。
+
+建议在执行这类 fixSQL 前，先做以下前置校验：
+
+1. 在生成的 fixSQL 中检查是否存在 `DEFINER=` 子句；
+2. 在目标库中确认对应账号已经存在；
+3. 确认该账号具备创建/修改对应 `PROCEDURE`、`FUNCTION`、`TRIGGER` 所需权限；
+4. 若源端与目标端账号体系不同，先由 DBA 完成账号和授权准备，再执行 `repairDB`。
 
 ## 配置参数详解
 
@@ -290,6 +297,8 @@ $ ./repairDB
 
 2. **SQL文件格式**：SQL文件可以包含多行SQL命令，会自动按分号分割并逐个执行。
 
+   对于包含 `PROCEDURE`、`FUNCTION`、`TRIGGER` 定义的 fixSQL，`repairDB` 也支持解析 `DELIMITER` 语法并执行。但如果脚本中包含 `DROP + CREATE PROCEDURE/FUNCTION/TRIGGER`，则目标库仍需预先满足对应 `DEFINER` 账号与权限要求。
+
 3. **事务管理**：按SQL执行单元处理事务。`BEGIN ... COMMIT` 内的语句作为一个事务块执行，失败时回滚该事务块；普通语句按语句级执行。
 
 4. **执行顺序**：优先执行删除操作的SQL文件（x-DELETE.sql文件），然后执行其他操作的SQL文件，确保数据一致性。为了降低同一个表上的锁等待，在执行删除操作类和其他类的SQL文件时，采用随机并行执行的方式。
@@ -299,6 +308,8 @@ $ ./repairDB
 6. **目录存在性**：检查指定的 `fixFileDir` 目录是否存在，如果不存在则报错退出。
 
 7. **并行执行**：以 `parallelThds` 线程数并行执行SQL文件。为了提高数据修复效率，可以考虑临时加大 `parallelThds` 参数值，但同时需要注意对目标数据库的负载的影响和死锁概率。
+
+8. **DEFINER 前置检查（可选但强烈建议）**：当 fixSQL 中包含 `CREATE DEFINER=... PROCEDURE/FUNCTION/TRIGGER` 时，建议在执行前先扫描 fixSQL 并核对目标库账号体系。例如先确认脚本里引用了哪些 `DEFINER`，再确认目标库是否已存在对应账号及授权。若缺失账号或权限，应先由 DBA 补齐，再执行 `repairDB`。
 
 ### 示例输出
 程序执行过程中的输出会记录到repairDB.log文件中，示例如下：
@@ -516,6 +527,8 @@ result=PARTIAL_SUCCESS continue_on_error=true
 - 为了安全起见，当设置checkObject=data之外的其他值时，即便同时设置datafix=table，也不会直接在线完成修复，需要改成datafix=file，生成fix SQL后再由DBA手动完成。
 
 - 当设置checkObject=trigger或routine时，如果连接数据库的账号没有相应的权限而无法读取到元数据，会导致检查结果不准确。这种情况下，先授予相应权限就可以。
+
+- 当 `checkObject=trigger` 或 `routine` 生成的 fixSQL 中包含 `DROP + CREATE PROCEDURE/FUNCTION/TRIGGER` 时，目标库必须预先存在源端定义中的 `DEFINER` 账号及权限，否则执行会失败。这是环境约束，不是程序实现错误。建议在执行 `repairDB` 前，先对 fixSQL 中的 `DEFINER` 做一次人工检查。
 
 - 因元数据间存在较多不一致，目前主要支持MySQL 8.0/GreatSQL 8.0版本，暂不支持跨5.7和8.0之间的校验。
 
