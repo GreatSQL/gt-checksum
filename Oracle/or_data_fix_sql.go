@@ -91,7 +91,7 @@ func (or *OracleDataAbnormalFixStruct) FixInsertSqlExec(db *sql.DB, sourceDrive 
 				}
 			} else {
 				// 如果索引越界，使用默认格式
-					tmpcolumnName = fmt.Sprintf("'%v'", v)
+				tmpcolumnName = fmt.Sprintf("'%v'", v)
 				vlog = fmt.Sprintf("(%d) Warning: Column index %d exceeds available column data for %s.%s",
 					logThreadSeq, k, targetSchema, or.Table)
 				global.Wlog.Warn(vlog)
@@ -185,17 +185,17 @@ func (or *OracleDataAbnormalFixStruct) FixAlterColumnAndIndexSqlGenerate(columnO
 	// Oracle不支持在单个ALTER TABLE语句中合并列和索引操作
 	// 分别生成列修复和索引修复SQL
 	var alterSql []string
-	
+
 	// 生成列修复SQL
 	if len(columnOperations) > 0 {
 		alterSql = append(alterSql, fmt.Sprintf("ALTER TABLE %s.%s %s", or.Schema, or.Table, strings.Join(columnOperations, ",")))
 	}
-	
+
 	// 生成索引修复SQL
 	if len(indexOperations) > 0 {
 		alterSql = append(alterSql, fmt.Sprintf("ALTER TABLE %s.%s %s", or.Schema, or.Table, strings.Join(indexOperations, ",")))
 	}
-	
+
 	return alterSql
 }
 
@@ -213,6 +213,15 @@ func (or *OracleDataAbnormalFixStruct) FixAlterIndexSqlGenerate(indexOperations 
 func (or *OracleDataAbnormalFixStruct) FixTableCharsetSqlGenerate(charset, collation string, logThreadSeq int64) []string {
 	// Oracle不支持MySQL的CONVERT TO CHARACTER SET语法，返回空数组
 	vlog := fmt.Sprintf("(%d) Oracle does not support CONVERT TO CHARACTER SET syntax, skipping charset conversion for %s.%s",
+		logThreadSeq, or.Schema, or.Table)
+	global.Wlog.Warn(vlog)
+	return []string{}
+}
+
+// FixTableAutoIncrementSqlGenerate exists only to satisfy the shared repair interface.
+// Oracle does not support MySQL table-level AUTO_INCREMENT metadata repair.
+func (or *OracleDataAbnormalFixStruct) FixTableAutoIncrementSqlGenerate(nextValue int64, logThreadSeq int64) []string {
+	vlog := fmt.Sprintf("(%d) Oracle does not support AUTO_INCREMENT repair syntax, skipping for %s.%s",
 		logThreadSeq, or.Schema, or.Table)
 	global.Wlog.Warn(vlog)
 	return []string{}

@@ -1305,6 +1305,21 @@ func (my *MysqlDataAbnormalFixStruct) FixTableCharsetSqlGenerate(charset, collat
 	return alterSql
 }
 
+// FixTableAutoIncrementSqlGenerate generates table-level AUTO_INCREMENT fix SQL.
+func (my *MysqlDataAbnormalFixStruct) FixTableAutoIncrementSqlGenerate(nextValue int64, logThreadSeq int64) []string {
+	var (
+		alterSql     []string
+		targetSchema = my.Schema
+	)
+
+	alterSql = append(alterSql, fmt.Sprintf("ALTER TABLE `%s`.`%s` AUTO_INCREMENT=%d;", targetSchema, my.Table, nextValue))
+
+	vlog := fmt.Sprintf("(%d) Generated table AUTO_INCREMENT SQL: %s", logThreadSeq, alterSql[0])
+	global.Wlog.Debug(vlog)
+
+	return alterSql
+}
+
 // WriteFixIfNeeded writes fix SQLs to file when datafix is "file"
 func WriteFixIfNeeded(datafix, fixFileDir string, sqls []string, logThreadSeq int64) error {
 	if strings.EqualFold(datafix, "file") && len(sqls) > 0 && strings.TrimSpace(fixFileDir) != "" {

@@ -33,6 +33,7 @@ type DataAbnormalFixInterface interface {
 	FixAlterColumnAndIndexSqlGenerate(columnOperations, indexOperations []string, logThreadSeq int64) []string
 	FixAlterIndexSqlGenerate(indexOperations []string, logThreadSeq int64) []string
 	FixTableCharsetSqlGenerate(charset, collation string, logThreadSeq int64) []string
+	FixTableAutoIncrementSqlGenerate(nextValue int64, logThreadSeq int64) []string
 }
 
 type unsupportedDataAbnormalFix struct {
@@ -82,6 +83,11 @@ func (u *unsupportedDataAbnormalFix) FixAlterIndexSqlGenerate(indexOperations []
 
 func (u *unsupportedDataAbnormalFix) FixTableCharsetSqlGenerate(charset, collation string, logThreadSeq int64) []string {
 	_ = u.unsupportedErr("FixTableCharsetSqlGenerate")
+	return nil
+}
+
+func (u *unsupportedDataAbnormalFix) FixTableAutoIncrementSqlGenerate(nextValue int64, logThreadSeq int64) []string {
+	_ = u.unsupportedErr("FixTableAutoIncrementSqlGenerate")
 	return nil
 }
 
