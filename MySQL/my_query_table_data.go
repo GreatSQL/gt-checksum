@@ -35,6 +35,18 @@ func getDBScopeKey(db *sql.DB) string {
 	return scopeKey
 }
 
+func scopedTableCacheKey(db *sql.DB, schema, table, suffix string) string {
+	scopeKey := getDBScopeKey(db)
+	if suffix == "" {
+		return fmt.Sprintf("%s.%s.%s", scopeKey, schema, table)
+	}
+	return fmt.Sprintf("%s.%s.%s.%s", scopeKey, schema, table, suffix)
+}
+
+func scopedColumnCacheKey(db *sql.DB, schema, table, column string) string {
+	return fmt.Sprintf("%s.%s.%s.%s", getDBScopeKey(db), schema, table, column)
+}
+
 /*
 查询MySQL库下指定表的索引统计信息
 */
@@ -43,20 +55,22 @@ func (my *QueryTable) QueryTableIndexColumnInfo(db *sql.DB, logThreadSeq int64) 
 		Event     = "Q_Index_Statistics"
 		tableData []map[string]interface{}
 		err       error
+		query     string
+		logMsg    string
 	)
-	strsql = fmt.Sprintf("SELECT isc.COLUMN_NAME AS columnName, isc.COLUMN_TYPE AS columnType, isc.COLUMN_KEY AS columnKey,isc.EXTRA AS autoIncrement, iss.NON_UNIQUE AS nonUnique, iss.INDEX_NAME AS indexName, iss.SEQ_IN_INDEX AS IndexSeq, isc.ORDINAL_POSITION AS columnSeq, iss.IS_VISIBLE AS indexVisibility FROM INFORMATION_SCHEMA.COLUMNS isc INNER JOIN (SELECT NON_UNIQUE, INDEX_NAME, SEQ_IN_INDEX, COLUMN_NAME, IS_VISIBLE FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s') AS iss ON isc.COLUMN_NAME=iss.COLUMN_NAME WHERE isc.TABLE_SCHEMA='%s' AND isc.TABLE_NAME='%s';", my.Schema, my.Table, my.Schema, my.Table)
-	vlog = fmt.Sprintf("(%d) [%s] Generate a sql statement to query the index statistics of table %s.%s under the %s database.sql messige is {%s}", logThreadSeq, Event, my.Schema, my.Table, DBType, strsql)
-	global.Wlog.Debug(vlog)
+	query = fmt.Sprintf("SELECT isc.COLUMN_NAME AS columnName, isc.COLUMN_TYPE AS columnType, isc.COLUMN_KEY AS columnKey,isc.EXTRA AS autoIncrement, iss.NON_UNIQUE AS nonUnique, iss.INDEX_NAME AS indexName, iss.SEQ_IN_INDEX AS IndexSeq, isc.ORDINAL_POSITION AS columnSeq, iss.IS_VISIBLE AS indexVisibility FROM INFORMATION_SCHEMA.COLUMNS isc INNER JOIN (SELECT NON_UNIQUE, INDEX_NAME, SEQ_IN_INDEX, COLUMN_NAME, IS_VISIBLE FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s') AS iss ON isc.COLUMN_NAME=iss.COLUMN_NAME WHERE isc.TABLE_SCHEMA='%s' AND isc.TABLE_NAME='%s';", my.Schema, my.Table, my.Schema, my.Table)
+	logMsg = fmt.Sprintf("(%d) [%s] Generate a sql statement to query the index statistics of table %s.%s under the %s database.sql messige is {%s}", logThreadSeq, Event, my.Schema, my.Table, DBType, query)
+	global.Wlog.Debug(logMsg)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
-	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
+	if dispos.SqlRows, err = dispos.DBSQLforExec(query); err != nil {
 		return nil, err
 	}
 	tableData, err = dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
 	if err != nil {
 		return nil, err
 	}
-	vlog = fmt.Sprintf("(%d) [%s] The index statistics query of table %s.%s under the %s database is completed. index statistics is {%v}", logThreadSeq, Event, my.Schema, my.Table, DBType, tableData)
-	global.Wlog.Debug(vlog)
+	logMsg = fmt.Sprintf("(%d) [%s] The index statistics query of table %s.%s under the %s database is completed. index statistics is {%v}", logThreadSeq, Event, my.Schema, my.Table, DBType, tableData)
+	global.Wlog.Debug(logMsg)
 	defer dispos.SqlRows.Close()
 	return tableData, err
 }
@@ -74,9 +88,10 @@ func (my *QueryTable) IndexDisposF(queryData []map[string]interface{}, logThread
 		indexName          string
 		currIndexName      string
 		Event              = "E_Index_Filter"
+		logMsg             string
 	)
-	vlog = fmt.Sprintf("(%d) [%s] Start to filter the primary key index, unique index, and common index based on the index information of the specified table %s.%s under the %s library", logThreadSeq, Event, my.Schema, my.Table, DBType)
-	global.Wlog.Debug(vlog)
+	logMsg = fmt.Sprintf("(%d) [%s] Start to filter the primary key index, unique index, and common index based on the index information of the specified table %s.%s under the %s library", logThreadSeq, Event, my.Schema, my.Table, DBType)
+	global.Wlog.Debug(logMsg)
 
 	// 用于临时存储每个索引的列顺序
 	indexColumns := make(map[string]map[string]string)
@@ -147,8 +162,8 @@ func (my *QueryTable) IndexDisposF(queryData []map[string]interface{}, logThread
 		}
 	}
 
-	vlog = fmt.Sprintf("(%d) [%s] The index information screening of the specified table %s.%s under the %s library is completed", logThreadSeq, Event, my.Schema, my.Table, DBType)
-	global.Wlog.Debug(vlog)
+	logMsg = fmt.Sprintf("(%d) [%s] The index information screening of the specified table %s.%s under the %s library is completed", logThreadSeq, Event, my.Schema, my.Table, DBType)
+	global.Wlog.Debug(logMsg)
 
 	// 返回四个map：主键索引、唯一索引、普通索引和索引可见性信息
 	return priIndexColumnMap, nultiseriateIndexColumnMap, multiseriateIndexColumnMap, indexVisibilityMap
@@ -163,9 +178,10 @@ func (my *QueryTable) TmpTableIndexColumnSelectDispos(logThreadSeq int64) map[st
 		columnSelect = make(map[string]string)
 		columnName   = my.ColumnName
 		Event        = "D_Index_Length"
+		logMsg       string
 	)
-	vlog = fmt.Sprintf("(%d) [%s] Start to query the length of the query index column in table %s.%s in the specified %s database.", logThreadSeq, Event, my.Schema, my.Table, DBType)
-	global.Wlog.Debug(vlog)
+	logMsg = fmt.Sprintf("(%d) [%s] Start to query the length of the query index column in table %s.%s in the specified %s database.", logThreadSeq, Event, my.Schema, my.Table, DBType)
+	global.Wlog.Debug(logMsg)
 	//根据索引列的多少，生成select 列条件，并生成列长度，为判断列是否为null或为空做判断
 	if len(columnName) == 1 {
 		columnSelect["selectColumnName"] = strings.Join(columnName, "")
@@ -188,8 +204,8 @@ func (my *QueryTable) TmpTableIndexColumnSelectDispos(logThreadSeq int64) map[st
 		columnSelect["selectColumnNull"] = strings.Join(cc, "/*column*/")
 		columnSelect["selectColumnEmpty"] = strings.Join(dd, "/*column*/")
 	}
-	vlog = fmt.Sprintf("(%d) [%s] The length of the query index column of table %s.%s in the %s database is completed.", logThreadSeq, Event, my.Schema, my.Table, DBType)
-	global.Wlog.Debug(vlog)
+	logMsg = fmt.Sprintf("(%d) [%s] The length of the query index column of table %s.%s in the %s database is completed.", logThreadSeq, Event, my.Schema, my.Table, DBType)
+	global.Wlog.Debug(logMsg)
 	return columnSelect
 }
 
@@ -201,12 +217,15 @@ func (my *QueryTable) TmpTableIndexColumnRowsCount(db *sql.DB, logThreadSeq int6
 		tmpTableCount uint64
 		Event         = "Q_Index_Table_Count"
 		E             string
+		err           error
+		query         string
+		logMsg        string
 	)
-	vlog = fmt.Sprintf("(%d) [%s] Start to query the total number of rows in the following table %s.%s of the %s database.", logThreadSeq, Event, my.Schema, my.Table, DBType)
-	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("SELECT index_name AS INDEX_NAME, column_name AS columnName, cardinality as CARDINALITY FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s' AND SEQ_IN_INDEX=1", my.Schema, my.Table)
+	logMsg = fmt.Sprintf("(%d) [%s] Start to query the total number of rows in the following table %s.%s of the %s database.", logThreadSeq, Event, my.Schema, my.Table, DBType)
+	global.Wlog.Debug(logMsg)
+	query = fmt.Sprintf("SELECT index_name AS INDEX_NAME, column_name AS columnName, cardinality as CARDINALITY FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s' AND SEQ_IN_INDEX=1", my.Schema, my.Table)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
-	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
+	if dispos.SqlRows, err = dispos.DBSQLforExec(query); err != nil {
 		return 0, err
 	}
 	if B, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{}); err != nil {
@@ -229,11 +248,11 @@ func (my *QueryTable) TmpTableIndexColumnRowsCount(db *sql.DB, logThreadSeq int6
 		}
 	}
 	if E != "" {
-		strsql = fmt.Sprintf("SELECT SUM(a.count) AS sum FROM (SELECT COUNT(1) AS count FROM `%s`.`%s` GROUP BY %s) a", my.Schema, my.Table, E)
+		query = fmt.Sprintf("SELECT SUM(a.count) AS sum FROM (SELECT COUNT(1) AS count FROM `%s`.`%s` GROUP BY %s) a", my.Schema, my.Table, E)
 	} else {
-		strsql = fmt.Sprintf("SELECT COUNT(1) AS sum FROM `%s`.`%s`", my.Schema, my.Table)
+		query = fmt.Sprintf("SELECT COUNT(1) AS sum FROM `%s`.`%s`", my.Schema, my.Table)
 	}
-	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
+	if dispos.SqlRows, err = dispos.DBSQLforExec(query); err != nil {
 		return 0, err
 	}
 	if tableData, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{}); err != nil {
@@ -244,8 +263,8 @@ func (my *QueryTable) TmpTableIndexColumnRowsCount(db *sql.DB, logThreadSeq int6
 			tmpTableCount += d
 		}
 	}
-	vlog = fmt.Sprintf("(%d) [%s] The query of the total number of rows in the following table %s.%s of the %s database is completed.", logThreadSeq, Event, my.Schema, my.Table, DBType)
-	global.Wlog.Debug(vlog)
+	logMsg = fmt.Sprintf("(%d) [%s] The query of the total number of rows in the following table %s.%s of the %s database is completed.", logThreadSeq, Event, my.Schema, my.Table, DBType)
+	global.Wlog.Debug(logMsg)
 	defer dispos.SqlRows.Close()
 	return tmpTableCount, nil
 }
@@ -364,8 +383,7 @@ func (my *QueryTable) getTableColumnSet(db *sql.DB, logThreadSeq int64) (map[str
 	cacheMutex.Lock()
 	tableColumnSetGlobalCache[cacheKey] = colSet
 	cacheMutex.Unlock()
-	vlog = fmt.Sprintf("(%d) [Check_Column_Exists] Loaded table column cache for %s.%s, columns=%d", logThreadSeq, my.Schema, my.Table, len(colSet))
-	global.Wlog.Debug(vlog)
+	global.Wlog.Debug(fmt.Sprintf("(%d) [Check_Column_Exists] Loaded table column cache for %s.%s, columns=%d", logThreadSeq, my.Schema, my.Table, len(colSet)))
 	return colSet, nil
 }
 
@@ -555,9 +573,10 @@ func (my QueryTable) TmpTableColumnGroupDataDispos(db *sql.DB, where string, col
 	var (
 		whereExist string
 		Event      = "Q_Index_ColumnData"
+		logMsg     string
 	)
-	vlog = fmt.Sprintf("(%d) [%s] Start to query the index column data of the following table %s.%s in the %s database and de-reorder the data.", logThreadSeq, Event, my.Schema, my.Table, DBType)
-	global.Wlog.Debug(vlog)
+	logMsg = fmt.Sprintf("(%d) [%s] Start to query the index column data of the following table %s.%s in the %s database and de-reorder the data.", logThreadSeq, Event, my.Schema, my.Table, DBType)
+	global.Wlog.Debug(logMsg)
 
 	// 先检查表中是否存在该列
 	columnExists, err := my.checkColumnExists(db, columnName, logThreadSeq)
@@ -565,8 +584,8 @@ func (my QueryTable) TmpTableColumnGroupDataDispos(db *sql.DB, where string, col
 		return nil, err
 	}
 	if !columnExists {
-		vlog = fmt.Sprintf("(%d) [%s] Column %s does not exist in table %s.%s, skipping query to avoid errors.", logThreadSeq, Event, columnName, my.Schema, my.Table)
-		global.Wlog.Warn(vlog)
+		logMsg = fmt.Sprintf("(%d) [%s] Column %s does not exist in table %s.%s, skipping query to avoid errors.", logThreadSeq, Event, columnName, my.Schema, my.Table)
+		global.Wlog.Warn(logMsg)
 		// 返回空的channel表示跳过该列的查询
 		emptyChan := make(chan map[string]interface{})
 		close(emptyChan)
@@ -593,19 +612,19 @@ func (my QueryTable) TmpTableColumnGroupDataDispos(db *sql.DB, where string, col
 	leadingIndexName := my.getLeadingIndexName(db, columnName)
 	groupQueryForceIndexName := my.chooseGroupByForceIndex(db, columnName, where)
 	if groupQueryForceIndexName != "" {
-		vlog = fmt.Sprintf("(%d) [%s] Force index chosen for grouped query on %s.%s(%s): %s",
+		logMsg = fmt.Sprintf("(%d) [%s] Force index chosen for grouped query on %s.%s(%s): %s",
 			logThreadSeq, Event, my.Schema, my.Table, columnName, groupQueryForceIndexName)
-		global.Wlog.Debug(vlog)
+		global.Wlog.Debug(logMsg)
 	}
 	if where != "" && groupQueryForceIndexName != "" && !strings.EqualFold(groupQueryForceIndexName, leadingIndexName) {
-		vlog = fmt.Sprintf("(%d) [%s] Use WHERE-driven force index (%s) instead of GROUP-column index (%s) for %s.%s",
+		logMsg = fmt.Sprintf("(%d) [%s] Use WHERE-driven force index (%s) instead of GROUP-column index (%s) for %s.%s",
 			logThreadSeq, Event, groupQueryForceIndexName, leadingIndexName, my.Schema, my.Table)
-		global.Wlog.Info(vlog)
+		global.Wlog.Info(logMsg)
 	}
 	if where != "" && groupQueryForceIndexName == "" {
-		vlog = fmt.Sprintf("(%d) [%s] No suitable force index detected from WHERE columns for %s.%s(%s), fallback to optimizer",
+		logMsg = fmt.Sprintf("(%d) [%s] No suitable force index detected from WHERE columns for %s.%s(%s), fallback to optimizer",
 			logThreadSeq, Event, my.Schema, my.Table, columnName)
-		global.Wlog.Debug(vlog)
+		global.Wlog.Debug(logMsg)
 	}
 	if groupQueryForceIndexName != "" {
 		forceIndexClause = fmt.Sprintf(" FORCE INDEX (`%s`)", groupQueryForceIndexName)
@@ -613,8 +632,8 @@ func (my QueryTable) TmpTableColumnGroupDataDispos(db *sql.DB, where string, col
 	useFastGroupMode := false
 	if shouldUseFastGroupMode(where, my.getTableRowsEstimate(db), my.getLeadingIndexCardinality(db, leadingIndexName, columnName), leadingIndexName != "") {
 		useFastGroupMode = true
-		vlog = fmt.Sprintf("(%d) [%s] Fast group mode enabled for %s.%s column %s", logThreadSeq, Event, my.Schema, my.Table, columnName)
-		global.Wlog.Info(vlog)
+		logMsg = fmt.Sprintf("(%d) [%s] Fast group mode enabled for %s.%s column %s", logThreadSeq, Event, my.Schema, my.Table, columnName)
+		global.Wlog.Info(logMsg)
 	}
 
 	accurateForceSQL := fmt.Sprintf("SELECT %s AS columnName, COUNT(1) AS count FROM `%s`.`%s`%s %s GROUP BY %s ORDER BY %s", columnName, my.Schema, my.Table, forceIndexClause, whereExist, columnName, columnName)
@@ -646,8 +665,8 @@ func (my QueryTable) TmpTableColumnGroupDataDispos(db *sql.DB, where string, col
 		}
 	}
 	C := dispos.DataChanDispos()
-	vlog = fmt.Sprintf("(%d) [%s] The index column data query of the following table %s.%s in the %s database is completed.", logThreadSeq, Event, my.Schema, my.Table, DBType)
-	global.Wlog.Debug(vlog)
+	logMsg = fmt.Sprintf("(%d) [%s] The index column data query of the following table %s.%s in the %s database is completed.", logThreadSeq, Event, my.Schema, my.Table, DBType)
+	global.Wlog.Debug(logMsg)
 	return C, nil
 }
 
@@ -680,34 +699,35 @@ MySQL 查询表的统计信息中行数
 */
 func (my *QueryTable) TableRows(db *sql.DB, logThreadSeq int64) (uint64, error) {
 	var (
-		Event = "Q_I_S_tableRows"
+		Event  = "Q_I_S_tableRows"
+		logMsg string
 	)
 	// 确保Schema不为空
 	if my.Schema == "" {
-		vlog := fmt.Sprintf("(%d) [%s] Schema is empty for table %s, cannot get row count. Please specify a schema.", logThreadSeq, Event, my.Table)
-		global.Wlog.Error(vlog)
+		logMsg = fmt.Sprintf("(%d) [%s] Schema is empty for table %s, cannot get row count. Please specify a schema.", logThreadSeq, Event, my.Table)
+		global.Wlog.Error(logMsg)
 		return 0, fmt.Errorf("schema is empty for table %s", my.Table)
 	}
 
-	vlog := fmt.Sprintf("(%d) [%s] Start querying row count for table %s.%s in the %s database", logThreadSeq, Event, my.Schema, my.Table, DBType)
-	global.Wlog.Debug(vlog)
+	logMsg = fmt.Sprintf("(%d) [%s] Start querying row count for table %s.%s in the %s database", logThreadSeq, Event, my.Schema, my.Table, DBType)
+	global.Wlog.Debug(logMsg)
 
 	// Prefer INFORMATION_SCHEMA.TABLES row estimate and avoid heavy COUNT(*) full scans.
 	if tableRows := my.getTableRowsEstimate(db); tableRows > 0 {
-		vlog = fmt.Sprintf("(%d) [%s] TABLE_ROWS estimate for %s.%s: %d", logThreadSeq, Event, my.Schema, my.Table, tableRows)
-		global.Wlog.Debug(vlog)
+		logMsg = fmt.Sprintf("(%d) [%s] TABLE_ROWS estimate for %s.%s: %d", logThreadSeq, Event, my.Schema, my.Table, tableRows)
+		global.Wlog.Debug(logMsg)
 		return tableRows, nil
 	}
 
 	// Fallback to max leading index cardinality estimate.
 	if cardRows := my.getMaxLeadingIndexCardinality(db); cardRows > 0 {
-		vlog = fmt.Sprintf("(%d) [%s] MAX(CARDINALITY) estimate for %s.%s: %d", logThreadSeq, Event, my.Schema, my.Table, cardRows)
-		global.Wlog.Debug(vlog)
+		logMsg = fmt.Sprintf("(%d) [%s] MAX(CARDINALITY) estimate for %s.%s: %d", logThreadSeq, Event, my.Schema, my.Table, cardRows)
+		global.Wlog.Debug(logMsg)
 		return cardRows, nil
 	}
 
-	vlog = fmt.Sprintf("(%d) [%s] Row estimate unavailable for %s.%s, returning 0 without COUNT(*) fallback", logThreadSeq, Event, my.Schema, my.Table)
-	global.Wlog.Warn(vlog)
+	logMsg = fmt.Sprintf("(%d) [%s] Row estimate unavailable for %s.%s, returning 0 without COUNT(*) fallback", logThreadSeq, Event, my.Schema, my.Table)
+	global.Wlog.Warn(logMsg)
 	return 0, nil
 }
 
@@ -745,15 +765,18 @@ func (my *QueryTable) NoIndexGeneratingQueryCriteria(db *sql.DB, beginSeq uint64
 	var (
 		columnNameSeq []string
 		Event         = "Q_table_Data"
+		err           error
+		query         string
+		logMsg        string
 	)
 
 	// 如果没有列信息，使用"*"查询所有列
 	if len(my.TableColumn) == 0 {
-		strsql := fmt.Sprintf("SELECT * FROM `%s`.`%s` LIMIT %d,%d", my.Schema, my.Table, beginSeq, chanrowCount)
+		query = fmt.Sprintf("SELECT * FROM `%s`.`%s` LIMIT %d,%d", my.Schema, my.Table, beginSeq, chanrowCount)
 		dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
-		if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
-			vlog = fmt.Sprintf("(%d) [%s] Failed to execute query: %s, Error: %v", logThreadSeq, Event, strsql, err)
-			global.Wlog.Error(vlog)
+		if dispos.SqlRows, err = dispos.DBSQLforExec(query); err != nil {
+			logMsg = fmt.Sprintf("(%d) [%s] Failed to execute query: %s, Error: %v", logThreadSeq, Event, query, err)
+			global.Wlog.Error(logMsg)
 			// 记录跳过的表信息到全局变量中
 			global.AddSkippedTable(my.Schema, my.Table, "data", fmt.Sprintf("query failed: %v", err))
 			return "", err
@@ -782,9 +805,9 @@ func (my *QueryTable) NoIndexGeneratingQueryCriteria(db *sql.DB, beginSeq uint64
 		columnNameSeq = append(columnNameSeq, "*")
 	}
 
-	strsql = fmt.Sprintf("SELECT %s FROM `%s`.`%s` LIMIT %d,%d", strings.Join(columnNameSeq, ","), my.Schema, my.Table, beginSeq, chanrowCount)
+	query = fmt.Sprintf("SELECT %s FROM `%s`.`%s` LIMIT %d,%d", strings.Join(columnNameSeq, ","), my.Schema, my.Table, beginSeq, chanrowCount)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
-	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
+	if dispos.SqlRows, err = dispos.DBSQLforExec(query); err != nil {
 		return "", err
 	}
 	tableData, err := dispos.DataRowsDispos([]string{})
@@ -802,6 +825,8 @@ func (my QueryTable) GeneratingQueryCriteria(db *sql.DB, logThreadSeq int64) (st
 	var (
 		Event         = "Q_Table_Data"
 		columnNameSeq []string
+		err           error
+		logMsg        string
 	)
 	//vlog = fmt.Sprintf("(%d) [%s] Start to query the segmented data of the following table %s.%s in the %s database through the where condition.", logThreadSeq, Event, my.Schema, my.Table, DBType)
 	//global.Wlog.Debug(vlog)
@@ -961,8 +986,7 @@ func (my QueryTable) GeneratingQueryCriteria(db *sql.DB, logThreadSeq int64) (st
 
 		// 如果存在无效列，记录并返回错误
 		if hasInvalidColumn {
-			vlog = fmt.Sprintf("(%d) [%s] Columns '%v' in WHERE clause do not exist in table %s.%s", logThreadSeq, Event, invalidColumns, my.Schema, my.Table)
-			global.Wlog.Warn(vlog)
+			global.Wlog.Warn(fmt.Sprintf("(%d) [%s] Columns '%v' in WHERE clause do not exist in table %s.%s", logThreadSeq, Event, invalidColumns, my.Schema, my.Table))
 			// 记录跳过的表信息到全局变量中
 			global.AddSkippedTable(my.Schema, my.Table, "data", fmt.Sprintf("invalid columns: %v", invalidColumns))
 			return "", fmt.Errorf("invalid columns in WHERE clause: %v", invalidColumns)
@@ -971,8 +995,7 @@ func (my QueryTable) GeneratingQueryCriteria(db *sql.DB, logThreadSeq int64) (st
 
 	// 获取表的所有列名
 	if len(my.TableColumn) == 0 {
-		// Generate cache key in format: schema.table
-		cacheKey := fmt.Sprintf("%s.%s", my.Schema, my.Table)
+		cacheKey := scopedTableCacheKey(db, my.Schema, my.Table, "allColumns")
 
 		// Check if result is already in global cache
 		cacheMutex.RLock()
@@ -989,8 +1012,8 @@ func (my QueryTable) GeneratingQueryCriteria(db *sql.DB, logThreadSeq int64) (st
 			strsql := fmt.Sprintf("SELECT COLUMN_NAME, COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s' ORDER BY ORDINAL_POSITION", my.Schema, my.Table)
 			dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 			if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
-				vlog = fmt.Sprintf("(%d) [%s] Failed to execute query: %s, Error: %v", logThreadSeq, Event, strsql, err)
-				global.Wlog.Error(vlog)
+				logMsg = fmt.Sprintf("(%d) [%s] Failed to execute query: %s, Error: %v", logThreadSeq, Event, strsql, err)
+				global.Wlog.Error(logMsg)
 				// 记录跳过的表信息到全局变量中
 				global.AddSkippedTable(my.Schema, my.Table, "data", fmt.Sprintf("query failed: %v", err))
 				return "", err
@@ -1036,7 +1059,7 @@ func (my QueryTable) GeneratingQueryCriteria(db *sql.DB, logThreadSeq int64) (st
 		tmpcolumnName = fmt.Sprintf("`%s`", columnName)
 
 		// 定义缓存键，在所有条件分支中都可以使用
-		cacheKey := fmt.Sprintf("%s.%s.%s", my.Schema, my.Table, columnName)
+		cacheKey := scopedColumnCacheKey(db, my.Schema, my.Table, columnName)
 
 		// 查找当前列的数据类型
 		var dataType string
@@ -1129,7 +1152,8 @@ func (my QueryTable) GeneratingQueryCriteria(db *sql.DB, logThreadSeq int64) (st
 		return "", err
 	}
 	defer dispos.SqlRows.Close()
-	vlog = fmt.Sprintf("(%d) [%s] Complete the data in the following table %s.%s of the %s database.", logThreadSeq, Event, my.Schema, my.Table, DBType)
+	logMsg = fmt.Sprintf("(%d) [%s] Complete the data in the following table %s.%s of the %s database.", logThreadSeq, Event, my.Schema, my.Table, DBType)
+	global.Wlog.Debug(logMsg)
 	return strings.Join(tableData, "/*go actions rowData*/"), nil
 }
 
@@ -1204,14 +1228,14 @@ func (my *QueryTable) GeneratingQuerySql(db *sql.DB, logThreadSeq int64) (string
 		columnNameSeq []string
 		Event         = "E_Table_SQL"
 		selectSql     string
+		logMsg        string
 	)
 	//vlog = fmt.Sprintf("(%d) [%s] Start to generate the data query sql of table %s.%s in the %s database", logThreadSeq, Event, my.Schema, my.Table, DBType)
 	//global.Wlog.Debug(vlog)
 
 	// 如果TableColumn为空，从数据库查询获取列信息
 	if len(my.TableColumn) == 0 {
-		// Generate cache key in format: schema.table
-		cacheKey := fmt.Sprintf("%s.%s", my.Schema, my.Table)
+		cacheKey := scopedTableCacheKey(db, my.Schema, my.Table, "tableColumn")
 
 		// Check if complete table column information is already in global cache
 		cacheMutex.RLock()
@@ -1223,15 +1247,15 @@ func (my *QueryTable) GeneratingQuerySql(db *sql.DB, logThreadSeq int64) (string
 			my.TableColumn = cachedTableColumn
 		} else {
 			cacheMutex.RUnlock()
-			vlog = fmt.Sprintf("(%d) [%s] TableColumn is empty, querying column info from database for table %s.%s", logThreadSeq, Event, my.Schema, my.Table)
-			global.Wlog.Debug(vlog)
+			logMsg = fmt.Sprintf("(%d) [%s] TableColumn is empty, querying column info from database for table %s.%s", logThreadSeq, Event, my.Schema, my.Table)
+			global.Wlog.Debug(logMsg)
 
 			// 查询表的所有列信息
 			query := fmt.Sprintf("SELECT COLUMN_NAME, COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s'", my.Schema, my.Table)
 			rows, err := db.Query(query)
 			if err != nil {
-				vlog = fmt.Sprintf("(%d) [%s] Failed to query column info for table %s.%s: %v", logThreadSeq, Event, my.Schema, my.Table, err)
-				global.Wlog.Error(vlog)
+				logMsg = fmt.Sprintf("(%d) [%s] Failed to query column info for table %s.%s: %v", logThreadSeq, Event, my.Schema, my.Table, err)
+				global.Wlog.Error(logMsg)
 				return "", err
 			}
 			defer rows.Close()
@@ -1241,8 +1265,8 @@ func (my *QueryTable) GeneratingQuerySql(db *sql.DB, logThreadSeq int64) (string
 			for rows.Next() {
 				var columnName, dataType string
 				if err := rows.Scan(&columnName, &dataType); err != nil {
-					vlog = fmt.Sprintf("(%d) [%s] Failed to scan column info for table %s.%s: %v", logThreadSeq, Event, my.Schema, my.Table, err)
-					global.Wlog.Error(vlog)
+					logMsg = fmt.Sprintf("(%d) [%s] Failed to scan column info for table %s.%s: %v", logThreadSeq, Event, my.Schema, my.Table, err)
+					global.Wlog.Error(logMsg)
 					return "", err
 				}
 				tableColumnEntry := map[string]string{
@@ -1251,7 +1275,7 @@ func (my *QueryTable) GeneratingQuerySql(db *sql.DB, logThreadSeq int64) (string
 				}
 				cachedTableColumn = append(cachedTableColumn, tableColumnEntry)
 				// Cache individual column mappings as well
-				columnCacheKey := fmt.Sprintf("%s.%s.%s", my.Schema, my.Table, columnName)
+				columnCacheKey := scopedColumnCacheKey(db, my.Schema, my.Table, columnName)
 				cacheMutex.Lock()
 				columnDataTypeGlobalCache[columnCacheKey] = dataType
 				cacheMutex.Unlock()
