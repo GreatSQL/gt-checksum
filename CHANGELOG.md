@@ -18,6 +18,8 @@
 - 优化内存使用：当有大量数据存在差异时，运行耗时降低12%的前提下，最高内存使用降低96%，效果显著
 - 新增参数showActualRows表示是否统计各表精确行数并优化相应的查询SQL，可设置为 [ON | OFF]，默认值：ON
 - 优化fixsql文件写入方式，不再采用临时文件写入，改为流式直接写入目标文件
+- 新增对MySQL中的struct, routine两种校验场景的支持，包括 DELIMITER、PROCEDURE/FUNCTION 定义包含COMMENT属性
+- 新增支持 MySQL -> MySQL struct 场景下的表级 AUTO_INCREMENT 差异检测与修复
 - Bugs fixed
   - 修复了ignoreTables参数无效问题
   - 修复了tables参数不支持%通配符问题，重新支持包括库名映射场景下的%通配符用法，例如"db1.t%:db2.t%"
