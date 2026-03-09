@@ -278,9 +278,9 @@ DELIMITER ;
 -- 测试索引
 DROP TABLE IF EXISTS indext;
 CREATE TABLE indext(
-    `id` INT(11) NOT NULL,
+    `id` INT(11) NOT NULL AUTO_INCREMENT,
     `tenantry_id` BIGINT(20) NOT NULL,
-    `code` VARCHAR(64) NOT NULL,
+    `code` VARCHAR(64) NOT NULL COMMENT 'col code',
     `goods_name` VARCHAR(50) NOT NULL,
     `props_name` VARCHAR(100) NOT NULL,
     `price` DECIMAL(10,2) NOT NULL,
@@ -291,13 +291,13 @@ CREATE TABLE indext(
     PRIMARY KEY (`id`),
     KEY `idx_2` (`tenantry_id`,`code`),
     KEY `idx_3` (`code`,`tenantry_id`)
-) ENGINE=InnoDB;
+) ENGINE=InnoDB AUTO_INCREMENT=10 COMMENT 'table indext';
 INSERT INTO indext VALUES ('583532949','8674665223082153551','aut','animi','eum','1.99','fugit','2026-02-17 16:04:25','2025-06-20 22:10:41','1');
 INSERT INTO indext VALUES ('914246705','2020683354385918016','quam','aut','cumque','0.00','nihil','2025-03-20 01:01:33','2025-07-27 22:10:28','2');
 
 -- 测试从Oracle=>MySQL数据同步
 CREATE TABLE t1 (
-    id BIGINT NOT NULL,
+    id BIGINT NOT NULL AUTO_INCREMENT,
     c_varchar2 VARCHAR(4000),
     c_char VARCHAR(10),
     c_nchar VARCHAR(10),
