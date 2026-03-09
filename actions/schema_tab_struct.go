@@ -325,6 +325,40 @@ func normalizeMetadataComment(v string) string {
 	}
 }
 
+func queryMySQLTableLevelMetadata(db *sql.DB, schema, table string) (string, string, sql.NullInt64, string, error) {
+	var (
+		collation sql.NullString
+		charset   sql.NullString
+		comment   sql.NullString
+	)
+
+	query := `
+SELECT t.TABLE_COLLATION, c.CHARACTER_SET_NAME, t.AUTO_INCREMENT, t.TABLE_COMMENT
+FROM information_schema.TABLES t
+LEFT JOIN information_schema.COLLATIONS c ON t.TABLE_COLLATION = c.COLLATION_NAME
+WHERE t.TABLE_SCHEMA = ? AND t.TABLE_NAME = ?
+`
+
+	var runtimeNextAutoInc sql.NullInt64
+	if err := db.QueryRow(query, schema, table).Scan(&collation, &charset, &runtimeNextAutoInc, &comment); err != nil {
+		return "", "", sql.NullInt64{}, "", err
+	}
+
+	createStmt, err := queryMySQLCreateTableStatement(db, schema, table)
+	if err != nil {
+		return "", "", sql.NullInt64{}, "", err
+	}
+
+	return collation.String, charset.String, extractExplicitMySQLTableAutoIncrementValue(createStmt), comment.String, nil
+}
+
+func nullInt64ForLog(v sql.NullInt64) interface{} {
+	if !v.Valid {
+		return nil
+	}
+	return v.Int64
+}
+
 func escapeMySQLCommentLiteral(v string) string {
 	s := strings.ReplaceAll(v, `\`, `\\`)
 	s = strings.ReplaceAll(s, `'`, `\'`)
@@ -332,7 +366,50 @@ func escapeMySQLCommentLiteral(v string) string {
 }
 
 var mysqlCreateObjectCommentPattern = regexp.MustCompile(`(?is)\bCOMMENT\s+'((?:\\'|[^'])*)'`)
+var mysqlTableAutoIncrementOptionPattern = regexp.MustCompile(`(?i)\)\s*ENGINE\s*=.*?\bAUTO_INCREMENT\s*=\s*([0-9]+)\b`)
 var mysqlAlterTableStatementPattern = regexp.MustCompile("(?is)^\\s*ALTER\\s+TABLE\\s+((?:`[^`]+`\\.`[^`]+`)|(?:[^\\s]+))\\s+(.*?);?\\s*$")
+
+func queryMySQLCreateTableStatement(db *sql.DB, schema, table string) (string, error) {
+	query := fmt.Sprintf("SHOW CREATE TABLE `%s`.`%s`", schema, table)
+	var (
+		objectName string
+		createStmt string
+	)
+	if err := db.QueryRow(query).Scan(&objectName, &createStmt); err != nil {
+		return "", err
+	}
+	return createStmt, nil
+}
+
+func extractExplicitMySQLTableAutoIncrementValue(createStmt string) sql.NullInt64 {
+	matches := mysqlTableAutoIncrementOptionPattern.FindStringSubmatch(createStmt)
+	if len(matches) < 2 {
+		return sql.NullInt64{}
+	}
+	n, err := strconv.ParseInt(matches[1], 10, 64)
+	if err != nil {
+		return sql.NullInt64{}
+	}
+	return sql.NullInt64{Int64: n, Valid: true}
+}
+
+func resolveMySQLTableAutoIncrementFixValue(sourceValue, destValue sql.NullInt64) (int64, bool) {
+	if sourceValue.Valid == destValue.Valid {
+		if !sourceValue.Valid {
+			return 0, false
+		}
+		if sourceValue.Int64 == destValue.Int64 {
+			return 0, false
+		}
+	}
+	if sourceValue.Valid {
+		return sourceValue.Int64, true
+	}
+	if destValue.Valid {
+		return 0, true
+	}
+	return 0, false
+}
 
 func extractMySQLObjectCommentFromCreate(createSQL string) string {
 	matches := mysqlCreateObjectCommentPattern.FindStringSubmatch(createSQL)
@@ -1280,108 +1357,66 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 			}
 		}
 
-		// 在TableColumnNameCheck函数中，在比较完列级别的属性后，添加表级别字符集和排序规则的比较
-		// 在生成alterSlice后，添加以下代码
-
-		// 检查表级别的字符集和排序规则
-		tableCharsetCollationQuery := fmt.Sprintf(`
-    SELECT t.TABLE_COLLATION, c.CHARACTER_SET_NAME 
-    FROM information_schema.TABLES t 
-    JOIN information_schema.COLLATIONS c ON t.TABLE_COLLATION = c.COLLATION_NAME 
-    WHERE t.TABLE_SCHEMA = '%s' AND t.TABLE_NAME = '%s'
-`, sourceSchema, stcls.table)
-
-		var sourceTableCollation, sourceTableCharset string
-		rows, err := stcls.sourceDB.Query(tableCharsetCollationQuery)
-		if err == nil {
-			defer rows.Close()
-			if rows.Next() {
-				err = rows.Scan(&sourceTableCollation, &sourceTableCharset)
-				if err != nil {
-					vlog = fmt.Sprintf("(%d) %s Failed to scan source table charset/collation: %v", logThreadSeq, event, err)
-					global.Wlog.Error(vlog)
-				}
-			}
-		}
-
-		tableCharsetCollationQuery = fmt.Sprintf(`
-    SELECT t.TABLE_COLLATION, c.CHARACTER_SET_NAME 
-    FROM information_schema.TABLES t 
-    JOIN information_schema.COLLATIONS c ON t.TABLE_COLLATION = c.COLLATION_NAME 
-    WHERE t.TABLE_SCHEMA = '%s' AND t.TABLE_NAME = '%s'
-`, destSchema, stcls.table)
-
-		var destTableCollation, destTableCharset string
-		rows, err = stcls.destDB.Query(tableCharsetCollationQuery)
-		if err == nil {
-			defer rows.Close()
-			if rows.Next() {
-				err = rows.Scan(&destTableCollation, &destTableCharset)
-				if err != nil {
-					vlog = fmt.Sprintf("(%d) %s Failed to scan dest table charset/collation: %v", logThreadSeq, event, err)
-					global.Wlog.Error(vlog)
-				}
-			}
-		}
-
-		// 比较表级别的字符集和排序规则
-		tableCharsetDifferent := false
-		if sourceTableCharset != "" && destTableCharset != "" && sourceTableCharset != destTableCharset {
-			tableCharsetDifferent = true
-			vlog = fmt.Sprintf("(%d) %s Table charset mismatch: source=%s, dest=%s",
-				logThreadSeq, event, sourceTableCharset, destTableCharset)
-			global.Wlog.Warn(vlog)
-		}
-
-		tableCollationDifferent := false
-		if sourceTableCollation != "" && destTableCollation != "" && sourceTableCollation != destTableCollation {
-			tableCollationDifferent = true
-			vlog = fmt.Sprintf("(%d) %s Table collation mismatch: source=%s, dest=%s",
-				logThreadSeq, event, sourceTableCollation, destTableCollation)
-			global.Wlog.Warn(vlog)
-		}
+		fixer := dbf.DataAbnormalFix()
 
 		// 先生成列级别的修复SQL
-		sqlS := dbf.DataAbnormalFix().FixAlterColumnSqlGenerate(alterSlice, logThreadSeq)
+		sqlS := fixer.FixAlterColumnSqlGenerate(alterSlice, logThreadSeq)
 
-		// 如果表级别的字符集或排序规则不一致，生成修复SQL
-		if tableCharsetDifferent || tableCollationDifferent {
-			// 生成表级别字符集转换的SQL语句
-			convertSqlS := dbf.DataAbnormalFix().FixTableCharsetSqlGenerate(sourceTableCharset, sourceTableCollation, logThreadSeq)
-
-			// 无论datafix是什么值，都将表级别字符集转换的SQL语句添加到sqlS中
-			sqlS = append(sqlS, convertSqlS...)
-		}
-
-		// 检查表注释是否一致并生成修复SQL（仅 MySQL -> MySQL）
-		var sourceTableComment, destTableComment string
-		var errTableComment error
+		tableCharsetDifferent := false
+		tableCollationDifferent := false
 		tableCommentDifferent := false
+		tableAutoIncrementDifferent := false
 
-		// 根据数据库类型创建相应的查询实例
 		if stcls.isMySQLToMySQL() {
-			mysqlQuery := &mysql.QueryTable{Schema: sourceSchema, Table: stcls.table}
-			sourceTableComment, errTableComment = mysqlQuery.TableComment(stcls.sourceDB, logThreadSeq)
-			if errTableComment == nil {
-				sourceTableComment = normalizeMetadataComment(sourceTableComment)
-				mysqlQuery.Schema = destSchema
-				destTableComment, errTableComment = mysqlQuery.TableComment(stcls.destDB, logThreadSeq)
-				if errTableComment == nil {
+			sourceTableCollation, sourceTableCharset, sourceAutoIncrement, sourceTableComment, errSourceMeta := queryMySQLTableLevelMetadata(stcls.sourceDB, sourceSchema, stcls.table)
+			if errSourceMeta != nil {
+				vlog = fmt.Sprintf("(%d) %s Failed to query source table metadata for %s.%s: %v", logThreadSeq, event, sourceSchema, stcls.table, errSourceMeta)
+				global.Wlog.Error(vlog)
+			} else {
+				destTableCollation, destTableCharset, destAutoIncrement, destTableComment, errDestMeta := queryMySQLTableLevelMetadata(stcls.destDB, destSchema, stcls.destTable)
+				if errDestMeta != nil {
+					vlog = fmt.Sprintf("(%d) %s Failed to query target table metadata for %s.%s: %v", logThreadSeq, event, destSchema, stcls.destTable, errDestMeta)
+					global.Wlog.Error(vlog)
+				} else {
+					sourceTableComment = normalizeMetadataComment(sourceTableComment)
 					destTableComment = normalizeMetadataComment(destTableComment)
-				}
-				if errTableComment == nil && sourceTableComment != destTableComment {
-					tableCommentDifferent = true
-					// 生成修改表注释的SQL语句
-					escapedComment := escapeMySQLCommentLiteral(sourceTableComment)
-					tableCommentSql := fmt.Sprintf("ALTER TABLE `%s`.`%s` COMMENT = '%s';", destSchema, stcls.destTable, escapedComment)
-					vlog = fmt.Sprintf("(%d) %s Table comment mismatch: source='%s', dest='%s', generating fix SQL", logThreadSeq, event, sourceTableComment, destTableComment)
-					global.Wlog.Warn(vlog)
-					sqlS = append(sqlS, tableCommentSql)
+
+					if sourceTableCharset != "" && destTableCharset != "" && sourceTableCharset != destTableCharset {
+						tableCharsetDifferent = true
+						vlog = fmt.Sprintf("(%d) %s Table charset mismatch: source=%s, dest=%s", logThreadSeq, event, sourceTableCharset, destTableCharset)
+						global.Wlog.Warn(vlog)
+					}
+
+					if sourceTableCollation != "" && destTableCollation != "" && sourceTableCollation != destTableCollation {
+						tableCollationDifferent = true
+						vlog = fmt.Sprintf("(%d) %s Table collation mismatch: source=%s, dest=%s", logThreadSeq, event, sourceTableCollation, destTableCollation)
+						global.Wlog.Warn(vlog)
+					}
+
+					if tableCharsetDifferent || tableCollationDifferent {
+						sqlS = append(sqlS, fixer.FixTableCharsetSqlGenerate(sourceTableCharset, sourceTableCollation, logThreadSeq)...)
+					}
+
+					if fixValue, needsFix := resolveMySQLTableAutoIncrementFixValue(sourceAutoIncrement, destAutoIncrement); needsFix {
+						tableAutoIncrementDifferent = true
+						vlog = fmt.Sprintf("(%d) %s Table AUTO_INCREMENT mismatch: source=%v, dest=%v", logThreadSeq, event, nullInt64ForLog(sourceAutoIncrement), nullInt64ForLog(destAutoIncrement))
+						global.Wlog.Warn(vlog)
+						sqlS = append(sqlS, fixer.FixTableAutoIncrementSqlGenerate(fixValue, logThreadSeq)...)
+					}
+
+					if sourceTableComment != destTableComment {
+						tableCommentDifferent = true
+						escapedComment := escapeMySQLCommentLiteral(sourceTableComment)
+						tableCommentSql := fmt.Sprintf("ALTER TABLE `%s`.`%s` COMMENT = '%s';", destSchema, stcls.destTable, escapedComment)
+						vlog = fmt.Sprintf("(%d) %s Table comment mismatch: source='%s', dest='%s', generating fix SQL", logThreadSeq, event, sourceTableComment, destTableComment)
+						global.Wlog.Warn(vlog)
+						sqlS = append(sqlS, tableCommentSql)
+					}
 				}
 			}
 		}
 
-		hasTableLevelDiff := tableCharsetDifferent || tableCollationDifferent || tableCommentDifferent
+		hasTableLevelDiff := tableCharsetDifferent || tableCollationDifferent || tableCommentDifferent || tableAutoIncrementDifferent
 		if len(alterSlice) > 0 || hasTableLevelDiff {
 			abnormalTableList = append(abnormalTableList, fmt.Sprintf("%s.%s", destSchema, stcls.table))
 		} else {
