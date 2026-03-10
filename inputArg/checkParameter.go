@@ -117,25 +117,29 @@ func (rc *ConfigParameter) checkPar() {
 
 	vlog = fmt.Sprintf("(%d) [%s] srcDSN is: {%s}", rc.LogThreadSeq, Event, rc.SecondaryL.DsnsV.SrcJdbc)
 	global.Wlog.Debug(vlog)
-	if _, err := tmpDbc.OpenDB(); err != nil {
+	srcDB, err := tmpDbc.OpenDB()
+	if err != nil {
 		fmt.Println(fmt.Sprintf("gt-checksum: Failed to connect to source database. Check %s for details or set logLevel=debug", rc.SecondaryL.LogV.LogFile))
 		vlog = fmt.Sprintf("(%d) [%s] srcDSN connect failed: {%s}", rc.LogThreadSeq, Event, err)
 		global.Wlog.Error(vlog)
 		os.Exit(1)
 	}
-	vlog = fmt.Sprintf("(%d) [%s] dstDSN connected", rc.LogThreadSeq, Event)
+	defer srcDB.Close()
+	vlog = fmt.Sprintf("(%d) [%s] srcDSN connected", rc.LogThreadSeq, Event)
 	global.Wlog.Debug(vlog)
 
 	tmpDbc.DBDevice = rc.SecondaryL.DsnsV.DestDrive
 	tmpDbc.JDBC = rc.SecondaryL.DsnsV.DestJdbc
 	vlog = fmt.Sprintf("(%d) [%s] dstDSN is: {%s}", rc.LogThreadSeq, Event, rc.SecondaryL.DsnsV.DestJdbc)
 	global.Wlog.Debug(vlog)
-	if _, err := tmpDbc.OpenDB(); err != nil {
+	dstDB, err := tmpDbc.OpenDB()
+	if err != nil {
 		fmt.Println(fmt.Sprintf("gt-checksum: Failed to connect to destination database. Check %s for details or set logLevel=debug", rc.SecondaryL.LogV.LogFile))
 		vlog = fmt.Sprintf("(%d) [%s] dstDSN connect failed: {%s}", rc.LogThreadSeq, Event, err)
 		global.Wlog.Error(vlog)
 		os.Exit(1)
 	}
+	defer dstDB.Close()
 	vlog = fmt.Sprintf("(%d) [%s] dstDSN connected", rc.LogThreadSeq, Event)
 	global.Wlog.Debug(vlog)
 
@@ -216,6 +220,15 @@ func (rc *ConfigParameter) checkPar() {
 
 	vlog = fmt.Sprintf("(%d) [%s] check object parameter message is {%s}.", rc.LogThreadSeq, Event, rc.SecondaryL.RulesV.CheckObject)
 	global.Wlog.Debug(vlog)
+
+	if rc.SecondaryL.DsnsV.SrcDrive == "mysql" && rc.SecondaryL.DsnsV.DestDrive == "mysql" {
+		if err := rc.validateMySQLCompatibility(srcDB, dstDB); err != nil {
+			fmt.Printf("gt-checksum: %s\n", err)
+			vlog = fmt.Sprintf("(%d) [%s] MySQL compatibility validation failed: %v", rc.LogThreadSeq, Event, err)
+			global.Wlog.Error(vlog)
+			os.Exit(1)
+		}
+	}
 
 	vlog = fmt.Sprintf("(%d) [%s] start init no index table values.", rc.LogThreadSeq, Event)
 	global.Wlog.Debug(vlog)

@@ -30,6 +30,21 @@ type Pod struct {
 	Schema, Table, IndexColumn, Rows, DIFFS, CheckObject, Datafix, FuncName, Definer, ProcName, TriggerName, MappingInfo string
 }
 
+func dataResultRows(pod Pod) string {
+	if pod.DIFFS == "DDL-yes" {
+		return ""
+	}
+	return pod.Rows
+}
+
+func skippedTableDiffs(skipped global.SkippedTable) string {
+	diffs := strings.TrimSpace(skipped.Diffs)
+	if diffs != "" {
+		return diffs
+	}
+	return global.SkipDiffsYes
+}
+
 // 获取表的映射信息
 func getTableMappingInfo(schema, table string) string {
 	// 遍历全局映射关系列表
@@ -125,9 +140,7 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 
 	// 先处理已有的measuredDataPods，记录已存在的表
 	for _, pod := range measuredDataPods {
-		if pod.CheckObject == "data" {
-			processedTables[pod.Schema+"."+pod.Table] = true
-		}
+		processedTables[pod.Schema+"."+pod.Table] = true
 	}
 
 	// 创建一个映射来跟踪跳过的表，避免重复添加
@@ -202,7 +215,8 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 				Schema:      skipped.Schema,
 				Table:       skipped.Table,
 				CheckObject: skipped.CheckObject,
-				DIFFS:       "yes",
+				DIFFS:       skippedTableDiffs(skipped),
+				Datafix:     m.SecondaryL.RepairV.Datafix,
 			}
 			measuredDataPods = append(measuredDataPods, pod)
 			processedTables[tableKey] = true
@@ -750,7 +764,7 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 					mappingInfo = fmt.Sprintf("Schema: %s:%s", pod.Schema, destSchema)
 				}
 
-				table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.IndexColumn), color.YellowString(pod.CheckObject), color.BlueString(pod.Rows), color.GreenString(differences), color.YellowString(pod.Datafix), color.CyanString(mappingInfo))
+				table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.IndexColumn), color.YellowString(pod.CheckObject), color.BlueString(dataResultRows(pod)), color.GreenString(differences), color.YellowString(pod.Datafix), color.CyanString(mappingInfo))
 			}
 		} else {
 			table.AddRow("Schema", "Table", "IndexColumn", "CheckObject", "Rows", "Diffs", "Datafix")
@@ -764,7 +778,7 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 						}
 					}
 				}
-				table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.IndexColumn), color.YellowString(pod.CheckObject), color.BlueString(pod.Rows), color.GreenString(differences), color.YellowString(pod.Datafix))
+				table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.IndexColumn), color.YellowString(pod.CheckObject), color.BlueString(dataResultRows(pod)), color.GreenString(differences), color.YellowString(pod.Datafix))
 			}
 		}
 		fmt.Println(table)

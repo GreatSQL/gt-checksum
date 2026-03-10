@@ -4,7 +4,7 @@ SET UNIQUE_CHECKS=0;
 SET sql_generate_invisible_primary_key=OFF;
 
 DROP DATABASE IF EXISTS gt_checksum;
-CREATE DATABASE IF NOT EXISTS gt_checksum;
+CREATE DATABASE IF NOT EXISTS gt_checksum DEFAULT CHARACTER SET utf8mb4;
 USE gt_checksum;
 
 -- 测试几个基本数据类型

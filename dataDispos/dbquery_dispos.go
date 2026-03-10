@@ -551,7 +551,7 @@ func (dbpos *DBdataDispos) DBSQLforExec(strsql string) (*sql.Rows, error) {
 		tableExistsErr := dbpos.DB.QueryRow(tableExistsQuery).Scan(&exists)
 		if tableExistsErr == sql.ErrNoRows {
 			// 表不存在，记录跳过的表
-			global.AddSkippedTable(dbpos.Schema, dbpos.Table, "data", "table does not exist")
+			global.AddSkippedTableWithDiffs(dbpos.Schema, dbpos.Table, "data", "table does not exist", global.SkipDiffsDDLYes)
 			vlog = fmt.Sprintf("(%d) [%s] Table %s.%s does not exist, skipping", dbpos.LogThreadSeq, dbpos.Event, dbpos.Schema, dbpos.Table)
 			global.Wlog.Warn(vlog)
 			return nil, fmt.Errorf("table %s.%s does not exist", dbpos.Schema, dbpos.Table)
@@ -564,7 +564,7 @@ func (dbpos *DBdataDispos) DBSQLforExec(strsql string) (*sql.Rows, error) {
 			// 特殊处理表不存在的错误，不进行重试
 			errMsg := err.Error()
 			if strings.Contains(errMsg, "Table") && strings.Contains(errMsg, "doesn't exist") && dbpos.Schema != "" && dbpos.Table != "" {
-				global.AddSkippedTable(dbpos.Schema, dbpos.Table, "data", "table does not exist")
+				global.AddSkippedTableWithDiffs(dbpos.Schema, dbpos.Table, "data", "table does not exist", global.SkipDiffsDDLYes)
 				vlog = fmt.Sprintf("(%d) [%s] Table %s.%s does not exist, skipping", dbpos.LogThreadSeq, dbpos.Event, dbpos.Schema, dbpos.Table)
 				global.Wlog.Warn(vlog)
 				return nil, fmt.Errorf("table %s.%s does not exist", dbpos.Schema, dbpos.Table)
@@ -573,7 +573,7 @@ func (dbpos *DBdataDispos) DBSQLforExec(strsql string) (*sql.Rows, error) {
 			// 源端与目标端DDL不一致时会出现此错误
 			if strings.Contains(errMsg, "Error 1054") || strings.Contains(errMsg, "Unknown column") {
 				if dbpos.Schema != "" && dbpos.Table != "" {
-					global.AddSkippedTable(dbpos.Schema, dbpos.Table, "data", "DDL mismatch: "+errMsg)
+					global.AddSkippedTableWithDiffs(dbpos.Schema, dbpos.Table, "data", "DDL mismatch: "+errMsg, global.SkipDiffsDDLYes)
 				}
 				vlog = fmt.Sprintf("(%d) [%s] DDL mismatch detected for %s.%s: %s", dbpos.LogThreadSeq, dbpos.Event, dbpos.Schema, dbpos.Table, errMsg)
 				global.Wlog.Error(vlog)

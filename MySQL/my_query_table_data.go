@@ -18,6 +18,7 @@ var leadingIndexNameGlobalCache = make(map[string]string)
 var tableColumnSetGlobalCache = make(map[string]map[string]struct{})
 var dbScopeKeyGlobalCache = make(map[*sql.DB]string)
 var dbScopeKeySeq uint64
+var statisticsIndexVisibilityCache = make(map[string]bool)
 
 // 在首层分组场景下，使用 `GROUP BY col, count=1` 的轻量模式阈值。
 // 当表行数/首列基数较低（重复度低）时，该模式通常明显快于 COUNT(*) 聚合。
@@ -47,6 +48,51 @@ func scopedColumnCacheKey(db *sql.DB, schema, table, column string) string {
 	return fmt.Sprintf("%s.%s.%s.%s", getDBScopeKey(db), schema, table, column)
 }
 
+func buildMySQLIndexStatisticsQuery(schema, table string, includeVisibility bool) string {
+	if includeVisibility {
+		return fmt.Sprintf(
+			"SELECT isc.COLUMN_NAME AS columnName, isc.COLUMN_TYPE AS columnType, isc.COLUMN_KEY AS columnKey, isc.EXTRA AS autoIncrement, iss.NON_UNIQUE AS nonUnique, iss.INDEX_NAME AS indexName, iss.SEQ_IN_INDEX AS IndexSeq, isc.ORDINAL_POSITION AS columnSeq, iss.IS_VISIBLE AS indexVisibility FROM INFORMATION_SCHEMA.COLUMNS isc INNER JOIN (SELECT NON_UNIQUE, INDEX_NAME, SEQ_IN_INDEX, COLUMN_NAME, IS_VISIBLE FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s') AS iss ON isc.COLUMN_NAME=iss.COLUMN_NAME WHERE isc.TABLE_SCHEMA='%s' AND isc.TABLE_NAME='%s';",
+			schema, table, schema, table,
+		)
+	}
+	return fmt.Sprintf(
+		"SELECT isc.COLUMN_NAME AS columnName, isc.COLUMN_TYPE AS columnType, isc.COLUMN_KEY AS columnKey, isc.EXTRA AS autoIncrement, iss.NON_UNIQUE AS nonUnique, iss.INDEX_NAME AS indexName, iss.SEQ_IN_INDEX AS IndexSeq, isc.ORDINAL_POSITION AS columnSeq, 'VISIBLE' AS indexVisibility FROM INFORMATION_SCHEMA.COLUMNS isc INNER JOIN (SELECT NON_UNIQUE, INDEX_NAME, SEQ_IN_INDEX, COLUMN_NAME FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s') AS iss ON isc.COLUMN_NAME=iss.COLUMN_NAME WHERE isc.TABLE_SCHEMA='%s' AND isc.TABLE_NAME='%s';",
+		schema, table, schema, table,
+	)
+}
+
+func supportsStatisticsIndexVisibility(db *sql.DB, logThreadSeq int64) (bool, error) {
+	cacheKey := fmt.Sprintf("%s.statistics.is_visible", getDBScopeKey(db))
+
+	cacheMutex.RLock()
+	if supported, ok := statisticsIndexVisibilityCache[cacheKey]; ok {
+		cacheMutex.RUnlock()
+		return supported, nil
+	}
+	cacheMutex.RUnlock()
+
+	const query = "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='information_schema' AND TABLE_NAME='STATISTICS' AND COLUMN_NAME='IS_VISIBLE' LIMIT 1"
+
+	var marker int
+	err := db.QueryRow(query).Scan(&marker)
+	switch err {
+	case nil:
+		cacheMutex.Lock()
+		statisticsIndexVisibilityCache[cacheKey] = true
+		cacheMutex.Unlock()
+		return true, nil
+	case sql.ErrNoRows:
+		cacheMutex.Lock()
+		statisticsIndexVisibilityCache[cacheKey] = false
+		cacheMutex.Unlock()
+		return false, nil
+	default:
+		logMsg := fmt.Sprintf("(%d) [Q_Index_Statistics] Failed to probe INFORMATION_SCHEMA.STATISTICS.IS_VISIBLE support: %v", logThreadSeq, err)
+		global.Wlog.Error(logMsg)
+		return false, err
+	}
+}
+
 /*
 查询MySQL库下指定表的索引统计信息
 */
@@ -58,10 +104,18 @@ func (my *QueryTable) QueryTableIndexColumnInfo(db *sql.DB, logThreadSeq int64) 
 		query     string
 		logMsg    string
 	)
-	query = fmt.Sprintf("SELECT isc.COLUMN_NAME AS columnName, isc.COLUMN_TYPE AS columnType, isc.COLUMN_KEY AS columnKey,isc.EXTRA AS autoIncrement, iss.NON_UNIQUE AS nonUnique, iss.INDEX_NAME AS indexName, iss.SEQ_IN_INDEX AS IndexSeq, isc.ORDINAL_POSITION AS columnSeq, iss.IS_VISIBLE AS indexVisibility FROM INFORMATION_SCHEMA.COLUMNS isc INNER JOIN (SELECT NON_UNIQUE, INDEX_NAME, SEQ_IN_INDEX, COLUMN_NAME, IS_VISIBLE FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s') AS iss ON isc.COLUMN_NAME=iss.COLUMN_NAME WHERE isc.TABLE_SCHEMA='%s' AND isc.TABLE_NAME='%s';", my.Schema, my.Table, my.Schema, my.Table)
+	includeVisibility, err := supportsStatisticsIndexVisibility(db, logThreadSeq)
+	if err != nil {
+		return nil, err
+	}
+	if !includeVisibility {
+		logMsg = fmt.Sprintf("(%d) [%s] INFORMATION_SCHEMA.STATISTICS.IS_VISIBLE is not available on %s.%s; using compatibility query", logThreadSeq, Event, my.Schema, my.Table)
+		global.Wlog.Debug(logMsg)
+	}
+	query = buildMySQLIndexStatisticsQuery(my.Schema, my.Table, includeVisibility)
 	logMsg = fmt.Sprintf("(%d) [%s] Generate a sql statement to query the index statistics of table %s.%s under the %s database.sql messige is {%s}", logThreadSeq, Event, my.Schema, my.Table, DBType, query)
 	global.Wlog.Debug(logMsg)
-	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
+	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db, Schema: my.Schema, Table: my.Table}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(query); err != nil {
 		return nil, err
 	}

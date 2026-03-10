@@ -75,6 +75,16 @@ type DifferencesDataStruct struct {
 	indexColumnType string                     //索引列类型
 }
 
+func preserveDDLResultPods(pods []Pod) []Pod {
+	preserved := make([]Pod, 0, len(pods))
+	for _, pod := range pods {
+		if pod.DIFFS == "DDL-yes" {
+			preserved = append(preserved, pod)
+		}
+	}
+	return preserved
+}
+
 /*
 查询索引列信息，并发执行调度生成
 */
@@ -185,7 +195,7 @@ func (sp *SchedulePlan) Schedulingtasks() {
 						sourceSchema, sourceTable, destSchema, destTable, mismatch)
 					global.Wlog.Error(fmt.Sprintf("DDL mismatch detected for table %s.%s vs %s.%s: %s",
 						sourceSchema, sourceTable, destSchema, destTable, mismatch))
-					global.AddSkippedTable(sourceSchema, sourceTable, "data", "DDL mismatch: "+mismatch)
+					global.AddSkippedTableWithDiffs(sourceSchema, sourceTable, "data", "DDL mismatch: "+mismatch, global.SkipDiffsDDLYes)
 
 					// 如果仅有一个表需要校验，则报错退出
 					if totalTables == 1 {
@@ -243,8 +253,8 @@ func (sp *SchedulePlan) Schedulingtasks() {
 // NewTableProgress is deprecated and removed as each table now creates its own progress bar directly in Schedulingtasks
 
 func CheckTableQuerySchedule(sdb, ddb *global.Pool, tableIndexColumnMap map[string][]string, tableAllCol map[string]global.TableAllColumnInfoS, m inputArg.ConfigParameter) *SchedulePlan {
-	// 清空之前的结果数据
-	measuredDataPods = []Pod{}
+	// 保留前置结构校验阶段已经生成的DDL差异结果，避免在进入数据校验调度时被清空
+	measuredDataPods = preserveDDLResultPods(measuredDataPods)
 
 	// 解析表映射关系
 	tableMappings := make(map[string]string)

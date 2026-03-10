@@ -119,12 +119,7 @@ func (rs repairSqlStruct) execRepairSql(sqlstr []string, dbType string, logThrea
 		// 从rs.JDBC（即dstDSN）中获取charset值
 		charset := global.ExtractCharsetFromDSN(rs.JDBC)
 
-		preSqls := []string{
-			fmt.Sprintf("SET NAMES %s;", charset),
-			"SET FOREIGN_KEY_CHECKS=0;",
-			"SET UNIQUE_CHECKS=0;",
-			"SET INNODB_LOCK_WAIT_TIMEOUT=1073741824;",
-		}
+		preSqls := global.BuildMySQLSessionPreamble(charset)
 
 		for _, preSql := range preSqls {
 			if _, err1 := conn.ExecContext(ctx, preSql); err1 != nil {
@@ -267,12 +262,7 @@ func (rs repairSqlStruct) sqlFileInternal(sfile *os.File, sql []string, logThrea
 		charset := global.ExtractCharsetFromDSN(rs.JDBC)
 
 		// 添加必要的前置语句（所有文件都添加）
-		preSqls := []string{
-			fmt.Sprintf("SET NAMES %s;", charset),
-			"SET FOREIGN_KEY_CHECKS=0;",
-			"SET UNIQUE_CHECKS=0;",
-			"SET INNODB_LOCK_WAIT_TIMEOUT=1073741824;",
-		}
+		preSqls := global.BuildMySQLSessionPreamble(charset)
 
 		for _, preSql := range preSqls {
 			// 不使用全局去重，确保每个文件都有SET语句

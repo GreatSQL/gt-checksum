@@ -754,7 +754,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 				}
 				stcls.appendPod(pod)
 				abnormalTableList = append(abnormalTableList, mappedTableKey)
-				global.AddSkippedTable(sourceSchema, sourceTableName, "data", diffReason)
+				global.AddSkippedTableWithDiffs(sourceSchema, sourceTableName, "data", diffReason, global.SkipDiffsDDLYes)
 				vlog = fmt.Sprintf("(%d) %s Skip data check for %s.%s due to DDL mismatch: %s", logThreadSeq, event, sourceSchema, sourceTableName, diffReason)
 				global.Wlog.Warn(vlog)
 				continue
@@ -778,7 +778,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 			if !sourceTableExists {
 				vlog = fmt.Sprintf("(%d) %s Source table %s.%s does not exist", logThreadSeq, event, sourceSchema, sourceTableName)
 				global.Wlog.Warn(vlog)
-				global.AddSkippedTable(sourceSchema, sourceTableName, "data", "table does not exist")
+				global.AddSkippedTableWithDiffs(sourceSchema, sourceTableName, "data", "table does not exist", global.SkipDiffsDDLYes)
 				pod := Pod{
 					Schema:      sourceSchema,
 					Table:       sourceTableName,
@@ -1125,9 +1125,10 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 					}
 					stcls.appendPod(pod)
 				} else {
+					diffReason := fmt.Sprintf("DDL mismatch: Extra=%v, Missing=%v", addColumn, delColumn)
 					vlog = fmt.Sprintf("(%d) %s Structure mismatch %s.%s -> %s.%s - Extra: %v, Missing: %v",
 						logThreadSeq, event, sourceSchema, stcls.table, destSchema, stcls.table, addColumn, delColumn)
-					global.Wlog.Error(vlog)
+					global.Wlog.Warn(vlog)
 					// 创建表结构检查记录，确保DDL不一致的表在报告中正确显示Diffs=yes
 					pod := Pod{
 						Schema:      sourceSchema,
@@ -1135,9 +1136,10 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 						CheckObject: "data",
 						DIFFS:       "DDL-yes",
 						Datafix:     stcls.datafix,
-						Rows:        fmt.Sprintf("DDL mismatch: Extra=%v, Missing=%v", addColumn, delColumn),
+						Rows:        diffReason,
 					}
 					stcls.appendPod(pod)
+					global.AddSkippedTableWithDiffs(sourceSchema, stcls.table, "data", diffReason, global.SkipDiffsDDLYes)
 				}
 				abnormalTableList = append(abnormalTableList, mappedTableKey)
 			}

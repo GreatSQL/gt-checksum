@@ -52,6 +52,8 @@ func extractSchemasFromTables(tables string) []string {
 }
 
 func main() {
+	global.ResetRuntimeState()
+
 	//获取当前时间
 	beginTime := time.Now()
 
@@ -114,32 +116,39 @@ func main() {
 	// 注意：proc和func选项已在参数处理阶段被强制改为data，所以这里不再需要单独的case
 	case "data":
 		initStartTime = time.Now()
+		var abnormalTableList []string
 
 		//校验表结构
-		tableListColCheck, _, err = schemaTableInstance.TableColumnNameCheck(tableList, 9, 10)
+		tableListColCheck, abnormalTableList, err = schemaTableInstance.TableColumnNameCheck(tableList, 9, 10)
 		if err != nil {
 			fmt.Println("gt-checksum: Table structure verification failed. Check log file or set logLevel=debug for details")
 			os.Exit(1)
-		} else if len(tableListColCheck) == 0 {
-			// 检查表结构不匹配的情况
-			if global.HasInvisibleColumnMismatch {
-				fmt.Println("gt-checksum: Source and target table structure mismatch (invisible columns detected), skipping data validation for these tables")
-			} else {
-				fmt.Println("gt-checksum: No valid tables in checklist. Check log file or set logLevel=debug for details")
-			}
-			// 添加分隔行，使输出更清晰
+		}
+
+		preflightDecision := actions.EvaluateDataCheckPreflight(len(tableListColCheck), len(abnormalTableList), global.HasInvisibleColumnMismatch)
+		if preflightDecision.Fatal {
+			fmt.Println(preflightDecision.Message)
 			fmt.Println("-----------------------------------------------------")
 			os.Exit(1)
 		}
+		if preflightDecision.SkipChecksum {
+			fmt.Println(preflightDecision.Message)
+			fmt.Println("-----------------------------------------------------")
+			metadataCollectionTime = time.Since(initStartTime)
+			totalElapsedTime = time.Since(beginTime)
+			miscellaneousTime = totalElapsedTime - initStartTime.Sub(beginTime) - metadataCollectionTime
+			break
+		}
+
 		if err != nil {
 			fmt.Println("gt-checksum report: Table structure verification failed. Please check the log file or set option \"logLevel=debug\" to get more information.")
 			os.Exit(1)
-		} else if len(tableList) == 0 {
+		} else if len(tableListColCheck) == 0 {
 			fmt.Println("gt-checksum report: table checklist is empty. Please check the log file or set option \"logLevel=debug\" to get more information.")
 			os.Exit(1)
 		}
 		//19、20
-		if tableListPriCheck, _, err = schemaTableInstance.TableAccessPriCheck(tableList, 19, 20); err != nil {
+		if tableListPriCheck, _, err = schemaTableInstance.TableAccessPriCheck(tableListColCheck, 19, 20); err != nil {
 			fmt.Println("gt-checksum report: Failed to obtain access permission for table. Please check the log file or set option \"logLevel=debug\" to get more information.")
 			os.Exit(1)
 		} else if len(tableListPriCheck) == 0 {
@@ -151,10 +160,10 @@ func main() {
 
 		//根据要校验的表，获取该表的全部列信息
 		fmt.Println("gt-checksum: Collecting table column information")
-		tableAllCol := schemaTableInstance.SchemaTableAllCol(tableList, 21, 22)
+		tableAllCol := schemaTableInstance.SchemaTableAllCol(tableListColCheck, 21, 22)
 		//根据要校验的表，筛选查询数据时使用到的索引列信息
 		fmt.Println("gt-checksum: Collecting table index information")
-		tableIndexColumnMap := schemaTableInstance.TableIndexColumn(tableList, 23, 24)
+		tableIndexColumnMap := schemaTableInstance.TableIndexColumn(tableListColCheck, 23, 24)
 
 		//初始化数据库连接池
 		fmt.Println("gt-checksum: Establishing database connections")
