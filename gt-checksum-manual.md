@@ -152,6 +152,65 @@ sbtest  F1              Function        no      no
 3. 确认该账号具备创建/修改对应 `PROCEDURE`、`FUNCTION`、`TRIGGER` 所需权限；
 4. 若源端与目标端账号体系不同，先由 DBA 完成账号和授权准备，再执行 `repairDB`。
 
+## MySQL跨版本兼容说明
+
+### 支持范围
+
+当前版本对 MySQL 的支持上限为 `8.4 LTS`，并按以下规则执行兼容性校验：
+
+| 场景 | `checkObject=data` | `checkObject=struct` | 说明 |
+|---|---|---|---|
+| 源端与目标端同版本主线（`5.6`、`5.7`、`8.0`、`8.4`） | 支持 | 支持 | 同时支持数据校验/修复和表结构校验/修复。 |
+| 源端版本主线小于目标端版本主线，且两端均在 `5.6`、`5.7`、`8.0`、`8.4` 范围内 | 支持 | 支持 | 例如 `5.6 -> 5.7`、`5.6 -> 8.0`、`5.7 -> 8.0`、`8.0 -> 8.4`。 |
+| 源端版本主线大于目标端版本主线 | 不支持 | 不支持 | 程序会在启动阶段直接退出，并明确提示 downgrade 场景不受支持。 |
+| 任一端版本主线不在 `5.6`、`5.7`、`8.0`、`8.4` 范围内 | 不支持 | 不支持 | 程序会在启动阶段直接退出，并提示支持的版本范围。 |
+
+### `checkObject=data` 的前置条件
+
+1. 源端与目标端 `srcDSN`、`dstDSN` 中的 `charset` 参数必须一致；如果两端字符集不一致，程序会在启动阶段直接退出，避免出现数据校验结果失真或修复后乱码的问题。
+2. 当数据校验前发现表结构不一致时，程序不会继续做该表的数据比对，而是保留结果并将 `Diffs` 标记为 `DDL-yes`。如果需要进一步修复表结构，请改用 `checkObject=struct`。
+
+### 推荐配置示例
+
+以下示例表示执行 `MySQL 5.7 -> MySQL 8.0` 的数据校验，并要求两端统一使用 `utf8mb4`：
+
+```ini
+srcDSN = mysql|checksum:Checksum@3306@tcp(127.0.0.1:3405)/information_schema?charset=utf8mb4
+dstDSN = mysql|checksum:Checksum@3306@tcp(127.0.0.1:3406)/information_schema?charset=utf8mb4
+tables = gt_checksum.*
+checkObject = data
+datafix = file
+```
+
+如果要修复表结构差异，则将 `checkObject` 改为 `struct`，其余配置保持不变即可。
+
+### DDL 差异结果展示
+
+当源端与目标端表结构不一致时，结果总览中会保留该表，并按如下方式展示：
+
+```text
+Checksum Results Overview
+Schema       Table    IndexColumn  CheckObject  Rows  Diffs    Datafix
+gt_checksum  tb_emp6               data               DDL-yes  file
+```
+
+说明如下：
+
+1. `Diffs=DDL-yes` 表示当前表存在 DDL 差异，当前轮次不会继续做数据比对。
+2. `Rows` 列固定显示为空值，这是预期行为，用于避免列差异信息过长时破坏终端表格布局。
+3. 若需查看具体差异字段，请检查运行日志；日志中会记录 `Extra=[...]`、`Missing=[...]` 等详细信息。
+
+### repair SQL 前置语句兼容性
+
+无论是生成 fix SQL 文件，还是执行在线修复，程序都会根据 `dstDSN` 中的 `charset` 自动生成统一的前置 `session` 语句，包括：
+
+- `SET NAMES ...`
+- `SET FOREIGN_KEY_CHECKS=0`
+- `SET UNIQUE_CHECKS=0`
+- `SET INNODB_LOCK_WAIT_TIMEOUT=1073741824`
+
+对于仅在 `MySQL 8.0` 中支持的 `sql_require_primary_key` 与 `sql_generate_invisible_primary_key`，程序会使用 **MySQL versioned comments** 包裹；因此同一套 fix SQL 可以兼容 `MySQL 5.6/5.7/8.0/8.4`，低版本实例会自动忽略不支持的 `session` 变量设置。
+
 ## 配置参数详解
 
 **gt-checksum** 支持命令行参数与配置文件方式运行，但命令行仅支持 `-c/-f`, `-h`, `-v` 等基础参数，其余参数通过配置文件指定。
@@ -520,7 +579,7 @@ result=PARTIAL_SUCCESS continue_on_error=true
 
 ## 已知缺陷/问题
 
-截止最新的v1.2.4版本，已知存在以下几个约束/问题。
+截止最新的v1.2.5版本，已知存在以下几个约束/问题。
 
 - 当存在触发器时，因为触发器的作用，可能导致在修复完一个表后，触发其他表被改变，从而看起来像是修复后仍不一致的情况。这种情况下，需要先临时删除触发器进行修复，完成后在重新创建触发器。
 
@@ -530,7 +589,9 @@ result=PARTIAL_SUCCESS continue_on_error=true
 
 - 当 `checkObject=trigger` 或 `routine` 生成的 fixSQL 中包含 `DROP + CREATE PROCEDURE/FUNCTION/TRIGGER` 时，目标库必须预先存在源端定义中的 `DEFINER` 账号及权限，否则执行会失败。这是环境约束，不是程序实现错误。建议在执行 `repairDB` 前，先对 fixSQL 中的 `DEFINER` 做一次人工检查。
 
-- 因元数据间存在较多不一致，目前主要支持MySQL 8.0/GreatSQL 8.0版本，暂不支持跨5.7和8.0之间的校验。
+- 已支持 `MySQL 5.6`、`5.7`、`8.0`、`8.4` 的同版本和升级链路校验；但仍不支持 `src > dst` 的 downgrade 场景，程序会在启动阶段直接退出。
+
+- 当 `checkObject=data` 且两端 DSN 中的 `charset` 参数不一致时，程序会在启动阶段直接拒绝执行；如需继续校验，请先统一连接字符集配置。
 
 - 不支持对非InnoDB引擎表的数据校验。
 
