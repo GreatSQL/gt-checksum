@@ -44,7 +44,7 @@ func (rc *ConfigParameter) cliHelp() {
 	app.Usage = "opensource MySQL database checksum and sync tool by GreatSQL" //应用功能说明
 	app.Author = "GreatSQL"                                                    //作者
 	app.Email = "GreatSQL <greatsql@greatdb.com>"                              //邮箱
-	app.Version = "1.2.4"
+	app.Version = "1.2.5"
 	app.Flags = []cli.Flag{
 		cli.StringFlag{
 			Name:        "c,f",                                                        //命令名称
