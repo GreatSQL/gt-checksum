@@ -16,12 +16,20 @@ var supportedMySQLSeries = map[string]struct{}{
 	"8.4": {},
 }
 
+type DatabaseFlavor string
+
+const (
+	DatabaseFlavorMySQL   DatabaseFlavor = "MySQL"
+	DatabaseFlavorMariaDB DatabaseFlavor = "MariaDB"
+)
+
 type MySQLVersionInfo struct {
 	Raw    string
 	Series string
 	Major  int
 	Minor  int
 	Patch  int
+	Flavor DatabaseFlavor
 }
 
 var (
@@ -63,7 +71,27 @@ func ParseMySQLVersion(raw string) (MySQLVersionInfo, error) {
 		Major:  major,
 		Minor:  minor,
 		Patch:  patch,
+		Flavor: DetectDatabaseFlavor(trimmed),
 	}, nil
+}
+
+func DetectDatabaseFlavor(raw string) DatabaseFlavor {
+	normalized := strings.ToLower(strings.TrimSpace(raw))
+	if strings.Contains(normalized, "mariadb") {
+		return DatabaseFlavorMariaDB
+	}
+	return DatabaseFlavorMySQL
+}
+
+func (info MySQLVersionInfo) FlavorName() string {
+	if info.Flavor == "" {
+		return string(DatabaseFlavorMySQL)
+	}
+	return string(info.Flavor)
+}
+
+func FormatDatabaseVersion(info MySQLVersionInfo) string {
+	return fmt.Sprintf("%s %s", info.FlavorName(), info.Raw)
 }
 
 func SupportedMySQLSeriesList() string {
@@ -100,6 +128,44 @@ func ValidateMySQLVersionPair(src, dst MySQLVersionInfo) error {
 	}
 	if CompareMySQLVersionSeries(src, dst) > 0 {
 		return fmt.Errorf("source MySQL version %s (series %s) is higher than target %s (series %s); downgrade check/repair is not supported", src.Raw, src.Series, dst.Raw, dst.Series)
+	}
+	return nil
+}
+
+func ValidateMySQLCompatibilityPolicy(src, dst MySQLVersionInfo, checkObject string) error {
+	normalizedCheckObject := strings.ToLower(strings.TrimSpace(checkObject))
+
+	switch {
+	case src.Flavor == DatabaseFlavorMariaDB && dst.Flavor == DatabaseFlavorMySQL:
+		if dst.Series != "8.0" && dst.Series != "8.4" {
+			return fmt.Errorf("source database %s only supports data check/fix to MySQL 8.0 or 8.4 targets; current destination %s is not supported", FormatDatabaseVersion(src), FormatDatabaseVersion(dst))
+		}
+		if normalizedCheckObject != "data" {
+			return fmt.Errorf("source database %s to destination %s only supports checkObject=data; checkObject=%s is not supported", FormatDatabaseVersion(src), FormatDatabaseVersion(dst), checkObject)
+		}
+		return nil
+	case src.Flavor == DatabaseFlavorMySQL && dst.Flavor == DatabaseFlavorMariaDB:
+		return fmt.Errorf("source database %s to destination %s is not supported", FormatDatabaseVersion(src), FormatDatabaseVersion(dst))
+	case src.Flavor == DatabaseFlavorMariaDB && dst.Flavor == DatabaseFlavorMariaDB:
+		return fmt.Errorf("source database %s to destination %s is not supported; only MariaDB -> MySQL 8.0/8.4 data check/fix is supported", FormatDatabaseVersion(src), FormatDatabaseVersion(dst))
+	default:
+		return ValidateMySQLVersionPair(src, dst)
+	}
+}
+
+func ValidateDataCheckCharset(srcCharset, dstCharset string) error {
+	normalizedSrc := strings.TrimSpace(srcCharset)
+	if normalizedSrc == "" {
+		normalizedSrc = "utf8mb4"
+	}
+
+	normalizedDst := strings.TrimSpace(dstCharset)
+	if normalizedDst == "" {
+		normalizedDst = "utf8mb4"
+	}
+
+	if !strings.EqualFold(normalizedSrc, normalizedDst) {
+		return fmt.Errorf("data check/fix requires identical DSN charsets; source uses %s and target uses %s. Please align srcDSN and dstDSN charset settings before retrying", normalizedSrc, normalizedDst)
 	}
 	return nil
 }

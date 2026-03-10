@@ -69,7 +69,7 @@ func main() {
 	actions.ResetMemoryPeakStats()
 
 	if !actions.SchemaTableInit(m).GlobalAccessPriCheck(1, 2) {
-		fmt.Println(fmt.Sprintf("gt-checksum: Missing required global privileges (SESSION_VARIABLES_ADMIN and REPLICATION). Check %s for details or set logLevel=debug", m.SecondaryL.LogV.LogFile))
+		fmt.Println(fmt.Sprintf("gt-checksum: Missing required global privileges. Check %s for details or set logLevel=debug", m.SecondaryL.LogV.LogFile))
 		os.Exit(1)
 	}
 	//获取待校验表信息

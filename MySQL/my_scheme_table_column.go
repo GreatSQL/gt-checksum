@@ -304,6 +304,11 @@ func (my *QueryTable) GlobalAccessPri(db *sql.DB, logThreadSeq int64) (bool, err
 	if version == "" {
 		return false, nil
 	}
+	if global.DetectDatabaseFlavor(version) == global.DatabaseFlavorMariaDB {
+		logMsg = fmt.Sprintf("(%d) [%s] Skip global privilege precheck for %s DB version %s; current data path does not require MariaDB-specific global privileges", logThreadSeq, Event, DBType, version)
+		global.Wlog.Info(logMsg)
+		return true, nil
+	}
 	if strings.HasPrefix(version, "8.") {
 		globalPri["SESSION_VARIABLES_ADMIN"] = 0
 	}

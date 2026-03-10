@@ -37,18 +37,18 @@ func (rc *ConfigParameter) validateMySQLCompatibility(srcDB, dstDB *sql.DB) erro
 	global.SourceMySQLVersion = srcVersion
 	global.DestMySQLVersion = dstVersion
 
-	global.Wlog.Infof("(%d) [C_check_Options] source MySQL version detected: %s (series %s)", rc.LogThreadSeq, srcVersion.Raw, srcVersion.Series)
-	global.Wlog.Infof("(%d) [C_check_Options] target MySQL version detected: %s (series %s)", rc.LogThreadSeq, dstVersion.Raw, dstVersion.Series)
+	global.Wlog.Infof("(%d) [C_check_Options] source database detected: %s (series %s)", rc.LogThreadSeq, global.FormatDatabaseVersion(srcVersion), srcVersion.Series)
+	global.Wlog.Infof("(%d) [C_check_Options] target database detected: %s (series %s)", rc.LogThreadSeq, global.FormatDatabaseVersion(dstVersion), dstVersion.Series)
 
-	if err := global.ValidateMySQLVersionPair(srcVersion, dstVersion); err != nil {
+	if err := global.ValidateMySQLCompatibilityPolicy(srcVersion, dstVersion, rc.SecondaryL.RulesV.CheckObject); err != nil {
 		return err
 	}
 
 	if strings.EqualFold(rc.SecondaryL.RulesV.CheckObject, "data") {
 		srcCharset := global.ExtractCharsetFromDSN(rc.SecondaryL.DsnsV.SrcJdbc)
 		dstCharset := global.ExtractCharsetFromDSN(rc.SecondaryL.DsnsV.DestJdbc)
-		if !strings.EqualFold(srcCharset, dstCharset) {
-			return fmt.Errorf("data check/fix requires identical DSN charsets, but source uses %s and target uses %s", srcCharset, dstCharset)
+		if err := global.ValidateDataCheckCharset(srcCharset, dstCharset); err != nil {
+			return err
 		}
 		global.Wlog.Infof("(%d) [C_check_Options] data check charset compatibility verified: source=%s target=%s", rc.LogThreadSeq, srcCharset, dstCharset)
 	}
