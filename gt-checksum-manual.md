@@ -77,6 +77,7 @@ $ gt-checksum -c ./gc.conf
 1. 不论 `checkObject` 取值为何，程序启动阶段都会先做全局权限检查。
 2. 表级权限检查（`TableAccessPriCheck`）当前仅在 `checkObject=data` 分支中强制执行。
 3. `checkObject=trigger` 或 `routine` 时，若账号无法读取对应元数据，可能出现“未报错但结果不完整”的情况，建议按上表补齐权限后再执行。
+4. 当源端为 `MariaDB`、目标端为 `MySQL 8.0/8.4` 且 `checkObject=data` 时，当前版本会跳过源端 `MariaDB` 的全局权限预检查，不再要求 `SESSION_VARIABLES_ADMIN` 或 `REPLICATION CLIENT` 形式的 `MySQL` 权限名称；但仍需确保源端表具备 `SELECT` 权限，目标端 `MySQL` 侧继续按数据校验/修复路径检查相应权限。
 
 ## 快速使用案例
 
@@ -152,23 +153,28 @@ sbtest  F1              Function        no      no
 3. 确认该账号具备创建/修改对应 `PROCEDURE`、`FUNCTION`、`TRIGGER` 所需权限；
 4. 若源端与目标端账号体系不同，先由 DBA 完成账号和授权准备，再执行 `repairDB`。
 
-## MySQL跨版本兼容说明
+## MySQL / MariaDB 跨版本兼容说明
 
 ### 支持范围
 
-当前版本对 MySQL 的支持上限为 `8.4 LTS`，并按以下规则执行兼容性校验：
+当前版本对 `MySQL` 的支持上限为 `8.4 LTS`，并按以下规则执行兼容性校验：
 
 | 场景 | `checkObject=data` | `checkObject=struct` | 说明 |
 |---|---|---|---|
 | 源端与目标端同版本主线（`5.6`、`5.7`、`8.0`、`8.4`） | 支持 | 支持 | 同时支持数据校验/修复和表结构校验/修复。 |
 | 源端版本主线小于目标端版本主线，且两端均在 `5.6`、`5.7`、`8.0`、`8.4` 范围内 | 支持 | 支持 | 例如 `5.6 -> 5.7`、`5.6 -> 8.0`、`5.7 -> 8.0`、`8.0 -> 8.4`。 |
+| 源端为 `MariaDB 10.x+`，目标端为 `MySQL 8.0/8.4` | 支持 | 不支持 | 仅允许执行 `checkObject=data` 的数据校验/修复。 |
+| 源端为 `MariaDB 10.x+`，目标端为 `MySQL 8.0` 以下版本 | 不支持 | 不支持 | 程序会在启动阶段直接退出，并提示当前组合不受支持。 |
+| 源端为 `MySQL`，目标端为 `MariaDB` | 不支持 | 不支持 | 程序会在启动阶段直接退出，并提示当前组合不受支持。 |
+| 源端与目标端均为 `MariaDB` | 不支持 | 不支持 | 当前版本未纳入正式支持范围。 |
 | 源端版本主线大于目标端版本主线 | 不支持 | 不支持 | 程序会在启动阶段直接退出，并明确提示 downgrade 场景不受支持。 |
 | 任一端版本主线不在 `5.6`、`5.7`、`8.0`、`8.4` 范围内 | 不支持 | 不支持 | 程序会在启动阶段直接退出，并提示支持的版本范围。 |
 
 ### `checkObject=data` 的前置条件
 
 1. 源端与目标端 `srcDSN`、`dstDSN` 中的 `charset` 参数必须一致；如果两端字符集不一致，程序会在启动阶段直接退出，避免出现数据校验结果失真或修复后乱码的问题。
-2. 当数据校验前发现表结构不一致时，程序不会继续做该表的数据比对，而是保留结果并将 `Diffs` 标记为 `DDL-yes`。如果需要进一步修复表结构，请改用 `checkObject=struct`。
+2. 当源端为 `MariaDB` 时，仅支持 `MariaDB 10.x+ -> MySQL 8.0/8.4` 的数据校验/修复路径；如果 `checkObject` 不是 `data`，程序会在启动阶段直接拒绝执行。
+3. 当数据校验前发现表结构不一致时，程序不会继续做该表的数据比对，而是保留结果并将 `Diffs` 标记为 `DDL-yes`。如果需要进一步修复表结构，请改用 `checkObject=struct`。
 
 ### 推荐配置示例
 
@@ -182,7 +188,17 @@ checkObject = data
 datafix = file
 ```
 
-如果要修复表结构差异，则将 `checkObject` 改为 `struct`，其余配置保持不变即可。
+以下示例表示执行 `MariaDB 10.5 -> MySQL 8.0` 的数据校验；该组合仅支持 `checkObject=data`：
+
+```ini
+srcDSN = mysql|checksum:Checksum@3306@tcp(127.0.0.1:3407)/information_schema?charset=utf8mb4
+dstDSN = mysql|checksum:Checksum@3306@tcp(127.0.0.1:3406)/information_schema?charset=utf8mb4
+tables = gt_checksum.*
+checkObject = data
+datafix = file
+```
+
+如果要修复表结构差异，则将 `checkObject` 改为 `struct`，其余配置保持不变即可；但当源端为 `MariaDB` 时，`checkObject=struct` 当前不受支持。
 
 ### DDL 差异结果展示
 
@@ -210,6 +226,15 @@ gt_checksum  tb_emp6               data               DDL-yes  file
 - `SET INNODB_LOCK_WAIT_TIMEOUT=1073741824`
 
 对于仅在 `MySQL 8.0` 中支持的 `sql_require_primary_key` 与 `sql_generate_invisible_primary_key`，程序会使用 **MySQL versioned comments** 包裹；因此同一套 fix SQL 可以兼容 `MySQL 5.6/5.7/8.0/8.4`，低版本实例会自动忽略不支持的 `session` 变量设置。
+
+### MariaDB 源端权限检查说明
+
+当场景为 `MariaDB 10.x+ -> MySQL 8.0/8.4` 且 `checkObject=data` 时，程序的权限检查行为如下：
+
+1. 源端 `MariaDB`：跳过全局权限预检查，不再要求 `SESSION_VARIABLES_ADMIN`、`REPLICATION CLIENT` 这类 `MySQL` 命名的全局权限；
+2. 目标端 `MySQL 8.0/8.4`：继续按现有逻辑检查全局权限；
+3. 源端与目标端表级权限：仍按 `checkObject=data` 的既有逻辑检查 `SELECT` 以及 `datafix=table` 时所需的对象权限；
+4. 如果终端提示 `Missing required global privileges`，请优先打开 debug 日志，根据日志中源端/目标端各自的权限检查结果确认具体缺失项，而不要仅凭终端输出中的概括性提示判断。
 
 ## 配置参数详解
 
@@ -592,6 +617,8 @@ result=PARTIAL_SUCCESS continue_on_error=true
 - 已支持 `MySQL 5.6`、`5.7`、`8.0`、`8.4` 的同版本和升级链路校验；但仍不支持 `src > dst` 的 downgrade 场景，程序会在启动阶段直接退出。
 
 - 当 `checkObject=data` 且两端 DSN 中的 `charset` 参数不一致时，程序会在启动阶段直接拒绝执行；如需继续校验，请先统一连接字符集配置。
+
+- `MariaDB` 当前仅支持作为源端，目标端为 `MySQL 8.0/8.4`，且只支持 `checkObject=data`；不支持 `MariaDB -> MySQL 8.0` 以下版本、`MySQL -> MariaDB` 以及 `MariaDB -> MariaDB` 组合。
 
 - 不支持对非InnoDB引擎表的数据校验。
 

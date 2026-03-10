@@ -1,13 +1,15 @@
 ## 1.2.5
-- 功能新增: 新增 `MySQL 5.6`、`5.7`、`8.0`、`8.4` 版本支持矩阵校验，支持同版本以及 `srcDSN <= dstDSN` 的升级链路执行数据校验/修复和表结构校验/修复；对 `srcDSN > dstDSN` 的 downgrade 场景启动即失败退出。
-- 功能新增: 新增 `checkObject=data` 模式下源端与目标端 DSN `charset` 一致性校验，避免字符集不兼容导致数据校验与修复结果失真。
-- 功能优化: 统一 repair SQL 和在线修复前置 `session` 语句的生成方式，使用 MySQL versioned comments 兼容 `sql_require_primary_key` 与 `sql_generate_invisible_primary_key`，提升 `MySQL 5.6/5.7/8.0/8.4` 修复链路兼容性。
-- 功能优化: 优化 `checkObject=data` 的结果汇总逻辑，DDL 不一致表会稳定保留在最终结果集中，`Diffs` 明确显示为 `DDL-yes`，且 `Rows` 列固定留空以避免终端表格错位。
-- 问题修复: 
-  - 修复 `srcDSN`、`dstDSN` 中 `charset` 参数提取不完整的问题，现可正确解析 `?charset=`、`&charset=` 及大小写不同的连接参数。
-  - 修复 `checkObject=data` 在全部候选表都存在 DDL 差异时直接退出并提示 `No valid tables in checklist` 的问题，改为跳过数据校验并输出 DDL 差异结果。
-  - 修复 `tables=...` 场景下 DDL 不一致表在最终报告中可能丢失的问题，现会在跳过列表与结果输出链路中持续保留该类表状态。
-  - 修复 `MySQL 5.6/5.7 -> 8.0/8.4` 数据校验阶段直接查询 `INFORMATION_SCHEMA.STATISTICS.IS_VISIBLE` 导致的 `Error 1054` 问题，低版本实例会自动回退到兼容查询语句。
+- [功能新增]: 新增 `MariaDB 10.x+ -> MySQL 8.0/8.4` 的受限兼容策略，仅允许执行 `checkObject=data` 的数据校验与修复；当目标端 `MySQL` 版本低于 `8.0`，或组合为 `MySQL -> MariaDB`、`MariaDB -> MariaDB` 时，程序会在启动阶段直接拒绝执行。
+- [功能新增]: 新增 `MySQL 5.6`、`5.7`、`8.0`、`8.4` 版本支持矩阵校验，支持同版本以及 `srcDSN <= dstDSN` 的升级链路执行数据校验/修复和表结构校验/修复；对 `srcDSN > dstDSN` 的 downgrade 场景启动即失败退出。
+- [功能新增]: 新增 `checkObject=data` 模式下源端与目标端 DSN `charset` 一致性校验，避免字符集不兼容导致数据校验与修复结果失真。
+- [功能优化]: 统一 repair SQL 和在线修复前置 `session` 语句的生成方式，使用 MySQL versioned comments 兼容 `sql_require_primary_key` 与 `sql_generate_invisible_primary_key`，提升 `MySQL 5.6/5.7/8.0/8.4` 修复链路兼容性。
+- [功能优化]: 优化 `checkObject=data` 的结果汇总逻辑，DDL 不一致表会稳定保留在最终结果集中，`Diffs` 明确显示为 `DDL-yes`，且 `Rows` 列固定留空以避免终端表格错位。
+- [测试完善]: 补充触发器场景的测试说明，明确 `account` 表触发器可能导致首次修复后 `tmp_account` 表再次出现数据变化，便于回归测试时正确识别由触发器引发的二次差异。
+- [问题修复]: 优化 `MariaDB` 源端场景下的全局权限预检查逻辑，启动阶段不再把 `SESSION_VARIABLES_ADMIN` 一类 `MySQL 8.0` 专属权限误判为 `MariaDB` 必需项；同时将终端缺权提示改为通用描述，具体缺失权限以 debug 日志为准。
+- [问题修复]: 修复 `srcDSN`、`dstDSN` 中 `charset` 参数提取不完整的问题，现可正确解析 `?charset=`、`&charset=` 及大小写不同的连接参数。
+- [问题修复]: 修复 `checkObject=data` 在全部候选表都存在 DDL 差异时直接退出并提示 `No valid tables in checklist` 的问题，改为跳过数据校验并输出 DDL 差异结果。
+- [问题修复]: 修复 `tables=...` 场景下 DDL 不一致表在最终报告中可能丢失的问题，现会在跳过列表与结果输出链路中持续保留该类表状态。
+- [问题修复]: 修复 `MySQL 5.6/5.7 -> 8.0/8.4` 数据校验阶段直接查询 `INFORMATION_SCHEMA.STATISTICS.IS_VISIBLE` 导致的 `Error 1054` 问题，低版本实例会自动回退到兼容查询语句。
 
 ## 1.2.4
 - 支持Oracle=>MySQL的单向数据校验和修复，目前支持NUMBER/CHAR/NCHAR/VARCHAR2/FLOAT/DECIMAL/DATE/TIMESTAMP/CLOB等多个常用类型

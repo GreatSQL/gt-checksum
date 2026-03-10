@@ -99,6 +99,8 @@ CREATE TABLE tmp_account (
     sql_text VARCHAR(100)
 );
 
+-- 注意：针对account表，创建触发器，会造成第一次校验并修复后，因为触发器导致tmp_account表数据发生变化
+--      修复结束后再次校验报告tmp_account表数据不一致，这种情况下需要先把触发器删除
 -- 监控insert
 DELIMITER ||
 DROP TRIGGER IF EXISTS accountInsert;
