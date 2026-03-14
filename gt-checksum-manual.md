@@ -163,7 +163,7 @@ sbtest  F1              Function        no      no
 |---|---|---|---|
 | 源端与目标端同版本主线（`5.6`、`5.7`、`8.0`、`8.4`） | 支持 | 支持 | 同时支持数据校验/修复和表结构校验/修复。 |
 | 源端版本主线小于目标端版本主线，且两端均在 `5.6`、`5.7`、`8.0`、`8.4` 范围内 | 支持 | 支持 | 例如 `5.6 -> 5.7`、`5.6 -> 8.0`、`5.7 -> 8.0`、`8.0 -> 8.4`。 |
-| 源端为 `MariaDB 10.x+`，目标端为 `MySQL 8.0/8.4` | 支持 | 不支持 | 仅允许执行 `checkObject=data` 的数据校验/修复。 |
+| 源端为 `MariaDB 10.x+`，目标端为 `MySQL 8.0/8.4` | 支持 | 支持 | `struct` 当前仅覆盖安全子集，见下方“`checkObject=struct` 的支持边界”。 |
 | 源端为 `MariaDB 10.x+`，目标端为 `MySQL 8.0` 以下版本 | 不支持 | 不支持 | 程序会在启动阶段直接退出，并提示当前组合不受支持。 |
 | 源端为 `MySQL`，目标端为 `MariaDB` | 不支持 | 不支持 | 程序会在启动阶段直接退出，并提示当前组合不受支持。 |
 | 源端与目标端均为 `MariaDB` | 不支持 | 不支持 | 当前版本未纳入正式支持范围。 |
@@ -173,32 +173,86 @@ sbtest  F1              Function        no      no
 ### `checkObject=data` 的前置条件
 
 1. 源端与目标端 `srcDSN`、`dstDSN` 中的 `charset` 参数必须一致；如果两端字符集不一致，程序会在启动阶段直接退出，避免出现数据校验结果失真或修复后乱码的问题。
-2. 当源端为 `MariaDB` 时，仅支持 `MariaDB 10.x+ -> MySQL 8.0/8.4` 的数据校验/修复路径；如果 `checkObject` 不是 `data`，程序会在启动阶段直接拒绝执行。
+2. 当源端为 `MariaDB` 时，仅支持 `MariaDB 10.x+ -> MySQL 8.0/8.4` 的数据校验/修复路径；其他 `MariaDB` 组合仍会在启动阶段直接拒绝执行。
 3. 当数据校验前发现表结构不一致时，程序不会继续做该表的数据比对，而是保留结果并将 `Diffs` 标记为 `DDL-yes`。如果需要进一步修复表结构，请改用 `checkObject=struct`。
+
+### `checkObject=struct` 的支持边界
+
+当前 `checkObject=struct` 的能力边界如下：
+
+1. `MySQL -> MySQL`
+   - 已覆盖普通列、默认值、`charset/collation`、`PRIMARY KEY`、`UNIQUE`、普通索引、外键、`CHECK` 风险输出；
+   - 已内置 `utf8 -> utf8mb3`、整数显示宽度、`ZEROFILL`、`ROW_FORMAT` 默认漂移、默认 `utf8mb4` 排序规则漂移等归一化规则；
+   - `CHECK`、高风险外键不会自动执行高风险 DDL，而是保留为 `warn-only` 或 advisory 信息。
+2. `MariaDB -> MySQL 8.0/8.4`
+   - 已覆盖安全子集：`JSON`、generated columns、`INET6`、`UUID`、`COMPRESSED`、`IGNORED INDEX`；
+   - `MariaDB JSON` 可通过 `mariaDBJSONTargetType` 配置为 `JSON`、`LONGTEXT` 或 `TEXT`；
+   - `COMPRESSED`、`MariaDB JSON -> LONGTEXT/TEXT` 的语义降级会保留为 `warn-only`。
+3. 以下对象当前只做识别、告警和 advisory 输出，不自动修复：
+   - `SYSTEM VERSIONING`
+   - `WITHOUT OVERLAPS`
+   - `SEQUENCE`
+
+### 结构迁移专项参数
+
+| 参数名 | 可选值 | 默认值 | 说明 |
+|---|---|---|---|
+| `mariaDBJSONTargetType` | `JSON` / `LONGTEXT` / `TEXT` | `JSON` | 控制 `MariaDB JSON` alias 在 `MariaDB -> MySQL 8.0/8.4` 结构迁移时的目标列类型。`JSON` 语义最接近；`LONGTEXT` 适合作为兼容性保底；`TEXT` 当前已实现但未纳入发布级实库基线。 |
+| `fixFilePerTable` | `ON` / `OFF` | `OFF` | 结构迁移场景建议设为 `ON`，便于逐表审查 fix SQL 与 advisory SQL。 |
+| `datafix` | `file` / `table` | `file` | `checkObject=struct` 场景建议固定为 `file`，先生成 fix SQL 供 DBA 审查，再使用 `repairDB` 回放。 |
 
 ### 推荐配置示例
 
 以下示例表示执行 `MySQL 5.7 -> MySQL 8.0` 的数据校验，并要求两端统一使用 `utf8mb4`：
 
 ```ini
-srcDSN = mysql|checksum:Checksum@3306@tcp(127.0.0.1:3405)/information_schema?charset=utf8mb4
-dstDSN = mysql|checksum:Checksum@3306@tcp(127.0.0.1:3406)/information_schema?charset=utf8mb4
+srcDSN = mysql|checksum:Checksum@3306@tcp(src-mysql57-host:3405)/information_schema?charset=utf8mb4
+dstDSN = mysql|checksum:Checksum@3306@tcp(dst-mysql80-host:3406)/information_schema?charset=utf8mb4
 tables = gt_checksum.*
 checkObject = data
 datafix = file
 ```
 
-以下示例表示执行 `MariaDB 10.5 -> MySQL 8.0` 的数据校验；该组合仅支持 `checkObject=data`：
+以下示例表示执行 `MySQL 5.7 -> MySQL 8.0` 的表结构校验与修复 SQL 生成：
 
 ```ini
-srcDSN = mysql|checksum:Checksum@3306@tcp(127.0.0.1:3407)/information_schema?charset=utf8mb4
-dstDSN = mysql|checksum:Checksum@3306@tcp(127.0.0.1:3406)/information_schema?charset=utf8mb4
-tables = gt_checksum.*
-checkObject = data
+srcDSN = mysql|checksum:Checksum@3306@tcp(src-mysql57-host:3405)/information_schema?charset=utf8mb4
+dstDSN = mysql|checksum:Checksum@3306@tcp(dst-mysql80-host:3406)/information_schema?charset=utf8mb4
+tables = gt_phase1_mysql57.*
+checkObject = struct
 datafix = file
+fixFilePerTable = ON
+fixFileDir = ./fixsql-struct-mysql57-to80
 ```
 
-如果要修复表结构差异，则将 `checkObject` 改为 `struct`，其余配置保持不变即可；但当源端为 `MariaDB` 时，`checkObject=struct` 当前不受支持。
+以下示例表示执行 `MariaDB 10.5 -> MySQL 8.0` 的安全子集表结构校验与 fix SQL 生成，并将 `JSON` alias 降级为 `LONGTEXT`：
+
+```ini
+srcDSN = mysql|checksum:Checksum@3306@tcp(src-mariadb105-host:3407)/information_schema?charset=utf8mb4
+dstDSN = mysql|checksum:Checksum@3306@tcp(dst-mysql80-host:3406)/information_schema?charset=utf8mb4
+tables = gt_phase1_mariadb105.*
+checkObject = struct
+datafix = file
+fixFilePerTable = ON
+fixFileDir = ./fixsql-struct-mariadb105-to80
+mariaDBJSONTargetType = LONGTEXT
+```
+
+### 结构迁移标准操作步骤
+
+建议按以下步骤执行 `checkObject=struct`：
+
+1. 首轮 compare：执行 `gt-checksum -c ...` 生成 fix SQL 与 advisory SQL；
+2. 人工审查：检查 `fixFileDir` 中的 SQL 文件，确认映射表名、`warn-only` 对象和 `MariaDB JSON` 目标类型是否符合预期；
+3. 回放修复：使用 `repairDB` 回放 fix SQL；
+4. 二次 compare：再次执行相同配置，确认结果已收敛到 `no` 或可解释的 `warn-only`。
+
+对于当前版本，`warn-only` 通常表示以下几类可解释、可审计的残余风险：
+
+1. `CHECK` 风险
+2. `COMPRESSED`
+3. `MariaDB JSON -> LONGTEXT/TEXT` 的语义降级
+4. `SYSTEM VERSIONING / WITHOUT OVERLAPS / SEQUENCE` 的 advisory-only 边界
 
 ### DDL 差异结果展示
 
@@ -216,6 +270,20 @@ gt_checksum  tb_emp6               data               DDL-yes  file
 2. `Rows` 列固定显示为空值，这是预期行为，用于避免列差异信息过长时破坏终端表格布局。
 3. 若需查看具体差异字段，请检查运行日志；日志中会记录 `Extra=[...]`、`Missing=[...]` 等详细信息。
 
+当结构 compare 已收敛，但仍保留明确可解释的残余风险时，结果会显示为 `warn-only`。例如：
+
+```text
+Checksum Results Overview
+Schema              Table                         CheckObject  Diffs      Datafix
+gt_phase1_mariadb105 t_mariadb_feature_pack      struct       warn-only  file
+```
+
+这表示：
+
+1. 当前对象的 fix SQL 已经完成主要结构改写；
+2. 剩余差异属于已知且可审计的风险边界；
+3. 不再等同于“未收敛的普通结构差异”。
+
 ### repair SQL 前置语句兼容性
 
 无论是生成 fix SQL 文件，还是执行在线修复，程序都会根据 `dstDSN` 中的 `charset` 自动生成统一的前置 `session` 语句，包括：
@@ -229,11 +297,11 @@ gt_checksum  tb_emp6               data               DDL-yes  file
 
 ### MariaDB 源端权限检查说明
 
-当场景为 `MariaDB 10.x+ -> MySQL 8.0/8.4` 且 `checkObject=data` 时，程序的权限检查行为如下：
+当场景为 `MariaDB 10.x+ -> MySQL 8.0/8.4` 且 `checkObject=data` 或 `checkObject=struct` 时，程序的权限检查行为如下：
 
 1. 源端 `MariaDB`：跳过全局权限预检查，不再要求 `SESSION_VARIABLES_ADMIN`、`REPLICATION CLIENT` 这类 `MySQL` 命名的全局权限；
 2. 目标端 `MySQL 8.0/8.4`：继续按现有逻辑检查全局权限；
-3. 源端与目标端表级权限：仍按 `checkObject=data` 的既有逻辑检查 `SELECT` 以及 `datafix=table` 时所需的对象权限；
+3. 源端与目标端表级权限：`checkObject=data` 仍按既有逻辑检查 `SELECT` 以及 `datafix=table` 时所需的对象权限；`checkObject=struct` 则需确保可读取相关元数据并具备目标端执行 fix SQL 所需的对象级 DDL 权限；
 4. 如果终端提示 `Missing required global privileges`，请优先打开 debug 日志，根据日志中源端/目标端各自的权限检查结果确认具体缺失项，而不要仅凭终端输出中的概括性提示判断。
 
 ## 配置参数详解
@@ -618,7 +686,11 @@ result=PARTIAL_SUCCESS continue_on_error=true
 
 - 当 `checkObject=data` 且两端 DSN 中的 `charset` 参数不一致时，程序会在启动阶段直接拒绝执行；如需继续校验，请先统一连接字符集配置。
 
-- `MariaDB` 当前仅支持作为源端，目标端为 `MySQL 8.0/8.4`，且只支持 `checkObject=data`；不支持 `MariaDB -> MySQL 8.0` 以下版本、`MySQL -> MariaDB` 以及 `MariaDB -> MariaDB` 组合。
+- `MariaDB` 当前仅支持作为源端，目标端为 `MySQL 8.0/8.4`；其中 `checkObject=struct` 仅覆盖安全子集。`MariaDB -> MySQL 8.0` 以下版本、`MySQL -> MariaDB` 以及 `MariaDB -> MariaDB` 组合仍不受支持。
+
+- `MariaDB JSON -> TEXT` 虽已具备规则改写和单测覆盖，但当前尚未纳入发布级实库基线；如需使用，建议先在测试环境中自行完成 fix SQL 回放与二次 compare 验证。
+
+- `SYSTEM VERSIONING`、`WITHOUT OVERLAPS`、`SEQUENCE` 当前只会输出 `warn-only` 或 advisory 信息，不会自动生成可直接执行的迁移 SQL。
 
 - 不支持对非InnoDB引擎表的数据校验。
 

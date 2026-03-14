@@ -1,11 +1,22 @@
 ## 1.2.5
-- [功能新增]: 新增 `MariaDB 10.x+ -> MySQL 8.0/8.4` 的受限兼容策略，仅允许执行 `checkObject=data` 的数据校验与修复；当目标端 `MySQL` 版本低于 `8.0`，或组合为 `MySQL -> MariaDB`、`MariaDB -> MariaDB` 时，程序会在启动阶段直接拒绝执行。
+- [测试完善]: 新增表结构迁移统一测试基线脚本 `scripts/struct-migration-test-baseline.sh`，固定 `CGO_ENABLED=0 go test -vet=off ./schemacompat ./actions ./dbExec ./inputArg ./global -count=1` 与 `gt-checksum`、`repairDB` 的标准构建步骤，作为当前结构迁移发布范围的统一测试入口。
+- [测试完善]: 新增统一的发布级结构回归基线与 fix SQL 回放标准作业说明，固化 MySQL `5.6 / 5.7 / 8.0 / 8.4` 低到高结构矩阵、MariaDB `10.5 / 10.11 -> MySQL 8.0 / 8.4` 安全子集主路径，以及“装载夹具 -> 生成 fix SQL -> 回放 -> 二次 compare”的闭环验证口径。
+- [功能新增]: 新增 `MySQL 5.6`、`5.7`、`8.0`、`8.4` 低版本到高版本的表结构 compare / repair 支持，覆盖普通列、默认值、`charset/collation`、`PRIMARY KEY`、`UNIQUE`、普通索引、外键和 `CHECK` 风险输出。
+- [功能新增]: 新增 `MariaDB 10.5 / 10.11 -> MySQL 8.0 / 8.4` 的安全子集表结构 compare / repair 支持，已覆盖 `JSON`、generated columns、`INET6`、`UUID`、`COMPRESSED`、`IGNORED INDEX` 等对象，并支持生成对应的 fix SQL 或 advisory SQL。
+- [功能新增]: 新增参数 `mariaDBJSONTargetType`，支持将 `MariaDB JSON` alias 按策略改写为 `JSON`、`LONGTEXT` 或 `TEXT`，并在 `LONGTEXT` 路径上完成“生成 fix SQL -> repairDB 回放 -> 二次 compare”的闭环验证。
+- [功能优化]: 新增统一的 canonical schema model 与 capability catalog，将列、索引、主键、唯一约束、外键、`CHECK`、`ROW_FORMAT`、显示宽度、`utf8/utf8mb3`、`ZEROFILL`、默认 `utf8mb4` 排序规则漂移纳入统一语义比较与归一化链路。
+- [功能优化]: 新增 `MySQL 8.4` 外键合法性预检查与 advisory-only 修复建议；`CHECK`、非标准外键以及 `MariaDB` 专属高风险对象不再自动执行高风险 DDL，而是统一输出 `warn-only` 或 advisory 信息。
+- [功能优化]: 新增 `SYSTEM VERSIONING`、`WITHOUT OVERLAPS`、`SEQUENCE` 的识别、告警与 advisory 输出边界；当前这些对象会被明确分类，不再以普通 `DDL mismatch` 的形式模糊报出。
+- [功能优化]: 优化结构 compare 结果表达，`CHECK` 的括号噪音已归一化，当前 `warn-only` 仅保留 `CHECK` 风险、`COMPRESSED`、`MariaDB JSON -> LONGTEXT/TEXT` 语义降级等真实且可审计的残余风险。
 - [功能新增]: 新增 `MySQL 5.6`、`5.7`、`8.0`、`8.4` 版本支持矩阵校验，支持同版本以及 `srcDSN <= dstDSN` 的升级链路执行数据校验/修复和表结构校验/修复；对 `srcDSN > dstDSN` 的 downgrade 场景启动即失败退出。
+- [功能新增]: 新增 `MariaDB 10.x+ -> MySQL 8.0/8.4` 的兼容策略，当前同时支持 `checkObject=data` 与 `checkObject=struct`；当目标端 `MySQL` 版本低于 `8.0`，或组合为 `MySQL -> MariaDB`、`MariaDB -> MariaDB` 时，程序会在启动阶段直接拒绝执行。
 - [功能新增]: 新增 `checkObject=data` 模式下源端与目标端 DSN `charset` 一致性校验，避免字符集不兼容导致数据校验与修复结果失真。
 - [功能优化]: 统一 repair SQL 和在线修复前置 `session` 语句的生成方式，使用 MySQL versioned comments 兼容 `sql_require_primary_key` 与 `sql_generate_invisible_primary_key`，提升 `MySQL 5.6/5.7/8.0/8.4` 修复链路兼容性。
 - [功能优化]: 优化 `checkObject=data` 的结果汇总逻辑，DDL 不一致表会稳定保留在最终结果集中，`Diffs` 明确显示为 `DDL-yes`，且 `Rows` 列固定留空以避免终端表格错位。
 - [测试完善]: 补充触发器场景的测试说明，明确 `account` 表触发器可能导致首次修复后 `tmp_account` 表再次出现数据变化，便于回归测试时正确识别由触发器引发的二次差异。
 - [问题修复]: 优化 `MariaDB` 源端场景下的全局权限预检查逻辑，启动阶段不再把 `SESSION_VARIABLES_ADMIN` 一类 `MySQL 8.0` 专属权限误判为 `MariaDB` 必需项；同时将终端缺权提示改为通用描述，具体缺失权限以 debug 日志为准。
+- [问题修复]: 修复结构 compare 中主键 `pri / PRIMARY` canonical key 残余误报、映射场景下 `CREATE TABLE` 目标表名错误保留为源表名，以及 `Index / Partitions / Foreign` 在映射规则下可能查错目标对象的问题。
+- [问题修复]: 修复 `CHECK` 仅有外层括号差异时被误判为结构差异的问题，当前会归一化为 `no`，不再把括号噪音保留到最终结果里。
 - [问题修复]: 修复 `srcDSN`、`dstDSN` 中 `charset` 参数提取不完整的问题，现可正确解析 `?charset=`、`&charset=` 及大小写不同的连接参数。
 - [问题修复]: 修复 `checkObject=data` 在全部候选表都存在 DDL 差异时直接退出并提示 `No valid tables in checklist` 的问题，改为跳过数据校验并输出 DDL 差异结果。
 - [问题修复]: 修复 `tables=...` 场景下 DDL 不一致表在最终报告中可能丢失的问题，现会在跳过列表与结果输出链路中持续保留该类表状态。
