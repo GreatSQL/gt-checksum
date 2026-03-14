@@ -9,7 +9,6 @@ import (
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
-	_ "github.com/godror/godror"
 )
 
 // DBConnStruct stores connection and pool settings for database sessions.

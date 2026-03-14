@@ -3,7 +3,6 @@ package dbExec
 import (
 	"database/sql"
 	mysql "gt-checksum/MySQL"
-	oracle "gt-checksum/Oracle"
 	"strings"
 )
 
@@ -62,18 +61,7 @@ func (qticis *IndexColumnStruct) TableIndexColumn() TableIndexColumner {
 		}
 	}
 	if qticis.Drivce == "godror" {
-		aa = &oracle.QueryTable{
-			Schema:       qticis.Schema,
-			Table:        qticis.Table,
-			ColumnName:   qticis.ColumnName,
-			ChanrowCount: qticis.ChanrowCount,
-			TableColumn:  qticis.TableColumn,
-			Sqlwhere:     qticis.Sqlwhere,
-			ColData:      qticis.ColData,
-			SelectColumn: qticis.SelectColumn,
-			BeginSeq:     qticis.BeginSeq,
-			RowDataCh:    qticis.RowDataCh,
-		}
+		aa = newOracleTableIndexColumner(qticis)
 	}
 	return aa
 }

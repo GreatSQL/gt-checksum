@@ -2,17 +2,13 @@ package dbExec
 
 import (
 	mysql "gt-checksum/MySQL"
-	oracle "gt-checksum/Oracle"
 	"gt-checksum/global"
 )
 
-type GlobalSNStruct struct {
-	mysql  DBGlobalCS
-	oracle DBGlobalCS
-}
+type GlobalSNStruct struct{}
 
 /*
-   全局一致性接口，初始化连接池、获取全局一致性位点
+全局一致性接口，初始化连接池、获取全局一致性位点
 */
 type DBGlobalCS interface {
 	GlobalCN(logThreadSeq int) (map[string]string, error) //全局一致性位点
@@ -29,11 +25,7 @@ func (gs GlobalSNStruct) GcnObject(poolMin int, jdbc, dbDevice string) DBGlobalC
 		}
 	}
 	if dbDevice == "godror" {
-		dbcs = &oracle.GlobalCS{
-			Jdbc:        jdbc,
-			ConnPoolMin: poolMin,
-			Drive:       dbDevice,
-		}
+		dbcs = newOracleGlobalCS(poolMin, jdbc, dbDevice)
 	}
 	return dbcs
 

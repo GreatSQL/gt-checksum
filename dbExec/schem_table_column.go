@@ -3,7 +3,6 @@ package dbExec
 import (
 	"database/sql"
 	mysql "gt-checksum/MySQL"
-	oracle "gt-checksum/Oracle"
 	"strings"
 )
 
@@ -49,12 +48,7 @@ func (tcns *TableColumnNameStruct) Query() QueryTableColumnNameInterface {
 		}
 	}
 	if tcns.Drive == "godror" {
-		aa = &oracle.QueryTable{
-			Schema:                  tcns.Schema,
-			Table:                   tcns.Table,
-			Db:                      tcns.Db,
-			CaseSensitiveObjectName: "",
-		}
+		aa = newOracleTableColumnQuery(tcns)
 	}
 	return aa
 }

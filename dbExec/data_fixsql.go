@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"fmt"
 	mysql "gt-checksum/MySQL"
-	oracle "gt-checksum/Oracle"
 	"gt-checksum/global"
 )
 
@@ -111,20 +110,7 @@ func (dafs DataAbnormalFixStruct) DataAbnormalFix() DataAbnormalFixInterface {
 		}
 	}
 	if dafs.DestDevice == "godror" {
-		// 创建Oracle数据修复结构体
-		// 注意：Oracle结构体不支持SourceSchema字段，所以我们只传递基本字段
-		tqaci = &oracle.OracleDataAbnormalFixStruct{
-			Schema:          dafs.Schema,
-			Table:           dafs.Table,
-			Sqlwhere:        dafs.Sqlwhere,
-			RowData:         dafs.RowData,
-			SourceDevice:    dafs.SourceDevice,
-			IndexColumnType: dafs.IndexColumnType,
-			ColData:         dafs.ColData,
-			IndexType:       dafs.IndexType,
-			IndexColumn:     dafs.IndexColumn,
-			DatafixType:     dafs.DatafixType,
-		}
+		tqaci = newOracleDataAbnormalFix(dafs)
 	}
 	if tqaci == nil {
 		tqaci = &unsupportedDataAbnormalFix{destDevice: dafs.DestDevice}
