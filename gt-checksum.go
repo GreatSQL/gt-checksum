@@ -68,9 +68,13 @@ func main() {
 	utils.MemoryMonitor(fmt.Sprintf("%dMB", m.SecondaryL.RulesV.MemoryLimit), m)
 	actions.ResetMemoryPeakStats()
 
-	if !actions.SchemaTableInit(m).GlobalAccessPriCheck(1, 2) {
-		fmt.Println(fmt.Sprintf("gt-checksum: Missing required global privileges. Check %s for details or set logLevel=debug", m.SecondaryL.LogV.LogFile))
-		os.Exit(1)
+	if m.SecondaryL.RulesV.CheckObject == "data" {
+		if !actions.SchemaTableInit(m).GlobalAccessPriCheck(1, 2) {
+			fmt.Println(fmt.Sprintf("gt-checksum: Missing required global privileges. Check %s for details or set logLevel=debug", m.SecondaryL.LogV.LogFile))
+			os.Exit(1)
+		}
+	} else {
+		global.Wlog.Info(fmt.Sprintf("Skip global privilege precheck for checkObject=%s", m.SecondaryL.RulesV.CheckObject))
 	}
 	//获取待校验表信息
 	var tableList, tableListColCheck, tableListPriCheck []string
@@ -94,8 +98,16 @@ func main() {
 		global.Wlog.Info(fmt.Sprintf("Using schemas for %s check: %v", m.SecondaryL.RulesV.CheckObject, schemas))
 	} else {
 		// 对于其他类型的检查，使用正常的表过滤逻辑
-		if tableList, err = schemaTableInstance.SchemaTableFilter(3, 4); err != nil || len(tableList) == 0 {
+		if tableList, err = schemaTableInstance.SchemaTableFilter(3, 4); err != nil {
 			fmt.Println(fmt.Sprintf("gt-checksum: No tables to check. Check %s for details or set logLevel=debug", m.SecondaryL.LogV.LogFile))
+			os.Exit(1)
+		}
+		if len(tableList) == 0 {
+			if ignoredSummary := schemaTableInstance.IgnoredMatchedTablesSummary(); ignoredSummary != "" {
+				fmt.Println(fmt.Sprintf("gt-checksum: No tables to check. Matched tables were filtered by ignoreTables: %s. Check %s for details or adjust ignoreTables", ignoredSummary, m.SecondaryL.LogV.LogFile))
+			} else {
+				fmt.Println(fmt.Sprintf("gt-checksum: No tables to check. Check %s for details or set logLevel=debug", m.SecondaryL.LogV.LogFile))
+			}
 			os.Exit(1)
 		}
 	}

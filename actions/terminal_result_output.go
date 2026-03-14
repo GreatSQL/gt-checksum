@@ -30,6 +30,15 @@ type Pod struct {
 	Schema, Table, IndexColumn, Rows, DIFFS, CheckObject, Datafix, FuncName, Definer, ProcName, TriggerName, MappingInfo string
 }
 
+func isStructOutputPod(pod Pod) bool {
+	switch strings.ToLower(strings.TrimSpace(pod.CheckObject)) {
+	case "struct", "sequence":
+		return true
+	default:
+		return false
+	}
+}
+
 func dataResultRows(pod Pod) string {
 	if pod.DIFFS == "DDL-yes" {
 		return ""
@@ -314,8 +323,8 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 		}
 
 		for _, pod := range measuredDataPods {
-			// 只显示CheckObject为struct的记录，过滤掉data类型的记录
-			if pod.CheckObject != "struct" {
+			// Keep structure-level rows and schema-object warnings in the same output.
+			if !isStructOutputPod(pod) {
 				continue
 			}
 			// 检查Table字段是否包含schema.table或schema:table格式

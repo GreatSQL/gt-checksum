@@ -220,6 +220,7 @@ func (rc *ConfigParameter) checkPar() {
 
 	vlog = fmt.Sprintf("(%d) [%s] check object parameter message is {%s}.", rc.LogThreadSeq, Event, rc.SecondaryL.RulesV.CheckObject)
 	global.Wlog.Debug(vlog)
+	global.CurrentCheckObject = rc.SecondaryL.RulesV.CheckObject
 
 	if rc.SecondaryL.DsnsV.SrcDrive == "mysql" && rc.SecondaryL.DsnsV.DestDrive == "mysql" {
 		if err := rc.validateMySQLCompatibility(srcDB, dstDB); err != nil {
@@ -307,6 +308,20 @@ func (rc *ConfigParameter) checkPar() {
 		global.Wlog.Error(vlog)
 		os.Exit(1)
 	}
+	rc.SecondaryL.RulesV.MariaDBJSONTargetType = strings.ToUpper(strings.TrimSpace(rc.SecondaryL.RulesV.MariaDBJSONTargetType))
+	if rc.SecondaryL.RulesV.MariaDBJSONTargetType == "" {
+		rc.SecondaryL.RulesV.MariaDBJSONTargetType = "JSON"
+	}
+	switch rc.SecondaryL.RulesV.MariaDBJSONTargetType {
+	case "JSON", "LONGTEXT", "TEXT":
+	default:
+		fmt.Println(fmt.Sprintf("gt-checksum: mariaDBJSONTargetType must be JSON, LONGTEXT or TEXT. Check %s or set logLevel=debug for details", rc.SecondaryL.LogV.LogFile))
+		vlog = fmt.Sprintf("(%d) [%s] option \"mariaDBJSONTargetType\" must be JSON, LONGTEXT or TEXT.", rc.LogThreadSeq, Event)
+		global.Wlog.Error(vlog)
+		os.Exit(1)
+	}
+	vlog = fmt.Sprintf("(%d) [%s] MariaDB JSON target type policy is {%s}.", rc.LogThreadSeq, Event, rc.SecondaryL.RulesV.MariaDBJSONTargetType)
+	global.Wlog.Debug(vlog)
 	if rc.SecondaryL.RepairV.FixTrxSize < 1 {
 		fmt.Println(fmt.Sprintf("gt-checksum: fixTrxSize must be greater than 0. Check %s or set logLevel=debug for details", rc.SecondaryL.LogV.LogFile))
 		vlog = fmt.Sprintf("(%d) [%s] option \"fixTrxSize\" must be greater than 0.", rc.LogThreadSeq, Event)

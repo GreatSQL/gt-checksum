@@ -8,6 +8,7 @@ import (
 	"gt-checksum/dbExec"
 	"gt-checksum/global"
 	"gt-checksum/inputArg"
+	"gt-checksum/schemacompat"
 	"os"
 	"regexp"
 	"sort"
@@ -21,13 +22,298 @@ import (
 var (
 	// 用于存储表映射关系
 	TableMappingRelations []string
-	// 用于存储索引检查结果的全局变量
-	indexDiffsMap map[string]bool
-	// 用于存储分区检查结果的全局变量
-	partitionDiffsMap map[string]bool
-	// 用于存储外键检查结果的全局变量
-	foreignKeyDiffsMap map[string]bool
 )
+
+var partitionMetadataPattern = regexp.MustCompile(`^NAME=(.*?),ORDINAL=(.*?),METHOD=(.*?),EXPRESSION=(.*?),DESCRIPTION=(.*),ROWS=(.*)$`)
+var partitionDelimiterSpacingPattern = regexp.MustCompile(`\s*([(),])\s*`)
+var mysqlVersionedCommentWrapperPattern = regexp.MustCompile(`(?is)^/\*!\d+\s*(.*?)\s*\*/$`)
+var routineMetadataCommentPattern = regexp.MustCompile(`/\*GT_CHECKSUM_METADATA:(.*?)\*/`)
+var routineInlineCommentPattern = regexp.MustCompile(`--.*?\n|/\*[\s\S]*?\*/`)
+var routineWhitespacePattern = regexp.MustCompile(`\s+`)
+var routineDefinerPattern = regexp.MustCompile(`CREATE\s+DEFINER\s*=\s*['"]?([^'"]*)['"]?@['"]?([^'"]*)['"]?`)
+var routineSecurityPattern = regexp.MustCompile(`SQL\s+SECURITY\s+(\w+)`)
+var routineCharsetPattern = regexp.MustCompile(`CHARACTER_SET_CLIENT\s*=\s*(\w+)`)
+var routineCollationPattern = regexp.MustCompile(`COLLATION_CONNECTION\s*=\s*(\w+)`)
+var routineDatabaseCollationPattern = regexp.MustCompile(`DATABASE\s+COLLATION\s*=\s*(\w+)`)
+var createTableTargetIdentifierPattern = regexp.MustCompile(`(?i)(CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?)` + `(?:(` + "`[^`]+`" + `)\.)?(` + "`[^`]+`" + `)`)
+
+type partitionMetadata struct {
+	Name        string
+	Ordinal     int
+	Method      string
+	Expression  string
+	Description string
+	Rows        string
+}
+
+func normalizePartitionCompareText(value string) string {
+	normalized := strings.TrimSpace(value)
+	normalized = strings.ReplaceAll(normalized, "`", "")
+	normalized = strings.ReplaceAll(normalized, "!", "")
+	normalized = strings.Join(strings.Fields(normalized), " ")
+	normalized = partitionDelimiterSpacingPattern.ReplaceAllString(normalized, "$1")
+	return strings.ToUpper(normalized)
+}
+
+func normalizePartitionFullDefinition(value string) string {
+	normalized := strings.TrimSpace(value)
+	for {
+		matches := mysqlVersionedCommentWrapperPattern.FindStringSubmatch(normalized)
+		if len(matches) != 2 {
+			break
+		}
+		// SHOW CREATE TABLE may wrap the same partition clause in a versioned
+		// comment on one side but not the other. The wrapper itself is metadata
+		// noise and should not affect semantic comparison.
+		normalized = strings.TrimSpace(matches[1])
+	}
+	return normalizePartitionCompareText(normalized)
+}
+
+func parsePartitionMetadataEntries(partitions map[string]string, tableKey string) []partitionMetadata {
+	entries := make([]partitionMetadata, 0)
+	prefix := tableKey + "."
+	for key, value := range partitions {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		matches := partitionMetadataPattern.FindStringSubmatch(value)
+		if len(matches) != 7 {
+			continue
+		}
+		ordinal, err := strconv.Atoi(strings.TrimSpace(matches[2]))
+		if err != nil {
+			continue
+		}
+		entries = append(entries, partitionMetadata{
+			Name:        strings.TrimSpace(matches[1]),
+			Ordinal:     ordinal,
+			Method:      strings.TrimSpace(matches[3]),
+			Expression:  strings.TrimSpace(matches[4]),
+			Description: strings.TrimSpace(matches[5]),
+			Rows:        strings.TrimSpace(matches[6]),
+		})
+	}
+
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].Ordinal == entries[j].Ordinal {
+			return entries[i].Name < entries[j].Name
+		}
+		return entries[i].Ordinal < entries[j].Ordinal
+	})
+	return entries
+}
+
+func partitionRowsReportedEmpty(meta partitionMetadata) bool {
+	rows := strings.TrimSpace(meta.Rows)
+	if rows == "" {
+		return false
+	}
+	value, err := strconv.ParseFloat(rows, 64)
+	if err != nil {
+		return false
+	}
+	return value == 0
+}
+
+func partitionsShareLeadingLayout(sourceParts, destParts []partitionMetadata) bool {
+	sharedCount := len(sourceParts)
+	if len(destParts) < sharedCount {
+		sharedCount = len(destParts)
+	}
+	for idx := 0; idx < sharedCount; idx++ {
+		sourceMeta := sourceParts[idx]
+		destMeta := destParts[idx]
+		if !strings.EqualFold(sourceMeta.Name, destMeta.Name) {
+			return false
+		}
+		if normalizePartitionCompareText(sourceMeta.Method) != normalizePartitionCompareText(destMeta.Method) {
+			return false
+		}
+		if normalizePartitionCompareText(sourceMeta.Expression) != normalizePartitionCompareText(destMeta.Expression) {
+			return false
+		}
+		if normalizePartitionCompareText(sourceMeta.Description) != normalizePartitionCompareText(destMeta.Description) {
+			return false
+		}
+	}
+	return true
+}
+
+func buildPartitionValidationQuery(schemaName, tableName, partitionName string) string {
+	return fmt.Sprintf("SELECT COUNT(*) FROM `%s`.`%s` PARTITION (`%s`);", schemaName, tableName, partitionName)
+}
+
+func buildDropPartitionAdvisoryLines(schemaName, tableName string, partitions []partitionMetadata) []string {
+	if len(partitions) == 0 {
+		return nil
+	}
+	lines := []string{
+		fmt.Sprintf("-- gt-checksum advisory begin: %s.%s partition repair", schemaName, tableName),
+	}
+	for _, partition := range partitions {
+		lines = append(lines, "-- 请在确认该分区不存在任何数据后再执行此操作")
+		lines = append(lines, fmt.Sprintf("-- %s", buildPartitionValidationQuery(schemaName, tableName, partition.Name)))
+		lines = append(lines, fmt.Sprintf("-- ALTER TABLE `%s`.`%s` DROP PARTITION `%s`;", schemaName, tableName, partition.Name))
+	}
+	lines = append(lines, fmt.Sprintf("-- gt-checksum advisory end: %s.%s partition repair", schemaName, tableName))
+	return lines
+}
+
+func formatPartitionDescriptionForAdd(meta partitionMetadata) (string, bool) {
+	description := strings.TrimSpace(meta.Description)
+	if description == "" {
+		return "", false
+	}
+	method := normalizePartitionCompareText(meta.Method)
+
+	switch {
+	case strings.HasPrefix(method, "RANGE"):
+		if strings.EqualFold(description, "MAXVALUE") {
+			if strings.Contains(method, "COLUMNS") {
+				return "(MAXVALUE)", true
+			}
+			return "MAXVALUE", true
+		}
+		if strings.HasPrefix(description, "(") && strings.HasSuffix(description, ")") {
+			return description, true
+		}
+		return fmt.Sprintf("(%s)", description), true
+	case strings.HasPrefix(method, "LIST"):
+		if strings.HasPrefix(description, "(") && strings.HasSuffix(description, ")") {
+			return description, true
+		}
+		return fmt.Sprintf("(%s)", description), true
+	default:
+		return "", false
+	}
+}
+
+func buildAddPartitionClause(meta partitionMetadata) (string, bool) {
+	formattedDescription, ok := formatPartitionDescriptionForAdd(meta)
+	if !ok {
+		return "", false
+	}
+	method := normalizePartitionCompareText(meta.Method)
+	switch {
+	case strings.HasPrefix(method, "RANGE"):
+		return fmt.Sprintf("PARTITION `%s` VALUES LESS THAN %s", meta.Name, formattedDescription), true
+	case strings.HasPrefix(method, "LIST"):
+		return fmt.Sprintf("PARTITION `%s` VALUES IN %s", meta.Name, formattedDescription), true
+	default:
+		return "", false
+	}
+}
+
+func buildAddPartitionSQL(schemaName, tableName string, partitions []partitionMetadata) []string {
+	clauses := make([]string, 0, len(partitions))
+	for _, partition := range partitions {
+		clause, ok := buildAddPartitionClause(partition)
+		if !ok {
+			return nil
+		}
+		clauses = append(clauses, clause)
+	}
+	if len(clauses) == 0 {
+		return nil
+	}
+	return []string{
+		fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD PARTITION (%s);", schemaName, tableName, strings.Join(clauses, ", ")),
+	}
+}
+
+func buildPartitionRepairSQLs(sourceSchema, sourceTable, destSchema, destTable string, sourcePartitions, destPartitions map[string]string) ([]string, []string, bool, string) {
+	sourceTableKey := fmt.Sprintf("%s.%s", sourceSchema, sourceTable)
+	destTableKey := fmt.Sprintf("%s.%s", destSchema, destTable)
+	sourceEntries := parsePartitionMetadataEntries(sourcePartitions, sourceTableKey)
+	destEntries := parsePartitionMetadataEntries(destPartitions, destTableKey)
+
+	if len(sourceEntries) == 0 || len(destEntries) == 0 {
+		return nil, nil, false, "partition metadata is incomplete"
+	}
+	if !partitionsShareLeadingLayout(sourceEntries, destEntries) {
+		return nil, nil, false, "shared partition prefix is not semantically identical"
+	}
+
+	switch {
+	case len(sourceEntries) < len(destEntries):
+		extraDestPartitions := destEntries[len(sourceEntries):]
+		for _, partition := range extraDestPartitions {
+			if !partitionRowsReportedEmpty(partition) {
+				return nil, nil, false, fmt.Sprintf("extra target partition %s is not reported empty", partition.Name)
+			}
+		}
+		return nil, buildDropPartitionAdvisoryLines(destSchema, destTable, extraDestPartitions), true, "extra empty tail partitions detected on target"
+	case len(sourceEntries) > len(destEntries):
+		missingDestPartitions := sourceEntries[len(destEntries):]
+		addSQL := buildAddPartitionSQL(destSchema, destTable, missingDestPartitions)
+		if len(addSQL) == 0 {
+			return nil, nil, false, "tail partitions require an unsupported ADD PARTITION shape"
+		}
+		return addSQL, nil, true, "missing tail partitions detected on target"
+	default:
+		return nil, nil, false, "partition counts are identical but definitions still differ"
+	}
+}
+
+func mergeStructDiffState(current, incoming string) string {
+	switch strings.TrimSpace(incoming) {
+	case global.SkipDiffsYes, global.SkipDiffsDDLYes:
+		return global.SkipDiffsYes
+	case global.SkipDiffsWarnOnly:
+		if strings.TrimSpace(current) == global.SkipDiffsYes || strings.TrimSpace(current) == global.SkipDiffsDDLYes {
+			return global.SkipDiffsYes
+		}
+		return global.SkipDiffsWarnOnly
+	default:
+		if strings.TrimSpace(current) == "" {
+			return global.SkipDiffsNo
+		}
+		return current
+	}
+}
+
+func shouldUseCaseSensitiveColumnMatching(sourceDrive, destDrive, caseSensitiveObjectName string, oracleToMySQLDataMode bool) bool {
+	if oracleToMySQLDataMode {
+		return false
+	}
+	// MySQL column identifiers are matched case-insensitively even when table
+	// name handling remains case-sensitive on the host filesystem.
+	if strings.EqualFold(sourceDrive, "mysql") && strings.EqualFold(destDrive, "mysql") {
+		return false
+	}
+	return strings.EqualFold(caseSensitiveObjectName, "yes")
+}
+
+func indexColumnsOnlyDifferInCase(sourceColumns, destColumns []string) bool {
+	if len(sourceColumns) != len(destColumns) {
+		return false
+	}
+	for i := range sourceColumns {
+		if !strings.EqualFold(sourceColumns[i], destColumns[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func mergeIndexVisibilityHints(base map[string]string, hints map[string]string) map[string]string {
+	if len(base) == 0 && len(hints) == 0 {
+		return map[string]string{}
+	}
+	merged := make(map[string]string, len(base)+len(hints))
+	for k, v := range base {
+		merged[k] = v
+	}
+	for k, v := range hints {
+		merged[k] = v
+	}
+	return merged
+}
+
+func isInvisibleLikeIndexVisibility(visibility string) bool {
+	return strings.EqualFold(visibility, "NO") || strings.EqualFold(visibility, "INVISIBLE") || strings.EqualFold(visibility, "IGNORED")
+}
 
 // measuredDataPods 在 terminal_result_output.go 中已定义
 
@@ -43,6 +329,8 @@ type schemaTable struct {
 	ignoreTable             string
 	sourceDrive             string
 	destDrive               string
+	sourceVersion           global.MySQLVersionInfo
+	destVersion             global.MySQLVersionInfo
 	sourceDB                *sql.DB
 	destDB                  *sql.DB
 	caseSensitiveObjectName string
@@ -58,6 +346,84 @@ type schemaTable struct {
 	skipIndexCheckTables []string
 	// 列修复操作映射表，用于合并列和索引操作
 	columnRepairMap map[string][]string
+	// Captures tables removed by ignoreTables for better diagnostics.
+	ignoredMatchedTables []string
+	// Keep per-run struct diff state on the schemaTable instance so repeated or
+	// concurrent checks do not share mutable package-level maps.
+	indexDiffsMap          map[string]bool
+	partitionDiffsMap      map[string]bool
+	foreignKeyDiffsMap     map[string]bool
+	structWarnOnlyDiffsMap map[string]bool
+}
+
+func cloneSQLStatements(sqls []string) []string {
+	if len(sqls) == 0 {
+		return nil
+	}
+	cloned := make([]string, len(sqls))
+	copy(cloned, sqls)
+	return cloned
+}
+
+// rememberColumnRepairOperations defers column-level fix SQL until index repairs
+// are known, so both kinds of changes can be emitted as one ALTER TABLE.
+func (stcls *schemaTable) rememberColumnRepairOperations(tableKey string, sqls []string) {
+	if stcls == nil || len(sqls) == 0 {
+		return
+	}
+	if stcls.columnRepairMap == nil {
+		stcls.columnRepairMap = make(map[string][]string)
+	}
+	stcls.columnRepairMap[tableKey] = cloneSQLStatements(sqls)
+}
+
+func (stcls *schemaTable) pendingColumnRepairOperations(tableKey string) []string {
+	if stcls == nil || stcls.columnRepairMap == nil {
+		return nil
+	}
+	return cloneSQLStatements(stcls.columnRepairMap[tableKey])
+}
+
+func (stcls *schemaTable) forgetColumnRepairOperations(tableKey string) {
+	if stcls == nil || stcls.columnRepairMap == nil {
+		return
+	}
+	delete(stcls.columnRepairMap, tableKey)
+}
+
+func hasAutoIncrementColumnAttribute(columnDefinition []string) bool {
+	for _, attr := range columnDefinition {
+		if strings.Contains(strings.ToUpper(attr), "AUTO_INCREMENT") {
+			return true
+		}
+	}
+	return false
+}
+
+func (stcls *schemaTable) sourceVersionInfo() global.MySQLVersionInfo {
+	if stcls != nil && strings.TrimSpace(stcls.sourceVersion.Raw) != "" {
+		return stcls.sourceVersion
+	}
+	return global.SourceMySQLVersion
+}
+
+func (stcls *schemaTable) destVersionInfo() global.MySQLVersionInfo {
+	if stcls != nil && strings.TrimSpace(stcls.destVersion.Raw) != "" {
+		return stcls.destVersion
+	}
+	return global.DestMySQLVersion
+}
+
+func queryVersionInfoFromDB(db *sql.DB) (global.MySQLVersionInfo, error) {
+	if db == nil {
+		return global.MySQLVersionInfo{}, fmt.Errorf("db is nil")
+	}
+
+	var version string
+	if err := db.QueryRow("SELECT VERSION()").Scan(&version); err != nil {
+		return global.MySQLVersionInfo{}, err
+	}
+	return global.ParseMySQLVersion(version)
 }
 
 // normalizeStoredProcBody 规范化存储过程体，以便更准确地比较
@@ -76,18 +442,15 @@ func normalizeStoredProcBody(body string) string {
 	originalBody := body
 
 	// 保存GT_CHECKSUM_METADATA注释
-	metadataRegex := regexp.MustCompile(`/\*GT_CHECKSUM_METADATA:(.*?)\*/`)
 	// 暂时移除元数据注释，以便不影响其他处理
-	body = metadataRegex.ReplaceAllString(body, "")
+	body = routineMetadataCommentPattern.ReplaceAllString(body, "")
 
 	// 移除注释
 	// 这里简化处理，实际可能需要更复杂的正则表达式
-	re := regexp.MustCompile(`--.*?\n|/\*[\s\S]*?\*/`)
-	body = re.ReplaceAllString(body, " ")
+	body = routineInlineCommentPattern.ReplaceAllString(body, " ")
 
 	// 规范化空白字符
-	re = regexp.MustCompile(`\s+`)
-	body = re.ReplaceAllString(body, " ")
+	body = routineWhitespacePattern.ReplaceAllString(body, " ")
 
 	// 移除开头和结尾的空格
 	body = strings.TrimSpace(body)
@@ -108,8 +471,7 @@ func extractMetadataFromProcedure(procDef string) map[string]string {
 	metadata := make(map[string]string)
 
 	// 查找GT_CHECKSUM_METADATA注释
-	metadataRegex := regexp.MustCompile(`/\*GT_CHECKSUM_METADATA:(.*?)\*/`)
-	metadataMatches := metadataRegex.FindStringSubmatch(procDef)
+	metadataMatches := routineMetadataCommentPattern.FindStringSubmatch(procDef)
 
 	if len(metadataMatches) > 1 {
 		// 解析JSON格式的元数据
@@ -127,41 +489,61 @@ func extractMetadataFromProcedure(procDef string) map[string]string {
 	}
 
 	// 提取DEFINER信息
-	definerRegex := regexp.MustCompile(`CREATE\s+DEFINER\s*=\s*['"]?([^'"]*)['"]?@['"]?([^'"]*)['"]?`)
-	definerMatches := definerRegex.FindStringSubmatch(procDef)
+	definerMatches := routineDefinerPattern.FindStringSubmatch(procDef)
 	if len(definerMatches) > 2 {
 		metadata["DEFINER"] = fmt.Sprintf("%s@%s", definerMatches[1], definerMatches[2])
 	}
 
 	// 提取SQL_MODE
-	sqlModeRegex := regexp.MustCompile(`SQL\s+SECURITY\s+(\w+)`)
-	sqlModeMatches := sqlModeRegex.FindStringSubmatch(procDef)
+	sqlModeMatches := routineSecurityPattern.FindStringSubmatch(procDef)
 	if len(sqlModeMatches) > 1 {
 		metadata["SQL_MODE"] = sqlModeMatches[1]
 	}
 
 	// 提取CHARACTER_SET_CLIENT
-	charsetRegex := regexp.MustCompile(`CHARACTER_SET_CLIENT\s*=\s*(\w+)`)
-	charsetMatches := charsetRegex.FindStringSubmatch(procDef)
+	charsetMatches := routineCharsetPattern.FindStringSubmatch(procDef)
 	if len(charsetMatches) > 1 {
 		metadata["CHARACTER_SET_CLIENT"] = charsetMatches[1]
 	}
 
 	// 提取COLLATION_CONNECTION
-	collationRegex := regexp.MustCompile(`COLLATION_CONNECTION\s*=\s*(\w+)`)
-	collationMatches := collationRegex.FindStringSubmatch(procDef)
+	collationMatches := routineCollationPattern.FindStringSubmatch(procDef)
 	if len(collationMatches) > 1 {
 		metadata["COLLATION_CONNECTION"] = collationMatches[1]
 	}
 
 	// 提取DATABASE_COLLATION
-	dbCollationRegex := regexp.MustCompile(`DATABASE\s+COLLATION\s*=\s*(\w+)`)
-	dbCollationMatches := dbCollationRegex.FindStringSubmatch(procDef)
+	dbCollationMatches := routineDatabaseCollationPattern.FindStringSubmatch(procDef)
 	if len(dbCollationMatches) > 1 {
 		metadata["DATABASE_COLLATION"] = dbCollationMatches[1]
 	}
 
 	return metadata
+}
+
+func normalizeRoutineDefinitionForCompare(definition string) string {
+	normalized := strings.TrimSpace(definition)
+	if normalized == "" {
+		return ""
+	}
+
+	// Routine definitions collected from INFORMATION_SCHEMA may embed
+	// environment metadata comments that differ between MariaDB and MySQL
+	// while the executable body stays the same. Those metadata blobs should
+	// not participate in semantic comparison.
+	for {
+		idx := strings.Index(normalized, "/*GT_CHECKSUM_METADATA:")
+		if idx == -1 {
+			break
+		}
+		endIdx := strings.Index(normalized[idx:], "*/")
+		if endIdx == -1 {
+			break
+		}
+		normalized = normalized[:idx] + normalized[idx+endIdx+2:]
+	}
+
+	return strings.Join(strings.Fields(normalized), "")
 }
 
 // getDisplayTableName 返回表的显示名称，包含映射关系信息
@@ -242,6 +624,77 @@ func (stcls *schemaTable) tableKeyInSet(tableSet map[string]int, schema, table s
 		}
 	}
 	return false
+}
+
+func splitSourcePattern(pattern string) (string, string, bool) {
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" {
+		return "", "", false
+	}
+	if strings.Contains(pattern, ":") {
+		pattern = strings.SplitN(pattern, ":", 2)[0]
+	}
+	parts := strings.SplitN(pattern, ".", 2)
+	if len(parts) != 2 {
+		return "", "", false
+	}
+	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), true
+}
+
+func hasObjectWildcard(pattern string) bool {
+	return strings.Contains(pattern, "*") || strings.Contains(pattern, "%")
+}
+
+// Explicit schema.table selections should win over ignoreTables to avoid
+// silently dropping the only requested table from the checklist.
+func (stcls *schemaTable) isExplicitSourceTableSelection(schema, table string) bool {
+	for _, pattern := range strings.Split(stcls.table, ",") {
+		sourceSchema, sourceTable, ok := splitSourcePattern(pattern)
+		if !ok || hasObjectWildcard(sourceSchema) || hasObjectWildcard(sourceTable) {
+			continue
+		}
+		if stcls.sourceObjectNameEqual(sourceSchema, schema) && stcls.sourceObjectNameEqual(sourceTable, table) {
+			return true
+		}
+	}
+	return false
+}
+
+func (stcls *schemaTable) recordIgnoredMatchedTable(schema, table string) {
+	qualifiedName := fmt.Sprintf("%s.%s", schema, table)
+	for _, existing := range stcls.ignoredMatchedTables {
+		parts := strings.SplitN(existing, ".", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		if stcls.sourceObjectNameEqual(parts[0], schema) && stcls.sourceObjectNameEqual(parts[1], table) {
+			return
+		}
+	}
+	stcls.ignoredMatchedTables = append(stcls.ignoredMatchedTables, qualifiedName)
+}
+
+func (stcls *schemaTable) IgnoredMatchedTablesSummary() string {
+	if len(stcls.ignoredMatchedTables) == 0 {
+		return ""
+	}
+	summary := append([]string(nil), stcls.ignoredMatchedTables...)
+	sort.Strings(summary)
+	return strings.Join(summary, ", ")
+}
+
+func (stcls *schemaTable) shouldIgnoreMatchedTable(ignoreSchema map[string]int, schema, table string) bool {
+	if !stcls.tableKeyInSet(ignoreSchema, schema, table) {
+		return false
+	}
+	if stcls.isExplicitSourceTableSelection(schema, table) {
+		if global.Wlog != nil {
+			global.Wlog.Warn(fmt.Sprintf("Explicitly selected table %s.%s also matches ignoreTables; keeping it in the checklist", schema, table))
+		}
+		return false
+	}
+	stcls.recordIgnoredMatchedTable(schema, table)
+	return true
 }
 
 // getDestTableName 返回目标表的名称
@@ -325,31 +778,140 @@ func normalizeMetadataComment(v string) string {
 	}
 }
 
-func queryMySQLTableLevelMetadata(db *sql.DB, schema, table string) (string, string, sql.NullInt64, string, error) {
+type mysqlTableLevelMetadata struct {
+	TableCollation string
+	TableCharset   string
+	AutoIncrement  sql.NullInt64
+	RowFormat      string
+	CreateOptions  string
+	TableComment   string
+	CreateTableSQL string
+}
+
+func listMariaDBSequenceNames(db *sql.DB, schema string) ([]string, error) {
+	rows, err := db.Query(`
+SELECT TABLE_NAME
+FROM information_schema.TABLES
+WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'SEQUENCE'
+ORDER BY TABLE_NAME
+`, schema)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	sequenceNames := make([]string, 0)
+	for rows.Next() {
+		var sequenceName string
+		if err := rows.Scan(&sequenceName); err != nil {
+			return nil, err
+		}
+		sequenceNames = append(sequenceNames, sequenceName)
+	}
+	return sequenceNames, rows.Err()
+}
+
+func collectSourceSchemasForStructCheck(checkTableList []string) []string {
+	seen := make(map[string]struct{})
+	schemas := make([]string, 0)
+	for _, item := range checkTableList {
+		sourceItem := item
+		if strings.Contains(item, ":") {
+			sourceItem = strings.SplitN(item, ":", 2)[0]
+		}
+		parts := strings.SplitN(sourceItem, ".", 2)
+		if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" {
+			continue
+		}
+		schemaName := parts[0]
+		if _, exists := seen[schemaName]; exists {
+			continue
+		}
+		seen[schemaName] = struct{}{}
+		schemas = append(schemas, schemaName)
+	}
+	sort.Strings(schemas)
+	return schemas
+}
+
+// Sequence objects are outside the table repair scope, so the best-effort
+// behavior is to emit explicit warn-only rows and advisory notes up front.
+func (stcls *schemaTable) emitMariaDBSequenceWarnings(checkTableList []string, logThreadSeq int64) {
+	if stcls.sourceVersionInfo().Flavor != global.DatabaseFlavorMariaDB || stcls.destVersionInfo().Flavor != global.DatabaseFlavorMySQL {
+		return
+	}
+
+	for _, sourceSchema := range collectSourceSchemasForStructCheck(checkTableList) {
+		sequenceNames, err := listMariaDBSequenceNames(stcls.sourceDB, sourceSchema)
+		if err != nil {
+			global.Wlog.Warn(fmt.Sprintf("(%d) Failed to list MariaDB sequences for schema %s: %v", logThreadSeq, sourceSchema, err))
+			continue
+		}
+		if len(sequenceNames) == 0 {
+			continue
+		}
+
+		destSchema := stcls.mappedDestSchema(sourceSchema)
+		suggestions := schemacompat.BuildMariaDBSequenceObjectSuggestions(sourceSchema, sequenceNames)
+		for idx, sequenceName := range sequenceNames {
+			stcls.appendPod(Pod{
+				Schema:      sourceSchema,
+				Table:       sequenceName,
+				CheckObject: "Sequence",
+				DIFFS:       global.SkipDiffsWarnOnly,
+				Datafix:     stcls.datafix,
+			})
+
+			scope := fmt.Sprintf("%s.%s SEQUENCE", destSchema, sequenceName)
+			advisoryLines := buildConstraintAdvisoryLines(scope, []schemacompat.ConstraintRepairSuggestion{suggestions[idx]})
+
+			originalSchema, originalTable, originalDestTable := stcls.schema, stcls.table, stcls.destTable
+			stcls.schema = destSchema
+			stcls.table = sequenceName
+			stcls.destTable = sequenceName
+			if err := stcls.writeAdvisoryFixSql(advisoryLines, logThreadSeq); err != nil {
+				global.Wlog.Error(fmt.Sprintf("(%d) Failed to write SEQUENCE advisory SQL for %s.%s: %v", logThreadSeq, sourceSchema, sequenceName, err))
+			}
+			stcls.schema, stcls.table, stcls.destTable = originalSchema, originalTable, originalDestTable
+		}
+	}
+}
+
+func queryMySQLTableLevelMetadata(db *sql.DB, schema, table string) (mysqlTableLevelMetadata, error) {
 	var (
 		collation sql.NullString
 		charset   sql.NullString
 		comment   sql.NullString
+		rowFormat sql.NullString
+		createOpt sql.NullString
 	)
 
 	query := `
-SELECT t.TABLE_COLLATION, c.CHARACTER_SET_NAME, t.AUTO_INCREMENT, t.TABLE_COMMENT
+SELECT t.TABLE_COLLATION, c.CHARACTER_SET_NAME, t.AUTO_INCREMENT, t.ROW_FORMAT, t.CREATE_OPTIONS, t.TABLE_COMMENT
 FROM information_schema.TABLES t
 LEFT JOIN information_schema.COLLATIONS c ON t.TABLE_COLLATION = c.COLLATION_NAME
 WHERE t.TABLE_SCHEMA = ? AND t.TABLE_NAME = ?
 `
 
 	var runtimeNextAutoInc sql.NullInt64
-	if err := db.QueryRow(query, schema, table).Scan(&collation, &charset, &runtimeNextAutoInc, &comment); err != nil {
-		return "", "", sql.NullInt64{}, "", err
+	if err := db.QueryRow(query, schema, table).Scan(&collation, &charset, &runtimeNextAutoInc, &rowFormat, &createOpt, &comment); err != nil {
+		return mysqlTableLevelMetadata{}, err
 	}
 
 	createStmt, err := queryMySQLCreateTableStatement(db, schema, table)
 	if err != nil {
-		return "", "", sql.NullInt64{}, "", err
+		return mysqlTableLevelMetadata{}, err
 	}
 
-	return collation.String, charset.String, extractExplicitMySQLTableAutoIncrementValue(createStmt), comment.String, nil
+	return mysqlTableLevelMetadata{
+		TableCollation: collation.String,
+		TableCharset:   charset.String,
+		AutoIncrement:  extractExplicitMySQLTableAutoIncrementValue(createStmt),
+		RowFormat:      rowFormat.String,
+		CreateOptions:  createOpt.String,
+		TableComment:   comment.String,
+		CreateTableSQL: createStmt,
+	}, nil
 }
 
 func nullInt64ForLog(v sql.NullInt64) interface{} {
@@ -391,6 +953,132 @@ func extractExplicitMySQLTableAutoIncrementValue(createStmt string) sql.NullInt6
 		return sql.NullInt64{}
 	}
 	return sql.NullInt64{Int64: n, Valid: true}
+}
+
+type mysqlUniqueIndexMetadata struct {
+	Name      string
+	Columns   []string
+	HasPrefix bool
+	IsPrimary bool
+	IsUnique  bool
+}
+
+func loadMySQLUniqueIndexMetadata(db *sql.DB, schema, table string) ([]mysqlUniqueIndexMetadata, error) {
+	rows, err := db.Query(`
+SELECT INDEX_NAME, NON_UNIQUE, SEQ_IN_INDEX, COLUMN_NAME, SUB_PART
+FROM INFORMATION_SCHEMA.STATISTICS
+WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+ORDER BY INDEX_NAME, SEQ_IN_INDEX
+`, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	type rowItem struct {
+		name      string
+		nonUnique int
+		seq       int
+		column    string
+		subPart   sql.NullInt64
+	}
+
+	grouped := make(map[string][]rowItem)
+	order := make([]string, 0)
+	for rows.Next() {
+		var item rowItem
+		if err := rows.Scan(&item.name, &item.nonUnique, &item.seq, &item.column, &item.subPart); err != nil {
+			return nil, err
+		}
+		if _, ok := grouped[item.name]; !ok {
+			order = append(order, item.name)
+		}
+		grouped[item.name] = append(grouped[item.name], item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	result := make([]mysqlUniqueIndexMetadata, 0)
+	for _, name := range order {
+		items := grouped[name]
+		if len(items) == 0 {
+			continue
+		}
+		if items[0].nonUnique != 0 && !strings.EqualFold(name, "PRIMARY") {
+			continue
+		}
+		sort.Slice(items, func(i, j int) bool { return items[i].seq < items[j].seq })
+		meta := mysqlUniqueIndexMetadata{
+			Name:      name,
+			IsPrimary: strings.EqualFold(name, "PRIMARY"),
+			IsUnique:  true,
+		}
+		for _, item := range items {
+			meta.Columns = append(meta.Columns, item.column)
+			if item.subPart.Valid {
+				meta.HasPrefix = true
+			}
+		}
+		result = append(result, meta)
+	}
+	return result, nil
+}
+
+func foreignKeyMatchesStrictUniqueIndex(fk schemacompat.CanonicalConstraint, indexes []mysqlUniqueIndexMetadata) bool {
+	if len(fk.ReferencedColumns) == 0 {
+		return false
+	}
+	for _, idx := range indexes {
+		if idx.HasPrefix {
+			continue
+		}
+		if len(idx.Columns) != len(fk.ReferencedColumns) {
+			continue
+		}
+		match := true
+		for i := range idx.Columns {
+			if !strings.EqualFold(idx.Columns[i], fk.ReferencedColumns[i]) {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
+}
+
+func detectStrictForeignKeyIssues(db *sql.DB, fks []schemacompat.CanonicalConstraint) ([]schemacompat.CanonicalConstraint, error) {
+	cache := make(map[string][]mysqlUniqueIndexMetadata)
+	issues := make([]schemacompat.CanonicalConstraint, 0)
+
+	for _, fk := range fks {
+		if fk.ReferencedSchema == "" || fk.ReferencedTable == "" {
+			continue
+		}
+		cacheKey := strings.ToLower(fmt.Sprintf("%s.%s", fk.ReferencedSchema, fk.ReferencedTable))
+		indexes, ok := cache[cacheKey]
+		if !ok {
+			loaded, err := loadMySQLUniqueIndexMetadata(db, fk.ReferencedSchema, fk.ReferencedTable)
+			if err != nil {
+				return nil, err
+			}
+			indexes = loaded
+			cache[cacheKey] = indexes
+		}
+		if !foreignKeyMatchesStrictUniqueIndex(fk, indexes) {
+			issues = append(issues, fk)
+		}
+	}
+
+	sort.Slice(issues, func(i, j int) bool {
+		left := fmt.Sprintf("%s:%s.%s", issues[i].Name, issues[i].ReferencedSchema, issues[i].ReferencedTable)
+		right := fmt.Sprintf("%s:%s.%s", issues[j].Name, issues[j].ReferencedSchema, issues[j].ReferencedTable)
+		return left < right
+	})
+	return issues, nil
 }
 
 func resolveMySQLTableAutoIncrementFixValue(sourceValue, destValue sql.NullInt64) (int64, bool) {
@@ -448,62 +1136,77 @@ func loadMySQLRoutineComments(db *sql.DB, schema, routineType string, logThreadS
 }
 
 func showCreateTriggerSQL(db *sql.DB, schema, triggerName string) (string, error) {
-	query := fmt.Sprintf("SHOW CREATE TRIGGER `%s`.`%s`", schema, triggerName)
-	rows, err := db.Query(query)
-	if err != nil {
-		return "", err
-	}
-	defer rows.Close()
+	row := db.QueryRow(
+		`SELECT DEFINER, ACTION_TIMING, EVENT_MANIPULATION, EVENT_OBJECT_TABLE, ACTION_STATEMENT
+		   FROM INFORMATION_SCHEMA.TRIGGERS
+		  WHERE TRIGGER_SCHEMA = ? AND TRIGGER_NAME = ?`,
+		schema,
+		triggerName,
+	)
 
-	cols, err := rows.Columns()
-	if err != nil {
-		return "", err
-	}
-	if !rows.Next() {
-		return "", fmt.Errorf("no SHOW CREATE result for trigger %s.%s", schema, triggerName)
-	}
-
-	values := make([]sql.RawBytes, len(cols))
-	args := make([]interface{}, len(cols))
-	for i := range values {
-		args[i] = &values[i]
-	}
-	if err := rows.Scan(args...); err != nil {
-		return "", err
-	}
-
-	for i, col := range cols {
-		if strings.EqualFold(col, "SQL Original Statement") || strings.EqualFold(col, "SQL Statement") {
-			return string(values[i]), nil
+	var definer, actionTiming, eventManipulation, eventObjectTable, actionStatement string
+	if err := row.Scan(&definer, &actionTiming, &eventManipulation, &eventObjectTable, &actionStatement); err != nil {
+		if err == sql.ErrNoRows {
+			return "", fmt.Errorf("no trigger metadata found for %s.%s", schema, triggerName)
 		}
+		return "", err
 	}
-	return "", fmt.Errorf("SHOW CREATE TRIGGER missing statement column, cols=%v", cols)
+
+	// Rebuild a full CREATE TRIGGER statement from INFORMATION_SCHEMA so the
+	// repair path does not depend on SHOW CREATE TRIGGER output shape.
+	return mysql.BuildTriggerCreateSQL(schema, triggerName, definer, actionTiming, eventManipulation, eventObjectTable, actionStatement), nil
 }
 
-func loadMySQLTriggerComments(db *sql.DB, schema string, logThreadSeq int64) map[string]string {
-	result := make(map[string]string)
-	rows, err := db.Query(`SELECT TRIGGER_NAME FROM INFORMATION_SCHEMA.TRIGGERS WHERE TRIGGER_SCHEMA = ?`, schema)
+func loadMySQLTriggerMetadata(db *sql.DB, schema string, logThreadSeq int64) (map[string]string, map[string]string) {
+	comments := make(map[string]string)
+	definers := make(map[string]string)
+
+	rows, err := db.Query(`
+SELECT TRIGGER_NAME, DEFINER, ACTION_TIMING, EVENT_MANIPULATION, EVENT_OBJECT_TABLE, ACTION_STATEMENT
+FROM INFORMATION_SCHEMA.TRIGGERS
+WHERE TRIGGER_SCHEMA = ?
+`, schema)
 	if err != nil {
-		global.Wlog.Warn(fmt.Sprintf("(%d) [loadMySQLTriggerComments] failed to list triggers for %s: %v", logThreadSeq, schema, err))
-		return result
+		global.Wlog.Warn(fmt.Sprintf("(%d) [loadMySQLTriggerMetadata] failed to query trigger metadata for %s: %v", logThreadSeq, schema, err))
+		return comments, definers
 	}
 	defer rows.Close()
 
 	for rows.Next() {
 		var triggerName string
-		if err := rows.Scan(&triggerName); err != nil {
-			global.Wlog.Warn(fmt.Sprintf("(%d) [loadMySQLTriggerComments] failed to scan trigger name for %s: %v", logThreadSeq, schema, err))
+		var definer sql.NullString
+		var actionTiming string
+		var eventManipulation string
+		var eventObjectTable string
+		var actionStatement string
+
+		if err := rows.Scan(&triggerName, &definer, &actionTiming, &eventManipulation, &eventObjectTable, &actionStatement); err != nil {
+			global.Wlog.Warn(fmt.Sprintf("(%d) [loadMySQLTriggerMetadata] failed to scan trigger metadata for %s: %v", logThreadSeq, schema, err))
 			continue
 		}
-		createSQL, err := showCreateTriggerSQL(db, schema, triggerName)
-		if err != nil {
-			global.Wlog.Warn(fmt.Sprintf("(%d) [loadMySQLTriggerComments] failed to SHOW CREATE TRIGGER %s.%s: %v", logThreadSeq, schema, triggerName, err))
-			continue
-		}
+
 		key := strings.ToUpper(fmt.Sprintf("\"%s\".\"%s\"", schema, triggerName))
-		result[key] = extractMySQLObjectCommentFromCreate(createSQL)
+		definers[key] = strings.TrimSpace(definer.String)
+
+		// Build the trigger definition from INFORMATION_SCHEMA once so comment
+		// extraction does not trigger an extra SHOW CREATE round-trip per row.
+		createSQL := mysql.BuildTriggerCreateSQL(
+			schema,
+			triggerName,
+			definer.String,
+			actionTiming,
+			eventManipulation,
+			eventObjectTable,
+			actionStatement,
+		)
+		comments[key] = extractMySQLObjectCommentFromCreate(createSQL)
 	}
-	return result
+
+	if err := rows.Err(); err != nil {
+		global.Wlog.Warn(fmt.Sprintf("(%d) [loadMySQLTriggerMetadata] row iteration failed for %s: %v", logThreadSeq, schema, err))
+	}
+
+	return comments, definers
 }
 
 func buildMySQLRoutineCommentFixSQL(destSchema, name, routineType, comment string) string {
@@ -523,6 +1226,9 @@ func normalizeFixSQLForExec(stmt string) string {
 	if s == "" {
 		return ""
 	}
+	if strings.HasPrefix(s, "--") || strings.HasPrefix(s, "/*") {
+		return ""
+	}
 	if strings.HasPrefix(strings.ToUpper(s), "DELIMITER ") {
 		return ""
 	}
@@ -530,6 +1236,114 @@ func normalizeFixSQLForExec(stmt string) string {
 		s = strings.TrimSpace(strings.TrimSuffix(s, "$$"))
 	}
 	return s
+}
+
+func (stcls *schemaTable) mappedDestSchema(sourceSchema string) string {
+	if mappedSchema, exists := stcls.tableMappings[sourceSchema]; exists && strings.TrimSpace(mappedSchema) != "" {
+		return mappedSchema
+	}
+	return sourceSchema
+}
+
+func parseSourceAndDestTablePair(mapping string, schemaMappings map[string]string) (string, string, string, string) {
+	sourceSchema := ""
+	sourceTable := ""
+	destSchema := ""
+	destTable := ""
+
+	if strings.Contains(mapping, ":") {
+		parts := strings.SplitN(mapping, ":", 2)
+		if len(parts) == 2 {
+			sourceParts := strings.SplitN(parts[0], ".", 2)
+			destParts := strings.SplitN(parts[1], ".", 2)
+			if len(sourceParts) == 2 {
+				sourceSchema = sourceParts[0]
+				sourceTable = sourceParts[1]
+			}
+			if len(destParts) == 2 {
+				destSchema = destParts[0]
+				destTable = destParts[1]
+			}
+		}
+	}
+
+	if sourceSchema == "" || sourceTable == "" {
+		parts := strings.SplitN(mapping, ".", 2)
+		if len(parts) == 2 {
+			sourceSchema = parts[0]
+			sourceTable = parts[1]
+		}
+	}
+
+	if destSchema == "" {
+		if mappedSchema, ok := schemaMappings[sourceSchema]; ok && strings.TrimSpace(mappedSchema) != "" {
+			destSchema = mappedSchema
+		} else {
+			destSchema = sourceSchema
+		}
+	}
+	if destTable == "" {
+		destTable = sourceTable
+	}
+
+	return sourceSchema, sourceTable, destSchema, destTable
+}
+
+func buildConstraintAdvisoryLines(scope string, suggestions []schemacompat.ConstraintRepairSuggestion) []string {
+	if len(suggestions) == 0 {
+		return nil
+	}
+
+	lines := []string{
+		fmt.Sprintf("-- gt-checksum advisory begin: %s", scope),
+		"-- generated as manual review SQL only; these statements are not auto-executed by gt-checksum",
+	}
+	for _, suggestion := range suggestions {
+		lines = append(lines, fmt.Sprintf("-- level: %s", suggestion.Level))
+		lines = append(lines, fmt.Sprintf("-- kind: %s", suggestion.Kind))
+		if suggestion.ConstraintName != "" {
+			lines = append(lines, fmt.Sprintf("-- constraint: %s", suggestion.ConstraintName))
+		}
+		if suggestion.Reason != "" {
+			lines = append(lines, fmt.Sprintf("-- reason: %s", suggestion.Reason))
+		}
+		if len(suggestion.Statements) == 0 {
+			lines = append(lines, "-- suggested SQL: none")
+			continue
+		}
+		for _, stmt := range suggestion.Statements {
+			lines = append(lines, fmt.Sprintf("-- %s", strings.TrimSpace(stmt)))
+		}
+	}
+	lines = append(lines, fmt.Sprintf("-- gt-checksum advisory end: %s", scope))
+	return lines
+}
+
+func (stcls *schemaTable) writeAdvisoryFixSql(sqls []string, logThreadSeq int64) error {
+	if len(sqls) == 0 {
+		return nil
+	}
+
+	if !strings.EqualFold(stcls.datafix, "file") {
+		global.Wlog.Warn(fmt.Sprintf("(%d) Constraint repair suggestions were generated but not executed. Use datafix=file to export advisory SQL.", logThreadSeq))
+		return nil
+	}
+
+	if stcls.sfile != nil {
+		return mysql.WriteFixIfNeededFile(stcls.datafix, stcls.sfile, sqls, logThreadSeq, stcls.djdbc)
+	}
+
+	if stcls.fixFilePerTable == "ON" {
+		tableFileName := fmt.Sprintf("%s/%s.sql", stcls.datafixSql, stcls.table)
+		file, err := os.OpenFile(tableFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err != nil {
+			return fmt.Errorf("failed to open advisory fix file %s: %v", tableFileName, err)
+		}
+		defer file.Close()
+		return mysql.WriteFixIfNeededFile(stcls.datafix, file, sqls, logThreadSeq, stcls.djdbc)
+	}
+
+	return nil
 }
 
 type alterTableMergeBucket struct {
@@ -662,6 +1476,10 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 		tableAbnormalBool                    = false
 		event                                string
 	)
+	if stcls.structWarnOnlyDiffsMap == nil {
+		stcls.structWarnOnlyDiffsMap = make(map[string]bool)
+	}
+	stcls.emitMariaDBSequenceWarnings(checkTableList, logThreadSeq)
 	vlog = fmt.Sprintf("(%d) %s Validating structure differences between source and target", logThreadSeq, event)
 	global.Wlog.Debug(vlog)
 	for _, v := range checkTableList {
@@ -697,6 +1515,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 		destTableName := destParts[1]
 
 		// 设置当前处理的表名
+		stcls.schema = sourceSchema
 		stcls.table = sourceTableName
 		// 记录目标表名，用于后续操作
 		stcls.destTable = destTableName
@@ -798,8 +1617,70 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 			vlog = fmt.Sprintf("(%d) %s Processing table creation with mapping - source: %s.%s -> dest: %s.%s", logThreadSeq, event, sourceSchema, sourceTableName, destSchema, destTableName)
 			global.Wlog.Debug(vlog)
 
+			sourceMeta, sourceMetaErr := queryMySQLTableLevelMetadata(stcls.sourceDB, sourceSchema, sourceTableName)
+			if sourceMetaErr != nil {
+				vlog = fmt.Sprintf("(%d) %s Failed to query source table metadata for %s.%s before CREATE TABLE generation: %v", logThreadSeq, event, sourceSchema, sourceTableName, sourceMetaErr)
+				global.Wlog.Warn(vlog)
+			} else {
+				jsonDowngradeColumns := schemacompat.DetectMariaDBJSONDowngradeColumns(
+					sourceMeta.CreateTableSQL,
+					stcls.sourceVersionInfo(),
+					stcls.destVersionInfo(),
+					stcls.checkRules.MariaDBJSONTargetType,
+				)
+				if len(jsonDowngradeColumns) > 0 {
+					advisoryLines := buildConstraintAdvisoryLines(
+						fmt.Sprintf("%s.%s MariaDB JSON downgrade", destSchema, destTableName),
+						schemacompat.BuildMariaDBJSONDowngradeSuggestions(destSchema, destTableName, jsonDowngradeColumns, stcls.checkRules.MariaDBJSONTargetType),
+					)
+					originalSchema, originalTable, originalDestTable := stcls.schema, stcls.table, stcls.destTable
+					stcls.schema = destSchema
+					stcls.table = destTableName
+					stcls.destTable = destTableName
+					if err = stcls.writeAdvisoryFixSql(advisoryLines, logThreadSeq); err != nil {
+						stcls.schema, stcls.table, stcls.destTable = originalSchema, originalTable, originalDestTable
+						return nil, nil, err
+					}
+					stcls.schema, stcls.table, stcls.destTable = originalSchema, originalTable, originalDestTable
+				}
+
+				// MariaDB-only temporal and sequence constructs must stay on the
+				// advisory path because there is no safe automatic MySQL rewrite.
+				unsupportedFeatures := schemacompat.DetectMariaDBUnsupportedTableFeatures(sourceMeta.CreateTableSQL, stcls.sourceVersionInfo(), stcls.destVersionInfo())
+				if len(unsupportedFeatures) > 0 {
+					vlog = fmt.Sprintf("(%d) %s Skip automatic CREATE TABLE for %s.%s because unsupported MariaDB features were detected: %+v", logThreadSeq, event, sourceSchema, sourceTableName, unsupportedFeatures)
+					global.Wlog.Warn(vlog)
+
+					advisoryLines := buildConstraintAdvisoryLines(
+						fmt.Sprintf("%s.%s MariaDB unsupported features", destSchema, destTableName),
+						schemacompat.BuildMariaDBUnsupportedFeatureSuggestions(destSchema, destTableName, unsupportedFeatures),
+					)
+					originalSchema, originalTable, originalDestTable := stcls.schema, stcls.table, stcls.destTable
+					stcls.schema = destSchema
+					stcls.table = destTableName
+					stcls.destTable = destTableName
+					if err = stcls.writeAdvisoryFixSql(advisoryLines, logThreadSeq); err != nil {
+						stcls.schema, stcls.table, stcls.destTable = originalSchema, originalTable, originalDestTable
+						return nil, nil, err
+					}
+					stcls.schema, stcls.table, stcls.destTable = originalSchema, originalTable, originalDestTable
+
+					stcls.appendPod(Pod{
+						Schema:      sourceSchema,
+						Table:       sourceTableName,
+						CheckObject: "struct",
+						DIFFS:       global.SkipDiffsWarnOnly,
+						Datafix:     stcls.datafix,
+					})
+					tableKey := fmt.Sprintf("%s.%s", destSchema, destTableName)
+					stcls.skipIndexCheckTables = append(stcls.skipIndexCheckTables, tableKey)
+					stcls.structWarnOnlyDiffsMap[fmt.Sprintf("%s.%s", sourceSchema, sourceTableName)] = true
+					continue
+				}
+			}
+
 			// 生成CREATE TABLE语句
-			createTableSql, err := generateCreateTableSql(stcls.sourceDB, sourceSchema, destSchema, sourceTableName, logThreadSeq)
+			createTableSql, err := generateCreateTableSql(stcls.sourceDB, sourceSchema, destSchema, sourceTableName, destTableName, stcls.sourceVersionInfo(), stcls.destVersionInfo(), stcls.checkRules.MariaDBJSONTargetType, logThreadSeq)
 			if err != nil {
 				vlog = fmt.Sprintf("(%d) %s Error generating CREATE TABLE statement for %s.%s: %v", logThreadSeq, event, destSchema, stcls.table, err)
 				global.Wlog.Error(vlog)
@@ -818,14 +1699,17 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 			// 应用修复SQL
 			vlog = fmt.Sprintf("(%d) %s Applying CREATE TABLE statement to %s.%s", logThreadSeq, event, destSchema, destTableName)
 			global.Wlog.Debug(vlog)
-			// 只有当 fixFilePerTable=OFF 时，才使用 stcls.sfile 写入修复语句
-			if stcls.sfile != nil {
-				if err = mysql.WriteFixIfNeededFile(stcls.datafix, stcls.sfile, []string{createTableSql}, logThreadSeq, stcls.djdbc); err != nil {
-					vlog = fmt.Sprintf("(%d) %s Error writing CREATE TABLE statement to file: %v", logThreadSeq, event, err)
-					global.Wlog.Error(vlog)
-					return nil, nil, err
-				}
+			originalSchema, originalTable, originalDestTable := stcls.schema, stcls.table, stcls.destTable
+			stcls.schema = destSchema
+			stcls.table = destTableName
+			stcls.destTable = destTableName
+			if err = stcls.writeFixSql([]string{createTableSql}, logThreadSeq); err != nil {
+				stcls.schema, stcls.table, stcls.destTable = originalSchema, originalTable, originalDestTable
+				vlog = fmt.Sprintf("(%d) %s Error applying CREATE TABLE statement: %v", logThreadSeq, event, err)
+				global.Wlog.Error(vlog)
+				return nil, nil, err
 			}
+			stcls.schema, stcls.table, stcls.destTable = originalSchema, originalTable, originalDestTable
 
 			// 创建表示差异的Pod记录
 			pod := Pod{
@@ -908,19 +1792,22 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 		var sourceColumnSlice, destColumnSlice []string
 		var sourceColumnMap, destColumnMap = make(map[string][]string), make(map[string][]string)
 		var sourceColumnSeq, destColumnSeq = make(map[string]int), make(map[string]int)
-		// 创建原始列名映射，用于保存原始大小写
-		var originalColumnNameMap = make(map[string]string)
-		columnNameCaseSensitive := stcls.caseSensitiveObjectName == "yes"
-		if oracleToMySQLDataMode {
-			// Oracle -> MySQL data mode uses case-insensitive column-name matching.
-			columnNameCaseSensitive = false
-		}
+		droppedAutoIncrementColumn := false
+		// Keep source and target casing separately so later repair SQL can still
+		// use the real target identifier even when compare keys are normalized.
+		var sourceOriginalColumnNameMap = make(map[string]string)
+		var destOriginalColumnNameMap = make(map[string]string)
+		columnNameCaseSensitive := shouldUseCaseSensitiveColumnMatching(
+			stcls.sourceDrive,
+			stcls.destDrive,
+			stcls.caseSensitiveObjectName,
+			oracleToMySQLDataMode,
+		)
 
 		for k1, v1 := range sColumn {
 			v1k := ""
 			for k, v22 := range v1 {
-				// 保存原始列名
-				originalColumnNameMap[strings.ToUpper(k)] = k
+				sourceOriginalColumnNameMap[strings.ToUpper(k)] = k
 
 				// 根据匹配模式决定是使用原始列名还是大写列名进行比较
 				if columnNameCaseSensitive {
@@ -939,8 +1826,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 		for k1, v1 := range dColumn {
 			v1k := ""
 			for k, v22 := range v1 {
-				// 保存原始列名
-				originalColumnNameMap[strings.ToUpper(k)] = k
+				destOriginalColumnNameMap[strings.ToUpper(k)] = k
 
 				// 根据匹配模式决定是使用原始列名还是大写列名进行比较
 				if columnNameCaseSensitive {
@@ -959,19 +1845,31 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 
 		// 确保在生成SQL时使用原始大小写的列名
 		// 创建一个函数来获取正确大小写的列名
-		getOriginalColumnName := func(colName string) string {
-			// 根据匹配模式决定如何查找原始列名
+		getSourceOriginalColumnName := func(colName string) string {
 			if columnNameCaseSensitive {
-				// 严格区分大小写时，colName已经是原始列名，直接返回
-				return colName
-			} else {
-				// 不区分大小写时，使用大写列名作为键查找原始列名
-				upperColName := strings.ToUpper(colName)
-				if originalName, exists := originalColumnNameMap[upperColName]; exists {
-					return originalName
-				}
 				return colName
 			}
+			upperColName := strings.ToUpper(colName)
+			if originalName, exists := sourceOriginalColumnNameMap[upperColName]; exists {
+				return originalName
+			}
+			return colName
+		}
+		getDestOriginalColumnName := func(colName string) string {
+			if columnNameCaseSensitive {
+				return colName
+			}
+			upperColName := strings.ToUpper(colName)
+			if originalName, exists := destOriginalColumnNameMap[upperColName]; exists {
+				return originalName
+			}
+			if originalName, exists := sourceOriginalColumnNameMap[upperColName]; exists {
+				return originalName
+			}
+			return colName
+		}
+		getTargetPositionColumnName := func(colName string) string {
+			return getDestOriginalColumnName(colName)
 		}
 
 		addColumn, delColumn := aa.Arrcmp(sourceColumnSlice, destColumnSlice)
@@ -1154,8 +2052,11 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 			// 收集所有需要删除的列名
 			var colsToDelete []string
 			for _, v1 := range delColumn {
+				if hasAutoIncrementColumnAttribute(destColumnMap[v1]) {
+					droppedAutoIncrementColumn = true
+				}
 				// 使用原始大小写的列名生成SQL
-				originalColName := getOriginalColumnName(v1)
+				originalColName := getDestOriginalColumnName(v1)
 				dropSql := dbf.DataAbnormalFix().FixAlterColumnSqlDispos("drop", destColumnMap[v1], 1, "", originalColName, logThreadSeq)
 				alterSlice = append(alterSlice, dropSql)
 				colsToDelete = append(colsToDelete, v1)
@@ -1167,6 +2068,29 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 		}
 		vlog = fmt.Sprintf("(%d) %s DROP SQL for %s.%s: %v", logThreadSeq, event, destSchema, stcls.table, alterSlice)
 		global.Wlog.Debug(vlog)
+		columnAdvisorySuggestions := make([]schemacompat.ConstraintRepairSuggestion, 0)
+		columnRiskDifferent := false
+		useCanonicalCompare := strings.EqualFold(stcls.sourceDrive, "mysql") && strings.EqualFold(stcls.destDrive, "mysql")
+		sourceCreateSQL := ""
+		destCreateSQL := ""
+		sourceColumnDefinitions := make(map[string]string)
+		destColumnDefinitions := make(map[string]string)
+		if useCanonicalCompare {
+			if sourceCreateSQL, err = queryMySQLCreateTableStatement(stcls.sourceDB, sourceSchema, stcls.table); err != nil {
+				vlog = fmt.Sprintf("(%d) %s Failed to query source SHOW CREATE TABLE for %s.%s: %v", logThreadSeq, event, sourceSchema, stcls.table, err)
+				global.Wlog.Warn(vlog)
+				sourceCreateSQL = ""
+			} else {
+				sourceColumnDefinitions = schemacompat.ExtractColumnDefinitionsFromCreateSQL(sourceCreateSQL)
+			}
+			if destCreateSQL, err = queryMySQLCreateTableStatement(stcls.destDB, destSchema, stcls.destTable); err != nil {
+				vlog = fmt.Sprintf("(%d) %s Failed to query target SHOW CREATE TABLE for %s.%s: %v", logThreadSeq, event, destSchema, stcls.destTable, err)
+				global.Wlog.Warn(vlog)
+				destCreateSQL = ""
+			} else {
+				destColumnDefinitions = schemacompat.ExtractColumnDefinitionsFromCreateSQL(destCreateSQL)
+			}
+		}
 		for k1, v1 := range sourceColumnSlice {
 			lastcolumn := ""
 			var alterColumnData []string
@@ -1193,17 +2117,66 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 					destType = destColumnMap[v1][0]
 				}
 
-				// 获取原始大小写的列名
-				originalColName := getOriginalColumnName(v1)
+				sourceOriginalColName := getSourceOriginalColumnName(v1)
+				destOriginalColName := getDestOriginalColumnName(v1)
+				repairColumnName := destOriginalColName
+				if strings.TrimSpace(repairColumnName) == "" {
+					repairColumnName = sourceOriginalColName
+				}
+				var sourceCanonical schemacompat.CanonicalColumn
+				var destCanonical schemacompat.CanonicalColumn
+				if useCanonicalCompare {
+					sourceCanonical = schemacompat.CanonicalizeColumnForComparison(
+						sourceOriginalColName,
+						sourceColumnMap[v1],
+						stcls.sourceVersionInfo(),
+						stcls.destVersionInfo(),
+						sourceColumnDefinitions[sourceOriginalColName],
+						stcls.checkRules.MariaDBJSONTargetType,
+					)
+					destCanonical = schemacompat.CanonicalizeColumnForComparison(
+						destOriginalColName,
+						destColumnMap[v1],
+						stcls.destVersionInfo(),
+						stcls.sourceVersionInfo(),
+						destColumnDefinitions[destOriginalColName],
+						stcls.checkRules.MariaDBJSONTargetType,
+					)
+				}
 
 				// 打印调试信息
-				vlog = fmt.Sprintf("(%d) %s Column %s type comparison: source=%s, dest=%s", logThreadSeq, event, originalColName, sourceType, destType)
+				vlog = fmt.Sprintf("(%d) %s Column %s type comparison: source=%s, dest=%s", logThreadSeq, event, repairColumnName, sourceType, destType)
 				global.Wlog.Debug(vlog)
 
 				// 比较列类型
-				if sourceType != destType {
+				if useCanonicalCompare {
+					decision := schemacompat.DecideColumnDefinitionCompatibility(sourceCanonical, destCanonical)
+					if decision.IsMismatch() {
+						if decision.State == schemacompat.CompatibilityWarnOnly {
+							vlog = fmt.Sprintf("(%d) %s Column %s definition warning: source=%s, dest=%s, reason=%s",
+								logThreadSeq, event, repairColumnName, sourceType, destType, decision.Reason)
+							global.Wlog.Warn(vlog)
+							columnRiskDifferent = true
+							columnAdvisorySuggestions = append(columnAdvisorySuggestions, schemacompat.ConstraintRepairSuggestion{
+								ConstraintName: repairColumnName,
+								Kind:           "COLUMN ATTRIBUTE",
+								Level:          schemacompat.ConstraintRepairLevelAdvisoryOnly,
+								Reason:         decision.Reason,
+							})
+						} else {
+							tableAbnormalBool = true
+							vlog = fmt.Sprintf("(%d) %s Column %s definition mismatch: source=%s, dest=%s, reason=%s",
+								logThreadSeq, event, repairColumnName, sourceType, destType, decision.Reason)
+							global.Wlog.Warn(vlog)
+						}
+					} else if decision.State == schemacompat.CompatibilityNormalizedEqual {
+						vlog = fmt.Sprintf("(%d) %s Column %s definition normalized-equal: source=%s, dest=%s, reason=%s",
+							logThreadSeq, event, repairColumnName, sourceType, destType, decision.Reason)
+						global.Wlog.Debug(vlog)
+					}
+				} else if sourceType != destType {
 					tableAbnormalBool = true
-					vlog = fmt.Sprintf("(%d) %s Column %s type mismatch: source=%s, dest=%s", logThreadSeq, event, originalColName, sourceType, destType)
+					vlog = fmt.Sprintf("(%d) %s Column %s type mismatch: source=%s, dest=%s", logThreadSeq, event, repairColumnName, sourceType, destType)
 					global.Wlog.Warn(vlog)
 				}
 
@@ -1220,10 +2193,22 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 				// 如果两者都不为空或null，则比较
 				if (sourceCharset != "null" && sourceCharset != "") ||
 					(destCharset != "null" && destCharset != "") {
-					if sourceCharset != destCharset {
+					if useCanonicalCompare {
+						decision := schemacompat.DecideColumnCharsetCompatibility(sourceCanonical, destCanonical)
+						if decision.IsMismatch() {
+							tableAbnormalBool = true
+							vlog = fmt.Sprintf("(%d) %s Column %s charset mismatch: source=%s, dest=%s, reason=%s",
+								logThreadSeq, event, repairColumnName, sourceCharset, destCharset, decision.Reason)
+							global.Wlog.Warn(vlog)
+						} else if decision.State == schemacompat.CompatibilityNormalizedEqual {
+							vlog = fmt.Sprintf("(%d) %s Column %s charset normalized-equal: source=%s, dest=%s, reason=%s",
+								logThreadSeq, event, repairColumnName, sourceCharset, destCharset, decision.Reason)
+							global.Wlog.Debug(vlog)
+						}
+					} else if sourceCharset != destCharset {
 						tableAbnormalBool = true
 						vlog = fmt.Sprintf("(%d) %s Column %s charset mismatch: source=%s, dest=%s",
-							logThreadSeq, event, originalColName, sourceCharset, destCharset)
+							logThreadSeq, event, repairColumnName, sourceCharset, destCharset)
 						global.Wlog.Warn(vlog)
 					}
 				}
@@ -1241,10 +2226,33 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 				// 如果两者都不为空或null，则比较
 				if (sourceCollation != "null" && sourceCollation != "") ||
 					(destCollation != "null" && destCollation != "") {
-					if sourceCollation != destCollation {
+					if useCanonicalCompare {
+						decision := schemacompat.DecideColumnCollationCompatibility(sourceCanonical, destCanonical)
+						if decision.State == schemacompat.CompatibilityWarnOnly {
+							vlog = fmt.Sprintf("(%d) %s Column %s collation warning: source=%s, dest=%s, reason=%s",
+								logThreadSeq, event, repairColumnName, sourceCollation, destCollation, decision.Reason)
+							global.Wlog.Warn(vlog)
+							columnRiskDifferent = true
+							columnAdvisorySuggestions = append(columnAdvisorySuggestions, schemacompat.ConstraintRepairSuggestion{
+								ConstraintName: repairColumnName,
+								Kind:           "COLUMN COLLATION",
+								Level:          schemacompat.ConstraintRepairLevelAdvisoryOnly,
+								Reason:         decision.Reason,
+							})
+						} else if decision.IsMismatch() {
+							tableAbnormalBool = true
+							vlog = fmt.Sprintf("(%d) %s Column %s collation mismatch: source=%s, dest=%s, reason=%s",
+								logThreadSeq, event, repairColumnName, sourceCollation, destCollation, decision.Reason)
+							global.Wlog.Warn(vlog)
+						} else if decision.State == schemacompat.CompatibilityNormalizedEqual {
+							vlog = fmt.Sprintf("(%d) %s Column %s collation normalized-equal: source=%s, dest=%s, reason=%s",
+								logThreadSeq, event, repairColumnName, sourceCollation, destCollation, decision.Reason)
+							global.Wlog.Debug(vlog)
+						}
+					} else if sourceCollation != destCollation {
 						tableAbnormalBool = true
 						vlog = fmt.Sprintf("(%d) %s Column %s collation mismatch: source=%s, dest=%s",
-							logThreadSeq, event, originalColName, sourceCollation, destCollation)
+							logThreadSeq, event, repairColumnName, sourceCollation, destCollation)
 						global.Wlog.Warn(vlog)
 					}
 				}
@@ -1262,7 +2270,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 				if sourceIsNull != destIsNull {
 					tableAbnormalBool = true
 					vlog = fmt.Sprintf("(%d) %s Column %s NULL constraint mismatch: source=%s, dest=%s",
-						logThreadSeq, event, originalColName, sourceIsNull, destIsNull)
+						logThreadSeq, event, repairColumnName, sourceIsNull, destIsNull)
 					global.Wlog.Warn(vlog)
 				}
 
@@ -1281,7 +2289,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 					if sourceDefault != destDefault {
 						tableAbnormalBool = true
 						vlog = fmt.Sprintf("(%d) %s Column %s default value mismatch: source=%s, dest=%s",
-							logThreadSeq, event, originalColName, sourceDefault, destDefault)
+							logThreadSeq, event, repairColumnName, sourceDefault, destDefault)
 						global.Wlog.Warn(vlog)
 					}
 				}
@@ -1299,7 +2307,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 					if sourceComment != destComment {
 						tableAbnormalBool = true
 						vlog = fmt.Sprintf("(%d) %s Column %s comment mismatch: source=%q, dest=%q",
-							logThreadSeq, event, originalColName, sourceComment, destComment)
+							logThreadSeq, event, repairColumnName, sourceComment, destComment)
 						global.Wlog.Warn(vlog)
 					}
 				}
@@ -1321,19 +2329,54 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 				if !hasAutoIncrementPrimaryKeyAdd && sourceColumnSeq[v1] != destColumnSeq[v1] {
 					tableAbnormalBool = true
 					vlog = fmt.Sprintf("(%d) %s Column %s sequence mismatch: source=%d, dest=%d",
-						logThreadSeq, event, originalColName, sourceColumnSeq[v1], destColumnSeq[v1])
+						logThreadSeq, event, repairColumnName, sourceColumnSeq[v1], destColumnSeq[v1])
 					global.Wlog.Warn(vlog)
 				}
 				if tableAbnormalBool {
-					// 使用原始大小写的列名生成SQL
-					originalColName := getOriginalColumnName(v1)
-					originalLastColumn := getOriginalColumnName(lastcolumn)
+					sourceOriginalColName := getSourceOriginalColumnName(v1)
+					repairColumnName := getDestOriginalColumnName(v1)
+					if strings.TrimSpace(repairColumnName) == "" {
+						repairColumnName = sourceOriginalColName
+					}
+					originalLastColumn := getTargetPositionColumnName(lastcolumn)
+					repairAttrs := append([]string(nil), alterColumnData...)
+					if useCanonicalCompare {
+						repairPlan := schemacompat.BuildTargetColumnRepairPlan(
+							sourceOriginalColName,
+							repairAttrs,
+							stcls.sourceVersionInfo(),
+							stcls.destVersionInfo(),
+							sourceColumnDefinitions[sourceOriginalColName],
+							stcls.checkRules.MariaDBJSONTargetType,
+						)
+						if len(repairAttrs) < 6 {
+							for len(repairAttrs) < 6 {
+								repairAttrs = append(repairAttrs, "null")
+							}
+						}
+						if strings.TrimSpace(repairPlan.Type) != "" {
+							repairAttrs[0] = repairPlan.Type
+						}
+						if strings.TrimSpace(repairPlan.Charset) != "" {
+							repairAttrs[1] = repairPlan.Charset
+						}
+						if strings.TrimSpace(repairPlan.Collation) != "" {
+							repairAttrs[2] = repairPlan.Collation
+						}
+						if repairPlan.UseDirectDefinition {
+							if len(repairAttrs) < 7 {
+								repairAttrs = append(repairAttrs, repairPlan.DirectDefinition)
+							} else {
+								repairAttrs[6] = repairPlan.DirectDefinition
+							}
+						}
+					}
 					// 检查目标表是否存在主键
 					if mysqlDataFix, ok := dbf.DataAbnormalFix().(*mysql.MysqlDataAbnormalFixStruct); ok {
 						mysqlDataFix.CheckDestTableHasPrimaryKey(stcls.destDB, logThreadSeq)
 					}
-					modifySql := dbf.DataAbnormalFix().FixAlterColumnSqlDispos("modify", alterColumnData, k1, originalLastColumn, originalColName, logThreadSeq)
-					vlog = fmt.Sprintf("(%d) %s The column name of column %s of the source and target table %s.%s:[%s.%s] is the same, but the definition of the column is inconsistent, and a modify statement is generated, and the modification statement is {%v}", logThreadSeq, event, originalColName, stcls.schema, stcls.table, destSchema, stcls.table, modifySql)
+					modifySql := dbf.DataAbnormalFix().FixAlterColumnSqlDispos("modify", repairAttrs, k1, originalLastColumn, repairColumnName, logThreadSeq)
+					vlog = fmt.Sprintf("(%d) %s The column name of column %s of the source and target table %s.%s:[%s.%s] is the same, but the definition of the column is inconsistent, and a modify statement is generated, and the modification statement is {%v}", logThreadSeq, event, repairColumnName, stcls.schema, stcls.table, destSchema, stcls.table, modifySql)
 					global.Wlog.Warn(vlog)
 					alterSlice = append(alterSlice, modifySql)
 				}
@@ -1344,14 +2387,47 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 				var position int
 				// 使用固定值：ScheckOrder=yes，总是使用源列的实际位置
 				position = k1
-				// 使用原始大小写的列名生成SQL
-				originalColName := getOriginalColumnName(v1)
-				originalLastColumn := getOriginalColumnName(lastcolumn)
+				// Use the source identifier for ADD COLUMN and the current target
+				// identifier for positional clauses when available.
+				originalColName := getSourceOriginalColumnName(v1)
+				originalLastColumn := getTargetPositionColumnName(lastcolumn)
+				repairAttrs := append([]string(nil), sourceColumnMap[v1]...)
+				if useCanonicalCompare {
+					repairPlan := schemacompat.BuildTargetColumnRepairPlan(
+						originalColName,
+						repairAttrs,
+						stcls.sourceVersionInfo(),
+						stcls.destVersionInfo(),
+						sourceColumnDefinitions[originalColName],
+						stcls.checkRules.MariaDBJSONTargetType,
+					)
+					if len(repairAttrs) < 6 {
+						for len(repairAttrs) < 6 {
+							repairAttrs = append(repairAttrs, "null")
+						}
+					}
+					if strings.TrimSpace(repairPlan.Type) != "" {
+						repairAttrs[0] = repairPlan.Type
+					}
+					if strings.TrimSpace(repairPlan.Charset) != "" {
+						repairAttrs[1] = repairPlan.Charset
+					}
+					if strings.TrimSpace(repairPlan.Collation) != "" {
+						repairAttrs[2] = repairPlan.Collation
+					}
+					if repairPlan.UseDirectDefinition {
+						if len(repairAttrs) < 7 {
+							repairAttrs = append(repairAttrs, repairPlan.DirectDefinition)
+						} else {
+							repairAttrs[6] = repairPlan.DirectDefinition
+						}
+					}
+				}
 				// 检查目标表是否存在主键
 				if mysqlDataFix, ok := dbf.DataAbnormalFix().(*mysql.MysqlDataAbnormalFixStruct); ok {
 					mysqlDataFix.CheckDestTableHasPrimaryKey(stcls.destDB, logThreadSeq)
 				}
-				addSql := dbf.DataAbnormalFix().FixAlterColumnSqlDispos("add", sourceColumnMap[v1], position, originalLastColumn, originalColName, logThreadSeq)
+				addSql := dbf.DataAbnormalFix().FixAlterColumnSqlDispos("add", repairAttrs, position, originalLastColumn, originalColName, logThreadSeq)
 				vlog = fmt.Sprintf("(%d) %s Missing column %s in %s.%s - ADD: %v", logThreadSeq, event, originalColName, destSchema, stcls.table, addSql)
 				global.Wlog.Warn(vlog)
 				alterSlice = append(alterSlice, addSql)
@@ -1363,54 +2439,136 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 
 		// 先生成列级别的修复SQL
 		sqlS := fixer.FixAlterColumnSqlGenerate(alterSlice, logThreadSeq)
+		constraintAdvisorySQLs := make([]string, 0)
+		tableAdvisorySuggestions := make([]schemacompat.ConstraintRepairSuggestion, 0)
+		if len(columnAdvisorySuggestions) > 0 {
+			constraintAdvisorySQLs = append(
+				constraintAdvisorySQLs,
+				buildConstraintAdvisoryLines(fmt.Sprintf("%s.%s COLUMN attributes", destSchema, stcls.destTable), columnAdvisorySuggestions)...,
+			)
+		}
 
 		tableCharsetDifferent := false
 		tableCollationDifferent := false
 		tableCommentDifferent := false
 		tableAutoIncrementDifferent := false
+		tableRowFormatDifferent := false
+		tableCollationRiskDifferent := false
+		tableCheckRiskDifferent := false
+		tableUnsupportedRiskDifferent := false
 
 		if stcls.isMySQLToMySQL() {
-			sourceTableCollation, sourceTableCharset, sourceAutoIncrement, sourceTableComment, errSourceMeta := queryMySQLTableLevelMetadata(stcls.sourceDB, sourceSchema, stcls.table)
+			sourceMeta, errSourceMeta := queryMySQLTableLevelMetadata(stcls.sourceDB, sourceSchema, stcls.table)
 			if errSourceMeta != nil {
 				vlog = fmt.Sprintf("(%d) %s Failed to query source table metadata for %s.%s: %v", logThreadSeq, event, sourceSchema, stcls.table, errSourceMeta)
 				global.Wlog.Error(vlog)
 			} else {
-				destTableCollation, destTableCharset, destAutoIncrement, destTableComment, errDestMeta := queryMySQLTableLevelMetadata(stcls.destDB, destSchema, stcls.destTable)
+				destMeta, errDestMeta := queryMySQLTableLevelMetadata(stcls.destDB, destSchema, stcls.destTable)
 				if errDestMeta != nil {
 					vlog = fmt.Sprintf("(%d) %s Failed to query target table metadata for %s.%s: %v", logThreadSeq, event, destSchema, stcls.destTable, errDestMeta)
 					global.Wlog.Error(vlog)
 				} else {
-					sourceTableComment = normalizeMetadataComment(sourceTableComment)
-					destTableComment = normalizeMetadataComment(destTableComment)
+					sourceMeta.TableComment = normalizeMetadataComment(sourceMeta.TableComment)
+					destMeta.TableComment = normalizeMetadataComment(destMeta.TableComment)
 
-					if sourceTableCharset != "" && destTableCharset != "" && sourceTableCharset != destTableCharset {
-						tableCharsetDifferent = true
-						vlog = fmt.Sprintf("(%d) %s Table charset mismatch: source=%s, dest=%s", logThreadSeq, event, sourceTableCharset, destTableCharset)
+					unsupportedFeatures := schemacompat.DetectMariaDBUnsupportedTableFeatures(sourceMeta.CreateTableSQL, stcls.sourceVersionInfo(), stcls.destVersionInfo())
+					if len(unsupportedFeatures) > 0 {
+						tableUnsupportedRiskDifferent = true
+						vlog = fmt.Sprintf("(%d) %s MariaDB unsupported features detected for %s.%s -> %s.%s: %+v",
+							logThreadSeq, event, sourceSchema, stcls.table, destSchema, stcls.destTable, unsupportedFeatures)
 						global.Wlog.Warn(vlog)
+						constraintAdvisorySQLs = append(
+							constraintAdvisorySQLs,
+							buildConstraintAdvisoryLines(
+								fmt.Sprintf("%s.%s MariaDB unsupported features", destSchema, stcls.destTable),
+								schemacompat.BuildMariaDBUnsupportedFeatureSuggestions(destSchema, stcls.destTable, unsupportedFeatures),
+							)...,
+						)
 					}
 
-					if sourceTableCollation != "" && destTableCollation != "" && sourceTableCollation != destTableCollation {
-						tableCollationDifferent = true
-						vlog = fmt.Sprintf("(%d) %s Table collation mismatch: source=%s, dest=%s", logThreadSeq, event, sourceTableCollation, destTableCollation)
+					charsetDecision := schemacompat.DecideCharsetCompatibility(sourceMeta.TableCharset, destMeta.TableCharset)
+					if charsetDecision.IsMismatch() {
+						tableCharsetDifferent = true
+						vlog = fmt.Sprintf("(%d) %s Table charset mismatch: source=%s, dest=%s, reason=%s", logThreadSeq, event, sourceMeta.TableCharset, destMeta.TableCharset, charsetDecision.Reason)
 						global.Wlog.Warn(vlog)
+					} else if charsetDecision.State == schemacompat.CompatibilityNormalizedEqual {
+						vlog = fmt.Sprintf("(%d) %s Table charset normalized-equal: source=%s, dest=%s, reason=%s", logThreadSeq, event, sourceMeta.TableCharset, destMeta.TableCharset, charsetDecision.Reason)
+						global.Wlog.Debug(vlog)
+					}
+
+					collationDecision := schemacompat.DecideCollationCompatibility(sourceMeta.TableCollation, destMeta.TableCollation)
+					if collationDecision.State == schemacompat.CompatibilityWarnOnly {
+						tableCollationRiskDifferent = true
+						vlog = fmt.Sprintf("(%d) %s Table collation warning: source=%s, dest=%s, reason=%s", logThreadSeq, event, sourceMeta.TableCollation, destMeta.TableCollation, collationDecision.Reason)
+						global.Wlog.Warn(vlog)
+						tableAdvisorySuggestions = append(tableAdvisorySuggestions, schemacompat.ConstraintRepairSuggestion{
+							Kind:       "TABLE COLLATION",
+							Level:      schemacompat.ConstraintRepairLevelAdvisoryOnly,
+							Reason:     collationDecision.Reason,
+							Statements: fixer.FixTableCharsetSqlGenerate(sourceMeta.TableCharset, sourceMeta.TableCollation, logThreadSeq),
+						})
+					} else if collationDecision.IsMismatch() {
+						tableCollationDifferent = true
+						vlog = fmt.Sprintf("(%d) %s Table collation mismatch: source=%s, dest=%s, reason=%s", logThreadSeq, event, sourceMeta.TableCollation, destMeta.TableCollation, collationDecision.Reason)
+						global.Wlog.Warn(vlog)
+					} else if collationDecision.State == schemacompat.CompatibilityNormalizedEqual {
+						vlog = fmt.Sprintf("(%d) %s Table collation normalized-equal: source=%s, dest=%s, reason=%s", logThreadSeq, event, sourceMeta.TableCollation, destMeta.TableCollation, collationDecision.Reason)
+						global.Wlog.Debug(vlog)
 					}
 
 					if tableCharsetDifferent || tableCollationDifferent {
-						sqlS = append(sqlS, fixer.FixTableCharsetSqlGenerate(sourceTableCharset, sourceTableCollation, logThreadSeq)...)
+						sqlS = append(sqlS, fixer.FixTableCharsetSqlGenerate(sourceMeta.TableCharset, sourceMeta.TableCollation, logThreadSeq)...)
 					}
 
-					if fixValue, needsFix := resolveMySQLTableAutoIncrementFixValue(sourceAutoIncrement, destAutoIncrement); needsFix {
+					rowFormatDecision := schemacompat.DecideTableRowFormatCompatibility(
+						schemacompat.CanonicalizeMySQLTableOptions(sourceMeta.RowFormat, sourceMeta.CreateOptions, sourceMeta.TableComment),
+						schemacompat.CanonicalizeMySQLTableOptions(destMeta.RowFormat, destMeta.CreateOptions, destMeta.TableComment),
+					)
+					if rowFormatDecision.IsMismatch() {
+						tableRowFormatDifferent = true
+						vlog = fmt.Sprintf("(%d) %s Table row format mismatch: source=%s, dest=%s, reason=%s",
+							logThreadSeq, event, sourceMeta.RowFormat, destMeta.RowFormat, rowFormatDecision.Reason)
+						global.Wlog.Warn(vlog)
+					} else if rowFormatDecision.State == schemacompat.CompatibilityNormalizedEqual {
+						vlog = fmt.Sprintf("(%d) %s Table row format normalized-equal: source=%s, dest=%s, reason=%s",
+							logThreadSeq, event, sourceMeta.RowFormat, destMeta.RowFormat, rowFormatDecision.Reason)
+						global.Wlog.Debug(vlog)
+					}
+
+					sourceCatalog := schemacompat.BuildSchemaFeatureCatalog(stcls.sourceVersionInfo())
+					destCatalog := schemacompat.BuildSchemaFeatureCatalog(stcls.destVersionInfo())
+					sourceChecks := schemacompat.ExtractCheckConstraintsFromCreateSQL(sourceMeta.CreateTableSQL)
+					sourceChecks = schemacompat.FilterPortableCheckConstraints(sourceChecks, stcls.sourceVersionInfo(), stcls.destVersionInfo(), sourceColumnDefinitions)
+					destChecks := schemacompat.ExtractCheckConstraintsFromCreateSQL(destMeta.CreateTableSQL)
+					checkDecision := schemacompat.DecideCheckConstraintCompatibility(sourceChecks, destChecks, sourceCatalog, destCatalog)
+					if checkDecision.IsMismatch() {
+						tableCheckRiskDifferent = true
+						vlog = fmt.Sprintf("(%d) %s Table CHECK constraint risk detected for %s.%s -> %s.%s: %s",
+							logThreadSeq, event, sourceSchema, stcls.table, destSchema, stcls.destTable, checkDecision.Reason)
+						global.Wlog.Warn(vlog)
+						checkSuggestions := schemacompat.BuildCheckConstraintRepairSuggestions(destSchema, stcls.destTable, sourceChecks, destChecks, checkDecision)
+						constraintAdvisorySQLs = append(
+							constraintAdvisorySQLs,
+							buildConstraintAdvisoryLines(fmt.Sprintf("%s.%s CHECK constraints", destSchema, stcls.destTable), checkSuggestions)...,
+						)
+					}
+
+					if fixValue, needsFix := resolveMySQLTableAutoIncrementFixValue(sourceMeta.AutoIncrement, destMeta.AutoIncrement); needsFix && !droppedAutoIncrementColumn {
 						tableAutoIncrementDifferent = true
-						vlog = fmt.Sprintf("(%d) %s Table AUTO_INCREMENT mismatch: source=%v, dest=%v", logThreadSeq, event, nullInt64ForLog(sourceAutoIncrement), nullInt64ForLog(destAutoIncrement))
+						vlog = fmt.Sprintf("(%d) %s Table AUTO_INCREMENT mismatch: source=%v, dest=%v", logThreadSeq, event, nullInt64ForLog(sourceMeta.AutoIncrement), nullInt64ForLog(destMeta.AutoIncrement))
 						global.Wlog.Warn(vlog)
 						sqlS = append(sqlS, fixer.FixTableAutoIncrementSqlGenerate(fixValue, logThreadSeq)...)
+					} else if needsFix && droppedAutoIncrementColumn {
+						vlog = fmt.Sprintf("(%d) %s Skip table AUTO_INCREMENT repair for %s.%s because the target auto-increment column is being dropped",
+							logThreadSeq, event, destSchema, stcls.table)
+						global.Wlog.Debug(vlog)
 					}
 
-					if sourceTableComment != destTableComment {
+					if sourceMeta.TableComment != destMeta.TableComment {
 						tableCommentDifferent = true
-						escapedComment := escapeMySQLCommentLiteral(sourceTableComment)
+						escapedComment := escapeMySQLCommentLiteral(sourceMeta.TableComment)
 						tableCommentSql := fmt.Sprintf("ALTER TABLE `%s`.`%s` COMMENT = '%s';", destSchema, stcls.destTable, escapedComment)
-						vlog = fmt.Sprintf("(%d) %s Table comment mismatch: source='%s', dest='%s', generating fix SQL", logThreadSeq, event, sourceTableComment, destTableComment)
+						vlog = fmt.Sprintf("(%d) %s Table comment mismatch: source='%s', dest='%s', generating fix SQL", logThreadSeq, event, sourceMeta.TableComment, destMeta.TableComment)
 						global.Wlog.Warn(vlog)
 						sqlS = append(sqlS, tableCommentSql)
 					}
@@ -1418,9 +2576,20 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 			}
 		}
 
-		hasTableLevelDiff := tableCharsetDifferent || tableCollationDifferent || tableCommentDifferent || tableAutoIncrementDifferent
-		if len(alterSlice) > 0 || hasTableLevelDiff {
+		if len(tableAdvisorySuggestions) > 0 {
+			constraintAdvisorySQLs = append(
+				constraintAdvisorySQLs,
+				buildConstraintAdvisoryLines(fmt.Sprintf("%s.%s TABLE options", destSchema, stcls.destTable), tableAdvisorySuggestions)...,
+			)
+		}
+
+		hasWarnOnlyTableLevelDiff := columnRiskDifferent || tableCollationRiskDifferent || tableCheckRiskDifferent || tableUnsupportedRiskDifferent
+		hasHardTableLevelDiff := tableCharsetDifferent || tableCollationDifferent || tableCommentDifferent || tableAutoIncrementDifferent || tableRowFormatDifferent
+		if len(alterSlice) > 0 || hasHardTableLevelDiff {
 			abnormalTableList = append(abnormalTableList, fmt.Sprintf("%s.%s", destSchema, stcls.table))
+		} else if hasWarnOnlyTableLevelDiff {
+			stcls.structWarnOnlyDiffsMap[fmt.Sprintf("%s.%s", sourceSchema, sourceTableName)] = true
+			newCheckTableList = append(newCheckTableList, fmt.Sprintf("%s.%s", destSchema, stcls.table))
 		} else {
 			newCheckTableList = append(newCheckTableList, fmt.Sprintf("%s.%s", destSchema, stcls.table))
 		}
@@ -1430,14 +2599,17 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 
 		// 如果sqlS不为空（表示没有应用过列级别修复），则应用它
 		if len(sqlS) > 0 {
-			vlog = fmt.Sprintf("(%d) %s Applying repair statements to %s.%s: %v", logThreadSeq, event, destSchema, stcls.table, sqlS)
+			tableKey := fmt.Sprintf("%s.%s", sourceSchema, sourceTableName)
+			stcls.rememberColumnRepairOperations(tableKey, sqlS)
+			vlog = fmt.Sprintf("(%d) %s Deferred column/table repair statements for %s.%s until index reconciliation: %v", logThreadSeq, event, destSchema, stcls.table, sqlS)
 			global.Wlog.Debug(vlog)
-			// 统一封装为按 datafix=file 追加写入
-			if err = stcls.writeFixSql(sqlS, logThreadSeq); err != nil {
+		}
+		if len(constraintAdvisorySQLs) > 0 {
+			vlog = fmt.Sprintf("(%d) %s Writing advisory-only constraint repair suggestions for %s.%s", logThreadSeq, event, destSchema, stcls.destTable)
+			global.Wlog.Debug(vlog)
+			if err = stcls.writeAdvisoryFixSql(constraintAdvisorySQLs, logThreadSeq); err != nil {
 				return nil, nil, err
 			}
-			vlog = fmt.Sprintf("(%d) %s Repair statements applied to %s.%s", logThreadSeq, event, destSchema, stcls.table)
-			global.Wlog.Debug(vlog)
 		}
 	}
 	vlog = fmt.Sprintf("(%d) %s Table structure validation completed", logThreadSeq, event)
@@ -2020,9 +3192,9 @@ func (stcls *schemaTable) SchemaTableFilter(logThreadSeq1, logThreadSeq2 int64) 
 						continue
 					}
 
-					// 检查该表是否在忽略列表中
-					if stcls.tableKeyInSet(ignoreSchema, dbSchemaName, tableName) {
-						vlog = fmt.Sprintf("Ignoring table: %s.%s", dbSchemaName, tableName)
+					// ignoreTables should only remove wildcard-selected tables.
+					if stcls.shouldIgnoreMatchedTable(ignoreSchema, dbSchemaName, tableName) {
+						vlog = fmt.Sprintf("Ignoring table due to ignoreTables: %s.%s", dbSchemaName, tableName)
 						global.Wlog.Debug(vlog)
 						continue
 					}
@@ -2081,9 +3253,8 @@ func (stcls *schemaTable) SchemaTableFilter(logThreadSeq1, logThreadSeq2 int64) 
 								// 处理忽略表
 								ignoreSchema := stcls.FuzzyMatchingDispos(dbCheckNameList, stcls.ignoreTable, logThreadSeq1)
 
-								// 检查该表是否在忽略列表中
-								if stcls.tableKeyInSet(ignoreSchema, dbSchemaName, tableName) {
-									vlog = fmt.Sprintf("Ignoring table: %s.%s", dbSchemaName, tableName)
+								if stcls.shouldIgnoreMatchedTable(ignoreSchema, dbSchemaName, tableName) {
+									vlog = fmt.Sprintf("Ignoring table due to ignoreTables: %s.%s", dbSchemaName, tableName)
 									global.Wlog.Debug(vlog)
 									continue
 								}
@@ -2106,9 +3277,8 @@ func (stcls *schemaTable) SchemaTableFilter(logThreadSeq1, logThreadSeq2 int64) 
 						// 处理忽略表
 						ignoreSchema := stcls.FuzzyMatchingDispos(dbCheckNameList, stcls.ignoreTable, logThreadSeq1)
 
-						// 检查该表是否在忽略列表中
-						if stcls.tableKeyInSet(ignoreSchema, srcDB, srcTable) {
-							vlog = fmt.Sprintf("Ignoring table: %s.%s", srcDB, srcTable)
+						if stcls.shouldIgnoreMatchedTable(ignoreSchema, srcDB, srcTable) {
+							vlog = fmt.Sprintf("Ignoring table due to ignoreTables: %s.%s", srcDB, srcTable)
 							global.Wlog.Debug(vlog)
 							continue
 						}
@@ -2145,7 +3315,7 @@ func (stcls *schemaTable) SchemaTableFilter(logThreadSeq1, logThreadSeq2 int64) 
 			if len(parts) != 2 {
 				continue
 			}
-			if stcls.tableKeyInSet(ignoreSchema, parts[0], parts[1]) {
+			if stcls.shouldIgnoreMatchedTable(ignoreSchema, parts[0], parts[1]) {
 				delete(schema, k)
 			}
 		}
@@ -2600,6 +3770,19 @@ func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 in
 		sourceTrigger, destTrigger map[string]string
 		err                        error
 	)
+	triggerDefFixSQLs := make([]string, 0)
+	appendTriggerDefinitionFixSQLs := func(sqls []string) {
+		for _, s := range sqls {
+			ts := strings.TrimSpace(s)
+			if ts == "" {
+				continue
+			}
+			if strings.HasPrefix(strings.ToUpper(ts), "DROP ") && !strings.HasSuffix(ts, ";") {
+				ts += ";"
+			}
+			triggerDefFixSQLs = append(triggerDefFixSQLs, ts)
+		}
+	}
 
 	vlog = fmt.Sprintf("(%d) Start init check source and target DB Trigger. to check it...", logThreadSeq)
 	global.Wlog.Info(vlog)
@@ -2815,9 +3998,11 @@ func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 in
 
 		sourceTriggerComments := make(map[string]string)
 		destTriggerComments := make(map[string]string)
+		sourceTriggerDefiners := make(map[string]string)
+		destTriggerDefiners := make(map[string]string)
 		if stcls.isMySQLToMySQL() {
-			sourceTriggerComments = loadMySQLTriggerComments(stcls.sourceDB, schema, logThreadSeq)
-			destTriggerComments = loadMySQLTriggerComments(stcls.destDB, schema, logThreadSeq)
+			sourceTriggerComments, sourceTriggerDefiners = loadMySQLTriggerMetadata(stcls.sourceDB, schema, logThreadSeq)
+			destTriggerComments, destTriggerDefiners = loadMySQLTriggerMetadata(stcls.destDB, schema, logThreadSeq)
 		}
 
 		if len(sourceTrigger) == 0 && len(destTrigger) == 0 {
@@ -2841,6 +4026,7 @@ func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 in
 			pods.TriggerName = strings.ReplaceAll(strings.Split(k, ".")[1], "\"", "")
 			definitionDiff := sourceTrigger[k] != destTrigger[k]
 			commentDiff := false
+			definerDiff := false
 			if stcls.isMySQLToMySQL() {
 				sourceComment := normalizeMetadataComment(sourceTriggerComments[k])
 				destComment := normalizeMetadataComment(destTriggerComments[k])
@@ -2849,35 +4035,27 @@ func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 in
 					vlog = fmt.Sprintf("(%d) Trigger comment mismatch %s: source=%q, dest=%q", logThreadSeq, k, sourceComment, destComment)
 					global.Wlog.Warn(vlog)
 				}
+
+				sourceDefiner := strings.TrimSpace(sourceTriggerDefiners[k])
+				destDefiner := strings.TrimSpace(destTriggerDefiners[k])
+				if sourceDefiner != destDefiner {
+					definerDiff = true
+					vlog = fmt.Sprintf("(%d) Trigger definer mismatch %s: source=%q, dest=%q", logThreadSeq, k, sourceDefiner, destDefiner)
+					global.Wlog.Warn(vlog)
+				}
 			}
 
-			if definitionDiff || commentDiff {
+			if definitionDiff || commentDiff || definerDiff {
 				pods.DIFFS = "yes"
 				d = append(d, k)
 
-				// Generate and write fix SQL for TRIGGER mismatch using SHOW CREATE and DELIMITER
+				// Rebuild full trigger DDL from INFORMATION_SCHEMA instead of relying
+				// on the body-only statement column returned by SHOW CREATE TRIGGER.
 				trName := strings.ReplaceAll(strings.Split(k, ".")[1], "\"", "")
-				trSourceDef := sourceTrigger[k]
-				query := fmt.Sprintf("SHOW CREATE TRIGGER `%s`.`%s`", schema, trName)
-				if rows, err := stcls.sourceDB.Query(query); err == nil {
-					defer rows.Close()
-					if cols, err := rows.Columns(); err == nil && rows.Next() {
-						values := make([]sql.RawBytes, len(cols))
-						args := make([]interface{}, len(cols))
-						for i := range values {
-							args[i] = &values[i]
-						}
-						if err := rows.Scan(args...); err == nil {
-							for i, col := range cols {
-								if strings.EqualFold(col, "SQL Original Statement") || strings.EqualFold(col, "SQL Statement") {
-									if v := string(values[i]); len(strings.TrimSpace(v)) > 0 {
-										trSourceDef = v
-										break
-									}
-								}
-							}
-						}
-					}
+				trSourceDef, showCreateErr := showCreateTriggerSQL(stcls.sourceDB, schema, trName)
+				if showCreateErr != nil {
+					global.Wlog.Warn(fmt.Sprintf("(%d) Failed to rebuild source trigger DDL for %s.%s: %v", logThreadSeq, schema, trName, showCreateErr))
+					trSourceDef = sourceTrigger[k]
 				}
 				// 确定目标schema
 				destSchema := schema
@@ -2885,18 +4063,7 @@ func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 in
 					destSchema = mappedSchema
 				}
 				tsqls := mysql.GenerateTriggerFixSQL(schema, destSchema, trName, trSourceDef)
-				// wrap with DELIMITER to ensure body semicolons don't conflict
-				var out []string
-				out = append(out, "DELIMITER $$")
-				for _, s := range tsqls {
-					ts := strings.TrimSpace(s)
-					if strings.HasPrefix(strings.ToUpper(ts), "DROP ") && !strings.HasSuffix(ts, ";") {
-						ts = ts + ";"
-					}
-					out = append(out, ts+"\n$$")
-				}
-				out = append(out, "DELIMITER ;")
-				_ = stcls.writeFixSql(out, logThreadSeq)
+				appendTriggerDefinitionFixSQLs(tsqls)
 			} else {
 				pods.DIFFS = "no"
 				c = append(c, k)
@@ -2906,6 +4073,17 @@ func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 in
 			vlog = fmt.Sprintf("(%d) The source target segment databases %s Trigger data verification is completed", logThreadSeq, schema)
 			global.Wlog.Debug(vlog)
 			measuredDataPods = append(measuredDataPods, pods)
+		}
+	}
+	if len(triggerDefFixSQLs) > 0 {
+		out := make([]string, 0, len(triggerDefFixSQLs)+2)
+		out = append(out, "DELIMITER $$")
+		for _, stmt := range triggerDefFixSQLs {
+			out = append(out, stmt+"\n$$")
+		}
+		out = append(out, "DELIMITER ;")
+		if err := stcls.writeFixSql(out, logThreadSeq); err != nil {
+			global.Wlog.Error(fmt.Sprintf("(%d) failed to write trigger definition fix SQLs: %v", logThreadSeq, err))
 		}
 	}
 	vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment table Trigger data. normal databases message is {%s} num [%d] abnormal databases message is {%s} num [%d]", logThreadSeq, c, len(c), d, len(d))
@@ -3302,15 +4480,14 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 					sourceComment := ""
 
 					if v == 2 {
-						// 同时存在：比较过程体
-						srcBody := strings.Join(strings.Fields(sourceProc[k+"_BODY"]), "")
-						dstBody := strings.Join(strings.Fields(destProc[k+"_BODY"]), "")
-						// 当 BODY 都为空时，回退到主定义字段进行比较，避免误判为一致
+						// 优先比较显式过程体；如果当前采集路径没有单独的 BODY
+						// 字段，则回退到归一化后的完整定义比较，并忽略环境元数据噪音。
+						srcBody := normalizeStoredProcBody(sourceProc[k+"_BODY"])
+						dstBody := normalizeStoredProcBody(destProc[k+"_BODY"])
 						if srcBody == "" && dstBody == "" {
-							srcDef := strings.Join(strings.Fields(sourceProc[k]), "")
-							dstDef := strings.Join(strings.Fields(destProc[k]), "")
+							srcDef := normalizeRoutineDefinitionForCompare(sourceProc[k])
+							dstDef := normalizeRoutineDefinitionForCompare(destProc[k])
 							if srcDef == "" && dstDef == "" {
-								// 两侧都缺失可比较内容，视为差异，避免漏报
 								definitionDiff = true
 							} else if srcDef != dstDef {
 								definitionDiff = true
@@ -3472,31 +4649,8 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 					sourceComment := ""
 
 					if v == 2 {
-						sv := sourceFunc[k]
-						dv := destFunc[k]
-
-						// 忽略元数据注释部分，只比较函数的实际定义内容
-						// 移除 GT_CHECKSUM_METADATA 注释
-						cleanSourceFunc := sv
-						if idx := strings.Index(cleanSourceFunc, "/*GT_CHECKSUM_METADATA:"); idx != -1 {
-							endIdx := strings.Index(cleanSourceFunc[idx:], "*/")
-							if endIdx != -1 {
-								cleanSourceFunc = cleanSourceFunc[:idx] + cleanSourceFunc[idx+endIdx+2:]
-							}
-						}
-
-						cleanDestFunc := dv
-						if idx := strings.Index(cleanDestFunc, "/*GT_CHECKSUM_METADATA:"); idx != -1 {
-							endIdx := strings.Index(cleanDestFunc[idx:], "*/")
-							if endIdx != -1 {
-								cleanDestFunc = cleanDestFunc[:idx] + cleanDestFunc[idx+endIdx+2:]
-							}
-						}
-
-						// 去除所有空格后进行比较
-						cleanSourceFunc = strings.Join(strings.Fields(cleanSourceFunc), "")
-						cleanDestFunc = strings.Join(strings.Fields(cleanDestFunc), "")
-
+						cleanSourceFunc := normalizeRoutineDefinitionForCompare(sourceFunc[k])
+						cleanDestFunc := normalizeRoutineDefinitionForCompare(destFunc[k])
 						if cleanSourceFunc != cleanDestFunc {
 							definitionDiff = true
 						}
@@ -3606,7 +4760,6 @@ func (stcls *schemaTable) Foreign(dtabS []string, logThreadSeq, logThreadSeq2 in
 	var (
 		vlog                       string
 		sourceForeign, destForeign map[string]string
-		tmpM                       = make(map[string]int)
 		err                        error
 		pods                       = Pod{
 			Datafix:     "no",
@@ -3624,73 +4777,132 @@ func (stcls *schemaTable) Foreign(dtabS []string, logThreadSeq, logThreadSeq2 in
 	//校验外键
 	var c, d []string
 	for _, i := range dtabS {
-		stcls.schema = strings.Split(i, ".")[0]
-		stcls.table = strings.Split(i, ".")[1]
-		vlog = fmt.Sprintf("(%d) Start processing srcDSN {%s} table %s.%s Foreign. to dispos it...", logThreadSeq, stcls.sourceDrive, stcls.schema, stcls.table)
+		sourceSchema, sourceTable, destSchema, destTable := parseSourceAndDestTablePair(i, stcls.tableMappings)
+		stcls.schema = sourceSchema
+		stcls.table = sourceTable
+		stcls.destTable = destTable
+		vlog = fmt.Sprintf("(%d) Start processing srcDSN {%s} table %s.%s Foreign. to dispos it...", logThreadSeq, stcls.sourceDrive, sourceSchema, sourceTable)
 		global.Wlog.Debug(vlog)
-		pods.Schema = stcls.schema
-		pods.Table = stcls.table
-		tc := dbExec.TableColumnNameStruct{Schema: stcls.schema, Table: stcls.table, Drive: stcls.sourceDrive}
+		pods.Schema = sourceSchema
+		pods.Table = sourceTable
+		tc := dbExec.TableColumnNameStruct{Schema: sourceSchema, Table: sourceTable, Drive: stcls.sourceDrive}
 		if sourceForeign, err = tc.Query().Foreign(stcls.sourceDB, logThreadSeq2); err != nil {
 			return
 		}
-		vlog = fmt.Sprintf("(%d) srcDSN {%s} table %s.%s message is {%s}", logThreadSeq, stcls.sourceDrive, stcls.schema, stcls.table, sourceForeign)
+		vlog = fmt.Sprintf("(%d) srcDSN {%s} table %s.%s message is {%s}", logThreadSeq, stcls.sourceDrive, sourceSchema, sourceTable, sourceForeign)
 		global.Wlog.Debug(vlog)
 
-		vlog = fmt.Sprintf("(%d) Start processing dstDSN {%s} table %s.%s Foreign. to dispos it...", logThreadSeq, stcls.destDrive, stcls.schema, stcls.table)
+		vlog = fmt.Sprintf("(%d) Start processing dstDSN {%s} table %s.%s Foreign. to dispos it...", logThreadSeq, stcls.destDrive, destSchema, destTable)
 		global.Wlog.Debug(vlog)
 		tc.Drive = stcls.destDrive
+		tc.Schema = destSchema
+		tc.Table = destTable
 		if destForeign, err = tc.Query().Foreign(stcls.destDB, logThreadSeq2); err != nil {
 			return
 		}
 
-		vlog = fmt.Sprintf("(%d) dstDSN {%s} table %s.%s message is {%s}", logThreadSeq, stcls.destDrive, stcls.schema, stcls.table, destForeign)
+		vlog = fmt.Sprintf("(%d) dstDSN {%s} table %s.%s message is {%s}", logThreadSeq, stcls.destDrive, destSchema, destTable, destForeign)
 		global.Wlog.Debug(vlog)
 		if len(sourceForeign) == 0 && len(destForeign) == 0 {
-			vlog = fmt.Sprintf("(%d) The current original target data is empty, and the verification of this table %s.%s will be skipped", logThreadSeq, stcls.schema, stcls.table)
+			vlog = fmt.Sprintf("(%d) The current original target data is empty, and the verification of this table %s.%s will be skipped", logThreadSeq, sourceSchema, sourceTable)
 			global.Wlog.Debug(vlog)
 			continue
 		}
-		tmpM = make(map[string]int)
-		vlog = fmt.Sprintf("(%d) Start seeking the union of the source and target table %s.%s Foreign Name. to dispos it...", logThreadSeq, stcls.schema, stcls.table)
-		global.Wlog.Debug(vlog)
-		for k, _ := range sourceForeign {
-			tmpM[k]++
+
+		sourceCanonicalFKs := schemacompat.CanonicalizeForeignKeyDefinitions(sourceForeign)
+		destCanonicalFKs := schemacompat.CanonicalizeForeignKeyDefinitions(destForeign)
+		sourceByName := make(map[string]schemacompat.CanonicalConstraint)
+		destByName := make(map[string]schemacompat.CanonicalConstraint)
+		unionNames := make(map[string]struct{})
+		for _, fk := range sourceCanonicalFKs {
+			sourceByName[fk.Name] = fk
+			unionNames[fk.Name] = struct{}{}
 		}
-		for k, _ := range destForeign {
-			tmpM[k]++
+		for _, fk := range destCanonicalFKs {
+			destByName[fk.Name] = fk
+			unionNames[fk.Name] = struct{}{}
 		}
+
 		vlog = fmt.Sprintf("(%d) Start to compare whether the Foreign table is consistent.", logThreadSeq)
 		global.Wlog.Debug(vlog)
 		// 初始化为"no"，如果发现任何不一致，则设置为"yes"
 		pods.DIFFS = "no"
+		advisorySuggestions := make([]schemacompat.ConstraintRepairSuggestion, 0)
 
-		for k, _ := range tmpM {
-			if sourceForeign[k] != destForeign[k] {
-				pods.DIFFS = "yes" // 如果有任何不一致，设置为"yes"
-				d = append(d, k)
+		for fkName := range unionNames {
+			sourceFK, sourceExists := sourceByName[fkName]
+			destFK, destExists := destByName[fkName]
+			if !sourceExists || !destExists {
+				pods.DIFFS = "yes"
+				d = append(d, fkName)
+				vlog = fmt.Sprintf("(%d) Foreign key %s existence mismatch on table %s.%s", logThreadSeq, fkName, sourceSchema, sourceTable)
+				global.Wlog.Warn(vlog)
+				continue
+			}
+
+			decision := schemacompat.DecideForeignKeyCompatibility(sourceFK, destFK)
+			if decision.IsMismatch() {
+				pods.DIFFS = "yes"
+				d = append(d, fkName)
+				vlog = fmt.Sprintf("(%d) Foreign key %s definition mismatch on table %s.%s: %s", logThreadSeq, fkName, sourceSchema, sourceTable, decision.Reason)
+				global.Wlog.Warn(vlog)
 			} else {
-				c = append(c, k)
-				// 不要在这里重置DIFFS
+				c = append(c, fkName)
 			}
 		}
-		vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment table %s.%s Foreign. normal table message is {%s} num [%d] abnormal table message is {%s} num [%d]", logThreadSeq, stcls.schema, stcls.table, c, len(c), d, len(d))
+		advisorySuggestions = append(advisorySuggestions, schemacompat.BuildForeignKeyRepairSuggestions(destSchema, destTable, sourceCanonicalFKs, destCanonicalFKs, stcls.tableMappings)...)
+
+		if strings.EqualFold(stcls.destDrive, "mysql") && stcls.destVersionInfo().Series == "8.4" {
+			strictIssues, strictErr := detectStrictForeignKeyIssues(stcls.sourceDB, sourceCanonicalFKs)
+			if strictErr != nil {
+				vlog = fmt.Sprintf("(%d) Failed to validate strict foreign key requirements for table %s.%s: %v", logThreadSeq, sourceSchema, sourceTable, strictErr)
+				global.Wlog.Warn(vlog)
+			} else if len(strictIssues) > 0 {
+				pods.DIFFS = "yes"
+				for _, issue := range strictIssues {
+					d = append(d, issue.Name)
+					vlog = fmt.Sprintf(
+						"(%d) MySQL 8.4 strict foreign key precheck warning for table %s.%s: foreign key %s references %s.%s(%s) without an exact UNIQUE/PRIMARY KEY match",
+						logThreadSeq,
+						sourceSchema,
+						sourceTable,
+						issue.Name,
+						issue.ReferencedSchema,
+						issue.ReferencedTable,
+						strings.Join(issue.ReferencedColumns, ", "),
+					)
+					global.Wlog.Warn(vlog)
+				}
+				advisorySuggestions = append(advisorySuggestions, schemacompat.BuildStrictForeignKeyRepairSuggestions(strictIssues, stcls.tableMappings)...)
+			}
+		}
+
+		if len(advisorySuggestions) > 0 {
+			advisoryLines := buildConstraintAdvisoryLines(fmt.Sprintf("%s.%s FOREIGN KEY constraints", destSchema, destTable), advisorySuggestions)
+			if err := stcls.writeAdvisoryFixSql(advisoryLines, logThreadSeq); err != nil {
+				global.Wlog.Error(fmt.Sprintf("(%d) Failed to write foreign key advisory SQL for %s.%s: %v", logThreadSeq, destSchema, destTable, err))
+				return
+			}
+		}
+
+		vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment table %s.%s Foreign. normal table message is {%s} num [%d] abnormal table message is {%s} num [%d]", logThreadSeq, sourceSchema, sourceTable, c, len(c), d, len(d))
 		global.Wlog.Debug(vlog)
-		vlog = fmt.Sprintf("(%d) The source target segment table %s.%s Foreign data verification is completed", logThreadSeq, stcls.schema, stcls.table)
+		vlog = fmt.Sprintf("(%d) The source target segment table %s.%s Foreign data verification is completed", logThreadSeq, sourceSchema, sourceTable)
 		global.Wlog.Debug(vlog)
 		// 如果是从 Struct 函数调用的，则将结果存储在全局变量中
 		if len(isCalledFromStruct) > 0 && isCalledFromStruct[0] {
 			// 使用完整的schema.table作为键
 			tableKey := fmt.Sprintf("%s.%s", pods.Schema, pods.Table)
 
-			// 将结果存储在全局变量中，以便 Struct 函数可以使用
-			if foreignKeyDiffsMap == nil {
-				foreignKeyDiffsMap = make(map[string]bool)
+			// Keep foreign-key diff state on the schemaTable instance so each run
+			// owns its own lifecycle.
+			if stcls.foreignKeyDiffsMap == nil {
+				stcls.foreignKeyDiffsMap = make(map[string]bool)
 			}
-			foreignKeyDiffsMap[tableKey] = pods.DIFFS == "yes"
+			stcls.foreignKeyDiffsMap[tableKey] = pods.DIFFS == "yes"
 
 			vlog = fmt.Sprintf("(%d) Storing foreign key check result for table %s: %v",
-				logThreadSeq, tableKey, foreignKeyDiffsMap[tableKey])
+				logThreadSeq, tableKey, stcls.foreignKeyDiffsMap[tableKey])
 			global.Wlog.Debug(vlog)
 		} else {
 			// 不是从 Struct 函数调用时，添加到 measuredDataPods
@@ -3721,46 +4933,51 @@ func (stcls *schemaTable) Partitions(dtabS []string, logThreadSeq, logThreadSeq2
 	vlog = fmt.Sprintf("(%d) Start init check source and target DB partition table. to check it...", logThreadSeq)
 	global.Wlog.Info(vlog)
 	for _, i := range dtabS {
-		stcls.schema = strings.Split(i, ".")[0]
-		stcls.table = strings.Split(i, ".")[1]
-		vlog = fmt.Sprintf("(%d) Start processing srcDSN {%s} table %s.%s partitions data. to dispos it...", logThreadSeq, stcls.sourceDrive, stcls.schema, stcls.table)
+		sourceSchema, sourceTable, destSchema, destTable := parseSourceAndDestTablePair(i, stcls.tableMappings)
+		stcls.schema = sourceSchema
+		stcls.table = sourceTable
+		stcls.destTable = destTable
+		vlog = fmt.Sprintf("(%d) Start processing srcDSN {%s} table %s.%s partitions data. to dispos it...", logThreadSeq, stcls.sourceDrive, sourceSchema, sourceTable)
 		global.Wlog.Debug(vlog)
-		tc := dbExec.TableColumnNameStruct{Schema: stcls.schema, Table: stcls.table, Drive: stcls.sourceDrive}
+		tc := dbExec.TableColumnNameStruct{Schema: sourceSchema, Table: sourceTable, Drive: stcls.sourceDrive}
 		if sourcePartitions, err = tc.Query().Partitions(stcls.sourceDB, logThreadSeq2); err != nil {
-			global.Wlog.Errorf("(%d) Failed to get source partitions for table %s.%s: %v", logThreadSeq, stcls.schema, stcls.table, err)
+			global.Wlog.Errorf("(%d) Failed to get source partitions for table %s.%s: %v", logThreadSeq, sourceSchema, sourceTable, err)
 			return
 		}
 
-		vlog = fmt.Sprintf("(%d) srcDSN {%s} table %s.%s partitions count: %d", logThreadSeq, stcls.sourceDrive, stcls.schema, stcls.table, len(sourcePartitions))
+		vlog = fmt.Sprintf("(%d) srcDSN {%s} table %s.%s partitions count: %d", logThreadSeq, stcls.sourceDrive, sourceSchema, sourceTable, len(sourcePartitions))
 		global.Wlog.Debug(vlog)
 
 		tc.Drive = stcls.destDrive
-		vlog = fmt.Sprintf("(%d) Start processing dstDSN {%s} table %s.%s partitions data. to dispos it...", logThreadSeq, stcls.destDrive, stcls.schema, stcls.table)
+		tc.Schema = destSchema
+		tc.Table = destTable
+		vlog = fmt.Sprintf("(%d) Start processing dstDSN {%s} table %s.%s partitions data. to dispos it...", logThreadSeq, stcls.destDrive, destSchema, destTable)
 		global.Wlog.Debug(vlog)
 		if destPartitions, err = tc.Query().Partitions(stcls.destDB, logThreadSeq2); err != nil {
-			global.Wlog.Errorf("(%d) Failed to get dest partitions for table %s.%s: %v", logThreadSeq, stcls.schema, stcls.table, err)
+			global.Wlog.Errorf("(%d) Failed to get dest partitions for table %s.%s: %v", logThreadSeq, destSchema, destTable, err)
 			return
 		}
-		vlog = fmt.Sprintf("(%d) Dest DB %s table %s.%s partitions count: %d", logThreadSeq, stcls.destDrive, stcls.schema, stcls.table, len(destPartitions))
+		vlog = fmt.Sprintf("(%d) Dest DB %s table %s.%s partitions count: %d", logThreadSeq, stcls.destDrive, destSchema, destTable, len(destPartitions))
 		global.Wlog.Debug(vlog)
 
-		pods.Schema = stcls.schema
-		pods.Table = stcls.table
+		pods.Schema = sourceSchema
+		pods.Table = sourceTable
 		if len(sourcePartitions) == 0 && len(destPartitions) == 0 {
-			vlog = fmt.Sprintf("(%d) The current original target data is empty, and the verification of this table %s.%s will be skipped", logThreadSeq, stcls.schema, stcls.table)
+			vlog = fmt.Sprintf("(%d) The current original target data is empty, and the verification of this table %s.%s will be skipped", logThreadSeq, sourceSchema, sourceTable)
 			global.Wlog.Debug(vlog)
 			continue
 		}
 
-		// 获取表的完整分区定义键
-		tableKey := fmt.Sprintf("%s.%s", stcls.schema, stcls.table)
+		// Mapped-table verification needs source and target keys separately.
+		sourceTableKey := fmt.Sprintf("%s.%s", sourceSchema, sourceTable)
+		destTableKey := fmt.Sprintf("%s.%s", destSchema, destTable)
 
 		// 1. 检查表级别的分区定义是否一致
 		pods.DIFFS = "no"
 
 		// 先比较完整的分区定义（包含分区类型、列和所有分区）
-		sourceFullDef, sourceHasDef := sourcePartitions[tableKey]
-		destFullDef, destHasDef := destPartitions[tableKey]
+		sourceFullDef, sourceHasDef := sourcePartitions[sourceTableKey]
+		destFullDef, destHasDef := destPartitions[destTableKey]
 
 		// 记录具体的分区名称用于详细比较
 		sourcePartitionNames := make([]string, 0)
@@ -3768,7 +4985,7 @@ func (stcls *schemaTable) Partitions(dtabS []string, logThreadSeq, logThreadSeq2
 
 		// 提取源端和目标端的分区名称
 		for k := range sourcePartitions {
-			if strings.HasPrefix(k, tableKey+".") {
+			if strings.HasPrefix(k, sourceTableKey+".") {
 				// 提取分区名称部分 (schema.table.partition -> partition)
 				parts := strings.Split(k, ".")
 				if len(parts) == 3 {
@@ -3778,7 +4995,7 @@ func (stcls *schemaTable) Partitions(dtabS []string, logThreadSeq, logThreadSeq2
 		}
 
 		for k := range destPartitions {
-			if strings.HasPrefix(k, tableKey+".") {
+			if strings.HasPrefix(k, destTableKey+".") {
 				parts := strings.Split(k, ".")
 				if len(parts) == 3 {
 					destPartitionNames = append(destPartitionNames, parts[2])
@@ -3786,29 +5003,67 @@ func (stcls *schemaTable) Partitions(dtabS []string, logThreadSeq, logThreadSeq2
 			}
 		}
 
-		vlog = fmt.Sprintf("(%d) Table %s.%s source partitions: %v, dest partitions: %v", logThreadSeq, stcls.schema, stcls.table, sourcePartitionNames, destPartitionNames)
+		vlog = fmt.Sprintf("(%d) Table %s.%s source partitions: %v, dest partitions: %v", logThreadSeq, sourceSchema, sourceTable, sourcePartitionNames, destPartitionNames)
 		global.Wlog.Debug(vlog)
 
-		// 直接比较完整的分区定义
-		if sourceFullDef != destFullDef {
+		sourceFullDefNormalized := normalizePartitionFullDefinition(sourceFullDef)
+		destFullDefNormalized := normalizePartitionFullDefinition(destFullDef)
+
+		// 直接比较完整的分区定义，但先做标识符和空白归一化，避免
+		// `customer_id` 与 customer_id 这类纯文本噪音被误判成结构差异。
+		if sourceFullDefNormalized != destFullDefNormalized {
 			pods.DIFFS = "yes"
-			vlog = fmt.Sprintf("(%d) Table %s.%s partition definitions mismatch", logThreadSeq, stcls.schema, stcls.table)
+			vlog = fmt.Sprintf("(%d) Table %s.%s partition definitions mismatch", logThreadSeq, sourceSchema, sourceTable)
 			global.Wlog.Warn(vlog)
 			d = append(d, "Partition definitions mismatch")
 
-			// 只生成人工检查提示，不生成具体SQL
-			// 清理表名，移除可能存在的映射后缀
-			cleanTable := stcls.table
-			if strings.Contains(cleanTable, ":") {
-				parts := strings.Split(cleanTable, ":")
-				cleanTable = parts[0]
+			// Only handle low-risk tail partition drift automatically.
+			execRepairSQLs, advisoryRepairSQLs, handled, reason := buildPartitionRepairSQLs(
+				sourceSchema,
+				sourceTable,
+				destSchema,
+				destTable,
+				sourcePartitions,
+				destPartitions,
+			)
+			if handled {
+				if len(execRepairSQLs) > 0 {
+					vlog = fmt.Sprintf("(%d) Generated executable partition repair SQLs for table %s.%s: %v", logThreadSeq, sourceSchema, sourceTable, execRepairSQLs)
+					global.Wlog.Warn(vlog)
+					if err = stcls.writeFixSql(execRepairSQLs, logThreadSeq); err != nil {
+						global.Wlog.Errorf("(%d) Failed to write executable partition repair SQLs for table %s.%s: %v", logThreadSeq, sourceSchema, sourceTable, err)
+						return
+					}
+				}
+				if len(advisoryRepairSQLs) > 0 {
+					vlog = fmt.Sprintf("(%d) Generated advisory partition repair SQLs for table %s.%s: %v", logThreadSeq, sourceSchema, sourceTable, advisoryRepairSQLs)
+					global.Wlog.Warn(vlog)
+					if err = stcls.writeFixSql(advisoryRepairSQLs, logThreadSeq); err != nil {
+						global.Wlog.Errorf("(%d) Failed to write advisory partition repair SQLs for table %s.%s: %v", logThreadSeq, sourceSchema, sourceTable, err)
+						return
+					}
+				}
+				vlog = fmt.Sprintf("(%d) Partition mismatch for table %s.%s was classified as a supported repair shape: %s", logThreadSeq, sourceSchema, sourceTable, reason)
+				global.Wlog.Warn(vlog)
+			} else {
+				// Fall back to a generic note when the partition mismatch cannot be repaired safely.
+				cleanTable := sourceTable
+				if strings.Contains(cleanTable, ":") {
+					parts := strings.Split(cleanTable, ":")
+					cleanTable = parts[0]
+				}
+				fixSQLHint := fmt.Sprintf("-- [Note] The partitions for table %s.%s is inconsistent, please check manually", sourceSchema, cleanTable)
+				if err = stcls.writeFixSql([]string{fixSQLHint}, logThreadSeq); err != nil {
+					global.Wlog.Errorf("(%d) Failed to write partition manual-check hint for table %s.%s: %v", logThreadSeq, sourceSchema, sourceTable, err)
+					return
+				}
+				vlog = fmt.Sprintf("(%d) Partition mismatch for table %s.%s remains manual-review only: %s", logThreadSeq, sourceSchema, sourceTable, reason)
+				global.Wlog.Warn(vlog)
 			}
-			fixSQLHint := fmt.Sprintf("-- [Note] The partitions for table %s.%s is inconsistent, please check manually", stcls.schema, cleanTable)
-			// 将提示写入文件
-			_ = stcls.writeFixSql([]string{fixSQLHint}, logThreadSeq)
 		} else {
-			// 分区定义完全一致，不做任何操作
-			vlog = fmt.Sprintf("(%d) Table %s.%s partition definitions are consistent", logThreadSeq, stcls.schema, stcls.table)
+			// Partition definitions can differ textually across versions or SHOW CREATE
+			// variants, so treat normalized-equal definitions as consistent.
+			vlog = fmt.Sprintf("(%d) Table %s.%s partition definitions are consistent after normalization", logThreadSeq, sourceSchema, sourceTable)
 			global.Wlog.Debug(vlog)
 			c = append(c, "All partitions consistent")
 			continue // 跳过后续的分区比较，因为定义已经完全一致
@@ -3817,33 +5072,34 @@ func (stcls *schemaTable) Partitions(dtabS []string, logThreadSeq, logThreadSeq2
 
 		// 记录分区定义的比较结果
 		if sourceHasDef && destHasDef {
-			vlog = fmt.Sprintf("(%d) Table %s.%s full partition definitions compared: source='%s', dest='%s'", logThreadSeq, stcls.schema, stcls.table, sourceFullDef, destFullDef)
+			vlog = fmt.Sprintf("(%d) Table %s.%s full partition definitions compared: source='%s', dest='%s'", logThreadSeq, sourceSchema, sourceTable, sourceFullDef, destFullDef)
 			global.Wlog.Debug(vlog)
 		}
 
-		vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment table %s.%s partitions. normal partitions: %v, abnormal partitions: %v", logThreadSeq, stcls.schema, stcls.table, c, d)
+		vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment table %s.%s partitions. normal partitions: %v, abnormal partitions: %v", logThreadSeq, sourceSchema, sourceTable, c, d)
 		global.Wlog.Debug(vlog)
 
 		// 如果是从 Struct 函数调用的，则将结果存储在全局变量中
 		if len(isCalledFromStruct) > 0 && isCalledFromStruct[0] {
 			// 使用完整的schema.table作为键
 
-			// 将结果存储在全局变量中，以便 Struct 函数可以使用
-			if partitionDiffsMap == nil {
-				partitionDiffsMap = make(map[string]bool)
+			// Keep partition diff state on the schemaTable instance so repeated
+			// checks do not reuse package-level mutable state.
+			if stcls.partitionDiffsMap == nil {
+				stcls.partitionDiffsMap = make(map[string]bool)
 			}
 
 			// 确保使用干净的表名格式（不含映射后缀）
-			cleanTableKey := tableKey
-			if strings.Contains(tableKey, ":") {
-				parts := strings.Split(tableKey, ":")
+			cleanTableKey := sourceTableKey
+			if strings.Contains(sourceTableKey, ":") {
+				parts := strings.Split(sourceTableKey, ":")
 				cleanTableKey = parts[0]
 			}
 
-			partitionDiffsMap[cleanTableKey] = pods.DIFFS == "yes"
+			stcls.partitionDiffsMap[cleanTableKey] = pods.DIFFS == "yes"
 
 			vlog = fmt.Sprintf("(%d) Storing partition check result for table %s (cleaned to %s): %v",
-				logThreadSeq, tableKey, cleanTableKey, partitionDiffsMap[cleanTableKey])
+				logThreadSeq, sourceTableKey, cleanTableKey, stcls.partitionDiffsMap[cleanTableKey])
 			global.Wlog.Debug(vlog)
 		} else {
 			// 不是从 Struct 函数调用时，添加到 measuredDataPods
@@ -3899,7 +5155,14 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 			return result
 		}
 
-		indexGenerate = func(smu, dmu map[string][]string, a *CheckSumTypeStruct, indexType string, indexVisibilityMap map[string]string) []string {
+		constraintNameKey = func(name string) string {
+			if stcls.caseSensitiveObjectName == "no" {
+				return strings.ToUpper(name)
+			}
+			return name
+		}
+
+		indexGenerate = func(smu, dmu map[string][]string, a *CheckSumTypeStruct, indexType string, sourceVisibilityMap, destVisibilityMap map[string]string) []string {
 			var cc, c, d []string
 
 			// 根据映射规则确定目标端schema
@@ -3917,7 +5180,36 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 				DatafixType:             stcls.datafix,
 				SourceSchema:            stcls.schema,                  // 添加源端schema
 				CaseSensitiveObjectName: stcls.caseSensitiveObjectName, // 传递是否区分对象名大小写
-				IndexVisibilityMap:      indexVisibilityMap,            // 传递索引可见性信息
+				IndexVisibilityMap:      sourceVisibilityMap,           // 传递索引可见性信息
+			}
+
+			sourceCanonicalIndexes := schemacompat.CanonicalizeMySQLIndexes(smu, sourceVisibilityMap)
+			destCanonicalIndexes := schemacompat.CanonicalizeMySQLIndexes(dmu, destVisibilityMap)
+			sourceCanonicalByName := make(map[string]schemacompat.CanonicalIndex)
+			destCanonicalByName := make(map[string]schemacompat.CanonicalIndex)
+			sourceCanonicalConstraints := make(map[string]schemacompat.CanonicalConstraint)
+			destCanonicalConstraints := make(map[string]schemacompat.CanonicalConstraint)
+			for _, idx := range sourceCanonicalIndexes {
+				sourceCanonicalByName[constraintNameKey(idx.Name)] = idx
+			}
+			for _, idx := range destCanonicalIndexes {
+				destCanonicalByName[constraintNameKey(idx.Name)] = idx
+			}
+			switch indexType {
+			case "pri":
+				for _, constraint := range schemacompat.CanonicalizePrimaryKeyConstraints(sourceCanonicalIndexes) {
+					sourceCanonicalConstraints[constraintNameKey(constraint.Name)] = constraint
+				}
+				for _, constraint := range schemacompat.CanonicalizePrimaryKeyConstraints(destCanonicalIndexes) {
+					destCanonicalConstraints[constraintNameKey(constraint.Name)] = constraint
+				}
+			case "uni":
+				for _, constraint := range schemacompat.CanonicalizeUniqueConstraints(sourceCanonicalIndexes) {
+					sourceCanonicalConstraints[constraintNameKey(constraint.Name)] = constraint
+				}
+				for _, constraint := range schemacompat.CanonicalizeUniqueConstraints(destCanonicalIndexes) {
+					destCanonicalConstraints[constraintNameKey(constraint.Name)] = constraint
+				}
 			}
 
 			// 首先比较索引名称
@@ -3927,6 +5219,8 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 			for k := range dmu {
 				d = append(d, k)
 			}
+			sort.Strings(c)
+			sort.Strings(d)
 
 			// 如果索引名称不同，生成修复SQL
 			if a.CheckMd5(strings.Join(c, ",")) != a.CheckMd5(strings.Join(d, ",")) {
@@ -3966,35 +5260,48 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 				// 即使索引名称相同，也要比较索引的具体内容
 				for k, sColumns := range smu {
 					if dColumns, exists := dmu[k]; exists {
-						// 比较同名索引的列及其顺序
-						// 如果设置了大小写不敏感，则在比较前将列名转换为大写
-						sColumnsForCompare := sColumns
-						dColumnsForCompare := dColumns
-
-						// 当caseSensitiveObjectName=no时，需要特殊处理列名大小写
-						if stcls.caseSensitiveObjectName == "no" {
-							// 提取并转换源端列名
-							sSortedColumns := sortColumns(sColumns)
-							dSortedColumns := sortColumns(dColumns)
-
-							// 如果列名只是大小写不同，则认为它们是相同的
-							if len(sSortedColumns) == len(dSortedColumns) {
-								allMatch := true
-								for i := 0; i < len(sSortedColumns); i++ {
-									if strings.ToUpper(sSortedColumns[i]) != strings.ToUpper(dSortedColumns[i]) {
-										allMatch = false
-										break
-									}
-								}
-								if allMatch {
-									// 列名只是大小写不同，跳过修改
-									continue
+						semanticMismatch := false
+						canonicalKey := constraintNameKey(k)
+						indexSemanticMatch := false
+						constraintSemanticMatch := indexType == "mul"
+						if sourceIdx, ok := sourceCanonicalByName[canonicalKey]; ok {
+							if destIdx, ok := destCanonicalByName[canonicalKey]; ok {
+								indexDecision := schemacompat.DecideIndexCompatibility(sourceIdx, destIdx)
+								if indexDecision.IsMismatch() {
+									semanticMismatch = true
+									vlog = fmt.Sprintf("(%d) %s Index %s semantic mismatch: reason=%s", logThreadSeq, event, k, indexDecision.Reason)
+									global.Wlog.Warn(vlog)
+								} else {
+									indexSemanticMatch = true
 								}
 							}
 						}
+						if indexType == "pri" || indexType == "uni" {
+							if sourceConstraint, ok := sourceCanonicalConstraints[canonicalKey]; ok {
+								if destConstraint, ok := destCanonicalConstraints[canonicalKey]; ok {
+									constraintDecision := schemacompat.DecideKeyConstraintCompatibility(sourceConstraint, destConstraint)
+									if constraintDecision.IsMismatch() {
+										semanticMismatch = true
+										vlog = fmt.Sprintf("(%d) %s %s constraint %s semantic mismatch: reason=%s", logThreadSeq, event, strings.ToUpper(indexType), k, constraintDecision.Reason)
+										global.Wlog.Warn(vlog)
+									} else {
+										constraintSemanticMatch = true
+									}
+								}
+							}
+						}
+						if indexSemanticMatch && constraintSemanticMatch && !semanticMismatch {
+							continue
+						}
+
+						sSortedColumns := sortColumns(sColumns)
+						dSortedColumns := sortColumns(dColumns)
+						if !semanticMismatch && indexColumnsOnlyDifferInCase(sSortedColumns, dSortedColumns) {
+							continue
+						}
 
 						// 比较同名索引的列及其顺序（包含序号信息的比较）
-						if a.CheckMd5(strings.Join(sColumnsForCompare, ",")) != a.CheckMd5(strings.Join(dColumnsForCompare, ",")) {
+						if semanticMismatch || a.CheckMd5(strings.Join(sColumns, ",")) != a.CheckMd5(strings.Join(dColumns, ",")) {
 							// 检查是否仅仅是列名大小写不同（当caseSensitiveObjectName=yes时）
 							columnsOnlyCaseDifferent := false
 							if stcls.caseSensitiveObjectName == "yes" && len(sColumns) == len(dColumns) {
@@ -4012,7 +5319,7 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 							}
 
 							// 如果只是列名大小写不同且是主键，跳过重建主键
-							if columnsOnlyCaseDifferent && indexType == "pri" {
+							if columnsOnlyCaseDifferent && indexType == "pri" && !semanticMismatch {
 								continue
 							}
 
@@ -4024,7 +5331,7 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 							}
 
 							// 2. 获取排序后的纯列名
-							sortedColumns := sortColumns(sColumns)
+							sortedColumns := sSortedColumns
 
 							// 检查是否是主键且该列是自增列
 							isAutoIncrementPrimaryKey := false
@@ -4055,8 +5362,8 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 
 							// 获取索引可见性信息
 							visibility := ""
-							if indexType == "mul" && indexVisibilityMap != nil {
-								if vis, ok := indexVisibilityMap[k]; ok && strings.ToUpper(vis) == "INVISIBLE" {
+							if indexType == "mul" && sourceVisibilityMap != nil {
+								if vis, ok := sourceVisibilityMap[k]; ok && isInvisibleLikeIndexVisibility(vis) {
 									visibility = " INVISIBLE"
 								}
 							}
@@ -4088,55 +5395,17 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 	vlog = fmt.Sprintf("(%d) %s start init check source and target DB index Column. to check it...", logThreadSeq, event)
 	global.Wlog.Info(vlog)
 	for _, i := range dtabS {
-		// 从表列表中提取源端schema和表名
-		sourceSchema := ""
-		tableName := ""
+		sourceSchema, tableName, destSchema, destTable := parseSourceAndDestTablePair(i, stcls.tableMappings)
 		// 在正确的作用域内声明索引相关变量
 		var spri, suni, smul, dpri, duni, dmul map[string][]string
-		var sourceIndexVisibilityMap map[string]string
-
-		// 检查是否是映射格式 (db1.t1:db2.t1)
-		if strings.Contains(i, ":") {
-			// 处理映射格式
-			parts := strings.Split(i, ":")
-			if len(parts) == 2 {
-				// 处理源端
-				if strings.Contains(parts[0], ".") {
-					sourceParts := strings.Split(parts[0], ".")
-					if len(sourceParts) == 2 {
-						sourceSchema = sourceParts[0]
-						tableName = sourceParts[1]
-					}
-				}
-
-				// 处理目标端，提取schema存入映射表
-				if strings.Contains(parts[1], ".") {
-					destParts := strings.Split(parts[1], ".")
-					if len(destParts) >= 1 {
-						stcls.tableMappings[sourceSchema] = destParts[0]
-					}
-				}
-			}
-		} else if strings.Contains(i, ".") {
-			// 处理普通格式 (schema.table)
-			parts := strings.Split(i, ".")
-			if len(parts) == 2 {
-				sourceSchema = parts[0]
-				tableName = parts[1]
-			}
-		}
+		var sourceIndexVisibilityMap, destIndexVisibilityMap map[string]string
 
 		stcls.table = tableName
-		stcls.schema = sourceSchema // 设置stcls.schema为sourceSchema
-
-		// 根据映射规则确定目标端schema
-		destSchema := sourceSchema
-		if mappedSchema, exists := stcls.tableMappings[sourceSchema]; exists {
-			destSchema = mappedSchema
-		}
+		stcls.schema = sourceSchema
+		stcls.destTable = destTable
 
 		// 检查表是否在skipIndexCheckTables列表中，如果是，则跳过
-		tableKey := fmt.Sprintf("%s.%s", destSchema, tableName)
+		tableKey := fmt.Sprintf("%s.%s", destSchema, destTable)
 		isDropped := false
 		for _, droppedTable := range stcls.skipIndexCheckTables {
 			if strings.EqualFold(droppedTable, tableKey) {
@@ -4160,6 +5429,9 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 			return err
 		}
 		spri, suni, smul, sourceIndexVisibilityMap = idxc.TableIndexColumn().IndexDisposF(squeryData, logThreadSeq2)
+		if sourceCreateSQL, err := queryMySQLCreateTableStatement(stcls.sourceDB, sourceSchema, stcls.table); err == nil {
+			sourceIndexVisibilityMap = mergeIndexVisibilityHints(sourceIndexVisibilityMap, schemacompat.ExtractIndexVisibilityHintsFromCreateSQL(sourceCreateSQL))
+		}
 		vlog = fmt.Sprintf("(%d) %s The index column data of the source %s database table %s.%s is {primary:%v,unique key:%v,index key:%v}",
 			logThreadSeq,
 			event,
@@ -4172,8 +5444,9 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 		global.Wlog.Debug(vlog)
 
 		idxc.Schema = destSchema
+		idxc.Table = destTable
 		idxc.Drivce = stcls.destDrive
-		vlog = fmt.Sprintf("(%d) %s Start processing dstDSN {%s} table %s.%s index column data. to dispos it...", logThreadSeq, event, stcls.destDrive, destSchema, stcls.table)
+		vlog = fmt.Sprintf("(%d) %s Start processing dstDSN {%s} table %s.%s index column data. to dispos it...", logThreadSeq, event, stcls.destDrive, destSchema, destTable)
 		global.Wlog.Debug(vlog)
 		dqueryData, err := idxc.TableIndexColumn().QueryTableIndexColumnInfo(stcls.destDB, logThreadSeq2)
 		if err != nil {
@@ -4181,13 +5454,16 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 			global.Wlog.Error(vlog)
 			return err
 		}
-		dpri, duni, dmul, _ = idxc.TableIndexColumn().IndexDisposF(dqueryData, logThreadSeq2)
+		dpri, duni, dmul, destIndexVisibilityMap = idxc.TableIndexColumn().IndexDisposF(dqueryData, logThreadSeq2)
+		if destCreateSQL, err := queryMySQLCreateTableStatement(stcls.destDB, destSchema, stcls.destTable); err == nil {
+			destIndexVisibilityMap = mergeIndexVisibilityHints(destIndexVisibilityMap, schemacompat.ExtractIndexVisibilityHintsFromCreateSQL(destCreateSQL))
+		}
 		vlog = fmt.Sprintf("(%d) %s The index column data of the dest %s database table %s.%s is {primary:%v,unique key:%v,index key:%v}",
 			logThreadSeq,
 			event,
 			stcls.destDrive,
 			destSchema,
-			stcls.table,
+			destTable,
 			dpri,
 			duni,
 			dmul)
@@ -4208,77 +5484,58 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 		//先比较主键索引
 		vlog = fmt.Sprintf("(%d) %s Start to compare whether the primary key index is consistent.", logThreadSeq, event)
 		global.Wlog.Debug(vlog)
-		sqlS = append(sqlS, indexGenerate(spri, dpri, aa, "pri", sourceIndexVisibilityMap)...)
+		sqlS = append(sqlS, indexGenerate(spri, dpri, aa, "pri", sourceIndexVisibilityMap, destIndexVisibilityMap)...)
 		vlog = fmt.Sprintf("(%d) %s Compare whether the primary key index is consistent and verified.", logThreadSeq, event)
 		global.Wlog.Debug(vlog)
 		//再比较唯一索引
 		vlog = fmt.Sprintf("(%d) %s Start to compare whether the unique key index is consistent.", logThreadSeq, event)
 		global.Wlog.Debug(vlog)
-		sqlS = append(sqlS, indexGenerate(suni, duni, aa, "uni", sourceIndexVisibilityMap)...)
+		sqlS = append(sqlS, indexGenerate(suni, duni, aa, "uni", sourceIndexVisibilityMap, destIndexVisibilityMap)...)
 		vlog = fmt.Sprintf("(%d) %s Compare whether the unique key index is consistent and verified.", logThreadSeq, event)
 		global.Wlog.Info(vlog)
 		//后比较普通索引
 		vlog = fmt.Sprintf("(%d) %s Start to compare whether the no-unique key index is consistent.", logThreadSeq, event)
 		global.Wlog.Debug(vlog)
-		sqlS = append(sqlS, indexGenerate(smul, dmul, aa, "mul", sourceIndexVisibilityMap)...)
+		sqlS = append(sqlS, indexGenerate(smul, dmul, aa, "mul", sourceIndexVisibilityMap, destIndexVisibilityMap)...)
 		vlog = fmt.Sprintf("(%d) %s Compare whether the no-unique key index is consistent and verified.", logThreadSeq, event)
 		global.Wlog.Debug(vlog)
 		// 应用并清空 sqlS
+		columnRepairKey := fmt.Sprintf("%s.%s", stcls.schema, stcls.table)
+		pendingColumnOperations := stcls.pendingColumnRepairOperations(columnRepairKey)
 		if len(sqlS) > 0 {
 			pods.DIFFS = "yes"
 
 			// 检查是否有列修复操作需要合并
-			tableKey := fmt.Sprintf("%s.%s", stcls.schema, stcls.table)
-			if stcls.columnRepairMap != nil {
-				if columnOperations, exists := stcls.columnRepairMap[tableKey]; exists && len(columnOperations) > 0 {
-					// 创建DataAbnormalFixStruct用于合并操作
-					destSchema := stcls.schema
-					if mappedSchema, exists := stcls.tableMappings[stcls.schema]; exists {
-						destSchema = mappedSchema
-					}
-
-					dbf := dbExec.DataAbnormalFixStruct{
-						Schema:                  destSchema,
-						Table:                   stcls.table,
-						SourceDevice:            stcls.sourceDrive,
-						DestDevice:              stcls.destDrive,
-						DatafixType:             stcls.datafix,
-						CaseSensitiveObjectName: stcls.caseSensitiveObjectName,
-						SourceSchema:            stcls.schema,
-					}
-
-					// 合并列修复和索引修复操作
-					combinedSql := dbf.DataAbnormalFix().FixAlterColumnAndIndexSqlGenerate(columnOperations, sqlS, logThreadSeq)
-
-					// 使用合并后的SQL
-					sqlS = combinedSql
-
-					// 从columnRepairMap中删除已处理的表
-					delete(stcls.columnRepairMap, tableKey)
-
-					vlog = fmt.Sprintf("(%d) %s Merged column and index operations for table %s.%s",
-						logThreadSeq, event, stcls.schema, stcls.table)
-					global.Wlog.Debug(vlog)
-				} else {
-					// 只有索引操作，合并索引操作
-					destSchema := stcls.schema
-					if mappedSchema, exists := stcls.tableMappings[stcls.schema]; exists {
-						destSchema = mappedSchema
-					}
-
-					dbf := dbExec.DataAbnormalFixStruct{
-						Schema:                  destSchema,
-						Table:                   stcls.table,
-						SourceDevice:            stcls.sourceDrive,
-						DestDevice:              stcls.destDrive,
-						DatafixType:             stcls.datafix,
-						SourceSchema:            stcls.schema,
-						CaseSensitiveObjectName: stcls.caseSensitiveObjectName,
-					}
-
-					combinedSql := dbf.DataAbnormalFix().FixAlterIndexSqlGenerate(sqlS, logThreadSeq)
-					sqlS = combinedSql
+			if len(pendingColumnOperations) > 0 {
+				// 创建DataAbnormalFixStruct用于合并操作
+				destSchema := stcls.schema
+				if mappedSchema, exists := stcls.tableMappings[stcls.schema]; exists {
+					destSchema = mappedSchema
 				}
+
+				dbf := dbExec.DataAbnormalFixStruct{
+					Schema:                  destSchema,
+					Table:                   stcls.table,
+					SourceDevice:            stcls.sourceDrive,
+					DestDevice:              stcls.destDrive,
+					DatafixType:             stcls.datafix,
+					CaseSensitiveObjectName: stcls.caseSensitiveObjectName,
+					SourceSchema:            stcls.schema,
+				}
+
+				// 合并列修复和索引修复操作
+				combinedSql := dbf.DataAbnormalFix().FixAlterColumnAndIndexSqlGenerate(pendingColumnOperations, sqlS, logThreadSeq)
+
+				// 使用合并后的SQL
+				sqlS = combinedSql
+
+				// Column repair operations have been merged into the final
+				// ALTER TABLE statement and can now be discarded.
+				stcls.forgetColumnRepairOperations(columnRepairKey)
+
+				vlog = fmt.Sprintf("(%d) %s Merged column and index operations for table %s.%s",
+					logThreadSeq, event, stcls.schema, stcls.table)
+				global.Wlog.Debug(vlog)
 			} else {
 				// 只有索引操作，合并索引操作
 				destSchema := stcls.schema
@@ -4309,6 +5566,17 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 			vlog = fmt.Sprintf("(%d) %s Table %s.%s has index differences, setting DIFFS to yes",
 				logThreadSeq, event, stcls.schema, stcls.table)
 			global.Wlog.Debug(vlog)
+		} else if len(pendingColumnOperations) > 0 {
+			// Tables with column-level fixes but no index diffs still need their
+			// deferred ALTER TABLE written once the index phase confirms no merge
+			// is needed.
+			if err := stcls.writeFixSql(pendingColumnOperations, logThreadSeq); err != nil {
+				return err
+			}
+			stcls.forgetColumnRepairOperations(columnRepairKey)
+			vlog = fmt.Sprintf("(%d) %s Flushed deferred column/table repair statements for table %s.%s",
+				logThreadSeq, event, stcls.schema, stcls.table)
+			global.Wlog.Debug(vlog)
 		}
 
 		// 如果是从 Struct 函数调用的，则将结果存储在临时变量中，以便 Struct 函数可以使用
@@ -4316,14 +5584,15 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 			// 使用完整的schema.table作为键
 			tableKey := fmt.Sprintf("%s.%s", stcls.schema, stcls.table)
 
-			// 将结果存储在全局变量中，以便 Struct 函数可以使用
-			if indexDiffsMap == nil {
-				indexDiffsMap = make(map[string]bool)
+			// Keep index diff state on the schemaTable instance so concurrent
+			// schemaTable values do not share mutable global maps.
+			if stcls.indexDiffsMap == nil {
+				stcls.indexDiffsMap = make(map[string]bool)
 			}
-			indexDiffsMap[tableKey] = pods.DIFFS == "yes"
+			stcls.indexDiffsMap[tableKey] = pods.DIFFS == "yes"
 
 			vlog = fmt.Sprintf("(%d) %s Storing index check result for table %s.%s: %v",
-				logThreadSeq, event, stcls.schema, stcls.table, indexDiffsMap[tableKey])
+				logThreadSeq, event, stcls.schema, stcls.table, stcls.indexDiffsMap[tableKey])
 			global.Wlog.Debug(vlog)
 		} else {
 			// 不是从 Struct 函数调用时，添加到 measuredDataPods
@@ -4331,6 +5600,28 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 		}
 		vlog = fmt.Sprintf("(%d) %s The source target segment table %s.%s index column data verification is completed", logThreadSeq, event, stcls.schema, stcls.table)
 		global.Wlog.Info(vlog)
+	}
+	if len(stcls.columnRepairMap) > 0 {
+		// A final sweep prevents deferred column SQL from being dropped if a
+		// table never reached the merge branch above.
+		for tableKey, pendingSQL := range stcls.columnRepairMap {
+			if len(pendingSQL) == 0 {
+				continue
+			}
+			parts := strings.SplitN(tableKey, ".", 2)
+			if len(parts) == 2 {
+				stcls.schema = parts[0]
+				stcls.table = parts[1]
+				stcls.destTable = parts[1]
+			}
+			if err := stcls.writeFixSql(pendingSQL, logThreadSeq); err != nil {
+				return err
+			}
+			vlog = fmt.Sprintf("(%d) %s Flushed remaining deferred repair statements for table %s",
+				logThreadSeq, event, tableKey)
+			global.Wlog.Debug(vlog)
+		}
+		stcls.columnRepairMap = make(map[string][]string)
 	}
 	fmt.Println("gt-checksum: Index verification completed")
 	return nil
@@ -4351,6 +5642,7 @@ func (stcls *schemaTable) Struct(dtabS []string, logThreadSeq, logThreadSeq2 int
 		existingTableKeys = make(map[string]bool)
 	)
 	event = fmt.Sprintf("[check_table_columns]")
+	stcls.structWarnOnlyDiffsMap = make(map[string]bool)
 	fmt.Println("gt-checksum: Checking table structure")
 	vlog = fmt.Sprintf("(%d) %s checking table structure of %v(num[%d]) from srcDSN and dstDSN", logThreadSeq, event, dtabS, len(dtabS))
 	global.Wlog.Info(vlog)
@@ -4434,15 +5726,18 @@ func (stcls *schemaTable) Struct(dtabS []string, logThreadSeq, logThreadSeq2 int
 				CheckObject: "struct",
 				Schema:      sourceSchema,
 				Table:       tableName,
-				DIFFS:       "no",
+				DIFFS:       global.SkipDiffsNo,
 			}
 
 			// 如果表在abnormal列表中，则标记为不一致
 			for _, abnormalTable := range abnormal {
 				if abnormalTable == i {
-					pods.DIFFS = "yes"
+					pods.DIFFS = global.SkipDiffsYes
 					break
 				}
+			}
+			if pods.DIFFS == global.SkipDiffsNo && stcls.structWarnOnlyDiffsMap[tableKey] {
+				pods.DIFFS = global.SkipDiffsWarnOnly
 			}
 
 			// 设置映射信息
@@ -4485,7 +5780,7 @@ func (stcls *schemaTable) Struct(dtabS []string, logThreadSeq, logThreadSeq2 int
 	global.Wlog.Info(vlog)
 
 	// 初始化索引差异映射
-	indexDiffsMap = make(map[string]bool)
+	stcls.indexDiffsMap = make(map[string]bool)
 
 	// 调用Index函数进行索引校验
 	fmt.Println("gt-checksum: Checking table indexes")
@@ -4498,7 +5793,7 @@ func (stcls *schemaTable) Struct(dtabS []string, logThreadSeq, logThreadSeq2 int
 	}
 
 	// 使用indexDiffsMap更新collector.diffs
-	for tableKey, hasDiff := range indexDiffsMap {
+	for tableKey, hasDiff := range stcls.indexDiffsMap {
 		if hasDiff {
 			// 只更新存在于映射中的表
 			if _, exists := collector.diffs[tableKey]; exists {
@@ -4521,19 +5816,19 @@ func (stcls *schemaTable) Struct(dtabS []string, logThreadSeq, logThreadSeq2 int
 	global.Wlog.Info(vlog)
 
 	// 初始化全局分区差异映射
-	partitionDiffsMap = make(map[string]bool)
+	stcls.partitionDiffsMap = make(map[string]bool)
 	vlog = fmt.Sprintf("(%d) %s Starting partitions check for %d tables, will query INFORMATION_SCHEMA.PARTITIONS for each table", logThreadSeq, event, len(dtabS))
 	global.Wlog.Debug(vlog)
 
 	// 调用Partitions函数进行分区检查，会查询INFORMATION_SCHEMA.PARTITIONS表
 	stcls.Partitions(dtabS, logThreadSeq, logThreadSeq2, true)
-	vlog = fmt.Sprintf("(%d) %s Completed partitions check, results: %v", logThreadSeq, event, partitionDiffsMap)
+	vlog = fmt.Sprintf("(%d) %s Completed partitions check, results: %v", logThreadSeq, event, stcls.partitionDiffsMap)
 	global.Wlog.Debug(vlog)
 
 	// 使用全局partitionDiffsMap更新collector.diffs
-	vlog = fmt.Sprintf("(%d) Processing partition diffs map with %d entries: %v", logThreadSeq, len(partitionDiffsMap), partitionDiffsMap)
+	vlog = fmt.Sprintf("(%d) Processing partition diffs map with %d entries: %v", logThreadSeq, len(stcls.partitionDiffsMap), stcls.partitionDiffsMap)
 	global.Wlog.Debug(vlog)
-	for tableKey, hasDiff := range partitionDiffsMap {
+	for tableKey, hasDiff := range stcls.partitionDiffsMap {
 		vlog = fmt.Sprintf("(%d) Checking partition diff for table %s: %v", logThreadSeq, tableKey, hasDiff)
 		global.Wlog.Debug(vlog)
 		if hasDiff {
@@ -4570,13 +5865,13 @@ func (stcls *schemaTable) Struct(dtabS []string, logThreadSeq, logThreadSeq2 int
 	global.Wlog.Info(vlog)
 
 	// 初始化全局外键差异映射
-	foreignKeyDiffsMap = make(map[string]bool)
+	stcls.foreignKeyDiffsMap = make(map[string]bool)
 
 	// 修改Foreign函数，使其能够存储检查结果
 	stcls.Foreign(dtabS, logThreadSeq, logThreadSeq2, true)
 
 	// 使用全局foreignKeyDiffsMap更新collector.diffs
-	for tableKey, hasDiff := range foreignKeyDiffsMap {
+	for tableKey, hasDiff := range stcls.foreignKeyDiffsMap {
 		if hasDiff {
 			// 只更新存在于映射中的表
 			if _, exists := collector.diffs[tableKey]; exists {
@@ -4600,15 +5895,21 @@ func (stcls *schemaTable) Struct(dtabS []string, logThreadSeq, logThreadSeq2 int
 
 			// 检查这个特定的表是否在差异映射中
 			isDifferent, exists := collector.diffs[tableKey]
+			hasWarnOnly := stcls.structWarnOnlyDiffsMap[tableKey]
 
-			vlog = fmt.Sprintf("(%d) Checking table %s.%s, current DIFFS=%s, in diff map: %v, exists: %v",
-				logThreadSeq, pod.Schema, pod.Table, pod.DIFFS, isDifferent, exists)
+			vlog = fmt.Sprintf("(%d) Checking table %s.%s, current DIFFS=%s, in diff map: %v, exists: %v, warnOnly: %v",
+				logThreadSeq, pod.Schema, pod.Table, pod.DIFFS, isDifferent, exists, hasWarnOnly)
 			global.Wlog.Debug(vlog)
 
-			// 只有当表存在于差异映射中且被标记为不一致时，才更新DIFFS状态
+			// 先应用硬差异，再应用纯风险告警
 			if exists && isDifferent {
-				measuredDataPods[i].DIFFS = "yes"
+				measuredDataPods[i].DIFFS = mergeStructDiffState(measuredDataPods[i].DIFFS, global.SkipDiffsYes)
 				vlog = fmt.Sprintf("(%d) Table %s.%s has structure differences, setting DIFFS to yes",
+					logThreadSeq, pod.Schema, pod.Table)
+				global.Wlog.Debug(vlog)
+			} else if hasWarnOnly {
+				measuredDataPods[i].DIFFS = mergeStructDiffState(measuredDataPods[i].DIFFS, global.SkipDiffsWarnOnly)
+				vlog = fmt.Sprintf("(%d) Table %s.%s only has warn-only structure risks, setting DIFFS to warn-only",
 					logThreadSeq, pod.Schema, pod.Table)
 				global.Wlog.Debug(vlog)
 			}
@@ -4675,20 +5976,31 @@ func SchemaTableInit(m *inputArg.ConfigParameter) *schemaTable {
 		}
 	}
 
-	// 初始化全局映射变量
-	indexDiffsMap = make(map[string]bool)
-	partitionDiffsMap = make(map[string]bool)
-	foreignKeyDiffsMap = make(map[string]bool)
-
 	// 添加调试日志
 	vlog := fmt.Sprintf("Initialized table mappings: %v", tableMappings)
 	global.Wlog.Debug(vlog)
+
+	sourceVersion := global.SourceMySQLVersion
+	if detectedVersion, err := queryVersionInfoFromDB(sdb); err == nil {
+		sourceVersion = detectedVersion
+	} else if strings.TrimSpace(sourceVersion.Raw) == "" {
+		global.Wlog.Warn(fmt.Sprintf("SchemaTableInit failed to detect source database version from live connection: %v", err))
+	}
+
+	destVersion := global.DestMySQLVersion
+	if detectedVersion, err := queryVersionInfoFromDB(ddb); err == nil {
+		destVersion = detectedVersion
+	} else if strings.TrimSpace(destVersion.Raw) == "" {
+		global.Wlog.Warn(fmt.Sprintf("SchemaTableInit failed to detect target database version from live connection: %v", err))
+	}
 
 	return &schemaTable{
 		ignoreTable:             m.SecondaryL.SchemaV.IgnoreTables,
 		table:                   m.SecondaryL.SchemaV.Tables,
 		sourceDrive:             m.SecondaryL.DsnsV.SrcDrive,
 		destDrive:               m.SecondaryL.DsnsV.DestDrive,
+		sourceVersion:           sourceVersion,
+		destVersion:             destVersion,
 		sourceDB:                sdb,
 		destDB:                  ddb,
 		caseSensitiveObjectName: m.SecondaryL.SchemaV.CaseSensitiveObjectName,
@@ -4699,6 +6011,11 @@ func SchemaTableInit(m *inputArg.ConfigParameter) *schemaTable {
 		djdbc:                   m.SecondaryL.DsnsV.DestJdbc,
 		checkRules:              m.SecondaryL.RulesV,
 		tableMappings:           tableMappings,
+		columnRepairMap:         make(map[string][]string),
+		indexDiffsMap:           make(map[string]bool),
+		partitionDiffsMap:       make(map[string]bool),
+		foreignKeyDiffsMap:      make(map[string]bool),
+		structWarnOnlyDiffsMap:  make(map[string]bool),
 	}
 }
 
@@ -4775,7 +6092,17 @@ func (stcls *schemaTable) GetDestDB() *sql.DB {
 }
 
 // generateCreateTableSql 生成创建表的SQL语句，包括表级别的字符集和排序规则
-func generateCreateTableSql(sourceDB *sql.DB, sourceSchema string, destSchema string, tableName string, logThreadSeq int64) (string, error) {
+// rewriteCreateTableTargetIdentifier rewrites the leading CREATE TABLE target
+// only, so mapped-table repairs do not accidentally keep the source table name.
+func rewriteCreateTableTargetIdentifier(createTableStmt, destSchema, destTable string) string {
+	matches := createTableTargetIdentifierPattern.FindStringSubmatch(createTableStmt)
+	if len(matches) == 0 {
+		return createTableStmt
+	}
+	return createTableTargetIdentifierPattern.ReplaceAllString(createTableStmt, fmt.Sprintf("${1}`%s`.`%s`", destSchema, destTable))
+}
+
+func generateCreateTableSql(sourceDB *sql.DB, sourceSchema string, destSchema string, tableName string, destTable string, sourceVersion, destVersion global.MySQLVersionInfo, mariaDBJSONTargetType string, logThreadSeq int64) (string, error) {
 	var (
 		vlog  string
 		event = "generateCreateTableSql"
@@ -4803,34 +6130,7 @@ func generateCreateTableSql(sourceDB *sql.DB, sourceSchema string, destSchema st
 		}
 	}
 
-	// 替换schema名称
-	createTableStmt = strings.ReplaceAll(createTableStmt, fmt.Sprintf("`%s`", sourceSchema), fmt.Sprintf("`%s`", destSchema))
-
-	// 检查替换后的CREATE TABLE语句是否包含目标schema名
-	// 如果不包含，说明原始语句没有schema名，需要手动添加
-	if !strings.Contains(createTableStmt, fmt.Sprintf("`%s`", destSchema)) {
-		// 使用正则表达式找到CREATE TABLE后面的表名，并在前面添加schema名
-		// 匹配模式：CREATE TABLE (IF NOT EXISTS)? `table_name`
-		// 注意：这里不匹配反引号，只匹配表名内容
-		re := regexp.MustCompile(`(?i)CREATE\s+TABLE\s+(IF\s+NOT\s+EXISTS\s+)?` + "`([^`]+)`")
-		matches := re.FindStringSubmatchIndex(createTableStmt)
-		if len(matches) > 0 {
-			// 找到匹配，在表名前添加schema名
-			startIdx := matches[0]       // 整个匹配的开始位置
-			tableNameStart := matches[4] // 表名组的开始位置（不包含反引号）
-			tableNameEnd := matches[5]   // 表名组的结束位置（不包含反引号）
-
-			// 构建新的CREATE TABLE部分
-			prefix := createTableStmt[:startIdx]
-			createPart := createTableStmt[startIdx : tableNameStart-1] // -1 是为了去掉反引号
-			tableName := createTableStmt[tableNameStart:tableNameEnd]  // 不包含反引号的纯表名
-			suffix := createTableStmt[tableNameEnd+1:]                 // +1 是为了跳过反引号
-
-			// 在表名前添加schema名（重新构建完整的反引号包围的表名）
-			newTableName := fmt.Sprintf("`%s`.`%s`", destSchema, tableName)
-			createTableStmt = prefix + createPart + newTableName + suffix
-		}
-	}
+	createTableStmt = rewriteCreateTableTargetIdentifier(createTableStmt, destSchema, destTable)
 
 	// 确保CREATE TABLE语句包含表级别的字符集和排序规则
 	// 查询表的字符集和排序规则
@@ -4918,12 +6218,30 @@ func generateCreateTableSql(sourceDB *sql.DB, sourceSchema string, destSchema st
 	}
 
 	vlog = fmt.Sprintf("(%d) %s Generated CREATE TABLE statement for %s.%s with charset %s and collation %s",
-		logThreadSeq, event, destSchema, tableName, tableCharset, tableCollation)
+		logThreadSeq, event, destSchema, destTable, tableCharset, tableCollation)
 	global.Wlog.Debug(vlog)
 
 	// 确保SQL语句末尾有分号
 	if !strings.HasSuffix(createTableStmt, ";") {
 		createTableStmt = createTableStmt + ";"
+	}
+
+	rewriteNeeded := schemacompat.ShouldRewriteMariaDBCreateTable(createTableStmt, sourceVersion, destVersion)
+	if rewriteNeeded {
+		beforeRewrite := createTableStmt
+		createTableStmt = schemacompat.ConvertMariaDBCreateTableToMySQL(createTableStmt, sourceVersion, destVersion, mariaDBJSONTargetType)
+		global.Wlog.Debug(fmt.Sprintf("(%d) %s MariaDB CREATE TABLE rewrite applied for %s.%s: sourceFlavor=%s targetFlavor=%s changed=%t",
+			logThreadSeq,
+			event,
+			destSchema,
+			destTable,
+			sourceVersion.FlavorName(),
+			destVersion.FlavorName(),
+			beforeRewrite != createTableStmt,
+		))
+		if !strings.HasSuffix(createTableStmt, ";") {
+			createTableStmt = createTableStmt + ";"
+		}
 	}
 
 	return createTableStmt, nil

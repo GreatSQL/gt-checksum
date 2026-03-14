@@ -119,6 +119,64 @@ var (
 	}
 )
 
+func normalizeTriggerActionStatement(statement string) string {
+	return strings.Join(strings.Fields(strings.ReplaceAll(strings.TrimSpace(statement), "\n", " ")), " ")
+}
+
+func normalizeTriggerDefiner(definer string) string {
+	return strings.TrimSpace(definer)
+}
+
+func buildTriggerCacheKey(schema, triggerName string) string {
+	return strings.ToUpper(fmt.Sprintf("\"%s\".\"%s\"", schema, triggerName))
+}
+
+func buildTriggerCanonicalValue(actionTiming, eventManipulation, eventObjectTable, actionStatement string) string {
+	return fmt.Sprintf(
+		"%s %s %s %s",
+		strings.ToUpper(strings.TrimSpace(actionTiming)),
+		strings.ToUpper(strings.TrimSpace(eventManipulation)),
+		strings.ToUpper(strings.TrimSpace(eventObjectTable)),
+		normalizeTriggerActionStatement(actionStatement),
+	)
+}
+
+func buildTriggerDefinerClause(definer string) string {
+	normalized := normalizeTriggerDefiner(definer)
+	if normalized == "" {
+		return ""
+	}
+
+	atPos := strings.LastIndex(normalized, "@")
+	if atPos <= 0 || atPos >= len(normalized)-1 {
+		return ""
+	}
+
+	user := strings.Trim(normalized[:atPos], "`'\" ")
+	host := strings.Trim(normalized[atPos+1:], "`'\" ")
+	if user == "" || host == "" {
+		return ""
+	}
+
+	user = strings.ReplaceAll(user, "`", "``")
+	host = strings.ReplaceAll(host, "`", "``")
+	return fmt.Sprintf("DEFINER=`%s`@`%s` ", user, host)
+}
+
+func BuildTriggerCreateSQL(schema, triggerName, definer, actionTiming, eventManipulation, eventObjectTable, actionStatement string) string {
+	return fmt.Sprintf(
+		"CREATE %sTRIGGER `%s`.`%s` %s %s ON `%s`.`%s` FOR EACH ROW %s",
+		buildTriggerDefinerClause(definer),
+		schema,
+		triggerName,
+		strings.ToUpper(strings.TrimSpace(actionTiming)),
+		strings.ToUpper(strings.TrimSpace(eventManipulation)),
+		schema,
+		eventObjectTable,
+		strings.TrimSpace(actionStatement),
+	)
+}
+
 /*
 	行数据处理
 */
@@ -305,11 +363,13 @@ func (my *QueryTable) GlobalAccessPri(db *sql.DB, logThreadSeq int64) (bool, err
 		return false, nil
 	}
 	if global.DetectDatabaseFlavor(version) == global.DatabaseFlavorMariaDB {
-		logMsg = fmt.Sprintf("(%d) [%s] Skip global privilege precheck for %s DB version %s; current data path does not require MariaDB-specific global privileges", logThreadSeq, Event, DBType, version)
+		logMsg = fmt.Sprintf("(%d) [%s] Skip global privilege precheck for %s DB version %s; current MariaDB source path does not require MySQL-specific global privilege names", logThreadSeq, Event, DBType, version)
 		global.Wlog.Info(logMsg)
 		return true, nil
 	}
-	if strings.HasPrefix(version, "8.") {
+	normalizedCheckObject := strings.ToLower(strings.TrimSpace(global.CurrentCheckObject))
+	requireSessionVariablesAdmin := strings.HasPrefix(version, "8.") && (normalizedCheckObject == "" || normalizedCheckObject == "data")
+	if requireSessionVariablesAdmin {
 		globalPri["SESSION_VARIABLES_ADMIN"] = 0
 	}
 	//globalPri["FLUSH_TABLES"] = 0
@@ -359,7 +419,7 @@ func (my *QueryTable) GlobalAccessPri(db *sql.DB, logThreadSeq int64) (bool, err
 		global.Wlog.Debug(logMsg)
 		return true, nil
 	}
-	if _, ok := globalPri["SESSION_VARIABLES_ADMIN"]; ok && strings.HasPrefix(version, "8.") {
+	if _, ok := globalPri["SESSION_VARIABLES_ADMIN"]; ok && requireSessionVariablesAdmin {
 		logMsg = fmt.Sprintf("(%d) [%s] The current user connecting to %s DB lacks \"session_variables_admin\" permission, and the check table is empty", logThreadSeq, Event, DBType)
 		global.Wlog.Error(logMsg)
 		return false, nil
@@ -767,45 +827,34 @@ func (my *QueryTable) Trigger(db *sql.DB, logThreadSeq int64) (map[string]string
 	)
 	logMsg = fmt.Sprintf("(%d) [%s] Start to query the trigger information under the %s database.", logThreadSeq, Event, DBType)
 	global.Wlog.Debug(logMsg)
-	query = fmt.Sprintf("SELECT TRIGGER_NAME AS triggerName, EVENT_OBJECT_TABLE AS tableName FROM INFORMATION_SCHEMA.TRIGGERS WHERE TRIGGER_SCHEMA IN('%s');", my.Schema)
+	query = fmt.Sprintf(
+		"SELECT TRIGGER_NAME AS TRIGGER_NAME, ACTION_TIMING AS ACTION_TIMING, EVENT_MANIPULATION AS EVENT_MANIPULATION, EVENT_OBJECT_TABLE AS EVENT_OBJECT_TABLE, ACTION_STATEMENT AS ACTION_STATEMENT FROM INFORMATION_SCHEMA.TRIGGERS WHERE TRIGGER_SCHEMA IN('%s');",
+		my.Schema,
+	)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(query); err != nil {
 		return nil, err
 	}
-	triggerName, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
+	triggerRows, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
 	if err != nil {
 		return nil, err
 	}
-	for _, v := range triggerName {
-		query = fmt.Sprintf("SHOW CREATE TRIGGER %s.%s", my.Schema, v["triggerName"])
-		if dispos.SqlRows, err = dispos.DBSQLforExec(query); err != nil {
-			return nil, err
-		}
-		createTrigger, err1 := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
-		if err1 != nil {
-			return nil, err1
-		}
-		for _, b := range createTrigger {
-			//获取trigger name
-			triggerNa := strings.ToUpper(fmt.Sprintf("\"%s\".\"%s\"", my.Schema, b["Trigger"]))
-			d := strings.Join(strings.Fields(strings.ReplaceAll(fmt.Sprintf("%s", b["SQL Original Statement"]), "\n", "")), " ")
-			//获取trigger action
-			f := strings.Index(d, "TRIGGER")
-			g := strings.Index(d, "ON")
-			triggerAction := strings.TrimSpace(d[f:g][strings.LastIndexAny(d[f:g], "`")+1:])
-			var triggerOn, triggerTRX string
-			if strings.Contains(d, "BEGIN") && strings.Contains(d, "END") {
-				// 获取trigger table
-				i := strings.Index(d, "BEGIN")
-				triggerTab := d[g:i][strings.Index(d[g:i], "`")+1 : strings.LastIndexAny(d[g:i], "`")]
-				triggerOn = strings.ToUpper(triggerTab)
-				//获取trigger struct
-				j := strings.Index(d, "END")
-				triggerTRX = strings.ToUpper(d[i:j])
-			}
-			tmpb[triggerNa] = fmt.Sprintf("%s %s %s", triggerAction, triggerOn, triggerTRX)
-		}
-		logMsg = fmt.Sprintf("(%d) MySQL db query databases %s Trigger data completion...", logThreadSeq, my.Schema)
+	for _, row := range triggerRows {
+		triggerName := fmt.Sprintf("%s", row["TRIGGER_NAME"])
+		actionTiming := fmt.Sprintf("%s", row["ACTION_TIMING"])
+		eventManipulation := fmt.Sprintf("%s", row["EVENT_MANIPULATION"])
+		eventObjectTable := fmt.Sprintf("%s", row["EVENT_OBJECT_TABLE"])
+		actionStatement := fmt.Sprintf("%s", row["ACTION_STATEMENT"])
+
+		// INFORMATION_SCHEMA.TRIGGERS already exposes canonical trigger
+		// metadata, which is safer than parsing SHOW CREATE TRIGGER output.
+		tmpb[buildTriggerCacheKey(my.Schema, triggerName)] = buildTriggerCanonicalValue(
+			actionTiming,
+			eventManipulation,
+			eventObjectTable,
+			actionStatement,
+		)
+		logMsg = fmt.Sprintf("(%d) [%s] Stored trigger %s.%s canonical definition", logThreadSeq, Event, my.Schema, triggerName)
 		global.Wlog.Debug(logMsg)
 	}
 	logMsg = fmt.Sprintf("(%d) [%s] Complete the trigger information query under the %s database.", logThreadSeq, Event, DBType)
@@ -954,30 +1003,26 @@ func (my *QueryTable) Foreign(db *sql.DB, logThreadSeq int64) (map[string]string
 	// 这个查询会获取外键名称、列名、引用的表和列信息
 	query = fmt.Sprintf(`
 			SELECT 
-				rc.CONSTRAINT_NAME,
-			kcu.COLUMN_NAME,
-			rc.CONSTRAINT_SCHEMA AS REFERENCED_TABLE_SCHEMA,
-			rc.REFERENCED_TABLE_NAME,
-			rcu.COLUMN_NAME AS REFERENCED_COLUMN_NAME,
-			rc.DELETE_RULE,
-			rc.UPDATE_RULE
+				kcu.CONSTRAINT_NAME,
+				kcu.COLUMN_NAME,
+				kcu.REFERENCED_TABLE_SCHEMA,
+				kcu.REFERENCED_TABLE_NAME,
+				kcu.REFERENCED_COLUMN_NAME,
+				rc.DELETE_RULE,
+				rc.UPDATE_RULE
 		FROM 
+			INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
+		JOIN 
 			INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS rc
-		JOIN 
-			INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu 
-				ON rc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME 
-				AND rc.CONSTRAINT_SCHEMA = kcu.TABLE_SCHEMA 
+				ON rc.CONSTRAINT_SCHEMA = kcu.CONSTRAINT_SCHEMA
 				AND rc.TABLE_NAME = kcu.TABLE_NAME
-		JOIN 
-			INFORMATION_SCHEMA.KEY_COLUMN_USAGE rcu 
-				ON rc.UNIQUE_CONSTRAINT_NAME = rcu.CONSTRAINT_NAME 
-				AND rc.CONSTRAINT_SCHEMA = rcu.TABLE_SCHEMA 
-				AND rc.REFERENCED_TABLE_NAME = rcu.TABLE_NAME
+				AND rc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME
 		WHERE 
-			rc.CONSTRAINT_SCHEMA = '%s' 
-			AND rc.TABLE_NAME = '%s'
+			kcu.TABLE_SCHEMA = '%s' 
+			AND kcu.TABLE_NAME = '%s'
+			AND kcu.REFERENCED_TABLE_NAME IS NOT NULL
 		ORDER BY 
-			rc.CONSTRAINT_NAME, kcu.ORDINAL_POSITION
+			kcu.CONSTRAINT_NAME, kcu.ORDINAL_POSITION
 		`, my.Schema, my.Table)
 
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
@@ -1029,7 +1074,7 @@ func (my *QueryTable) Foreign(db *sql.DB, logThreadSeq int64) (map[string]string
 		// 构建外键DDL
 		sourceColumnsStr := strings.Join(sourceColumns, ", ")
 		referencedColumnsStr := strings.Join(referencedColumns, ", ")
-		ddl := fmt.Sprintf("CONSTRAINT !%s! FOREIGN KEY (!%s!) REFERENCES !%s!.!%s! (!%s!)",
+		ddl := fmt.Sprintf("CONSTRAINT !%s! FOREIGN KEY (%s) REFERENCES !%s!.!%s! (%s)",
 			constraintName, sourceColumnsStr, referencedSchema, referencedTable, referencedColumnsStr)
 
 		// 添加删除和更新规则
@@ -1040,9 +1085,9 @@ func (my *QueryTable) Foreign(db *sql.DB, logThreadSeq int64) (map[string]string
 			ddl += " ON UPDATE " + updateRule
 		}
 
-		// 存储到结果map中，使用大写并将反引号替换为感叹号
-		tableKey := fmt.Sprintf("%s.%s", my.Schema, my.Table)
-		tmpb[tableKey] = strings.ToUpper(ddl)
+		// Use an upper-cased key for stable lookups, but keep the original DDL text
+		// so downstream metadata probes can still use the real schema/table casing.
+		tmpb[strings.ToUpper(constraintName)] = ddl
 
 		logMsg = fmt.Sprintf("(%d) [%s] Found foreign key: %s", logThreadSeq, Event, ddl)
 		global.Wlog.Debug(logMsg)
@@ -1131,10 +1176,10 @@ func (my *QueryTable) Partitions(db *sql.DB, logThreadSeq int64) (map[string]str
 			}
 
 			// 将所有分区定义合并为一个字符串作为表的分区定义
-			// 移除所有空格，使比较更加严格和准确
+			// 保留 SHOW CREATE TABLE 的原始标识符引用形式，后续在 compare
+			// 层统一做归一化，避免这里引入额外的符号噪音。
 			fullPartitionDef := strings.Join(partitionDefs, " ")
 			fullPartitionDef = strings.Join(strings.Fields(fullPartitionDef), " ")
-			fullPartitionDef = strings.ReplaceAll(fullPartitionDef, "`", "!")
 
 			// 增加日志，记录完整的分区定义用于调试
 			logMsg = fmt.Sprintf("(%d) [%s] Extracted full partition definition for %s.%s: %s", logThreadSeq, Event, my.Schema, actualTableName, fullPartitionDef)

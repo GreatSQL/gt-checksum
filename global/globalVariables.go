@@ -57,6 +57,9 @@ func ExtractCharsetFromDSN(dsn string) string {
 */
 var Wlog *log.Logger
 
+// CurrentCheckObject stores the normalized checkObject for the current run.
+var CurrentCheckObject string
+
 // DroppedTables 存储已经被标记为需要删除的表的列表
 // 格式为 "schema.table"
 var DroppedTables []string
@@ -65,8 +68,10 @@ var DroppedTables []string
 var HasInvisibleColumnMismatch bool
 
 const (
-	SkipDiffsYes    = "yes"
-	SkipDiffsDDLYes = "DDL-yes"
+	SkipDiffsNo       = "no"
+	SkipDiffsYes      = "yes"
+	SkipDiffsDDLYes   = "DDL-yes"
+	SkipDiffsWarnOnly = "warn-only"
 )
 
 // SkippedTable 存储跳过的表信息
@@ -142,6 +147,7 @@ func ResetRuntimeState() {
 
 	DroppedTables = nil
 	HasInvisibleColumnMismatch = false
+	CurrentCheckObject = ""
 	SourceMySQLVersion = MySQLVersionInfo{}
 	DestMySQLVersion = MySQLVersionInfo{}
 }

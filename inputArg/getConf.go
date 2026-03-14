@@ -281,6 +281,17 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 		rc.SecondaryL.RulesV.ShowActualRows = "ON"
 	}
 
+	mariaDBJSONTargetTypeValue := strings.ToUpper(strings.TrimSpace(getLastConfigValue("mariaDBJSONTargetType")))
+	switch mariaDBJSONTargetTypeValue {
+	case "", "JSON":
+		rc.SecondaryL.RulesV.MariaDBJSONTargetType = "JSON"
+	case "LONGTEXT", "TEXT":
+		rc.SecondaryL.RulesV.MariaDBJSONTargetType = mariaDBJSONTargetTypeValue
+	default:
+		fmt.Println("Using default value 'JSON' for option mariaDBJSONTargetType")
+		rc.SecondaryL.RulesV.MariaDBJSONTargetType = "JSON"
+	}
+
 	if rc.CliShowActualRows != "" {
 		override := strings.ToUpper(strings.TrimSpace(rc.CliShowActualRows))
 		if override == "ON" || override == "OFF" {

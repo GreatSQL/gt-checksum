@@ -7,6 +7,7 @@ import (
 	"gt-checksum/global"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -80,6 +81,7 @@ func escapeSQLString(str string) string {
 var mysqlDateTimePrefixPattern = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(\.\d{1,6})?`)
 var floatScalePattern = regexp.MustCompile(`(?i)^FLOAT\s*\(\s*\d+\s*,\s*(\d+)\s*\)`)
 var integerLiteralPattern = regexp.MustCompile(`^[+-]?\d+$`)
+var mysqlKeywordDefaultPattern = regexp.MustCompile(`(?i)^(current_timestamp(?:\(\d+\))?|current_date(?:\(\))?|current_time(?:\(\d+\))?|localtime(?:\(\d+\))?|localtimestamp(?:\(\d+\))?)$`)
 
 // normalizeMySQLDateTimeLiteral converts common Oracle/Golang datetime string forms
 // (e.g. "2026-02-17 16:04:25 +0800 CST") to MySQL DATETIME/TIMESTAMP literal
@@ -102,6 +104,44 @@ func normalizeMySQLDateTimeLiteral(value string) string {
 		return s[:10] + " " + s[11:]
 	}
 	return s
+}
+
+func stripDeprecatedZeroFillAttr(columnType string) string {
+	if !strings.Contains(strings.ToUpper(columnType), "ZEROFILL") {
+		return columnType
+	}
+
+	fields := strings.Fields(columnType)
+	filtered := make([]string, 0, len(fields))
+	hasUnsigned := false
+	for _, field := range fields {
+		switch {
+		case strings.EqualFold(field, "ZEROFILL"):
+			continue
+		case strings.EqualFold(field, "UNSIGNED"):
+			hasUnsigned = true
+		}
+		filtered = append(filtered, field)
+	}
+	if !hasUnsigned {
+		filtered = append(filtered, "unsigned")
+	}
+	return strings.Join(filtered, " ")
+}
+
+func formatMySQLColumnDefault(defaultValue string, nullable bool) string {
+	trimmed := strings.TrimSpace(defaultValue)
+	switch {
+	case strings.EqualFold(trimmed, "null") || strings.EqualFold(trimmed, "NULL"):
+		if nullable {
+			return "DEFAULT NULL"
+		}
+		return ""
+	case mysqlKeywordDefaultPattern.MatchString(trimmed):
+		return "DEFAULT " + strings.ToUpper(trimmed)
+	default:
+		return fmt.Sprintf("DEFAULT '%s'", escapeSQLString(defaultValue))
+	}
 }
 
 func lookupColumnDataType(colData []map[string]string, columnName string) string {
@@ -772,30 +812,24 @@ func (my *MysqlDataAbnormalFixStruct) LoadForeignKeyDefinitions(db *sql.DB, logT
 		logThreadSeq, sourceSchema, my.Table, sourceSchema)
 	global.Wlog.Debug(vlog)
 
-	// 查询外键约束信息 - 重新设计查询以正确获取引用表和字段信息
+	// Query the child-side KEY_COLUMN_USAGE rows directly so composite foreign
+	// keys keep their ordinal position and do not cross-join referenced columns.
 	query := `
 		SELECT 
-			rc.CONSTRAINT_NAME,
+			kcu.CONSTRAINT_NAME,
+			kcu.ORDINAL_POSITION,
 			kcu.COLUMN_NAME AS SOURCE_COLUMN_NAME,
-			rc.REFERENCED_TABLE_NAME,
-			rcu.COLUMN_NAME AS REFERENCED_COLUMN_NAME
+			kcu.REFERENCED_TABLE_SCHEMA,
+			kcu.REFERENCED_TABLE_NAME,
+			kcu.REFERENCED_COLUMN_NAME
 		FROM 
-			INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS rc
-		JOIN 
-			INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu 
-				ON rc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME 
-				AND rc.CONSTRAINT_SCHEMA = kcu.TABLE_SCHEMA 
-				AND rc.TABLE_NAME = kcu.TABLE_NAME
-		JOIN 
-			INFORMATION_SCHEMA.KEY_COLUMN_USAGE rcu 
-				ON rc.UNIQUE_CONSTRAINT_NAME = rcu.CONSTRAINT_NAME 
-				AND rc.CONSTRAINT_SCHEMA = rcu.TABLE_SCHEMA 
-				AND rc.REFERENCED_TABLE_NAME = rcu.TABLE_NAME
+			INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
 		WHERE 
-			rc.CONSTRAINT_SCHEMA = ? 
-			AND rc.TABLE_NAME = ?
+			kcu.TABLE_SCHEMA = ? 
+			AND kcu.TABLE_NAME = ?
+			AND kcu.REFERENCED_TABLE_NAME IS NOT NULL
 		ORDER BY 
-			rc.CONSTRAINT_NAME, kcu.ORDINAL_POSITION
+			kcu.CONSTRAINT_NAME, kcu.ORDINAL_POSITION
 	`
 
 	rows, err := db.Query(query, sourceSchema, my.Table)
@@ -805,27 +839,34 @@ func (my *MysqlDataAbnormalFixStruct) LoadForeignKeyDefinitions(db *sql.DB, logT
 		return err
 	}
 
-	// 按约束名称分组外键信息
-	fkInfoMap := make(map[string]struct {
+	type foreignKeyColumn struct {
+		ordinalPosition  int
 		columnName       string
+		referencedSchema string
 		referencedTable  string
 		referencedColumn string
-	})
+	}
+	fkInfoMap := make(map[string][]foreignKeyColumn)
 
 	for rows.Next() {
 		// 使用sql.NullString处理可能为NULL的值
 		var constraintName, sourceColumn string
-		var referencedTable, referencedColumn sql.NullString
+		var ordinalPosition int
+		var referencedSchema, referencedTable, referencedColumn sql.NullString
 
-		if err := rows.Scan(&constraintName, &sourceColumn, &referencedTable, &referencedColumn); err != nil {
+		if err := rows.Scan(&constraintName, &ordinalPosition, &sourceColumn, &referencedSchema, &referencedTable, &referencedColumn); err != nil {
 			vlog = fmt.Sprintf("(%d) Error scanning foreign key row: %v", logThreadSeq, err)
 			global.Wlog.Warn(vlog)
 			continue
 		}
 
 		// 将sql.NullString转换为普通string，NULL值转为空字符串
+		referencedSchemaStr := ""
 		referencedTableStr := ""
 		referencedColumnStr := ""
+		if referencedSchema.Valid {
+			referencedSchemaStr = referencedSchema.String
+		}
 		if referencedTable.Valid {
 			referencedTableStr = referencedTable.String
 		}
@@ -834,15 +875,13 @@ func (my *MysqlDataAbnormalFixStruct) LoadForeignKeyDefinitions(db *sql.DB, logT
 		}
 
 		// 存储外键信息
-		fkInfoMap[constraintName] = struct {
-			columnName       string
-			referencedTable  string
-			referencedColumn string
-		}{
+		fkInfoMap[constraintName] = append(fkInfoMap[constraintName], foreignKeyColumn{
+			ordinalPosition:  ordinalPosition,
 			columnName:       sourceColumn,
+			referencedSchema: referencedSchemaStr,
 			referencedTable:  referencedTableStr,
 			referencedColumn: referencedColumnStr,
-		}
+		})
 	}
 	if rowsErr := rows.Err(); rowsErr != nil {
 		_ = rows.Close()
@@ -851,18 +890,41 @@ func (my *MysqlDataAbnormalFixStruct) LoadForeignKeyDefinitions(db *sql.DB, logT
 	_ = rows.Close()
 
 	// 构建完整的外键DDL定义
-	for fkName, info := range fkInfoMap {
-		// 检查引用表和列信息是否有效
-		if info.referencedTable == "" || info.referencedColumn == "" {
+	for fkName, infoRows := range fkInfoMap {
+		if len(infoRows) == 0 {
+			continue
+		}
+		sort.Slice(infoRows, func(i, j int) bool {
+			return infoRows[i].ordinalPosition < infoRows[j].ordinalPosition
+		})
+
+		referencedSchema := infoRows[0].referencedSchema
+		if referencedSchema == "" {
+			referencedSchema = sourceSchema
+		}
+
+		referencedTable := infoRows[0].referencedTable
+		sourceColumns := make([]string, 0, len(infoRows))
+		referencedColumns := make([]string, 0, len(infoRows))
+		valid := true
+		for _, item := range infoRows {
+			if item.referencedTable == "" || item.referencedColumn == "" {
+				valid = false
+				break
+			}
+			sourceColumns = append(sourceColumns, fmt.Sprintf("`%s`", item.columnName))
+			referencedColumns = append(referencedColumns, fmt.Sprintf("`%s`", item.referencedColumn))
+		}
+
+		if !valid || referencedTable == "" {
 			vlog = fmt.Sprintf("(%d) Invalid foreign key info for %s: missing referenced table or column",
 				logThreadSeq, fkName)
 			global.Wlog.Warn(vlog)
 			continue
 		}
 
-		// 构建外键DDL，包含schema名称
-		fkDDL := fmt.Sprintf("CONSTRAINT `%s` FOREIGN KEY (`%s`) REFERENCES `%s`.`%s` (`%s`)",
-			fkName, info.columnName, sourceSchema, info.referencedTable, info.referencedColumn)
+		fkDDL := fmt.Sprintf("CONSTRAINT `%s` FOREIGN KEY (%s) REFERENCES `%s`.`%s` (%s)",
+			fkName, strings.Join(sourceColumns, ","), referencedSchema, referencedTable, strings.Join(referencedColumns, ","))
 		my.ForeignKeyDefinitions[fkName] = fkDDL
 		vlog = fmt.Sprintf("(%d) Found foreign key: %s", logThreadSeq, fkDDL)
 		global.Wlog.Debug(vlog)
@@ -916,7 +978,7 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterIndexSqlExec(e, f []string, si map
 			// 生成普通索引的SQL
 			var invisibleClause string
 			if my.IndexVisibilityMap != nil {
-				if visibility, exists := my.IndexVisibilityMap[v]; exists && visibility == "NO" {
+				if visibility, exists := my.IndexVisibilityMap[v]; exists && (strings.EqualFold(visibility, "NO") || strings.EqualFold(visibility, "INVISIBLE") || strings.EqualFold(visibility, "IGNORED")) {
 					invisibleClause = " INVISIBLE"
 				}
 			}
@@ -979,15 +1041,32 @@ func (my *MysqlDataAbnormalFixStruct) CheckDestTableHasPrimaryKey(db *sql.DB, lo
 	}
 	tablePrimaryKeyMutex.RUnlock()
 
-	// 查询表的主键信息
-	query := "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND CONSTRAINT_NAME = 'PRIMARY' LIMIT 1"
-	var columnName string
-	err := db.QueryRow(query, my.Schema, my.Table).Scan(&columnName)
-	hasPK := err == nil && columnName != ""
+	// Cache the full primary key column list so later SQL consolidation can
+	// safely decide whether DROP PRIMARY KEY becomes redundant.
+	query := `
+SELECT COLUMN_NAME
+FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND CONSTRAINT_NAME = 'PRIMARY'
+ORDER BY ORDINAL_POSITION
+`
+	rows, err := db.Query(query, my.Schema, my.Table)
+	hasPK := false
+	primaryKeyColumns := make([]string, 0)
+	if err == nil {
+		for rows.Next() {
+			var columnName string
+			if scanErr := rows.Scan(&columnName); scanErr == nil && strings.TrimSpace(columnName) != "" {
+				hasPK = true
+				primaryKeyColumns = append(primaryKeyColumns, columnName)
+			}
+		}
+		_ = rows.Close()
+	}
 
 	// 更新映射（使用写锁）
 	tablePrimaryKeyMutex.Lock()
 	DestTableHasPrimaryKey[key] = hasPK
+	TablePrimaryKeyColumns[key] = primaryKeyColumns
 	tablePrimaryKeyMutex.Unlock()
 
 	return hasPK
@@ -995,6 +1074,42 @@ func (my *MysqlDataAbnormalFixStruct) CheckDestTableHasPrimaryKey(db *sql.DB, lo
 
 func (my *MysqlDataAbnormalFixStruct) FixAlterColumnSqlDispos(alterType string, columnDataType []string, columnSeq int, lastColumn, curryColumn string, logThreadSeq int64) string {
 	var sqlS string
+	if len(columnDataType) > 6 {
+		directDefinition := strings.TrimSpace(columnDataType[6])
+		if directDefinition != "" && !strings.EqualFold(directDefinition, "null") {
+			columnLocation := ""
+			if columnSeq == 0 {
+				columnLocation = "FIRST"
+			} else if lastColumn != "alterNoAfter" {
+				columnLocation = fmt.Sprintf("AFTER `%s`", lastColumn)
+			}
+
+			switch alterType {
+			case "add":
+				if columnLocation != "" {
+					return fmt.Sprintf(" ADD COLUMN `%s` %s %s", curryColumn, directDefinition, columnLocation)
+				}
+				return fmt.Sprintf(" ADD COLUMN `%s` %s", curryColumn, directDefinition)
+			case "modify":
+				if columnLocation != "" {
+					return fmt.Sprintf(" MODIFY COLUMN `%s` %s %s", curryColumn, directDefinition, columnLocation)
+				}
+				return fmt.Sprintf(" MODIFY COLUMN `%s` %s", curryColumn, directDefinition)
+			case "change":
+				parts := strings.Split(curryColumn, ":")
+				if len(parts) == 2 {
+					if columnLocation != "" {
+						return fmt.Sprintf(" CHANGE COLUMN `%s` `%s` %s %s", parts[0], parts[1], directDefinition, columnLocation)
+					}
+					return fmt.Sprintf(" CHANGE COLUMN `%s` `%s` %s", parts[0], parts[1], directDefinition)
+				}
+				if columnLocation != "" {
+					return fmt.Sprintf(" MODIFY COLUMN `%s` %s %s", curryColumn, directDefinition, columnLocation)
+				}
+				return fmt.Sprintf(" MODIFY COLUMN `%s` %s", curryColumn, directDefinition)
+			}
+		}
+	}
 
 	// 构建属性列表，只添加非空的值
 	var attributes []string
@@ -1013,6 +1128,7 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterColumnSqlDispos(alterType string, 
 			columnDataType[0] = strings.ReplaceAll(columnDataType[0], "  ", " ")
 		}
 	}
+	columnDataType[0] = stripDeprecatedZeroFillAttr(columnDataType[0])
 
 	// 添加数据类型
 	attributes = append(attributes, columnDataType[0])
@@ -1032,16 +1148,10 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterColumnSqlDispos(alterType string, 
 		attributes = append(attributes, "NOT NULL")
 	}
 
-	// 添加默认值
-	if columnDataType[4] != "empty" && columnDataType[4] != "NULL" {
-		if columnDataType[4] == "null" {
-			// 如果列允许为NULL，则设置DEFAULT NULL
-			if strings.ToUpper(columnDataType[3]) != "NO" {
-				attributes = append(attributes, "DEFAULT NULL")
-			}
-		} else {
-			// 设置具体的默认值
-			attributes = append(attributes, fmt.Sprintf("DEFAULT '%s'", columnDataType[4]))
+	// Preserve SQL function defaults and NULL defaults without string quoting.
+	if columnDataType[4] != "empty" {
+		if defaultClause := formatMySQLColumnDefault(columnDataType[4], strings.ToUpper(columnDataType[3]) != "NO"); defaultClause != "" {
+			attributes = append(attributes, defaultClause)
 		}
 	}
 
@@ -1167,7 +1277,7 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterColumnAndIndexSqlGenerate(columnOp
 		AutoIncrementColumnsWithPrimaryKey = make(map[string]bool)
 	}
 
-	// 过滤掉已经在列操作中设置为主键的列的索引操作
+	// Filter index operations before combining them into one ALTER TABLE.
 	filteredIndexOperations := make([]string, 0)
 	for _, op := range indexOperations {
 		// 检查是否是添加主键的操作
@@ -1200,6 +1310,7 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterColumnAndIndexSqlGenerate(columnOp
 			filteredIndexOperations = append(filteredIndexOperations, op)
 		}
 	}
+	filteredIndexOperations = my.filterRedundantDropPrimaryKeyOperations(columnOperations, filteredIndexOperations)
 
 	// 合并所有操作
 	var allOperations []string
@@ -1241,6 +1352,93 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterColumnAndIndexSqlGenerate(columnOp
 	}
 
 	return alterSql
+}
+
+func normalizeAlterOperationContent(op string) string {
+	op = strings.TrimSpace(op)
+	if op == "" {
+		return ""
+	}
+	if strings.HasPrefix(strings.ToUpper(op), "ALTER TABLE") {
+		parts := strings.SplitN(op, " ", 4)
+		if len(parts) >= 4 {
+			op = strings.TrimSpace(parts[3])
+		}
+	}
+	return strings.TrimSpace(strings.TrimSuffix(op, ";"))
+}
+
+func extractDroppedColumnNameFromAlterClause(op string) string {
+	clause := normalizeAlterOperationContent(op)
+	if clause == "" || !strings.HasPrefix(strings.ToUpper(clause), "DROP COLUMN") {
+		return ""
+	}
+
+	rest := strings.TrimSpace(clause[len("DROP COLUMN"):])
+	if rest == "" {
+		return ""
+	}
+	if strings.HasPrefix(rest, "`") {
+		end := strings.Index(rest[1:], "`")
+		if end == -1 {
+			return ""
+		}
+		return rest[1 : end+1]
+	}
+	parts := strings.Fields(rest)
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Trim(parts[0], "`")
+}
+
+func collectDroppedColumns(columnOperations []string) map[string]struct{} {
+	droppedColumns := make(map[string]struct{})
+	for _, op := range columnOperations {
+		columnName := extractDroppedColumnNameFromAlterClause(op)
+		if strings.TrimSpace(columnName) == "" {
+			continue
+		}
+		droppedColumns[strings.ToUpper(columnName)] = struct{}{}
+	}
+	return droppedColumns
+}
+
+func cachedPrimaryKeyColumns(schema, table string) []string {
+	tableKey := fmt.Sprintf("%s.%s", schema, table)
+	tablePrimaryKeyMutex.RLock()
+	defer tablePrimaryKeyMutex.RUnlock()
+	if columns, exists := TablePrimaryKeyColumns[tableKey]; exists {
+		copied := make([]string, len(columns))
+		copy(copied, columns)
+		return copied
+	}
+	return nil
+}
+
+func (my *MysqlDataAbnormalFixStruct) filterRedundantDropPrimaryKeyOperations(columnOperations, indexOperations []string) []string {
+	droppedColumns := collectDroppedColumns(columnOperations)
+	if len(droppedColumns) == 0 {
+		return indexOperations
+	}
+
+	primaryKeyColumns := cachedPrimaryKeyColumns(my.Schema, my.Table)
+	if len(primaryKeyColumns) != 1 {
+		return indexOperations
+	}
+	if _, exists := droppedColumns[strings.ToUpper(primaryKeyColumns[0])]; !exists {
+		return indexOperations
+	}
+
+	filtered := make([]string, 0, len(indexOperations))
+	for _, op := range indexOperations {
+		clause := normalizeAlterOperationContent(op)
+		if strings.EqualFold(strings.TrimSpace(clause), "DROP PRIMARY KEY") {
+			continue
+		}
+		filtered = append(filtered, op)
+	}
+	return filtered
 }
 
 // FixAlterIndexSqlGenerate 合并索引操作，生成单个ALTER TABLE语句
@@ -1390,7 +1588,7 @@ func WriteFixIfNeededFile(datafix string, sfile *os.File, sqls []string, logThre
 		if ss == "" {
 			continue
 		}
-		if !strings.HasSuffix(ss, ";") {
+		if !isFixCommentLine(ss) && !strings.HasSuffix(ss, ";") {
 			ss += ";"
 		}
 		if _, err := w.WriteString(ss + "\n"); err != nil {
@@ -1403,6 +1601,11 @@ func WriteFixIfNeededFile(datafix string, sfile *os.File, sqls []string, logThre
 		return err
 	}
 	return nil
+}
+
+func isFixCommentLine(stmt string) bool {
+	s := strings.TrimSpace(stmt)
+	return strings.HasPrefix(s, "--") || strings.HasPrefix(s, "/*")
 }
 
 // filterRedundantPrimaryKeyStatements 过滤多余的ADD PRIMARY KEY语句
@@ -1847,7 +2050,7 @@ func processTriggerSchemaNames(sourceDef, sourceSchema, destSchema string) strin
 	processedDef := strings.ReplaceAll(sourceDef, fmt.Sprintf("`%s`.`", sourceSchema), fmt.Sprintf("`%s`.`", destSchema))
 
 	// 检查是否需要添加schema前缀到触发器名
-	if !strings.Contains(strings.ToUpper(processedDef), fmt.Sprintf("TRIGGER `%s`.`", destSchema)) {
+	if !strings.Contains(strings.ToUpper(processedDef), strings.ToUpper(fmt.Sprintf("TRIGGER `%s`.`", destSchema))) {
 		// 查找TRIGGER关键字的位置（忽略大小写）
 		triggerIndex := strings.Index(strings.ToUpper(processedDef), "TRIGGER")
 		if triggerIndex != -1 {
@@ -1939,37 +2142,34 @@ func processTriggerSchemaNames(sourceDef, sourceSchema, destSchema string) strin
 
 // replaceTableSchemaInTrigger 替换触发器ON子句中的表名schema
 func replaceTableSchemaInTrigger(triggerDef, sourceSchema, destSchema string) string {
-	// 使用字符串匹配来处理ON子句
 	onIndex := strings.Index(strings.ToUpper(triggerDef), " ON ")
 	if onIndex != -1 {
-		afterOn := triggerDef[onIndex+4:] // +4 跳过 " ON "
-		afterOn = strings.TrimSpace(afterOn)
+		afterOn := triggerDef[onIndex+4:]
+		forEachIndex := strings.Index(strings.ToUpper(afterOn), " FOR EACH ROW")
+		if forEachIndex == -1 {
+			return triggerDef
+		}
 
-		// 检查是否是反引号包围的表名
-		if strings.HasPrefix(afterOn, "`") {
-			endQuoteIndex := strings.Index(afterOn[1:], "`")
-			if endQuoteIndex != -1 {
-				tablePart := afterOn[:endQuoteIndex+2] // 包含反引号
+		tableRef := strings.TrimSpace(afterOn[:forEachIndex])
+		rest := afterOn[forEachIndex:]
 
-				// 检查是否已经包含schema
-				if !strings.Contains(tablePart, ".") {
-					// 只有表名，没有schema，添加schema
-					tableName := tablePart
-					newTablePart := fmt.Sprintf("`%s`.%s", destSchema, tableName)
-					triggerDef = triggerDef[:onIndex+4] + newTablePart + afterOn[endQuoteIndex+2:]
-				} else {
-					// 已经有schema.table格式，检查是否需要替换
-					parts := strings.Split(tablePart, ".")
-					if len(parts) == 2 {
-						schemaPart := strings.Trim(parts[0], "` ")
-						tableNamePart := parts[1]
-						if schemaPart == sourceSchema {
-							newTablePart := fmt.Sprintf("`%s`.%s", destSchema, tableNamePart)
-							triggerDef = triggerDef[:onIndex+4] + newTablePart + afterOn[endQuoteIndex+2:]
-						}
-					}
-				}
-			}
+		if tableRef == "" {
+			return triggerDef
+		}
+
+		if !strings.Contains(tableRef, ".") {
+			return triggerDef[:onIndex+4] + fmt.Sprintf("`%s`.%s", destSchema, tableRef) + rest
+		}
+
+		parts := strings.SplitN(tableRef, ".", 2)
+		if len(parts) != 2 {
+			return triggerDef
+		}
+
+		schemaPart := strings.Trim(parts[0], "` ")
+		tablePart := parts[1]
+		if strings.EqualFold(schemaPart, sourceSchema) {
+			return triggerDef[:onIndex+4] + fmt.Sprintf("`%s`.%s", destSchema, tablePart) + rest
 		}
 	}
 

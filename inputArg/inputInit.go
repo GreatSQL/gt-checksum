@@ -44,7 +44,9 @@ type RulesS struct {
 	CheckObject    string
 	MemoryLimit    int
 	ShowActualRows string
-	IsRoutineCheck bool // 标记是否同时检查存储过程和函数
+	// MariaDBJSONTargetType controls how MariaDB JSON alias columns are rewritten on MySQL targets.
+	MariaDBJSONTargetType string
+	IsRoutineCheck        bool // 标记是否同时检查存储过程和函数
 }
 
 type LogS struct {
