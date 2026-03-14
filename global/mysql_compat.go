@@ -140,14 +140,16 @@ func ValidateMySQLCompatibilityPolicy(src, dst MySQLVersionInfo, checkObject str
 		if dst.Series != "8.0" && dst.Series != "8.4" {
 			return fmt.Errorf("source database %s only supports data check/fix to MySQL 8.0 or 8.4 targets; current destination %s is not supported", FormatDatabaseVersion(src), FormatDatabaseVersion(dst))
 		}
-		if normalizedCheckObject != "data" {
-			return fmt.Errorf("source database %s to destination %s only supports checkObject=data; checkObject=%s is not supported", FormatDatabaseVersion(src), FormatDatabaseVersion(dst), checkObject)
+		switch normalizedCheckObject {
+		case "data", "struct", "routine", "trigger":
+			return nil
+		default:
+			return fmt.Errorf("source database %s to destination %s only supports checkObject=data, struct, routine or trigger; checkObject=%s is not supported", FormatDatabaseVersion(src), FormatDatabaseVersion(dst), checkObject)
 		}
-		return nil
 	case src.Flavor == DatabaseFlavorMySQL && dst.Flavor == DatabaseFlavorMariaDB:
 		return fmt.Errorf("source database %s to destination %s is not supported", FormatDatabaseVersion(src), FormatDatabaseVersion(dst))
 	case src.Flavor == DatabaseFlavorMariaDB && dst.Flavor == DatabaseFlavorMariaDB:
-		return fmt.Errorf("source database %s to destination %s is not supported; only MariaDB -> MySQL 8.0/8.4 data check/fix is supported", FormatDatabaseVersion(src), FormatDatabaseVersion(dst))
+		return fmt.Errorf("source database %s to destination %s is not supported; only MariaDB -> MySQL 8.0/8.4 data/struct/routine/trigger check and fix are supported", FormatDatabaseVersion(src), FormatDatabaseVersion(dst))
 	default:
 		return ValidateMySQLVersionPair(src, dst)
 	}
