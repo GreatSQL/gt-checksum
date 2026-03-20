@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"gt-checksum/global"
+	"gt-checksum/schemacompat"
 	"os"
 	"regexp"
 	"sort"
@@ -69,6 +70,10 @@ func escapeSQLString(str string) string {
 			result.WriteString("\\n")
 		case '\r':
 			result.WriteString("\\r")
+		case '\b':
+			result.WriteString("\\b")
+		case '\t':
+			result.WriteString("\\t")
 		case '\x1a':
 			result.WriteString("\\Z")
 		default:
@@ -79,9 +84,16 @@ func escapeSQLString(str string) string {
 }
 
 var mysqlDateTimePrefixPattern = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(\.\d{1,6})?`)
+var mysqlDateLiteralPattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
+var mysqlTimeLiteralPattern = regexp.MustCompile(`^\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?$`)
+var mysqlDateTimeLiteralPattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?$`)
 var floatScalePattern = regexp.MustCompile(`(?i)^FLOAT\s*\(\s*\d+\s*,\s*(\d+)\s*\)`)
 var integerLiteralPattern = regexp.MustCompile(`^[+-]?\d+$`)
-var mysqlKeywordDefaultPattern = regexp.MustCompile(`(?i)^(current_timestamp(?:\(\d+\))?|current_date(?:\(\))?|current_time(?:\(\d+\))?|localtime(?:\(\d+\))?|localtimestamp(?:\(\d+\))?)$`)
+var numericLiteralPattern = regexp.MustCompile(`^[+-]?\d+(?:\.\d+)?$`)
+var mysqlKeywordFunctionPattern = regexp.MustCompile(`(?i)^(current_timestamp|current_date|current_time|localtime|localtimestamp)(?:\((\d*)\))?$`)
+var mysqlKeywordFunctionInDefinitionPattern = regexp.MustCompile(`(?i)\b(current_timestamp|current_date|current_time|localtime|localtimestamp)(?:\((\d*)\))?`)
+var inlinePrimaryKeyPattern = regexp.MustCompile(`(?i)\s+PRIMARY\s+KEY\b`)
+var routineFixMetadataCommentPattern = regexp.MustCompile(`(?is)/\*GT_CHECKSUM_METADATA:.*?\*/`)
 
 // normalizeMySQLDateTimeLiteral converts common Oracle/Golang datetime string forms
 // (e.g. "2026-02-17 16:04:25 +0800 CST") to MySQL DATETIME/TIMESTAMP literal
@@ -129,6 +141,29 @@ func stripDeprecatedZeroFillAttr(columnType string) string {
 	return strings.Join(filtered, " ")
 }
 
+func normalizeMySQLKeywordFunction(value string) (string, bool) {
+	trimmed := strings.TrimSpace(value)
+	matches := mysqlKeywordFunctionPattern.FindStringSubmatch(trimmed)
+	if len(matches) != 3 {
+		return "", false
+	}
+
+	name := strings.ToUpper(matches[1])
+	if matches[2] == "" {
+		return name, true
+	}
+	return fmt.Sprintf("%s(%s)", name, matches[2]), true
+}
+
+func normalizeMySQLKeywordFunctionsInDefinition(definition string) string {
+	return mysqlKeywordFunctionInDefinitionPattern.ReplaceAllStringFunc(definition, func(match string) string {
+		if normalized, ok := normalizeMySQLKeywordFunction(match); ok {
+			return normalized
+		}
+		return match
+	})
+}
+
 func formatMySQLColumnDefault(defaultValue string, nullable bool) string {
 	trimmed := strings.TrimSpace(defaultValue)
 	switch {
@@ -137,11 +172,49 @@ func formatMySQLColumnDefault(defaultValue string, nullable bool) string {
 			return "DEFAULT NULL"
 		}
 		return ""
-	case mysqlKeywordDefaultPattern.MatchString(trimmed):
-		return "DEFAULT " + strings.ToUpper(trimmed)
+	case trimmed == "":
+		return ""
 	default:
-		return fmt.Sprintf("DEFAULT '%s'", escapeSQLString(defaultValue))
+		if normalized, ok := normalizeMySQLKeywordFunction(trimmed); ok {
+			return "DEFAULT " + normalized
+		}
+		literal, _ := schemacompat.UnwrapQuotedDefaultLiteral(trimmed)
+		literal = normalizeMySQLDateTimeLiteral(strings.TrimSpace(literal))
+		switch {
+		case numericLiteralPattern.MatchString(literal):
+			return "DEFAULT " + literal
+		case mysqlDateLiteralPattern.MatchString(literal),
+			mysqlTimeLiteralPattern.MatchString(literal),
+			mysqlDateTimeLiteralPattern.MatchString(literal):
+			return fmt.Sprintf("DEFAULT '%s'", escapeSQLString(literal))
+		default:
+			return fmt.Sprintf("DEFAULT '%s'", escapeSQLString(literal))
+		}
 	}
+}
+
+func isBinaryLikeColumnType(dataType string) bool {
+	t := strings.ToUpper(strings.TrimSpace(dataType))
+	return strings.HasPrefix(t, "BIT") ||
+		strings.HasPrefix(t, "BINARY") ||
+		strings.HasPrefix(t, "VARBINARY") ||
+		strings.Contains(t, "BLOB")
+}
+
+func formatMySQLInsertLiteral(value, dataType string) string {
+	if strings.EqualFold(value, "<entry>") {
+		return "''"
+	}
+	if strings.EqualFold(value, "<nil>") {
+		return "NULL"
+	}
+	if strings.EqualFold(dataType, "DATETIME") || strings.Contains(strings.ToUpper(dataType), "TIMESTAMP") {
+		return fmt.Sprintf("'%s'", escapeSQLString(normalizeMySQLDateTimeLiteral(value)))
+	}
+	if isBinaryLikeColumnType(dataType) {
+		return fmt.Sprintf("0x%X", []byte(value))
+	}
+	return fmt.Sprintf("'%s'", escapeSQLString(value))
 }
 
 func lookupColumnDataType(colData []map[string]string, columnName string) string {
@@ -308,38 +381,15 @@ func (my *MysqlDataAbnormalFixStruct) FixInsertSqlExec(db *sql.DB, sourceDrive s
 	//Handle timezone issues with MySQL datetime columns (e.g. 2021-01-23 10:16:29 +0800 CST)
 	rowParts := strings.Split(my.RowData, "/*go actions columnData*/")
 	for k, v := range rowParts {
-		var tmpcolumnName string
-		if strings.EqualFold(v, "<entry>") {
-			tmpcolumnName = fmt.Sprintf("''")
-		} else if strings.EqualFold(v, "<nil>") {
-			tmpcolumnName = fmt.Sprintf("NULL")
+		dataType := ""
+		if k < len(my.ColData) {
+			dataType = my.ColData[k]["dataType"]
 		} else {
-			// 检查索引是否越界
-			if k < len(my.ColData) {
-				if dataType, ok := my.ColData[k]["dataType"]; ok {
-					if strings.ToUpper(dataType) == "DATETIME" {
-						tmpcolumnName = fmt.Sprintf("'%s'", escapeSQLString(normalizeMySQLDateTimeLiteral(v)))
-					} else if strings.Contains(strings.ToUpper(dataType), "TIMESTAMP") {
-						tmpcolumnName = fmt.Sprintf("'%s'", escapeSQLString(normalizeMySQLDateTimeLiteral(v)))
-					} else {
-						// 对于INSERT语句，使用源端的原始数据格式
-						// 保留源端数据的原始格式，包括尾部空格，不做任何修改
-						tmpcolumnName = fmt.Sprintf("'%s'", escapeSQLString(v))
-					}
-				} else {
-					// 如果没有dataType字段，使用默认格式并转义特殊字符
-					// 保留源端数据的原始格式，包括尾部空格，不做任何修改
-					tmpcolumnName = fmt.Sprintf("'%s'", escapeSQLString(v))
-				}
-			} else {
-				// 如果索引越界，使用默认格式并转义特殊字符
-				// 保留源端数据的原始格式，包括尾部空格，不做任何修改
-				tmpcolumnName = fmt.Sprintf("'%s'", escapeSQLString(v))
-				vlog = fmt.Sprintf("(%d) Warning: Column index %d exceeds available column data for %s.%s",
-					logThreadSeq, k, targetSchema, my.Table)
-				global.Wlog.Warn(vlog)
-			}
+			vlog = fmt.Sprintf("(%d) Warning: Column index %d exceeds available column data for %s.%s",
+				logThreadSeq, k, targetSchema, my.Table)
+			global.Wlog.Warn(vlog)
 		}
+		tmpcolumnName := formatMySQLInsertLiteral(v, dataType)
 		valuesNameSeq = append(valuesNameSeq, tmpcolumnName)
 	}
 
@@ -1077,6 +1127,10 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterColumnSqlDispos(alterType string, 
 	if len(columnDataType) > 6 {
 		directDefinition := strings.TrimSpace(columnDataType[6])
 		if directDefinition != "" && !strings.EqualFold(directDefinition, "null") {
+			// MODIFY existing primary-key columns should not inline PRIMARY KEY again.
+			if strings.EqualFold(alterType, "modify") && shouldSkipInlinePrimaryKeyClause(my.Schema, my.Table, curryColumn) {
+				directDefinition = normalizeInlinePrimaryKeyClause(directDefinition)
+			}
 			columnLocation := ""
 			if columnSeq == 0 {
 				columnLocation = "FIRST"
@@ -1129,6 +1183,8 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterColumnSqlDispos(alterType string, 
 		}
 	}
 	columnDataType[0] = stripDeprecatedZeroFillAttr(columnDataType[0])
+	columnDataType[0] = schemacompat.StripMySQLMetadataOnlyExtraTokens(columnDataType[0])
+	columnDataType[0] = normalizeMySQLKeywordFunctionsInDefinition(columnDataType[0])
 
 	// 添加数据类型
 	attributes = append(attributes, columnDataType[0])
@@ -1171,7 +1227,11 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterColumnSqlDispos(alterType string, 
 
 	// 检查是否需要设置主键（对于自增列，无论是add还是modify操作）
 	hasAutoIncrement := strings.Contains(strings.ToUpper(columnDataType[0]), "AUTO_INCREMENT")
-	if hasAutoIncrement {
+	needInlinePrimaryKey := hasAutoIncrement
+	if needInlinePrimaryKey && strings.EqualFold(alterType, "modify") && shouldSkipInlinePrimaryKeyClause(my.Schema, my.Table, curryColumn) {
+		needInlinePrimaryKey = false
+	}
+	if needInlinePrimaryKey {
 		// 对于自增列，需要设置为主键
 		attributes = append(attributes, "PRIMARY KEY")
 		// 标记该列已经设置了主键，避免在索引修复时重复设置
@@ -1204,9 +1264,17 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterColumnSqlDispos(alterType string, 
 			}
 		}
 
-		// 只有当目标表存在主键且需要设置新主键时，才需要删除旧主键
+		// 只有当目标表存在主键且当前列不是已有单列主键时，才需要删除旧主键。
+		// 对已有主键列做 MODIFY 时，保留原主键即可，避免对 generated invisible
+		// primary key 这类场景生成多余的 DROP PRIMARY KEY。
 		key := fmt.Sprintf("%s.%s", my.Schema, my.Table)
 		needDropPrimaryKey := hasPrimaryKeyAttr && DestTableHasPrimaryKey[key]
+		if needDropPrimaryKey && strings.EqualFold(alterType, "modify") {
+			primaryKeyColumns := cachedPrimaryKeyColumns(my.Schema, my.Table)
+			if len(primaryKeyColumns) == 1 && strings.EqualFold(primaryKeyColumns[0], curryColumn) {
+				needDropPrimaryKey = false
+			}
+		}
 
 		// 统一处理ADD和MODIFY操作，确保主键处理逻辑一致
 		operation := "ADD COLUMN"
@@ -1416,6 +1484,33 @@ func cachedPrimaryKeyColumns(schema, table string) []string {
 	return nil
 }
 
+func containsPrimaryKeyColumn(primaryKeyColumns []string, column string) bool {
+	trimmedColumn := strings.TrimSpace(column)
+	if trimmedColumn == "" {
+		return false
+	}
+	for _, pkColumn := range primaryKeyColumns {
+		if strings.EqualFold(strings.TrimSpace(pkColumn), trimmedColumn) {
+			return true
+		}
+	}
+	return false
+}
+
+func shouldSkipInlinePrimaryKeyClause(schema, table, column string) bool {
+	primaryKeyColumns := cachedPrimaryKeyColumns(schema, table)
+	if len(primaryKeyColumns) == 0 {
+		return false
+	}
+	return containsPrimaryKeyColumn(primaryKeyColumns, column)
+}
+
+func normalizeInlinePrimaryKeyClause(definition string) string {
+	cleaned := inlinePrimaryKeyPattern.ReplaceAllString(definition, "")
+	normalized := strings.Join(strings.Fields(cleaned), " ")
+	return strings.TrimSpace(normalized)
+}
+
 func (my *MysqlDataAbnormalFixStruct) filterRedundantDropPrimaryKeyOperations(columnOperations, indexOperations []string) []string {
 	droppedColumns := collectDroppedColumns(columnOperations)
 	if len(droppedColumns) == 0 {
@@ -1492,13 +1587,35 @@ func (my *MysqlDataAbnormalFixStruct) FixTableCharsetSqlGenerate(charset, collat
 		targetSchema = my.Schema // 默认使用目标schema
 	)
 
+	// 防护空 charset：当 LEFT JOIN COLLATIONS 失败时 charset 可能为空，
+	// 此时从 collation 名推断 charset，最终兜底为 utf8mb4。
+	trimmedCharset := strings.TrimSpace(charset)
+	if trimmedCharset == "" {
+		trimmedCharset = schemacompat.InferCharsetFromCollation(collation)
+		if trimmedCharset == "" {
+			trimmedCharset = "utf8mb4"
+		}
+		if global.Wlog != nil {
+			vlog := fmt.Sprintf("(%d) Table charset was empty, inferred as %s from collation %s for %s.%s",
+				logThreadSeq, trimmedCharset, collation, targetSchema, my.Table)
+			global.Wlog.Warn(vlog)
+		}
+	}
+
 	// 生成表级别字符集转换的SQL语句
-	alterSql = append(alterSql, fmt.Sprintf("ALTER TABLE `%s`.`%s` CONVERT TO CHARACTER SET %s COLLATE %s;",
-		targetSchema, my.Table, charset, collation))
+	if strings.TrimSpace(collation) == "" {
+		alterSql = append(alterSql, fmt.Sprintf("ALTER TABLE `%s`.`%s` CONVERT TO CHARACTER SET %s;",
+			targetSchema, my.Table, trimmedCharset))
+	} else {
+		alterSql = append(alterSql, fmt.Sprintf("ALTER TABLE `%s`.`%s` CONVERT TO CHARACTER SET %s COLLATE %s;",
+			targetSchema, my.Table, trimmedCharset, collation))
+	}
 
 	// 添加日志，方便调试
 	vlog := fmt.Sprintf("(%d) Generated table charset conversion SQL: %s", logThreadSeq, alterSql[0])
-	global.Wlog.Debug(vlog)
+	if global.Wlog != nil {
+		global.Wlog.Debug(vlog)
+	}
 
 	return alterSql
 }
@@ -1513,7 +1630,9 @@ func (my *MysqlDataAbnormalFixStruct) FixTableAutoIncrementSqlGenerate(nextValue
 	alterSql = append(alterSql, fmt.Sprintf("ALTER TABLE `%s`.`%s` AUTO_INCREMENT=%d;", targetSchema, my.Table, nextValue))
 
 	vlog := fmt.Sprintf("(%d) Generated table AUTO_INCREMENT SQL: %s", logThreadSeq, alterSql[0])
-	global.Wlog.Debug(vlog)
+	if global.Wlog != nil {
+		global.Wlog.Debug(vlog)
+	}
 
 	return alterSql
 }
@@ -1840,12 +1959,19 @@ func writeFixSQLToFile(path string, sqls []string, logThreadSeq int64) error {
 // GenerateRoutineFixSQL builds DROP + CREATE statements for procedure/function
 // routineType should be "PROCEDURE" or "FUNCTION"
 func GenerateRoutineFixSQL(sourceSchema, destSchema, name, routineType, sourceDef string) []string {
-	drop := fmt.Sprintf("DROP %s IF EXISTS `%s`.`%s`;", strings.ToUpper(routineType), destSchema, name)
-
+	upperType := strings.ToUpper(strings.TrimSpace(routineType))
 	// 处理源端定义中的schema名称替换
 	processedDef := processRoutineSchemaNames(sourceDef, sourceSchema, destSchema)
+	createStmt := extractRoutineCreateStatement(processedDef)
+	if !routineCreateLooksExecutable(createStmt, upperType) {
+		return []string{
+			fmt.Sprintf("-- WARNING: unable to auto-generate executable CREATE %s for `%s`.`%s`", upperType, destSchema, name),
+			fmt.Sprintf("-- Suggested manual check: SHOW CREATE %s `%s`.`%s`;", upperType, sourceSchema, name),
+		}
+	}
 
-	return []string{drop, strings.TrimSpace(processedDef)}
+	drop := fmt.Sprintf("DROP %s IF EXISTS `%s`.`%s`;", upperType, destSchema, name)
+	return []string{drop, createStmt}
 }
 
 // GenerateTriggerFixSQL builds DROP + CREATE statements for trigger
@@ -2042,6 +2168,90 @@ func processRoutineSchemaNames(sourceDef, sourceSchema, destSchema string) strin
 	}
 
 	return processedDef
+}
+
+func extractRoutineCreateStatement(sourceDef string) string {
+	normalized := strings.TrimSpace(strings.ReplaceAll(sourceDef, "\r", ""))
+	if normalized == "" {
+		return ""
+	}
+
+	lines := strings.Split(normalized, "\n")
+	filtered := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(strings.ToUpper(trimmed), "DELIMITER ") {
+			continue
+		}
+		filtered = append(filtered, line)
+	}
+
+	normalized = strings.TrimSpace(strings.Join(filtered, "\n"))
+	normalized = strings.TrimSpace(routineFixMetadataCommentPattern.ReplaceAllString(normalized, ""))
+	if normalized == "" {
+		return ""
+	}
+
+	upper := strings.ToUpper(normalized)
+	if idx := strings.Index(upper, "CREATE "); idx >= 0 {
+		normalized = strings.TrimSpace(normalized[idx:])
+	}
+
+	for {
+		switch {
+		case strings.HasSuffix(normalized, "$$"):
+			normalized = strings.TrimSpace(strings.TrimSuffix(normalized, "$$"))
+		case strings.HasSuffix(normalized, "$"):
+			normalized = strings.TrimSpace(strings.TrimSuffix(normalized, "$"))
+		case strings.HasSuffix(normalized, ";"):
+			normalized = strings.TrimSpace(strings.TrimSuffix(normalized, ";"))
+		default:
+			return normalized
+		}
+	}
+}
+
+func routineCreateLooksExecutable(createStmt, routineType string) bool {
+	normalized := strings.TrimSpace(createStmt)
+	if normalized == "" {
+		return false
+	}
+
+	upper := strings.ToUpper(normalized)
+	if !strings.Contains(upper, "CREATE ") || !strings.Contains(upper, routineType) {
+		return false
+	}
+
+	typeIndex := strings.Index(upper, routineType)
+	if typeIndex == -1 {
+		return false
+	}
+
+	openParenOffset := strings.Index(normalized[typeIndex:], "(")
+	if openParenOffset == -1 {
+		return false
+	}
+	openParenIndex := typeIndex + openParenOffset
+	depth := 0
+	closingParenIndex := -1
+	for i := openParenIndex; i < len(normalized); i++ {
+		switch normalized[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				closingParenIndex = i
+				break
+			}
+		}
+	}
+	if closingParenIndex == -1 {
+		return false
+	}
+
+	rest := strings.TrimSpace(normalized[closingParenIndex+1:])
+	return rest != ""
 }
 
 // processTriggerSchemaNames 处理触发器定义中的schema名称替换

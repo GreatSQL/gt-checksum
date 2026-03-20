@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"gt-checksum/dataDispos"
 	"gt-checksum/global"
-	"strconv"
 	"strings"
 	"sync"
 )
@@ -51,47 +50,85 @@ var (
 	cacheMutex sync.RWMutex
 
 	procP = func(inout []map[string]interface{}, event string) map[string]string {
-		var tmpa = make(map[string]string)
+		var tmpa = make(map[string][]string)
 		for _, v := range inout {
-			ORDINAL_POSITIO, err1 := strconv.Atoi(fmt.Sprintf("%s", v["ORDINAL_POSITION"]))
-			if err1 != nil {
-				fmt.Println(err1)
+			specificName := fmt.Sprintf("%s", v["SPECIFIC_NAME"])
+			parameterName := strings.TrimSpace(fmt.Sprintf("%v", v["PARAMETER_NAME"]))
+			if parameterName == "" || strings.EqualFold(parameterName, "<nil>") || strings.EqualFold(parameterName, "NULL") {
+				continue
 			}
-			SPECIFIC_NAME := fmt.Sprintf("%s", v["SPECIFIC_NAME"])
-			PARAMETER_MODE := fmt.Sprintf("%s", v["PARAMETER_MODE"])
+
+			parameterMode := strings.TrimSpace(fmt.Sprintf("%s", v["PARAMETER_MODE"]))
+			dtdIdentifier := strings.TrimSpace(fmt.Sprintf("%s", v["DTD_IDENTIFIER"]))
+			if dtdIdentifier == "" || strings.EqualFold(dtdIdentifier, "<nil>") || strings.EqualFold(dtdIdentifier, "NULL") {
+				continue
+			}
+
+			segment := fmt.Sprintf("%s %s", parameterName, dtdIdentifier)
 			if event == "Func" {
-				PARAMETER_MODE = ""
+				tmpa[specificName] = append(tmpa[specificName], segment)
+				continue
 			}
-			if _, ok := tmpa["SPECIFIC_NAME"]; !ok && ORDINAL_POSITIO == 1 {
-				tmpa[SPECIFIC_NAME] = fmt.Sprintf("%s %s %s", PARAMETER_MODE, v["PARAMETER_NAME"], v["DTD_IDENTIFIER"])
-			} else if _, ok = tmpa[SPECIFIC_NAME]; ok && ORDINAL_POSITIO > 1 {
-				if strings.Split(fmt.Sprintf("%s", tmpa[SPECIFIC_NAME]), " ")[0] == PARAMETER_MODE {
-					tmpa[SPECIFIC_NAME] = fmt.Sprintf("%s ,%s %s", tmpa[SPECIFIC_NAME], v["PARAMETER_NAME"], v["DTD_IDENTIFIER"])
-				} else {
-					tmpa[SPECIFIC_NAME] = fmt.Sprintf("%s %s ,%s %s", PARAMETER_MODE, tmpa[SPECIFIC_NAME], v["PARAMETER_NAME"], v["DTD_IDENTIFIER"])
-				}
+
+			if parameterMode != "" && !strings.EqualFold(parameterMode, "<nil>") && !strings.EqualFold(parameterMode, "NULL") {
+				segment = fmt.Sprintf("%s %s", parameterMode, segment)
 			}
+			tmpa[specificName] = append(tmpa[specificName], segment)
 		}
-		return tmpa
+
+		result := make(map[string]string, len(tmpa))
+		for specificName, params := range tmpa {
+			result[specificName] = strings.Join(params, ", ")
+		}
+		return result
 	}
 	procR = func(createProc []map[string]interface{}, tmpa map[string]string, event string) map[string]string {
 		var tmpb = make(map[string]string)
-
-		// 获取环境属性
-		var sqlMode, charsetClient, collationConn, dbCollation, definer string
-		if len(createProc) > 0 {
-			sqlMode = fmt.Sprintf("%s", createProc[0]["SQL_MODE"])
-			charsetClient = fmt.Sprintf("%s", createProc[0]["CHARACTER_SET_CLIENT"])
-			collationConn = fmt.Sprintf("%s", createProc[0]["COLLATION_CONNECTION"])
-			dbCollation = fmt.Sprintf("%s", createProc[0]["DATABASE_COLLATION"])
-			definer = fmt.Sprintf("%s", createProc[0]["DEFINER"])
+		lookupParamSignature := func(routineName string) string {
+			if signature, ok := tmpa[routineName]; ok {
+				return signature
+			}
+			for name, signature := range tmpa {
+				if strings.EqualFold(name, routineName) {
+					return signature
+				}
+			}
+			return ""
+		}
+		splitDefiner := func(definer string) (string, string) {
+			normalized := strings.TrimSpace(definer)
+			if normalized == "" || strings.EqualFold(normalized, "<entry>") || strings.EqualFold(normalized, "<nil>") {
+				return "", ""
+			}
+			atPos := strings.LastIndex(normalized, "@")
+			if atPos <= 0 || atPos >= len(normalized)-1 {
+				return strings.Trim(normalized, "`'\" "), ""
+			}
+			user := strings.Trim(normalized[:atPos], "`'\" ")
+			host := strings.Trim(normalized[atPos+1:], "`'\" ")
+			return user, host
 		}
 
 		for _, v := range createProc {
-			ROUTINE_DEFINITION := fmt.Sprintf("%s", v["ROUTINE_DEFINITION"])
-			ROUTINE_NAME := strings.ToUpper(fmt.Sprintf("%s", v["ROUTINE_NAME"]))
-			user := strings.Split(fmt.Sprintf("%s", v["DEFINER"]), "@")[0]
-			host := strings.Split(fmt.Sprintf("%s", v["DEFINER"]), "@")[1]
+			routineDefinition := strings.TrimSpace(fmt.Sprintf("%s", v["ROUTINE_DEFINITION"]))
+			routineName := strings.TrimSpace(fmt.Sprintf("%s", v["ROUTINE_NAME"]))
+			if routineName == "" || strings.EqualFold(routineName, "<entry>") || strings.EqualFold(routineName, "<nil>") {
+				continue
+			}
+
+			sqlMode := fmt.Sprintf("%s", v["SQL_MODE"])
+			charsetClient := fmt.Sprintf("%s", v["CHARACTER_SET_CLIENT"])
+			collationConn := fmt.Sprintf("%s", v["COLLATION_CONNECTION"])
+			dbCollation := fmt.Sprintf("%s", v["DATABASE_COLLATION"])
+			definer := fmt.Sprintf("%s", v["DEFINER"])
+			user, host := splitDefiner(definer)
+
+			definerClause := ""
+			if user != "" && host != "" {
+				definerClause = fmt.Sprintf("DEFINER='%s'@'%s' ", user, host)
+			}
+			routineIdentifier := fmt.Sprintf("`%s`", strings.ReplaceAll(routineName, "`", "``"))
+			paramSignature := lookupParamSignature(routineName)
 
 			// 将存储过程的完整定义和属性存储在一个JSON格式的字符串中
 			if event == "Proc" {
@@ -100,9 +137,12 @@ var (
 				metadataComment := fmt.Sprintf(`/*GT_CHECKSUM_METADATA:{"sql_mode":"%s","character_set_client":"%s","collation_connection":"%s","database_collation":"%s","definer":"%s"}*/`,
 					sqlMode, charsetClient, collationConn, dbCollation, definer)
 
-				// 存储完整的存储过程定义，包括环境属性作为注释
-				tmpb[ROUTINE_NAME] = fmt.Sprintf("DELIMITER $\n%s\nCREATE DEFINER='%s'@'%s' PROCEDURE %s(%s) %s$ \nDELIMITER ;",
-					metadataComment, user, host, ROUTINE_NAME, tmpa[ROUTINE_NAME], ROUTINE_DEFINITION)
+				createStmt := fmt.Sprintf("CREATE %sPROCEDURE %s(%s)", definerClause, routineIdentifier, paramSignature)
+				if routineDefinition != "" && !strings.EqualFold(routineDefinition, "<entry>") && !strings.EqualFold(routineDefinition, "<nil>") {
+					createStmt = fmt.Sprintf("%s %s", createStmt, routineDefinition)
+				}
+				tmpb[routineName] = fmt.Sprintf("%s\n%s", metadataComment, createStmt)
+				tmpb[routineName+"_BODY"] = routineDefinition
 			}
 
 			if event == "Func" {
@@ -110,9 +150,11 @@ var (
 				metadataComment := fmt.Sprintf(`/*GT_CHECKSUM_METADATA:{"sql_mode":"%s","character_set_client":"%s","collation_connection":"%s","database_collation":"%s","definer":"%s"}*/`,
 					sqlMode, charsetClient, collationConn, dbCollation, definer)
 
-				// 存储完整的函数定义，包括环境属性作为注释
-				tmpb[ROUTINE_NAME] = fmt.Sprintf("DELIMITER $\n%s\nCREATE DEFINER='%s'@'%s' FUNCTION %s(%s) %s$ \nDELIMITER ;",
-					metadataComment, user, host, ROUTINE_NAME, tmpa[ROUTINE_NAME], strings.ReplaceAll(ROUTINE_DEFINITION, "\n", ""))
+				createStmt := fmt.Sprintf("CREATE %sFUNCTION %s(%s)", definerClause, routineIdentifier, paramSignature)
+				if routineDefinition != "" && !strings.EqualFold(routineDefinition, "<entry>") && !strings.EqualFold(routineDefinition, "<nil>") {
+					createStmt = fmt.Sprintf("%s %s", createStmt, routineDefinition)
+				}
+				tmpb[routineName] = fmt.Sprintf("%s\n%s", metadataComment, createStmt)
 			}
 		}
 		return tmpb
@@ -641,7 +683,7 @@ func (my *QueryTable) TableAllColumn(db *sql.DB, logThreadSeq int64) ([]map[stri
 
 	logMsg = fmt.Sprintf("(%d) [%s] Start to query the metadata of all the columns of table %s.%s in the %s database", logThreadSeq, Event, my.Schema, my.Table, DBType)
 	global.Wlog.Debug(logMsg)
-	query = fmt.Sprintf("SELECT COLUMN_NAME AS columnName, COLUMN_TYPE AS dataType, ORDINAL_POSITION AS columnSeq, IS_NULLABLE AS isNull, COLUMN_COMMENT AS columnComment FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s' ORDER BY ORDINAL_POSITION;", my.Schema, my.Table)
+	query = fmt.Sprintf("SELECT COLUMN_NAME AS columnName, COLUMN_TYPE AS dataType, ORDINAL_POSITION AS columnSeq, IS_NULLABLE AS isNull, COLUMN_COMMENT AS columnComment, EXTRA AS extra FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s' ORDER BY ORDINAL_POSITION;", my.Schema, my.Table)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(query); err != nil {
 		return nil, err
