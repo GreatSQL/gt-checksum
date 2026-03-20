@@ -1,21 +1,23 @@
+-- to be applied in target MySQL instance
 SET NAMES utf8mb4;
 SET FOREIGN_KEY_CHECKS=0;
 SET UNIQUE_CHECKS=0;
-SET sql_generate_invisible_primary_key=OFF;
+/*!80013 SET SESSION sql_require_primary_key=0 */;
+/*!80030 SET SESSION sql_generate_invisible_primary_key=0 */;
 
-DROP DATABASE IF EXISTS gt_checksum;
-CREATE DATABASE IF NOT EXISTS gt_checksum DEFAULT CHARACTER SET utf8mb4;
+/*!40000 DROP DATABASE IF EXISTS `gt_checksum`*/;
+CREATE DATABASE /*!32312 IF NOT EXISTS*/ `gt_checksum` /*!40100 DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci */ /*!80016 DEFAULT ENCRYPTION='N' */;
 USE gt_checksum;
 
 -- 测试几个基本数据类型
 DROP TABLE IF EXISTS testint;
 CREATE TABLE testint(
     f1 TINYINT,
-    f2 SMALLINT,
-    f3 MEDIUMINT,
-    f4 INT,
-    f5 INT(5) ZEROFILL,
-    f6 INT UNSIGNED,
+    f2 SMALLINT NOT NULL,
+    f3 MEDIUMINT NOT NULL DEFAULT 3,
+    f4 INT UNSIGNED DEFAULT 4,
+    f5 INT(11) ZEROFILL NOT NULL,
+    f6 INT(3) UNSIGNED ZEROFILL,
     f7 BIGINT
 ) COMMENT='table testint' ;
 ALTER TABLE testint ADD INDEX idx_testint_1(f1);
@@ -40,24 +42,24 @@ CREATE TABLE testbit(
 ALTER TABLE testbit ADD INDEX idx_testbit_1(f1);
 INSERT INTO testbit VALUES(1,31,65);
 
+/*!80030 SET SESSION sql_generate_invisible_primary_key=1 */;
 DROP TABLE IF EXISTS testtime;
 CREATE TABLE testtime(
      f1 YEAR,
-     f2 YEAR(4),
-     f3 DATE,
-     f4 TIME,
-     f5 DATETIME,
-     f6 TIMESTAMP
+     f2 YEAR(4) DEFAULT 2026,
+     f3 DATE DEFAULT '2026-03-16',
+     f4 TIME DEFAULT '15:15:30',
+     f5 DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+     f6 TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 ALTER TABLE testtime ADD INDEX idx_testtime_1(f1);
 INSERT INTO testtime(f1,f2,f3,f4,f5,f6) VALUES('2022',2022,'2022-07-12','12:30:29','2022-07-12 14:53:00','2022-07-12 14:54:00');
-INSERT INTO testtime(f1,f2,f3,f4,f5,f6) VALUES('2026',2026,'2026-02-12','15:15:30','2026-02-12 14:53:00','2026-02-12 14:54:00');
 
 DROP TABLE IF EXISTS teststring;
 CREATE TABLE teststring(
    f1 CHAR,
-   f2 CHAR(5),
-   f3 VARCHAR(10),
+   f2 VARCHAR(5),
+   f3 CHAR(15),
    f4 TINYTEXT,
    f5 TEXT,
    f6 MEDIUMTEXT,
@@ -67,7 +69,6 @@ CREATE TABLE teststring(
 );
 ALTER TABLE teststring ADD INDEX idx_teststring_1(f1);
 INSERT INTO teststring(f1,f2,f3,f4,f5,f6,f7,f8,f9) VALUES('1','abcde','abc123','abcd.1234','hello gt-checksum','hello ','hello gt-checksum','a','aa,bb');
-INSERT INTO teststring(f1,f2,f3,f4,f5,f6,f7,f8,f9) VALUES('2','fghij','def456','efgh.5678',"hello, i\'m gt-checksum",'hello ','hello gt-checksum','b','cc,dd');
 INSERT INTO teststring(f1,f2,f3,f4,f5,f6,f7,f8,f9) VALUES('3','klmno','ghi789','ijkl.9012',"a\\\b\\'c",'hello ','hello gt-checksum','c','cc,dd');
 
 DROP TABLE IF EXISTS testbin;
@@ -83,13 +84,13 @@ CREATE TABLE testbin(
 ALTER TABLE testbin ADD INDEX idx_testbin_1(f1);
 INSERT INTO testbin(f1,f2,f3,f4,f5,f6,f7) VALUES('a','abc','abcd.1234','01010101','0x9023123123','hello gt-checksum','hello gt-checksum');
 
+/*!80030 SET SESSION sql_generate_invisible_primary_key=0 */;
 -- 测试触发器的处理
 DROP TABLE IF EXISTS account;
 CREATE TABLE account (
     acct_num INT, 
     amount DECIMAL(10,2)
 );
-INSERT INTO account VALUES(137,14.98),(141,1937.50),(97,-100.00);
 
 -- 创建影子表
 DROP TABLE IF EXISTS tmp_account;
@@ -107,7 +108,7 @@ DROP TRIGGER IF EXISTS accountInsert;
 CREATE TRIGGER accountInsert BEFORE INSERT
     ON account FOR EACH ROW
 BEGIN
-    INSERT INTO tmp_account VALUES(NEW.acct_num,NEW.amount,"INSERT");
+    INSERT INTO tmp_account VALUES(NEW.acct_num,NEW.amount,"INSERT-x");
 END ||
 
 -- 监控delete
@@ -130,14 +131,6 @@ BEGIN
 END ||
 DELIMITER ;
 
-INSERT INTO account VALUES (150,33.32);
-
-INSERT INTO account VALUES(200,13.23);
-UPDATE account SET acct_num = 201 WHERE amount = 13.23;
-
-INSERT INTO account VALUES(300,14.23);
-DELETE FROM account WHERE acct_num = 300;
-
 -- 测试分区
 DROP TABLE IF EXISTS range_partition_table;
 CREATE TABLE range_partition_table(
@@ -150,8 +143,8 @@ CREATE TABLE range_partition_table(
     PARTITION PART_202009 VALUES LESS THAN (to_days('2020-09-1'))
 );
 
-DROP TABLE IF EXISTS gt_checksum.customer;
-CREATE TABLE gt_checksum.customer(
+DROP TABLE IF EXISTS customer;
+CREATE TABLE customer(
     customer_id INT NOT NULL PRIMARY KEY,
     first_name  VARCHAR(30) NOT NULL,
     last_name   VARCHAR(30) NOT NULL,
@@ -160,11 +153,13 @@ CREATE TABLE gt_checksum.customer(
     status      CHAR(1)
 )PARTITION BY RANGE (customer_id)(
  PARTITION CUS_PART1 VALUES LESS THAN (100000),
- PARTITION CUS_PART2 VALUES LESS THAN (200000)
+ PARTITION CUS_PART2 VALUES LESS THAN (200000),
+ PARTITION CUS_PART3 VALUES LESS THAN (300000),
+ PARTITION CUS_PART4 VALUES LESS THAN (400000)
 );
 
-DROP TABLE IF EXISTS gt_checksum.customer1;
-CREATE TABLE gt_checksum.customer1(
+DROP TABLE IF EXISTS customer1;
+CREATE TABLE customer1(
     customer_id BIGINT NOT NULL,
     first_name  VARCHAR(30) NOT NULL,
     last_name   VARCHAR(30) NOT NULL,
@@ -172,8 +167,7 @@ CREATE TABLE gt_checksum.customer1(
     email       VARCHAR(80),
     status      CHAR(1)
 ) PARTITION BY RANGE COLUMNS (customer_id)(
-    PARTITION CUS_PART1 VALUES LESS THAN (100000),
-    PARTITION CUS_PART2 VALUES LESS THAN (200000)
+    PARTITION CUS_PART1 VALUES LESS THAN (100000)
 );
 
 DROP TABLE IF EXISTS list_partition_table;
@@ -208,6 +202,7 @@ CREATE TABLE range_hash_partition_table (
         PARTITION p2 VALUES LESS THAN MAXVALUE
 );
 
+/*!80030 SET SESSION sql_generate_invisible_primary_key=1 */;
 -- 测试外键约束
 DROP TABLE IF EXISTS tb_dept1;
 CREATE TABLE tb_dept1 (
@@ -238,7 +233,7 @@ BEGIN
 	DECLARE results VARCHAR(20);
 	IF age<=14 then
 		set results = 'Children';
-	ELSEIF age <=24 THEN
+	ELSEIF age <=25 THEN
 		set results = 'Teenagers';
 	ELSEIF age <=44 THEN
 		set results = 'Youth';
@@ -256,7 +251,7 @@ DROP PROCEDURE IF EXISTS myAdd;
 CREATE PROCEDURE myAdd(IN n1 INT, IN n2 INT, OUT s INT)
 COMMENT 'PROCEDURE myAdd'
 BEGIN
-    SET s = n1 + n2;
+    SET s = n1 + n2 + 1;
 END ||
 DELIMITER ;
 
@@ -273,10 +268,11 @@ DELIMITER ||
 DROP TRIGGER IF EXISTS tri_test;
 CREATE TRIGGER tri_test
  BEFORE INSERT ON test1 FOR EACH ROW BEGIN
-  INSERT INTO test2 SET a2=NEW.a1;
+  INSERT INTO test2 SET a2=NEW.a1 + 1;
 END ||
 DELIMITER ;
 
+/*!80030 SET SESSION sql_generate_invisible_primary_key=0 */;
 -- 测试索引
 DROP TABLE IF EXISTS indext;
 CREATE TABLE indext(
