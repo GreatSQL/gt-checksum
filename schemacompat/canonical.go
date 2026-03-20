@@ -100,17 +100,20 @@ type CanonicalTableOptions struct {
 }
 
 var (
-	whitespaceRegexp         = regexp.MustCompile(`\s+`)
-	integerDisplayWidthRegex = regexp.MustCompile(`\b(tinyint|smallint|mediumint|int|integer|bigint)\s*\(\s*\d+\s*\)`)
-	yearDisplayWidthRegex    = regexp.MustCompile(`\byear\s*\(\s*4\s*\)`)
-	rowFormatOptionRegexp    = regexp.MustCompile(`(?i)\brow_format\s*=\s*([a-z_]+)`)
-	checkWithNameRegexp      = regexp.MustCompile("(?i)constraint\\s+`?([^`\\s]+)`?\\s+check\\s*(\\(.*\\))")
-	checkNoNameRegexp        = regexp.MustCompile(`(?i)\bcheck\s*(\(.+\))`)
-	fkNameRegexp             = regexp.MustCompile("(?i)constraint\\s+!([^!]+)!\\s+foreign\\s+key")
-	fkDefinitionRegexp       = regexp.MustCompile(`(?i)foreign\s+key\s*\((.*?)\)\s*references\s*!([^!]+)!\s*\.\s*!([^!]+)!\s*\((.*?)\)`)
-	fkDeleteRuleRegexp       = regexp.MustCompile(`(?i)\bon\s+delete\s+(cascade|restrict|set null|no action|set default)`)
-	fkUpdateRuleRegexp       = regexp.MustCompile(`(?i)\bon\s+update\s+(cascade|restrict|set null|no action|set default)`)
-	mariadbCompressedComment = regexp.MustCompile(`(?i)/\*m!\d+\s+compressed\s*\*/`)
+	whitespaceRegexp           = regexp.MustCompile(`\s+`)
+	integerDisplayWidthRegex   = regexp.MustCompile(`\b(tinyint|smallint|mediumint|int|integer|bigint)\s*\(\s*\d+\s*\)`)
+	yearDisplayWidthRegex      = regexp.MustCompile(`\byear\s*\(\s*4\s*\)`)
+	mysqlKeywordDefaultRegex   = regexp.MustCompile(`(?i)^(current_timestamp|current_date|current_time|localtime|localtimestamp)(?:\((\d*)\))?$`)
+	mysqlKeywordInTypeRegexp   = regexp.MustCompile(`(?i)\b(current_timestamp|current_date|current_time|localtime|localtimestamp)(?:\((\d*)\))?`)
+	mysqlDateTimeDefaultRegexp = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(\.\d{1,6})?$`)
+	rowFormatOptionRegexp      = regexp.MustCompile(`(?i)\brow_format\s*=\s*([a-z_]+)`)
+	checkWithNameRegexp        = regexp.MustCompile("(?i)constraint\\s+`?([^`\\s]+)`?\\s+check\\s*(\\(.*\\))")
+	checkNoNameRegexp          = regexp.MustCompile(`(?i)\bcheck\s*(\(.+\))`)
+	fkNameRegexp               = regexp.MustCompile("(?i)constraint\\s+!([^!]+)!\\s+foreign\\s+key")
+	fkDefinitionRegexp         = regexp.MustCompile(`(?i)foreign\s+key\s*\((.*?)\)\s*references\s*!([^!]+)!\s*\.\s*!([^!]+)!\s*\((.*?)\)`)
+	fkDeleteRuleRegexp         = regexp.MustCompile(`(?i)\bon\s+delete\s+(cascade|restrict|set null|no action|set default)`)
+	fkUpdateRuleRegexp         = regexp.MustCompile(`(?i)\bon\s+update\s+(cascade|restrict|set null|no action|set default)`)
+	mariadbCompressedComment   = regexp.MustCompile(`(?i)/\*m!\d+\s+compressed\s*\*/`)
 )
 
 func normalizeWhitespace(v string) string {
@@ -145,8 +148,110 @@ func normalizeCollation(v string) string {
 	return s
 }
 
+func normalizeColumnDefaultValue(v string) string {
+	raw := strings.TrimSpace(v)
+	switch strings.ToLower(raw) {
+	case "", "null", "<nil>", "<entry>":
+		return ""
+	}
+
+	matches := mysqlKeywordDefaultRegex.FindStringSubmatch(raw)
+	if len(matches) != 3 {
+		unquoted, _ := UnwrapQuotedDefaultLiteral(raw)
+		return normalizeDefaultLiteral(unquoted)
+	}
+
+	name := strings.ToUpper(matches[1])
+	if matches[2] == "" {
+		return name
+	}
+	return fmt.Sprintf("%s(%s)", name, matches[2])
+}
+
+// UnwrapQuotedDefaultLiteral removes up to 4 layers of escaped/nested quotes
+// from MySQL INFORMATION_SCHEMA DEFAULT values. Exported so that the fixsql
+// generator in the mysql package can reuse the same logic without duplication.
+func UnwrapQuotedDefaultLiteral(v string) (string, bool) {
+	s := strings.TrimSpace(v)
+	changed := false
+	// MySQL INFORMATION_SCHEMA DEFAULT values may be wrapped in up to 4
+	// layers of escaped quotes (e.g. \'...\' → '...' → inner), depending
+	// on the MySQL version and how the value was originally declared. Four
+	// iterations covers all observed nesting depths across 5.6 → 8.4.
+	for i := 0; i < 4; i++ {
+		if strings.HasPrefix(s, "\\'") && strings.HasSuffix(s, "\\'") && len(s) >= 4 {
+			s = "'" + s[2:len(s)-2] + "'"
+		}
+		if strings.HasPrefix(s, "\\\"") && strings.HasSuffix(s, "\\\"") && len(s) >= 4 {
+			s = `"` + s[2:len(s)-2] + `"`
+		}
+		if len(s) < 2 {
+			break
+		}
+		quote := s[0]
+		if (quote != '\'' && quote != '"') || s[len(s)-1] != quote {
+			break
+		}
+
+		inner := strings.TrimSpace(s[1 : len(s)-1])
+		if quote == '\'' {
+			inner = strings.ReplaceAll(inner, "\\'", "'")
+			inner = strings.ReplaceAll(inner, "''", "'")
+		} else {
+			inner = strings.ReplaceAll(inner, "\\\"", `"`)
+			inner = strings.ReplaceAll(inner, `""`, `"`)
+		}
+		s = inner
+		changed = true
+	}
+	return s, changed
+}
+
+func normalizeDefaultLiteral(v string) string {
+	normalized := normalizeWhitespace(strings.TrimSpace(v))
+	if normalized == "" {
+		return ""
+	}
+
+	if matches := mysqlDateTimeDefaultRegexp.FindStringSubmatch(normalized); len(matches) == 4 {
+		return matches[1] + " " + matches[2] + matches[3]
+	}
+	if len(normalized) >= 19 && normalized[10] == 'T' {
+		return normalized[:10] + " " + normalized[11:]
+	}
+	return normalized
+}
+
+func normalizeMySQLKeywordFunctionsForType(v string) string {
+	return mysqlKeywordInTypeRegexp.ReplaceAllStringFunc(v, func(match string) string {
+		matches := mysqlKeywordDefaultRegex.FindStringSubmatch(strings.TrimSpace(match))
+		if len(matches) != 3 {
+			return match
+		}
+		name := strings.ToLower(matches[1])
+		if matches[2] == "" {
+			return name
+		}
+		return fmt.Sprintf("%s(%s)", name, matches[2])
+	})
+}
+
+// StripMySQLMetadataOnlyExtraTokens removes INFORMATION_SCHEMA.EXTRA markers
+// that describe metadata state but are not valid standalone DDL fragments.
+func StripMySQLMetadataOnlyExtraTokens(value string) string {
+	s := normalizeWhitespace(strings.TrimSpace(value))
+	if s == "" {
+		return s
+	}
+	if strings.Contains(strings.ToLower(s), "default_generated") {
+		s = strings.ReplaceAll(strings.ReplaceAll(s, "DEFAULT_GENERATED", " "), "default_generated", " ")
+		s = normalizeWhitespace(s)
+	}
+	return s
+}
+
 func normalizeMySQLColumnType(raw string) (string, string, ColumnVisibility, bool, string) {
-	s := strings.ToLower(normalizeWhitespace(raw))
+	s := strings.ToLower(StripMySQLMetadataOnlyExtraTokens(raw))
 	visibility := ColumnVisibilityVisible
 	autoIncrement := false
 	compressionAttr := ""
@@ -191,12 +296,6 @@ func normalizeMySQLColumnType(raw string) (string, string, ColumnVisibility, boo
 	if strings.Contains(s, " generated always") {
 		s = strings.ReplaceAll(s, " generated always", " ")
 	}
-	// INFORMATION_SCHEMA.EXTRA in MySQL 8.0+ may add DEFAULT_GENERATED for
-	// TIMESTAMP/DATETIME defaults. This is metadata noise, not a type change.
-	if strings.Contains(s, " default_generated") || strings.HasSuffix(s, "default_generated") {
-		s = strings.ReplaceAll(s, " default_generated", " ")
-		s = strings.TrimSuffix(s, "default_generated")
-	}
 	if strings.Contains(s, " generated") || strings.HasSuffix(s, "generated") {
 		s = strings.ReplaceAll(s, " generated", " ")
 	}
@@ -208,6 +307,7 @@ func normalizeMySQLColumnType(raw string) (string, string, ColumnVisibility, boo
 	s = normalizeWhitespace(s)
 	s = strings.ReplaceAll(s, "integer", "int")
 	s = integerDisplayWidthRegex.ReplaceAllString(s, "${1}")
+	s = normalizeMySQLKeywordFunctionsForType(s)
 	// YEAR(4) in MySQL 5.6/5.7 is rendered as YEAR in MySQL 8.0+, so treat
 	// the display width drift as a textual difference only.
 	s = yearDisplayWidthRegex.ReplaceAllString(s, "year")
@@ -241,7 +341,7 @@ func CanonicalizeMySQLColumn(name string, attrs []string, _ global.MySQLVersionI
 		Collation:           normalizeNullish(getAttr(2)),
 		NormalizedCollation: normalizeCollation(getAttr(2)),
 		Nullable:            strings.EqualFold(normalizeNullish(getAttr(3)), "YES"),
-		DefaultValue:        normalizeNullish(getAttr(4)),
+		DefaultValue:        normalizeColumnDefaultValue(getAttr(4)),
 		Comment:             normalizeNullish(getAttr(5)),
 		Visibility:          visibility,
 		AutoIncrement:       autoIncrement,
@@ -363,6 +463,24 @@ func DecideColumnCharsetCompatibility(source, target CanonicalColumn) Compatibil
 
 func DecideColumnCollationCompatibility(source, target CanonicalColumn) CompatibilityDecision {
 	return decideCollationCompatibility(source.Collation, target.Collation, source.NormalizedCollation, target.NormalizedCollation)
+}
+
+func DecideColumnDefaultCompatibility(source, target CanonicalColumn) CompatibilityDecision {
+	if source.DefaultValue == target.DefaultValue {
+		return CompatibilityDecision{
+			State:  CompatibilityEqual,
+			Reason: "column default matches after normalization",
+			Source: source.DefaultValue,
+			Target: target.DefaultValue,
+		}
+	}
+
+	return CompatibilityDecision{
+		State:  CompatibilityUnsupported,
+		Reason: fmt.Sprintf("column default differs after normalization: source=%s target=%s", source.DefaultValue, target.DefaultValue),
+		Source: source.DefaultValue,
+		Target: target.DefaultValue,
+	}
 }
 
 func NormalizeTableRowFormat(v string) string {
@@ -855,7 +973,7 @@ func decideCollationCompatibility(sourceRaw, targetRaw, sourceNormalized, target
 	if sourceNormalized == targetNormalized {
 		return decideNormalizedStringCompatibility("collation", sourceRaw, targetRaw, sourceNormalized, targetNormalized)
 	}
-	if isUTF8MB4DefaultCollationDrift(sourceNormalized, targetNormalized) {
+	if IsUTF8MB4DefaultCollationDrift(sourceNormalized, targetNormalized) {
 		return CompatibilityDecision{
 			State:  CompatibilityWarnOnly,
 			Reason: fmt.Sprintf("utf8mb4 default collation drift detected between legacy and MySQL 8.x defaults: source=%s target=%s", sourceNormalized, targetNormalized),
@@ -871,13 +989,83 @@ func decideCollationCompatibility(sourceRaw, targetRaw, sourceNormalized, target
 	}
 }
 
-func isUTF8MB4DefaultCollationDrift(sourceNormalized, targetNormalized string) bool {
+func IsUTF8MB4DefaultCollationDrift(sourceNormalized, targetNormalized string) bool {
+	// Static pairs: known default collation upgrades between MySQL/MariaDB versions.
 	pairs := map[string]map[string]struct{}{
 		"utf8mb4_general_ci": {"utf8mb4_0900_ai_ci": {}},
 		"utf8mb4_0900_ai_ci": {"utf8mb4_general_ci": {}},
 	}
-	_, ok := pairs[sourceNormalized][targetNormalized]
-	return ok
+	if _, ok := pairs[sourceNormalized][targetNormalized]; ok {
+		return true
+	}
+
+	// Dynamic check: MariaDB UCA 14.0.0 ↔ MySQL UCA 9.0.0 with matching sensitivity.
+	// Covers MariaDB 11.2+/12.x default utf8mb4_uca1400_ai_ci and all sensitivity variants.
+	srcMapped, srcIsUCA1400 := MapMariaDBCollationToMySQL(sourceNormalized)
+	if srcIsUCA1400 && srcMapped == targetNormalized {
+		return true
+	}
+	dstMapped, dstIsUCA1400 := MapMariaDBCollationToMySQL(targetNormalized)
+	if dstIsUCA1400 && dstMapped == sourceNormalized {
+		return true
+	}
+	return false
+}
+
+// MapMariaDBCollationToMySQL maps a MariaDB UCA 14.0.0 collation to the closest
+// MySQL UCA 9.0.0 equivalent by preserving the charset prefix and sensitivity
+// suffix (ai_ci, as_ci, as_cs, ai_cs). Locale variants are folded into the base
+// MySQL collation. Returns ("", false) if the input is not a UCA 14.0.0 collation.
+func MapMariaDBCollationToMySQL(collation string) (string, bool) {
+	lower := strings.ToLower(strings.TrimSpace(collation))
+	if !strings.Contains(lower, "_uca1400_") {
+		return "", false
+	}
+
+	parts := strings.SplitN(lower, "_uca1400_", 2)
+	if len(parts) != 2 {
+		return "", false
+	}
+	charset := parts[0]
+	suffix := parts[1]
+
+	sensitivities := []string{"ai_ci", "as_ci", "as_cs", "ai_cs"}
+
+	// Base collation (no locale): e.g. utf8mb4_uca1400_ai_ci → utf8mb4_0900_ai_ci
+	for _, sens := range sensitivities {
+		if suffix == sens {
+			return charset + "_0900_" + sens, true
+		}
+	}
+	// Locale variant: e.g. utf8mb4_uca1400_swedish_ai_ci → utf8mb4_0900_ai_ci
+	for _, sens := range sensitivities {
+		if strings.HasSuffix(suffix, "_"+sens) {
+			return charset + "_0900_" + sens, true
+		}
+	}
+
+	return "", false
+}
+
+// InferCharsetFromCollation extracts the character set name from a collation
+// name by matching known charset prefixes. Returns empty string on failure.
+func InferCharsetFromCollation(collation string) string {
+	lower := strings.ToLower(strings.TrimSpace(collation))
+	if lower == "" || lower == "null" {
+		return ""
+	}
+	for _, prefix := range []string{
+		"utf8mb4_", "utf8mb3_", "utf8_", "latin1_", "ascii_",
+		"utf16_", "utf32_", "ucs2_", "gbk_", "gb2312_", "big5_",
+	} {
+		if strings.HasPrefix(lower, prefix) {
+			return strings.TrimSuffix(prefix, "_")
+		}
+	}
+	if idx := strings.Index(lower, "_"); idx > 0 {
+		return lower[:idx]
+	}
+	return ""
 }
 
 func decideNormalizedStringCompatibility(label, sourceRaw, targetRaw, sourceNormalized, targetNormalized string) CompatibilityDecision {

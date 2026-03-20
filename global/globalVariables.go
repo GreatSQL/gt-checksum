@@ -68,10 +68,11 @@ var DroppedTables []string
 var HasInvisibleColumnMismatch bool
 
 const (
-	SkipDiffsNo       = "no"
-	SkipDiffsYes      = "yes"
-	SkipDiffsDDLYes   = "DDL-yes"
-	SkipDiffsWarnOnly = "warn-only"
+	SkipDiffsNo              = "no"
+	SkipDiffsYes             = "yes"
+	SkipDiffsDDLYes          = "DDL-yes"
+	SkipDiffsWarnOnly        = "warn-only"
+	SkipDiffsCollationMapped = "collation-mapped"
 )
 
 // SkippedTable 存储跳过的表信息

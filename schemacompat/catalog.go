@@ -71,7 +71,12 @@ func BuildSchemaFeatureCatalog(info global.MySQLVersionInfo) SchemaFeatureCatalo
 		catalog.SupportsNativeINET6Type = info.Major > 10 || (info.Major == 10 && info.Minor >= 5)
 		catalog.SupportsNativeUUIDType = info.Major > 10 || (info.Major == 10 && info.Minor >= 7)
 		catalog.SupportsColumnCompression = true
-		catalog.DefaultCollationByCharset["utf8mb4"] = "utf8mb4_general_ci"
+		// MariaDB 11.5+ uses utf8mb4_uca1400_ai_ci as the default collation for utf8mb4.
+		if info.Major > 11 || (info.Major == 11 && info.Minor >= 5) {
+			catalog.DefaultCollationByCharset["utf8mb4"] = "utf8mb4_uca1400_ai_ci"
+		} else {
+			catalog.DefaultCollationByCharset["utf8mb4"] = "utf8mb4_general_ci"
+		}
 	default:
 		catalog.SupportsJSON = info.Major > 5 || (info.Major == 5 && info.Minor >= 7)
 		catalog.SupportsGeneratedColumns = info.Major > 5 || (info.Major == 5 && info.Minor >= 7)

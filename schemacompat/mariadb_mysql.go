@@ -217,8 +217,32 @@ func BuildTargetColumnRepairPlan(name string, attrs []string, sourceInfo, target
 	default:
 		plan.Type = stripMariaDBOnlyColumnAttributes(plan.Type)
 	}
+	if !plan.UseDirectDefinition {
+		plan.Type = normalizeMySQLRepairColumnType(plan.Type)
+	}
+
+	// MariaDB UCA 14.0.0 collation 在 MySQL 上不存在，映射为 UCA 9.0.0 等价物
+	if plan.Collation != "" && plan.Collation != "null" {
+		if mapped, ok := MapMariaDBCollationToMySQL(plan.Collation); ok {
+			plan.Collation = mapped
+		}
+	}
 
 	return plan
+}
+
+func normalizeMySQLRepairColumnType(columnType string) string {
+	normalized := normalizeWhitespace(strings.TrimSpace(columnType))
+	if normalized == "" {
+		return normalized
+	}
+
+	normalized = normalizeMySQLKeywordFunctionsForType(normalized)
+	if !strings.Contains(strings.ToUpper(normalized), "ZEROFILL") {
+		normalized = integerDisplayWidthRegex.ReplaceAllString(normalized, "${1}")
+	}
+	normalized = yearDisplayWidthRegex.ReplaceAllString(normalized, "year")
+	return normalizeWhitespace(normalized)
 }
 
 func ConvertMariaDBCreateTableToMySQL(createSQL string, sourceInfo, targetInfo global.MySQLVersionInfo, jsonTargetType string) string {

@@ -199,10 +199,11 @@ func (sp *SchedulePlan) Schedulingtasks() {
 
 					// 如果仅有一个表需要校验，则报错退出
 					if totalTables == 1 {
-						fmt.Printf("\n[ERROR] Only one table to check and DDL mismatch found. Exiting.\n")
+						fmt.Printf("\n[ERROR] Only one table to check and data checksum precheck found a DDL mismatch. Exiting.\n")
 						fmt.Printf("Source: %s.%s, Target: %s.%s\n", sourceSchema, sourceTable, destSchema, destTable)
 						fmt.Printf("Detail: %s\n", mismatch)
-						global.Wlog.Error(fmt.Sprintf("Only one table to check (%s.%s) and DDL mismatch found, exiting", sourceSchema, sourceTable))
+						fmt.Printf("Suggestion: run checkObject=struct or align the table DDL before retrying data checksum.\n")
+						global.Wlog.Error(fmt.Sprintf("Only one table to check (%s.%s) and data checksum precheck found a DDL mismatch, exiting", sourceSchema, sourceTable))
 						os.Exit(1)
 					}
 					continue
@@ -322,6 +323,7 @@ func checkDDLConsistency(sourceColumns, destColumns []map[string]string, sourceS
 	type columnMeta struct {
 		name     string
 		dataType string
+		extra    string
 	}
 
 	isOracleDrive := func(d string) bool {
@@ -334,6 +336,11 @@ func checkDDLConsistency(sourceColumns, destColumns []map[string]string, sourceS
 	}
 	normalizeColumnKey := func(name string) string {
 		key := strings.TrimSpace(name)
+		// Keep the fast DDL precheck consistent with the struct compare path:
+		// MySQL and MariaDB column identifiers are compared case-insensitively.
+		if isMySQLDrive(sourceDrive) && isMySQLDrive(destDrive) {
+			return strings.ToUpper(key)
+		}
 		// Oracle metadata returns unquoted identifiers in uppercase.
 		// For Oracle<->MySQL comparison, compare column names case-insensitively
 		// to avoid false DDL mismatch on same semantic column names.
@@ -341,6 +348,13 @@ func checkDDLConsistency(sourceColumns, destColumns []map[string]string, sourceS
 			return strings.ToUpper(key)
 		}
 		return key
+	}
+	isIgnorableHiddenColumn := func(col columnMeta) bool {
+		// MySQL 8.0+ may synthesize an invisible generated primary key column named
+		// my_row_id. Data checksum should not treat that metadata-only addition as a
+		// hard DDL mismatch when the column stays hidden from normal row access.
+		return strings.EqualFold(strings.TrimSpace(col.name), "my_row_id") &&
+			strings.Contains(strings.ToUpper(strings.TrimSpace(col.extra)), "INVISIBLE")
 	}
 
 	// 构建源端列名集合
@@ -358,9 +372,15 @@ func checkDDLConsistency(sourceColumns, destColumns []map[string]string, sourceS
 		} else if v, ok := col["DATA_TYPE"]; ok {
 			dataType = v
 		}
+		extra := ""
+		if v, ok := col["extra"]; ok {
+			extra = v
+		} else if v, ok := col["EXTRA"]; ok {
+			extra = v
+		}
 		if name != "" {
 			key := normalizeColumnKey(name)
-			sourceColMap[key] = columnMeta{name: name, dataType: dataType}
+			sourceColMap[key] = columnMeta{name: name, dataType: dataType, extra: extra}
 		}
 	}
 
@@ -379,9 +399,15 @@ func checkDDLConsistency(sourceColumns, destColumns []map[string]string, sourceS
 		} else if v, ok := col["DATA_TYPE"]; ok {
 			dataType = v
 		}
+		extra := ""
+		if v, ok := col["extra"]; ok {
+			extra = v
+		} else if v, ok := col["EXTRA"]; ok {
+			extra = v
+		}
 		if name != "" {
 			key := normalizeColumnKey(name)
-			destColMap[key] = columnMeta{name: name, dataType: dataType}
+			destColMap[key] = columnMeta{name: name, dataType: dataType, extra: extra}
 		}
 	}
 
@@ -390,6 +416,9 @@ func checkDDLConsistency(sourceColumns, destColumns []map[string]string, sourceS
 
 	// 检查源端有但目标端没有的列
 	for key, srcCol := range sourceColMap {
+		if isIgnorableHiddenColumn(srcCol) {
+			continue
+		}
 		if _, exists := destColMap[key]; !exists {
 			hasExistenceMismatch = true
 			mismatches = append(mismatches, fmt.Sprintf("  Column '%s' (%s) exists in source %s.%s but NOT in target %s.%s",
@@ -399,6 +428,9 @@ func checkDDLConsistency(sourceColumns, destColumns []map[string]string, sourceS
 
 	// 检查目标端有但源端没有的列
 	for key, destCol := range destColMap {
+		if isIgnorableHiddenColumn(destCol) {
+			continue
+		}
 		if _, exists := sourceColMap[key]; !exists {
 			hasExistenceMismatch = true
 			mismatches = append(mismatches, fmt.Sprintf("  Column '%s' (%s) exists in target %s.%s but NOT in source %s.%s",
@@ -407,9 +439,23 @@ func checkDDLConsistency(sourceColumns, destColumns []map[string]string, sourceS
 	}
 
 	// 检查列数量是否一致
-	if len(sourceColMap) != len(destColMap) && !hasExistenceMismatch {
+	effectiveSourceCount := 0
+	for _, col := range sourceColMap {
+		if isIgnorableHiddenColumn(col) {
+			continue
+		}
+		effectiveSourceCount++
+	}
+	effectiveDestCount := 0
+	for _, col := range destColMap {
+		if isIgnorableHiddenColumn(col) {
+			continue
+		}
+		effectiveDestCount++
+	}
+	if effectiveSourceCount != effectiveDestCount && !hasExistenceMismatch {
 		mismatches = append(mismatches, fmt.Sprintf("  Column count mismatch: source %s.%s has %d columns, target %s.%s has %d columns",
-			sourceSchema, sourceTable, len(sourceColMap), destSchema, destTable, len(destColMap)))
+			sourceSchema, sourceTable, effectiveSourceCount, destSchema, destTable, effectiveDestCount))
 	}
 
 	if len(mismatches) > 0 {

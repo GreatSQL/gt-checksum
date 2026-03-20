@@ -27,9 +27,19 @@ var (
 var partitionMetadataPattern = regexp.MustCompile(`^NAME=(.*?),ORDINAL=(.*?),METHOD=(.*?),EXPRESSION=(.*?),DESCRIPTION=(.*),ROWS=(.*)$`)
 var partitionDelimiterSpacingPattern = regexp.MustCompile(`\s*([(),])\s*`)
 var mysqlVersionedCommentWrapperPattern = regexp.MustCompile(`(?is)^/\*!\d+\s*(.*?)\s*\*/$`)
+var partitionExpressionColumnPatternTemplate = `(^|[^A-Z0-9_])%s([^A-Z0-9_]|$)`
+var mysqlColumnCharsetOrCollationClausePattern = regexp.MustCompile(`(?i)\bCHARACTER\s+SET\b|\bCOLLATE\b`)
+var mysqlCharacterColumnDefinitionPattern = regexp.MustCompile(`(?i)^(?:varchar|char|tinytext|text|mediumtext|longtext|enum|set)\b`)
 var routineMetadataCommentPattern = regexp.MustCompile(`/\*GT_CHECKSUM_METADATA:(.*?)\*/`)
 var routineInlineCommentPattern = regexp.MustCompile(`--.*?\n|/\*[\s\S]*?\*/`)
 var routineWhitespacePattern = regexp.MustCompile(`\s+`)
+var routineCharsetCollationClausePattern = regexp.MustCompile(`(?i)CHARSET\s+([a-zA-Z0-9_]+)(?:\s+COLLATE\s+([a-zA-Z0-9_]+))?`)
+var standaloneCollatePattern = regexp.MustCompile(`(?i)\bCOLLATE\s+([a-zA-Z0-9_]+)`)
+var intDisplayWidthPattern = regexp.MustCompile(`(?i)\b((?:tiny|small|medium|big)?int)\(\d+\)`)
+
+// routineHeaderIdentifierPattern 匹配 routine 定义头部的标识符（DEFINER、routine 名称），
+// 用于仅对标识符做大小写归一，而不影响函数体中的字符串字面量。
+var routineHeaderIdentifierPattern = regexp.MustCompile("(?i)(CREATE\\s+(?:DEFINER\\s*=\\s*[^\\s]+\\s+)?(?:PROCEDURE|FUNCTION)\\s+)(`[^`]*`)")
 var routineDefinerPattern = regexp.MustCompile(`CREATE\s+DEFINER\s*=\s*['"]?([^'"]*)['"]?@['"]?([^'"]*)['"]?`)
 var routineSecurityPattern = regexp.MustCompile(`SQL\s+SECURITY\s+(\w+)`)
 var routineCharsetPattern = regexp.MustCompile(`CHARACTER_SET_CLIENT\s*=\s*(\w+)`)
@@ -256,6 +266,91 @@ func buildPartitionRepairSQLs(sourceSchema, sourceTable, destSchema, destTable s
 	}
 }
 
+func classifyPartitionRepairDiffState(execRepairSQLs, advisoryRepairSQLs []string, handled bool) string {
+	if !handled {
+		return global.SkipDiffsYes
+	}
+	if len(execRepairSQLs) == 0 && len(advisoryRepairSQLs) > 0 {
+		return global.SkipDiffsWarnOnly
+	}
+	return global.SkipDiffsYes
+}
+
+func loadTablePartitionExpressions(db *sql.DB, drive, schemaName, tableName, caseSensitiveObjectName string, logThreadSeq int64) []string {
+	tc := dbExec.TableColumnNameStruct{
+		Drive:                   drive,
+		Schema:                  schemaName,
+		Table:                   tableName,
+		CaseSensitiveObjectName: caseSensitiveObjectName,
+	}
+	partitions, err := tc.Query().Partitions(db, logThreadSeq)
+	if err != nil {
+		global.Wlog.Warn(fmt.Sprintf("(%d) Failed to load partition expressions for %s.%s: %v", logThreadSeq, schemaName, tableName, err))
+		return nil
+	}
+	tableKey := fmt.Sprintf("%s.%s", schemaName, tableName)
+	entries := parsePartitionMetadataEntries(partitions, tableKey)
+	if len(entries) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	expressions := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		expr := normalizePartitionCompareText(entry.Expression)
+		if strings.TrimSpace(expr) == "" {
+			continue
+		}
+		if _, exists := seen[expr]; exists {
+			continue
+		}
+		seen[expr] = struct{}{}
+		expressions = append(expressions, expr)
+	}
+	return expressions
+}
+
+func partitionExpressionsReferenceColumn(expressions []string, columnNames ...string) bool {
+	if len(expressions) == 0 || len(columnNames) == 0 {
+		return false
+	}
+
+	// Pre-compile one regexp per unique column name so the inner expression
+	// loop never triggers repeated MustCompile calls.
+	type columnPattern struct {
+		pattern *regexp.Regexp
+	}
+	patterns := make([]columnPattern, 0, len(columnNames))
+	for _, candidate := range columnNames {
+		normalizedColumn := strings.ToUpper(strings.TrimSpace(strings.ReplaceAll(candidate, "`", "")))
+		if normalizedColumn == "" {
+			continue
+		}
+		patterns = append(patterns, columnPattern{
+			pattern: regexp.MustCompile(fmt.Sprintf(partitionExpressionColumnPatternTemplate, regexp.QuoteMeta(normalizedColumn))),
+		})
+	}
+	if len(patterns) == 0 {
+		return false
+	}
+
+	for _, expression := range expressions {
+		normalizedExpression := strings.ToUpper(strings.TrimSpace(strings.ReplaceAll(expression, "`", "")))
+		for _, cp := range patterns {
+			if cp.pattern.MatchString(normalizedExpression) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func shouldDeferPartitionKeyColumnRepair(expressions []string, decision schemacompat.CompatibilityDecision, columnNames ...string) bool {
+	if !decision.IsMismatch() || decision.State == schemacompat.CompatibilityWarnOnly {
+		return false
+	}
+	return partitionExpressionsReferenceColumn(expressions, columnNames...)
+}
+
 func mergeStructDiffState(current, incoming string) string {
 	switch strings.TrimSpace(incoming) {
 	case global.SkipDiffsYes, global.SkipDiffsDDLYes:
@@ -265,6 +360,12 @@ func mergeStructDiffState(current, incoming string) string {
 			return global.SkipDiffsYes
 		}
 		return global.SkipDiffsWarnOnly
+	case global.SkipDiffsCollationMapped:
+		cur := strings.TrimSpace(current)
+		if cur == global.SkipDiffsYes || cur == global.SkipDiffsDDLYes || cur == global.SkipDiffsWarnOnly {
+			return cur
+		}
+		return global.SkipDiffsCollationMapped
 	default:
 		if strings.TrimSpace(current) == "" {
 			return global.SkipDiffsNo
@@ -353,7 +454,8 @@ type schemaTable struct {
 	indexDiffsMap          map[string]bool
 	partitionDiffsMap      map[string]bool
 	foreignKeyDiffsMap     map[string]bool
-	structWarnOnlyDiffsMap map[string]bool
+	structWarnOnlyDiffsMap    map[string]bool
+	structCollationMappedMap map[string]bool
 }
 
 func cloneSQLStatements(sqls []string) []string {
@@ -543,7 +645,119 @@ func normalizeRoutineDefinitionForCompare(definition string) string {
 		normalized = normalized[:idx] + normalized[idx+endIdx+2:]
 	}
 
+	// MySQL 8.0.17+ drops integer display widths from INFORMATION_SCHEMA
+	// (e.g. int(11) → int, bigint(20) → bigint). Strip them so cross-version
+	// comparisons don't produce false positives.
+	normalized = intDisplayWidthPattern.ReplaceAllString(normalized, "$1")
+
+	// 仅对 routine 标识符（如函数/过程名）做大小写归一，不对整个 definition 做 ToLower。
+	// 这样可以保留函数体中字符串字面量的原始大小写（如 'Children' vs 'children'），
+	// 避免吞掉真实的业务逻辑差异。
+	normalized = routineHeaderIdentifierPattern.ReplaceAllStringFunc(normalized, func(m string) string {
+		return strings.ToLower(m)
+	})
+
 	return strings.Join(strings.Fields(normalized), "")
+}
+
+func normalizeRoutineCreateSQLForCompare(createSQL string) string {
+	normalized := strings.TrimSpace(createSQL)
+	if normalized == "" {
+		return ""
+	}
+	normalized = routineWhitespacePattern.ReplaceAllString(normalized, " ")
+	return normalized
+}
+
+// mapMariaDBCollationInRoutineSQL 将 routine/trigger 定义中的 MariaDB 特有 collation
+// 替换为 MySQL 等价物。处理两种形式：
+//   - CHARSET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci → CHARSET utf8mb4 COLLATE utf8mb4_0900_ai_ci
+//   - 独立的 COLLATE utf8mb4_uca1400_ai_ci → COLLATE utf8mb4_0900_ai_ci
+func mapMariaDBCollationInRoutineSQL(createSQL string) string {
+	if createSQL == "" {
+		return createSQL
+	}
+	// 先处理 CHARSET ... COLLATE ... 组合形式
+	result := routineCharsetCollationClausePattern.ReplaceAllStringFunc(createSQL, func(match string) string {
+		parts := routineCharsetCollationClausePattern.FindStringSubmatch(match)
+		if len(parts) < 3 || strings.TrimSpace(parts[2]) == "" {
+			return match
+		}
+		collation := strings.TrimSpace(parts[2])
+		if mapped, ok := schemacompat.MapMariaDBCollationToMySQL(collation); ok {
+			charset := strings.TrimSpace(parts[1])
+			return fmt.Sprintf("CHARSET %s COLLATE %s", charset, mapped)
+		}
+		return match
+	})
+	// 再处理独立的 COLLATE 子句（不带 CHARSET 前缀的情况，如 DECLARE 变量声明中）
+	result = standaloneCollatePattern.ReplaceAllStringFunc(result, func(match string) string {
+		parts := standaloneCollatePattern.FindStringSubmatch(match)
+		if len(parts) < 2 {
+			return match
+		}
+		collation := strings.TrimSpace(parts[1])
+		if mapped, ok := schemacompat.MapMariaDBCollationToMySQL(collation); ok {
+			return "COLLATE " + mapped
+		}
+		return match
+	})
+	return result
+}
+
+// buildTriggerCharsetSetStatements 生成 trigger fix SQL 需要的 charset session 变量 SET 语句
+func buildTriggerCharsetSetStatements(result triggerCreateResult, isMariaDBToMySQL bool) []string {
+	return buildRoutineCharsetSetStatements(result.CharacterSetClient, result.CollationConnection, result.DatabaseCollation, isMariaDBToMySQL)
+}
+
+func normalizeRoutineCreateSQLForCompareWithCatalog(createSQL string, infos ...global.MySQLVersionInfo) string {
+	normalized := normalizeRoutineCreateSQLForCompare(createSQL)
+	if normalized == "" {
+		return ""
+	}
+
+	// 收集所有平台的默认 collation 映射。在跨平台对比（如 MariaDB→MySQL）中，
+	// 传入双方的版本信息可同时 strip 两端的平台默认 collation，避免修复后
+	// 目标端显式带上源端默认 collation 而源端隐式省略导致的不可收敛假差异。
+	mergedDefaults := make(map[string]map[string]bool) // charset → set of default collations
+	for _, info := range infos {
+		catalog := schemacompat.BuildSchemaFeatureCatalog(info)
+		for charset, defCol := range catalog.DefaultCollationByCharset {
+			lc := strings.ToLower(charset)
+			if mergedDefaults[lc] == nil {
+				mergedDefaults[lc] = make(map[string]bool)
+			}
+			mergedDefaults[lc][strings.ToLower(strings.TrimSpace(defCol))] = true
+		}
+	}
+
+	return routineCharsetCollationClausePattern.ReplaceAllStringFunc(normalized, func(match string) string {
+		parts := routineCharsetCollationClausePattern.FindStringSubmatch(match)
+		if len(parts) < 2 {
+			return match
+		}
+
+		charset := strings.ToLower(strings.TrimSpace(parts[1]))
+		collation := ""
+		if len(parts) > 2 {
+			collation = strings.ToLower(strings.TrimSpace(parts[2]))
+		}
+		// 当 collation 等于任一平台该 charset 的默认值时，统一移除 COLLATE 子句。
+		// 这样两端各自的平台默认 collation（如 MariaDB 的 utf8mb4_general_ci
+		// 和 MySQL 8.0 的 utf8mb4_0900_ai_ci）会被归一化为同一形式，
+		// 避免因平台默认值不同导致不可修复的假差异。
+		if collation != "" {
+			if defaults, ok := mergedDefaults[charset]; ok {
+				if defaults[collation] {
+					collation = ""
+				}
+			}
+		}
+		if collation == "" {
+			return fmt.Sprintf("CHARSET %s", charset)
+		}
+		return fmt.Sprintf("CHARSET %s COLLATE %s", charset, collation)
+	})
 }
 
 // getDisplayTableName 返回表的显示名称，包含映射关系信息
@@ -738,6 +952,7 @@ func (stcls *schemaTable) tableColumnName(db *sql.DB, tc dbExec.TableColumnNameS
 		if fmt.Sprintf("%v", v["columnName"]) != "" {
 			// 获取extra属性，包含AUTO_INCREMENT和INVISIBLE等特殊属性
 			extra := C(fmt.Sprintf("%v", v["extra"]))
+			extra = schemacompat.StripMySQLMetadataOnlyExtraTokens(extra)
 			// 将extra添加到列定义数组中，放在columnType之后，这样可以在生成SQL时包含特殊属性
 			columnType := fmt.Sprintf("%v", v["columnType"])
 			// 如果有extra属性，添加到columnType后面
@@ -768,6 +983,93 @@ func (stcls *schemaTable) isMySQLToMySQL() bool {
 	return strings.EqualFold(stcls.sourceDrive, "mysql") && strings.EqualFold(stcls.destDrive, "mysql")
 }
 
+func (stcls *schemaTable) isMariaDBToMySQL() bool {
+	return stcls.sourceVersionInfo().Flavor == global.DatabaseFlavorMariaDB &&
+		stcls.destVersionInfo().Flavor == global.DatabaseFlavorMySQL
+}
+
+func isIgnorableGeneratedInvisibleColumn(colName string, columnMap map[string][]string) bool {
+	if !strings.EqualFold(strings.TrimSpace(colName), "my_row_id") {
+		return false
+	}
+	columnDef, exists := columnMap[colName]
+	if !exists {
+		return false
+	}
+	for _, def := range columnDef {
+		upperDef := strings.ToUpper(strings.TrimSpace(def))
+		if strings.Contains(upperDef, "INVISIBLE") {
+			return true
+		}
+	}
+	return false
+}
+
+func filterIgnorableGeneratedInvisibleColumns(columns []string, columnMap map[string][]string) ([]string, []string) {
+	kept := make([]string, 0, len(columns))
+	ignored := make([]string, 0)
+	for _, col := range columns {
+		if isIgnorableGeneratedInvisibleColumn(col, columnMap) {
+			ignored = append(ignored, col)
+			continue
+		}
+		kept = append(kept, col)
+	}
+	return kept, ignored
+}
+
+// Trigger metadata compare currently relies on INFORMATION_SCHEMA fields that
+// are stable for MySQL-family sources and MySQL targets in the first-stage
+// support matrix. When version info is unavailable, fall back to the driver
+// pair so the existing MySQL -> MySQL behavior does not regress.
+func (stcls *schemaTable) shouldCompareTriggerMetadata() bool {
+	src := stcls.sourceVersionInfo()
+	dst := stcls.destVersionInfo()
+
+	if strings.TrimSpace(src.Raw) == "" || strings.TrimSpace(dst.Raw) == "" {
+		return stcls.isMySQLToMySQL()
+	}
+
+	if dst.Flavor != global.DatabaseFlavorMySQL {
+		return false
+	}
+
+	switch src.Flavor {
+	case global.DatabaseFlavorMySQL:
+		return dst.Flavor == global.DatabaseFlavorMySQL
+	case global.DatabaseFlavorMariaDB:
+		return dst.Series == "8.0" || dst.Series == "8.4"
+	default:
+		return false
+	}
+}
+
+// Routine metadata compare follows the same first-stage support matrix as
+// trigger metadata: keep MySQL -> MySQL behavior unchanged, and explicitly
+// enable MariaDB -> MySQL 8.0/8.4 so COMMENT and DEFINER drift are no longer
+// silently skipped on the primary implementation path.
+func (stcls *schemaTable) shouldCompareRoutineMetadata() bool {
+	src := stcls.sourceVersionInfo()
+	dst := stcls.destVersionInfo()
+
+	if strings.TrimSpace(src.Raw) == "" || strings.TrimSpace(dst.Raw) == "" {
+		return stcls.isMySQLToMySQL()
+	}
+
+	if dst.Flavor != global.DatabaseFlavorMySQL {
+		return false
+	}
+
+	switch src.Flavor {
+	case global.DatabaseFlavorMySQL:
+		return dst.Flavor == global.DatabaseFlavorMySQL
+	case global.DatabaseFlavorMariaDB:
+		return dst.Series == "8.0" || dst.Series == "8.4"
+	default:
+		return false
+	}
+}
+
 func normalizeMetadataComment(v string) string {
 	s := strings.TrimSpace(v)
 	switch strings.ToLower(s) {
@@ -778,6 +1080,44 @@ func normalizeMetadataComment(v string) string {
 	}
 }
 
+func normalizeDataCheckColumnInfo(sourceCols, destCols []map[string]string) ([]map[string]string, []map[string]string, []string) {
+	sourceKeys := make(map[string]struct{}, len(sourceCols))
+	for _, col := range sourceCols {
+		name := strings.TrimSpace(col["columnName"])
+		if name == "" {
+			name = strings.TrimSpace(col["COLUMN_NAME"])
+		}
+		if name == "" {
+			continue
+		}
+		sourceKeys[strings.ToUpper(name)] = struct{}{}
+	}
+
+	filteredDest := make([]map[string]string, 0, len(destCols))
+	stripped := make([]string, 0)
+	for _, col := range destCols {
+		name := strings.TrimSpace(col["columnName"])
+		if name == "" {
+			name = strings.TrimSpace(col["COLUMN_NAME"])
+		}
+		extra := strings.TrimSpace(col["extra"])
+		if extra == "" {
+			extra = strings.TrimSpace(col["EXTRA"])
+		}
+		if name != "" {
+			if _, exists := sourceKeys[strings.ToUpper(name)]; !exists &&
+				strings.EqualFold(name, "my_row_id") &&
+				strings.Contains(strings.ToUpper(extra), "INVISIBLE") {
+				stripped = append(stripped, name)
+				continue
+			}
+		}
+		filteredDest = append(filteredDest, col)
+	}
+
+	return sourceCols, filteredDest, stripped
+}
+
 type mysqlTableLevelMetadata struct {
 	TableCollation string
 	TableCharset   string
@@ -786,6 +1126,148 @@ type mysqlTableLevelMetadata struct {
 	CreateOptions  string
 	TableComment   string
 	CreateTableSQL string
+}
+
+type columnCollationRepairCandidate struct {
+	ColumnName       string
+	ColumnSeq        int
+	LastColumn       string
+	SourceAttrs      []string
+	SourceDefinition string
+	SourceCharset    string
+	SourceCollation  string
+	DestCharset      string
+	DestCollation    string
+	Reason           string
+}
+
+func hasExplicitColumnCharsetOrCollation(definition string) bool {
+	return mysqlColumnCharsetOrCollationClausePattern.MatchString(strings.TrimSpace(definition))
+}
+
+func isCharacterColumnDefinition(definition string) bool {
+	return mysqlCharacterColumnDefinitionPattern.MatchString(strings.TrimSpace(definition))
+}
+
+func canUseTableCharsetConvertForColumnCollationDrift(sourceMeta, destMeta mysqlTableLevelMetadata, sourceColumnDefinitions map[string]string, candidates []columnCollationRepairCandidate) bool {
+	if len(candidates) == 0 {
+		return false
+	}
+	// 当 LEFT JOIN COLLATIONS 失败导致 charset 为空时，从 collation 名推断
+	sourceCharset := strings.TrimSpace(sourceMeta.TableCharset)
+	if sourceCharset == "" {
+		sourceCharset = schemacompat.InferCharsetFromCollation(sourceMeta.TableCollation)
+	}
+	if sourceCharset == "" {
+		return false
+	}
+	if !strings.EqualFold(sourceCharset, strings.TrimSpace(destMeta.TableCharset)) {
+		return false
+	}
+
+	for _, definition := range sourceColumnDefinitions {
+		if !isCharacterColumnDefinition(definition) {
+			continue
+		}
+		if hasExplicitColumnCharsetOrCollation(definition) {
+			return false
+		}
+	}
+
+	for _, candidate := range candidates {
+		if !strings.EqualFold(strings.TrimSpace(candidate.SourceCharset), strings.TrimSpace(sourceMeta.TableCharset)) {
+			return false
+		}
+		if !strings.EqualFold(strings.TrimSpace(candidate.SourceCollation), strings.TrimSpace(sourceMeta.TableCollation)) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func buildColumnCollationAdvisorySuggestions(candidates []columnCollationRepairCandidate) []schemacompat.ConstraintRepairSuggestion {
+	suggestions := make([]schemacompat.ConstraintRepairSuggestion, 0, len(candidates))
+	for _, candidate := range candidates {
+		suggestions = append(suggestions, schemacompat.ConstraintRepairSuggestion{
+			ConstraintName: candidate.ColumnName,
+			Kind:           "COLUMN COLLATION",
+			Level:          schemacompat.ConstraintRepairLevelAdvisoryOnly,
+			Reason:         candidate.Reason,
+		})
+	}
+	return suggestions
+}
+
+func (stcls *schemaTable) buildColumnCollationRepairSQL(
+	fixer dbExec.DataAbnormalFixInterface,
+	sourceMeta, destMeta mysqlTableLevelMetadata,
+	sourceColumnDefinitions map[string]string,
+	candidates []columnCollationRepairCandidate,
+	logThreadSeq int64,
+) ([]string, bool) {
+	if len(candidates) == 0 {
+		return nil, false
+	}
+
+	if canUseTableCharsetConvertForColumnCollationDrift(sourceMeta, destMeta, sourceColumnDefinitions, candidates) {
+		collation := sourceMeta.TableCollation
+		if strings.EqualFold(strings.TrimSpace(sourceMeta.TableCollation), strings.TrimSpace(destMeta.TableCollation)) {
+			collation = ""
+		}
+		// MariaDB UCA 14.0.0 collation 在 MySQL 上不存在，映射为 UCA 9.0.0 等价物
+		if collation != "" {
+			if mapped, ok := schemacompat.MapMariaDBCollationToMySQL(collation); ok {
+				collation = mapped
+			}
+		}
+		sqls := fixer.FixTableCharsetSqlGenerate(sourceMeta.TableCharset, collation, logThreadSeq)
+		return sqls, len(sqls) > 0
+	}
+
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].ColumnSeq < candidates[j].ColumnSeq
+	})
+
+	alterOps := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		repairAttrs := append([]string(nil), candidate.SourceAttrs...)
+		if len(repairAttrs) < 6 {
+			for len(repairAttrs) < 6 {
+				repairAttrs = append(repairAttrs, "null")
+			}
+		}
+		repairPlan := schemacompat.BuildTargetColumnRepairPlan(
+			candidate.ColumnName,
+			repairAttrs,
+			stcls.sourceVersionInfo(),
+			stcls.destVersionInfo(),
+			candidate.SourceDefinition,
+			stcls.checkRules.MariaDBJSONTargetType,
+		)
+		if strings.TrimSpace(repairPlan.Type) != "" {
+			repairAttrs[0] = repairPlan.Type
+		}
+		if strings.TrimSpace(repairPlan.Charset) != "" {
+			repairAttrs[1] = repairPlan.Charset
+		}
+		if strings.TrimSpace(repairPlan.Collation) != "" {
+			repairAttrs[2] = repairPlan.Collation
+		}
+		if repairPlan.UseDirectDefinition {
+			if len(repairAttrs) < 7 {
+				repairAttrs = append(repairAttrs, repairPlan.DirectDefinition)
+			} else {
+				repairAttrs[6] = repairPlan.DirectDefinition
+			}
+		}
+		alterOps = append(alterOps, fixer.FixAlterColumnSqlDispos("modify", repairAttrs, candidate.ColumnSeq, candidate.LastColumn, candidate.ColumnName, logThreadSeq))
+	}
+
+	if len(alterOps) == 0 {
+		return nil, false
+	}
+	return fixer.FixAlterColumnSqlGenerate(alterOps, logThreadSeq), true
 }
 
 func listMariaDBSequenceNames(db *sql.DB, schema string) ([]string, error) {
@@ -1099,6 +1581,29 @@ func resolveMySQLTableAutoIncrementFixValue(sourceValue, destValue sql.NullInt64
 	return 0, false
 }
 
+func buildMySQLTableAutoIncrementAdvisory(destSchema, destTable string, sourceValue, destValue sql.NullInt64) (schemacompat.ConstraintRepairSuggestion, bool) {
+	fixValue, needsFix := resolveMySQLTableAutoIncrementFixValue(sourceValue, destValue)
+	if !needsFix {
+		return schemacompat.ConstraintRepairSuggestion{}, false
+	}
+
+	suggestion := schemacompat.ConstraintRepairSuggestion{
+		Kind:  "TABLE AUTO_INCREMENT",
+		Level: schemacompat.ConstraintRepairLevelAdvisoryOnly,
+		Reason: fmt.Sprintf(
+			"table AUTO_INCREMENT next value differs between source and target (source=%v, target=%v); this drift does not change existing rows and should only be aligned if future inserts must continue from the source sequence",
+			nullInt64ForLog(sourceValue),
+			nullInt64ForLog(destValue),
+		),
+	}
+	if sourceValue.Valid {
+		suggestion.Statements = []string{
+			fmt.Sprintf("ALTER TABLE `%s`.`%s` AUTO_INCREMENT=%d;", destSchema, destTable, fixValue),
+		}
+	}
+	return suggestion, true
+}
+
 func extractMySQLObjectCommentFromCreate(createSQL string) string {
 	matches := mysqlCreateObjectCommentPattern.FindStringSubmatch(createSQL)
 	if len(matches) < 2 {
@@ -1135,9 +1640,25 @@ func loadMySQLRoutineComments(db *sql.DB, schema, routineType string, logThreadS
 	return result
 }
 
+type triggerCreateResult struct {
+	CreateSQL           string
+	CharacterSetClient  string
+	CollationConnection string
+	DatabaseCollation   string
+}
+
 func showCreateTriggerSQL(db *sql.DB, schema, triggerName string) (string, error) {
+	result, err := showCreateTriggerSQLWithCharset(db, schema, triggerName)
+	if err != nil {
+		return "", err
+	}
+	return result.CreateSQL, nil
+}
+
+func showCreateTriggerSQLWithCharset(db *sql.DB, schema, triggerName string) (triggerCreateResult, error) {
 	row := db.QueryRow(
-		`SELECT DEFINER, ACTION_TIMING, EVENT_MANIPULATION, EVENT_OBJECT_TABLE, ACTION_STATEMENT
+		`SELECT DEFINER, ACTION_TIMING, EVENT_MANIPULATION, EVENT_OBJECT_TABLE, ACTION_STATEMENT,
+		        CHARACTER_SET_CLIENT, COLLATION_CONNECTION, DATABASE_COLLATION
 		   FROM INFORMATION_SCHEMA.TRIGGERS
 		  WHERE TRIGGER_SCHEMA = ? AND TRIGGER_NAME = ?`,
 		schema,
@@ -1145,16 +1666,22 @@ func showCreateTriggerSQL(db *sql.DB, schema, triggerName string) (string, error
 	)
 
 	var definer, actionTiming, eventManipulation, eventObjectTable, actionStatement string
-	if err := row.Scan(&definer, &actionTiming, &eventManipulation, &eventObjectTable, &actionStatement); err != nil {
+	var csClient, colConnection, dbCollation sql.NullString
+	if err := row.Scan(&definer, &actionTiming, &eventManipulation, &eventObjectTable, &actionStatement,
+		&csClient, &colConnection, &dbCollation); err != nil {
 		if err == sql.ErrNoRows {
-			return "", fmt.Errorf("no trigger metadata found for %s.%s", schema, triggerName)
+			return triggerCreateResult{}, fmt.Errorf("no trigger metadata found for %s.%s", schema, triggerName)
 		}
-		return "", err
+		return triggerCreateResult{}, err
 	}
 
-	// Rebuild a full CREATE TRIGGER statement from INFORMATION_SCHEMA so the
-	// repair path does not depend on SHOW CREATE TRIGGER output shape.
-	return mysql.BuildTriggerCreateSQL(schema, triggerName, definer, actionTiming, eventManipulation, eventObjectTable, actionStatement), nil
+	createSQL := mysql.BuildTriggerCreateSQL(schema, triggerName, definer, actionTiming, eventManipulation, eventObjectTable, actionStatement)
+	return triggerCreateResult{
+		CreateSQL:           createSQL,
+		CharacterSetClient:  strings.TrimSpace(csClient.String),
+		CollationConnection: strings.TrimSpace(colConnection.String),
+		DatabaseCollation:   strings.TrimSpace(dbCollation.String),
+	}, nil
 }
 
 func loadMySQLTriggerMetadata(db *sql.DB, schema string, logThreadSeq int64) (map[string]string, map[string]string) {
@@ -1479,6 +2006,9 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 	if stcls.structWarnOnlyDiffsMap == nil {
 		stcls.structWarnOnlyDiffsMap = make(map[string]bool)
 	}
+	if stcls.structCollationMappedMap == nil {
+		stcls.structCollationMappedMap = make(map[string]bool)
+	}
 	stcls.emitMariaDBSequenceWarnings(checkTableList, logThreadSeq)
 	vlog = fmt.Sprintf("(%d) %s Validating structure differences between source and target", logThreadSeq, event)
 	global.Wlog.Debug(vlog)
@@ -1788,6 +2318,11 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 		vlog = fmt.Sprintf("(%d) %s Target table %s.%s has %d columns", logThreadSeq, event, destSchema, stcls.table, len(dColumn))
 		global.Wlog.Debug(vlog)
 
+		sourcePartitionExpressions := loadTablePartitionExpressions(stcls.sourceDB, stcls.sourceDrive, sourceSchema, sourceTableName, stcls.caseSensitiveObjectName, logThreadSeq2)
+		destPartitionExpressions := loadTablePartitionExpressions(stcls.destDB, stcls.destDrive, destSchema, destTableName, stcls.caseSensitiveObjectName, logThreadSeq2)
+		partitionExpressions := append([]string{}, sourcePartitionExpressions...)
+		partitionExpressions = append(partitionExpressions, destPartitionExpressions...)
+
 		alterSlice := []string{}
 		var sourceColumnSlice, destColumnSlice []string
 		var sourceColumnMap, destColumnMap = make(map[string][]string), make(map[string][]string)
@@ -1983,6 +2518,13 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 
 		// 移除对data类型的特殊处理，只处理struct类型的检查对象
 		if stcls.checkRules.CheckObject != "struct" {
+			addColumn, ignoredSourceHiddenColumns := filterIgnorableGeneratedInvisibleColumns(addColumn, sourceColumnMap)
+			delColumn, ignoredTargetHiddenColumns := filterIgnorableGeneratedInvisibleColumns(delColumn, destColumnMap)
+			if len(ignoredSourceHiddenColumns) > 0 || len(ignoredTargetHiddenColumns) > 0 {
+				vlog = fmt.Sprintf("(%d) %s Ignoring generated invisible column differences for data precheck %s.%s -> %s.%s - ignored source extras: %v, ignored target missing: %v",
+					logThreadSeq, event, sourceSchema, stcls.table, destSchema, stcls.table, ignoredSourceHiddenColumns, ignoredTargetHiddenColumns)
+				global.Wlog.Info(vlog)
+			}
 			if len(addColumn) == 0 && len(delColumn) == 0 {
 				// 使用目标端schema
 				newCheckTableList = append(newCheckTableList, mappedTableKey)
@@ -2069,6 +2611,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 		vlog = fmt.Sprintf("(%d) %s DROP SQL for %s.%s: %v", logThreadSeq, event, destSchema, stcls.table, alterSlice)
 		global.Wlog.Debug(vlog)
 		columnAdvisorySuggestions := make([]schemacompat.ConstraintRepairSuggestion, 0)
+		columnCollationRepairCandidates := make([]columnCollationRepairCandidate, 0)
 		columnRiskDifferent := false
 		useCanonicalCompare := strings.EqualFold(stcls.sourceDrive, "mysql") && strings.EqualFold(stcls.destDrive, "mysql")
 		sourceCreateSQL := ""
@@ -2152,7 +2695,18 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 				if useCanonicalCompare {
 					decision := schemacompat.DecideColumnDefinitionCompatibility(sourceCanonical, destCanonical)
 					if decision.IsMismatch() {
-						if decision.State == schemacompat.CompatibilityWarnOnly {
+						if shouldDeferPartitionKeyColumnRepair(partitionExpressions, decision, sourceOriginalColName, destOriginalColName) {
+							vlog = fmt.Sprintf("(%d) %s Column %s definition mismatch requires manual review because it participates in the partition expression: source=%s, dest=%s, reason=%s",
+								logThreadSeq, event, repairColumnName, sourceType, destType, decision.Reason)
+							global.Wlog.Warn(vlog)
+							columnRiskDifferent = true
+							columnAdvisorySuggestions = append(columnAdvisorySuggestions, schemacompat.ConstraintRepairSuggestion{
+								ConstraintName: repairColumnName,
+								Kind:           "PARTITION KEY COLUMN",
+								Level:          schemacompat.ConstraintRepairLevelAdvisoryOnly,
+								Reason:         fmt.Sprintf("partition key column requires manual review: %s", decision.Reason),
+							})
+						} else if decision.State == schemacompat.CompatibilityWarnOnly {
 							vlog = fmt.Sprintf("(%d) %s Column %s definition warning: source=%s, dest=%s, reason=%s",
 								logThreadSeq, event, repairColumnName, sourceType, destType, decision.Reason)
 							global.Wlog.Warn(vlog)
@@ -2195,7 +2749,18 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 					(destCharset != "null" && destCharset != "") {
 					if useCanonicalCompare {
 						decision := schemacompat.DecideColumnCharsetCompatibility(sourceCanonical, destCanonical)
-						if decision.IsMismatch() {
+						if shouldDeferPartitionKeyColumnRepair(partitionExpressions, decision, sourceOriginalColName, destOriginalColName) {
+							vlog = fmt.Sprintf("(%d) %s Column %s charset mismatch requires manual review because it participates in the partition expression: source=%s, dest=%s, reason=%s",
+								logThreadSeq, event, repairColumnName, sourceCharset, destCharset, decision.Reason)
+							global.Wlog.Warn(vlog)
+							columnRiskDifferent = true
+							columnAdvisorySuggestions = append(columnAdvisorySuggestions, schemacompat.ConstraintRepairSuggestion{
+								ConstraintName: repairColumnName,
+								Kind:           "PARTITION KEY COLUMN",
+								Level:          schemacompat.ConstraintRepairLevelAdvisoryOnly,
+								Reason:         fmt.Sprintf("partition key column requires manual review: %s", decision.Reason),
+							})
+						} else if decision.IsMismatch() {
 							tableAbnormalBool = true
 							vlog = fmt.Sprintf("(%d) %s Column %s charset mismatch: source=%s, dest=%s, reason=%s",
 								logThreadSeq, event, repairColumnName, sourceCharset, destCharset, decision.Reason)
@@ -2228,17 +2793,49 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 					(destCollation != "null" && destCollation != "") {
 					if useCanonicalCompare {
 						decision := schemacompat.DecideColumnCollationCompatibility(sourceCanonical, destCanonical)
-						if decision.State == schemacompat.CompatibilityWarnOnly {
-							vlog = fmt.Sprintf("(%d) %s Column %s collation warning: source=%s, dest=%s, reason=%s",
+						// MariaDB→MySQL：非 MariaDB 特有的 collation 在 MySQL 中合法存在，视为真实差异
+						if decision.State == schemacompat.CompatibilityWarnOnly && stcls.isMariaDBToMySQL() {
+							if _, isMappable := schemacompat.MapMariaDBCollationToMySQL(sourceCollation); !isMappable {
+								decision.State = schemacompat.CompatibilityUnsupported
+								decision.Reason = fmt.Sprintf("cross-platform collation mismatch: source=%s is valid in MySQL but differs from target=%s",
+									sourceCollation, destCollation)
+							}
+						}
+						if shouldDeferPartitionKeyColumnRepair(partitionExpressions, decision, sourceOriginalColName, destOriginalColName) {
+							vlog = fmt.Sprintf("(%d) %s Column %s collation mismatch requires manual review because it participates in the partition expression: source=%s, dest=%s, reason=%s",
 								logThreadSeq, event, repairColumnName, sourceCollation, destCollation, decision.Reason)
 							global.Wlog.Warn(vlog)
 							columnRiskDifferent = true
 							columnAdvisorySuggestions = append(columnAdvisorySuggestions, schemacompat.ConstraintRepairSuggestion{
 								ConstraintName: repairColumnName,
-								Kind:           "COLUMN COLLATION",
+								Kind:           "PARTITION KEY COLUMN",
 								Level:          schemacompat.ConstraintRepairLevelAdvisoryOnly,
-								Reason:         decision.Reason,
+								Reason:         fmt.Sprintf("partition key column requires manual review: %s", decision.Reason),
 							})
+						} else if decision.State == schemacompat.CompatibilityWarnOnly {
+							vlog = fmt.Sprintf("(%d) %s Column %s collation warning: source=%s, dest=%s, reason=%s",
+								logThreadSeq, event, repairColumnName, sourceCollation, destCollation, decision.Reason)
+							global.Wlog.Warn(vlog)
+							// 如果该列已因类型/定义差异被标记为 tableAbnormalBool=true，
+							// 后续会生成包含正确 charset/collation 的 MODIFY，无需重复加入 collation repair candidates
+							if tableAbnormalBool {
+								vlog = fmt.Sprintf("(%d) %s Column %s collation drift skipped from repair candidates: already covered by definition mismatch repair",
+									logThreadSeq, event, repairColumnName)
+								global.Wlog.Debug(vlog)
+							} else {
+								columnCollationRepairCandidates = append(columnCollationRepairCandidates, columnCollationRepairCandidate{
+									ColumnName:       repairColumnName,
+									ColumnSeq:        k1,
+									LastColumn:       getTargetPositionColumnName(lastcolumn),
+									SourceAttrs:      append([]string(nil), alterColumnData...),
+									SourceDefinition: sourceColumnDefinitions[sourceOriginalColName],
+									SourceCharset:    sourceCharset,
+									SourceCollation:  sourceCollation,
+									DestCharset:      destCharset,
+									DestCollation:    destCollation,
+									Reason:           decision.Reason,
+								})
+							}
 						} else if decision.IsMismatch() {
 							tableAbnormalBool = true
 							vlog = fmt.Sprintf("(%d) %s Column %s collation mismatch: source=%s, dest=%s, reason=%s",
@@ -2286,7 +2883,19 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 
 				// 如果两者都不为null，则比较
 				if sourceDefault != "null" && destDefault != "null" {
-					if sourceDefault != destDefault {
+					if useCanonicalCompare {
+						decision := schemacompat.DecideColumnDefaultCompatibility(sourceCanonical, destCanonical)
+						if decision.IsMismatch() {
+							tableAbnormalBool = true
+							vlog = fmt.Sprintf("(%d) %s Column %s default value mismatch: source=%s, dest=%s, reason=%s",
+								logThreadSeq, event, repairColumnName, sourceDefault, destDefault, decision.Reason)
+							global.Wlog.Warn(vlog)
+						} else if decision.State == schemacompat.CompatibilityNormalizedEqual {
+							vlog = fmt.Sprintf("(%d) %s Column %s default value normalized-equal: source=%s, dest=%s, reason=%s",
+								logThreadSeq, event, repairColumnName, sourceDefault, destDefault, decision.Reason)
+							global.Wlog.Debug(vlog)
+						}
+					} else if sourceDefault != destDefault {
 						tableAbnormalBool = true
 						vlog = fmt.Sprintf("(%d) %s Column %s default value mismatch: source=%s, dest=%s",
 							logThreadSeq, event, repairColumnName, sourceDefault, destDefault)
@@ -2376,9 +2985,16 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 						mysqlDataFix.CheckDestTableHasPrimaryKey(stcls.destDB, logThreadSeq)
 					}
 					modifySql := dbf.DataAbnormalFix().FixAlterColumnSqlDispos("modify", repairAttrs, k1, originalLastColumn, repairColumnName, logThreadSeq)
-					vlog = fmt.Sprintf("(%d) %s The column name of column %s of the source and target table %s.%s:[%s.%s] is the same, but the definition of the column is inconsistent, and a modify statement is generated, and the modification statement is {%v}", logThreadSeq, event, repairColumnName, stcls.schema, stcls.table, destSchema, stcls.table, modifySql)
-					global.Wlog.Warn(vlog)
-					alterSlice = append(alterSlice, modifySql)
+					if suggestion, gated := stcls.buildColumnShrinkAdvisory(destSchema, stcls.destTable, repairColumnName, sourceCanonical, destCanonical, modifySql); gated {
+						vlog = fmt.Sprintf("(%d) %s Column %s modify repair downgraded to advisory-only by shrink safety gate: %s", logThreadSeq, event, repairColumnName, suggestion.Reason)
+						global.Wlog.Warn(vlog)
+						columnRiskDifferent = true
+						columnAdvisorySuggestions = append(columnAdvisorySuggestions, suggestion)
+					} else {
+						vlog = fmt.Sprintf("(%d) %s The column name of column %s of the source and target table %s.%s:[%s.%s] is the same, but the definition of the column is inconsistent, and a modify statement is generated, and the modification statement is {%v}", logThreadSeq, event, repairColumnName, stcls.schema, stcls.table, destSchema, stcls.table, modifySql)
+						global.Wlog.Warn(vlog)
+						alterSlice = append(alterSlice, modifySql)
+					}
 				}
 				delete(destColumnMap, v1)
 			} else {
@@ -2441,19 +3057,16 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 		sqlS := fixer.FixAlterColumnSqlGenerate(alterSlice, logThreadSeq)
 		constraintAdvisorySQLs := make([]string, 0)
 		tableAdvisorySuggestions := make([]schemacompat.ConstraintRepairSuggestion, 0)
-		if len(columnAdvisorySuggestions) > 0 {
-			constraintAdvisorySQLs = append(
-				constraintAdvisorySQLs,
-				buildConstraintAdvisoryLines(fmt.Sprintf("%s.%s COLUMN attributes", destSchema, stcls.destTable), columnAdvisorySuggestions)...,
-			)
-		}
+		executableColumnCollationRepair := false
+		columnCollationRepairHandled := len(columnCollationRepairCandidates) == 0
 
 		tableCharsetDifferent := false
 		tableCollationDifferent := false
 		tableCommentDifferent := false
-		tableAutoIncrementDifferent := false
+		tableAutoIncrementRiskDifferent := false
 		tableRowFormatDifferent := false
 		tableCollationRiskDifferent := false
+		tableCollationMappedDifferent := false
 		tableCheckRiskDifferent := false
 		tableUnsupportedRiskDifferent := false
 
@@ -2486,7 +3099,19 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 						)
 					}
 
-					charsetDecision := schemacompat.DecideCharsetCompatibility(sourceMeta.TableCharset, destMeta.TableCharset)
+					// MariaDB LEFT JOIN information_schema.COLLATIONS 可能返回空的 TableCharset，
+				// 在比较前从 collation 名推断 charset，避免误判为 charset mismatch
+				if strings.TrimSpace(sourceMeta.TableCharset) == "" && strings.TrimSpace(sourceMeta.TableCollation) != "" {
+					inferred := schemacompat.InferCharsetFromCollation(sourceMeta.TableCollation)
+					if inferred != "" {
+						vlog = fmt.Sprintf("(%d) %s Source table charset was empty, inferred as %s from collation %s for %s.%s",
+							logThreadSeq, event, inferred, sourceMeta.TableCollation, sourceSchema, stcls.table)
+						global.Wlog.Warn(vlog)
+						sourceMeta.TableCharset = inferred
+					}
+				}
+
+				charsetDecision := schemacompat.DecideCharsetCompatibility(sourceMeta.TableCharset, destMeta.TableCharset)
 					if charsetDecision.IsMismatch() {
 						tableCharsetDifferent = true
 						vlog = fmt.Sprintf("(%d) %s Table charset mismatch: source=%s, dest=%s, reason=%s", logThreadSeq, event, sourceMeta.TableCharset, destMeta.TableCharset, charsetDecision.Reason)
@@ -2496,17 +3121,82 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 						global.Wlog.Debug(vlog)
 					}
 
-					collationDecision := schemacompat.DecideCollationCompatibility(sourceMeta.TableCollation, destMeta.TableCollation)
-					if collationDecision.State == schemacompat.CompatibilityWarnOnly {
-						tableCollationRiskDifferent = true
-						vlog = fmt.Sprintf("(%d) %s Table collation warning: source=%s, dest=%s, reason=%s", logThreadSeq, event, sourceMeta.TableCollation, destMeta.TableCollation, collationDecision.Reason)
+					// 检查是否所有列级 collation 差异都属于已知的 MariaDB→MySQL 等价映射
+					allColumnCollationMapped := len(columnCollationRepairCandidates) > 0 && len(alterSlice) == 0
+					if allColumnCollationMapped {
+						for _, c := range columnCollationRepairCandidates {
+							mapped, ok := schemacompat.MapMariaDBCollationToMySQL(c.SourceCollation)
+							if !ok || !strings.EqualFold(mapped, strings.TrimSpace(c.DestCollation)) {
+								allColumnCollationMapped = false
+								break
+							}
+						}
+					}
+
+					if allColumnCollationMapped {
+						// 所有列级 collation 差异都是已知的跨平台等价映射，无需生成修复 SQL
+						tableCollationMappedDifferent = true
+						columnCollationRepairHandled = true
+						vlog = fmt.Sprintf("(%d) %s All %d column collation differences are cross-platform mappings for %s.%s -> %s.%s, no fix SQL needed",
+							logThreadSeq, event, len(columnCollationRepairCandidates), sourceSchema, stcls.table, destSchema, stcls.destTable)
 						global.Wlog.Warn(vlog)
-						tableAdvisorySuggestions = append(tableAdvisorySuggestions, schemacompat.ConstraintRepairSuggestion{
-							Kind:       "TABLE COLLATION",
-							Level:      schemacompat.ConstraintRepairLevelAdvisoryOnly,
-							Reason:     collationDecision.Reason,
-							Statements: fixer.FixTableCharsetSqlGenerate(sourceMeta.TableCharset, sourceMeta.TableCollation, logThreadSeq),
-						})
+					} else if repairSQLs, ok := stcls.buildColumnCollationRepairSQL(fixer, sourceMeta, destMeta, sourceColumnDefinitions, columnCollationRepairCandidates, logThreadSeq); ok {
+						executableColumnCollationRepair = true
+						columnCollationRepairHandled = true
+						vlog = fmt.Sprintf("(%d) %s Generated executable column collation repair SQL for %s.%s -> %s.%s: %v",
+							logThreadSeq, event, sourceSchema, stcls.table, destSchema, stcls.destTable, repairSQLs)
+						global.Wlog.Warn(vlog)
+						sqlS = append(sqlS, repairSQLs...)
+					} else if len(columnCollationRepairCandidates) > 0 {
+						columnRiskDifferent = true
+						columnCollationRepairHandled = true
+						columnAdvisorySuggestions = append(columnAdvisorySuggestions, buildColumnCollationAdvisorySuggestions(columnCollationRepairCandidates)...)
+					}
+
+					collationDecision := schemacompat.DecideCollationCompatibility(sourceMeta.TableCollation, destMeta.TableCollation)
+					// MariaDB→MySQL 跨平台场景：非 MariaDB 特有的 collation（如 utf8mb4_general_ci）在 MySQL 中合法存在，
+					// 排序行为不同于目标端，应视为真实差异而非默认 collation 漂移
+					if collationDecision.State == schemacompat.CompatibilityWarnOnly && stcls.isMariaDBToMySQL() {
+						if _, isMappable := schemacompat.MapMariaDBCollationToMySQL(sourceMeta.TableCollation); !isMappable {
+							collationDecision.State = schemacompat.CompatibilityUnsupported
+							collationDecision.Reason = fmt.Sprintf("cross-platform collation mismatch: source=%s is valid in MySQL but differs from target=%s",
+								sourceMeta.TableCollation, destMeta.TableCollation)
+							vlog = fmt.Sprintf("(%d) %s Reclassified table collation drift as hard mismatch for MariaDB→MySQL: source=%s, dest=%s",
+								logThreadSeq, event, sourceMeta.TableCollation, destMeta.TableCollation)
+							global.Wlog.Debug(vlog)
+						}
+					}
+					if collationDecision.State == schemacompat.CompatibilityWarnOnly {
+						// 检查是否为 MariaDB→MySQL 已知的 collation 等价映射（如 uca1400→0900）
+						mappedCollation, isMappable := schemacompat.MapMariaDBCollationToMySQL(sourceMeta.TableCollation)
+						if isMappable && strings.EqualFold(mappedCollation, strings.TrimSpace(destMeta.TableCollation)) {
+							// 已知的跨平台 collation 等价映射，标记为 collation-mapped，不生成任何 fix SQL
+							tableCollationMappedDifferent = true
+							vlog = fmt.Sprintf("(%d) %s Table collation-mapped: source=%s maps to target=%s, no fix SQL needed",
+								logThreadSeq, event, sourceMeta.TableCollation, destMeta.TableCollation)
+							global.Wlog.Warn(vlog)
+						} else if executableColumnCollationRepair || tableCharsetDifferent {
+							// 可执行的列级 collation 修复 SQL 或表级 charset 差异修复已包含 CONVERT TO CHARACTER SET，
+							// 跳过重复的表级 advisory 输出
+							vlog = fmt.Sprintf("(%d) %s Table collation drift already covered by executable column collation repair: source=%s, dest=%s", logThreadSeq, event, sourceMeta.TableCollation, destMeta.TableCollation)
+							global.Wlog.Debug(vlog)
+						} else {
+							tableCollationRiskDifferent = true
+							vlog = fmt.Sprintf("(%d) %s Table collation warning: source=%s, dest=%s, reason=%s", logThreadSeq, event, sourceMeta.TableCollation, destMeta.TableCollation, collationDecision.Reason)
+							global.Wlog.Warn(vlog)
+							tableAdvisorySuggestions = append(tableAdvisorySuggestions, schemacompat.ConstraintRepairSuggestion{
+								Kind:       "TABLE COLLATION",
+								Level:      schemacompat.ConstraintRepairLevelAdvisoryOnly,
+								Reason:     collationDecision.Reason,
+								Statements: func() []string {
+								advisoryCollation := sourceMeta.TableCollation
+								if mapped, ok := schemacompat.MapMariaDBCollationToMySQL(advisoryCollation); ok {
+									advisoryCollation = mapped
+								}
+								return fixer.FixTableCharsetSqlGenerate(sourceMeta.TableCharset, advisoryCollation, logThreadSeq)
+							}(),
+							})
+						}
 					} else if collationDecision.IsMismatch() {
 						tableCollationDifferent = true
 						vlog = fmt.Sprintf("(%d) %s Table collation mismatch: source=%s, dest=%s, reason=%s", logThreadSeq, event, sourceMeta.TableCollation, destMeta.TableCollation, collationDecision.Reason)
@@ -2517,7 +3207,11 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 					}
 
 					if tableCharsetDifferent || tableCollationDifferent {
-						sqlS = append(sqlS, fixer.FixTableCharsetSqlGenerate(sourceMeta.TableCharset, sourceMeta.TableCollation, logThreadSeq)...)
+						repairCollation := sourceMeta.TableCollation
+						if mapped, ok := schemacompat.MapMariaDBCollationToMySQL(repairCollation); ok {
+							repairCollation = mapped
+						}
+						sqlS = append(sqlS, fixer.FixTableCharsetSqlGenerate(sourceMeta.TableCharset, repairCollation, logThreadSeq)...)
 					}
 
 					rowFormatDecision := schemacompat.DecideTableRowFormatCompatibility(
@@ -2553,11 +3247,11 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 						)
 					}
 
-					if fixValue, needsFix := resolveMySQLTableAutoIncrementFixValue(sourceMeta.AutoIncrement, destMeta.AutoIncrement); needsFix && !droppedAutoIncrementColumn {
-						tableAutoIncrementDifferent = true
-						vlog = fmt.Sprintf("(%d) %s Table AUTO_INCREMENT mismatch: source=%v, dest=%v", logThreadSeq, event, nullInt64ForLog(sourceMeta.AutoIncrement), nullInt64ForLog(destMeta.AutoIncrement))
+					if advisorySuggestion, needsFix := buildMySQLTableAutoIncrementAdvisory(destSchema, stcls.destTable, sourceMeta.AutoIncrement, destMeta.AutoIncrement); needsFix && !droppedAutoIncrementColumn {
+						tableAutoIncrementRiskDifferent = true
+						vlog = fmt.Sprintf("(%d) %s Table AUTO_INCREMENT drift recorded as advisory-only: source=%v, dest=%v", logThreadSeq, event, nullInt64ForLog(sourceMeta.AutoIncrement), nullInt64ForLog(destMeta.AutoIncrement))
 						global.Wlog.Warn(vlog)
-						sqlS = append(sqlS, fixer.FixTableAutoIncrementSqlGenerate(fixValue, logThreadSeq)...)
+						tableAdvisorySuggestions = append(tableAdvisorySuggestions, advisorySuggestion)
 					} else if needsFix && droppedAutoIncrementColumn {
 						vlog = fmt.Sprintf("(%d) %s Skip table AUTO_INCREMENT repair for %s.%s because the target auto-increment column is being dropped",
 							logThreadSeq, event, destSchema, stcls.table)
@@ -2582,13 +3276,27 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 				buildConstraintAdvisoryLines(fmt.Sprintf("%s.%s TABLE options", destSchema, stcls.destTable), tableAdvisorySuggestions)...,
 			)
 		}
+		if !columnCollationRepairHandled && len(columnCollationRepairCandidates) > 0 {
+			columnRiskDifferent = true
+			columnAdvisorySuggestions = append(columnAdvisorySuggestions, buildColumnCollationAdvisorySuggestions(columnCollationRepairCandidates)...)
+		}
+		if len(columnAdvisorySuggestions) > 0 {
+			constraintAdvisorySQLs = append(
+				constraintAdvisorySQLs,
+				buildConstraintAdvisoryLines(fmt.Sprintf("%s.%s COLUMN attributes", destSchema, stcls.destTable), columnAdvisorySuggestions)...,
+			)
+		}
 
-		hasWarnOnlyTableLevelDiff := columnRiskDifferent || tableCollationRiskDifferent || tableCheckRiskDifferent || tableUnsupportedRiskDifferent
-		hasHardTableLevelDiff := tableCharsetDifferent || tableCollationDifferent || tableCommentDifferent || tableAutoIncrementDifferent || tableRowFormatDifferent
-		if len(alterSlice) > 0 || hasHardTableLevelDiff {
+		hasWarnOnlyTableLevelDiff := columnRiskDifferent || tableAutoIncrementRiskDifferent || tableCollationRiskDifferent || tableCheckRiskDifferent || tableUnsupportedRiskDifferent
+		hasCollationMappedOnly := tableCollationMappedDifferent && !columnRiskDifferent && !tableAutoIncrementRiskDifferent && !tableCollationRiskDifferent && !tableCheckRiskDifferent && !tableUnsupportedRiskDifferent
+		hasHardTableLevelDiff := tableCharsetDifferent || tableCollationDifferent || tableCommentDifferent || tableRowFormatDifferent
+		if len(alterSlice) > 0 || hasHardTableLevelDiff || executableColumnCollationRepair {
 			abnormalTableList = append(abnormalTableList, fmt.Sprintf("%s.%s", destSchema, stcls.table))
 		} else if hasWarnOnlyTableLevelDiff {
 			stcls.structWarnOnlyDiffsMap[fmt.Sprintf("%s.%s", sourceSchema, sourceTableName)] = true
+			newCheckTableList = append(newCheckTableList, fmt.Sprintf("%s.%s", destSchema, stcls.table))
+		} else if hasCollationMappedOnly {
+			stcls.structCollationMappedMap[fmt.Sprintf("%s.%s", sourceSchema, sourceTableName)] = true
 			newCheckTableList = append(newCheckTableList, fmt.Sprintf("%s.%s", destSchema, stcls.table))
 		} else {
 			newCheckTableList = append(newCheckTableList, fmt.Sprintf("%s.%s", destSchema, stcls.table))
@@ -3478,11 +4186,21 @@ func (stcls *schemaTable) SchemaTableAllCol(tableList []string, logThreadSeq, lo
 		}
 		vlog = fmt.Sprintf("(%d) All column information query of dstDSN {%s} table %s.%s is completed", logThreadSeq, stcls.destDrive, destSchema, tableName)
 		global.Wlog.Debug(vlog)
-		tableCol[fmt.Sprintf("%s_gtchecksum_%s", destSchema, tableName)] = global.TableAllColumnInfoS{
-			SColumnInfo: interfToString(a),
-			DColumnInfo: interfToString(b),
+		sourceColInfo := interfToString(a)
+		destColInfo := interfToString(b)
+		if strings.EqualFold(stcls.checkRules.CheckObject, "data") {
+			var strippedGeneratedColumns []string
+			sourceColInfo, destColInfo, strippedGeneratedColumns = normalizeDataCheckColumnInfo(sourceColInfo, destColInfo)
+			if len(strippedGeneratedColumns) > 0 {
+				vlog = fmt.Sprintf("(%d) Stripped generated invisible columns from data-check target metadata for %s.%s -> %s.%s: %v", logThreadSeq, sourceSchema, tableName, destSchema, tableName, strippedGeneratedColumns)
+				global.Wlog.Info(vlog)
+			}
 		}
-		vlog = fmt.Sprintf("(%d) all column information query of source table %s.%s and target table %s.%s is completed. table column message is {source: %s, dest: %s}", logThreadSeq, sourceSchema, tableName, destSchema, tableName, interfToString(a), interfToString(b))
+		tableCol[fmt.Sprintf("%s_gtchecksum_%s", destSchema, tableName)] = global.TableAllColumnInfoS{
+			SColumnInfo: sourceColInfo,
+			DColumnInfo: destColInfo,
+		}
+		vlog = fmt.Sprintf("(%d) all column information query of source table %s.%s and target table %s.%s is completed. table column message is {source: %s, dest: %s}", logThreadSeq, sourceSchema, tableName, destSchema, tableName, sourceColInfo, destColInfo)
 		global.Wlog.Debug(vlog)
 	}
 	vlog = fmt.Sprintf("(%d) The metadata information of the source target verification table has been obtained", logThreadSeq)
@@ -4000,7 +4718,7 @@ func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 in
 		destTriggerComments := make(map[string]string)
 		sourceTriggerDefiners := make(map[string]string)
 		destTriggerDefiners := make(map[string]string)
-		if stcls.isMySQLToMySQL() {
+		if stcls.shouldCompareTriggerMetadata() {
 			sourceTriggerComments, sourceTriggerDefiners = loadMySQLTriggerMetadata(stcls.sourceDB, schema, logThreadSeq)
 			destTriggerComments, destTriggerDefiners = loadMySQLTriggerMetadata(stcls.destDB, schema, logThreadSeq)
 		}
@@ -4025,9 +4743,18 @@ func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 in
 		for k, _ := range tmpM {
 			pods.TriggerName = strings.ReplaceAll(strings.Split(k, ".")[1], "\"", "")
 			definitionDiff := sourceTrigger[k] != destTrigger[k]
+			collationMappedOnly := false
+			if definitionDiff && stcls.isMariaDBToMySQL() {
+				mappedSource := mapMariaDBCollationInRoutineSQL(sourceTrigger[k])
+				if mappedSource == destTrigger[k] {
+					definitionDiff = false
+					collationMappedOnly = true
+					global.Wlog.Debug(fmt.Sprintf("(%d) Trigger %s definition matches after MariaDB collation mapping", logThreadSeq, k))
+				}
+			}
 			commentDiff := false
 			definerDiff := false
-			if stcls.isMySQLToMySQL() {
+			if stcls.shouldCompareTriggerMetadata() {
 				sourceComment := normalizeMetadataComment(sourceTriggerComments[k])
 				destComment := normalizeMetadataComment(destTriggerComments[k])
 				if sourceComment != destComment {
@@ -4045,14 +4772,36 @@ func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 in
 				}
 			}
 
-			if definitionDiff || commentDiff || definerDiff {
+			// MariaDB→MySQL：当 body 和其他属性均一致时，检查 charset 会话元数据的 collation 差异
+			metadataCollationDiff := false
+			if !definitionDiff && !commentDiff && !definerDiff && !collationMappedOnly && stcls.isMariaDBToMySQL() {
+				trName := strings.ReplaceAll(strings.Split(k, ".")[1], "\"", "")
+				srcResult, srcErr := showCreateTriggerSQLWithCharset(stcls.sourceDB, schema, trName)
+				dstResult, dstErr := showCreateTriggerSQLWithCharset(stcls.destDB, schema, trName)
+				if srcErr == nil && dstErr == nil {
+					if isCharsetMetadataCollationMapped(srcResult.CharacterSetClient, srcResult.CollationConnection, srcResult.DatabaseCollation,
+						dstResult.CharacterSetClient, dstResult.CollationConnection, dstResult.DatabaseCollation) {
+						// uca1400→0900 映射（仅 MariaDB 11.5+ 触发）
+						collationMappedOnly = true
+						global.Wlog.Debug(fmt.Sprintf("(%d) Trigger %s charset metadata collation-mapped: uca1400→0900 drift (src=%s/%s dst=%s/%s)", logThreadSeq, k, srcResult.CollationConnection, srcResult.DatabaseCollation, dstResult.CollationConnection, dstResult.DatabaseCollation))
+					} else if hasCharsetMetadataCollationDiff(srcResult.CharacterSetClient, srcResult.CollationConnection, srcResult.DatabaseCollation,
+						dstResult.CharacterSetClient, dstResult.CollationConnection, dstResult.DatabaseCollation) {
+						// 非可映射的 collation 差异（如 general_ci ↔ 0900_ai_ci），需生成 fix SQL
+						metadataCollationDiff = true
+						global.Wlog.Warn(fmt.Sprintf("(%d) Trigger %s charset metadata collation mismatch requiring fix SQL (src=%s/%s dst=%s/%s)", logThreadSeq, k, srcResult.CollationConnection, srcResult.DatabaseCollation, dstResult.CollationConnection, dstResult.DatabaseCollation))
+					}
+				}
+			}
+
+			if definitionDiff || commentDiff || definerDiff || metadataCollationDiff {
 				pods.DIFFS = "yes"
 				d = append(d, k)
 
 				// Rebuild full trigger DDL from INFORMATION_SCHEMA instead of relying
 				// on the body-only statement column returned by SHOW CREATE TRIGGER.
 				trName := strings.ReplaceAll(strings.Split(k, ".")[1], "\"", "")
-				trSourceDef, showCreateErr := showCreateTriggerSQL(stcls.sourceDB, schema, trName)
+				trResult, showCreateErr := showCreateTriggerSQLWithCharset(stcls.sourceDB, schema, trName)
+				trSourceDef := trResult.CreateSQL
 				if showCreateErr != nil {
 					global.Wlog.Warn(fmt.Sprintf("(%d) Failed to rebuild source trigger DDL for %s.%s: %v", logThreadSeq, schema, trName, showCreateErr))
 					trSourceDef = sourceTrigger[k]
@@ -4062,8 +4811,26 @@ func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 in
 				if mappedSchema, exists := stcls.tableMappings[schema]; exists {
 					destSchema = mappedSchema
 				}
+				// MariaDB→MySQL：映射源端定义中的 MariaDB 特有 collation
+				if stcls.isMariaDBToMySQL() {
+					trSourceDef = mapMariaDBCollationInRoutineSQL(trSourceDef)
+				}
 				tsqls := mysql.GenerateTriggerFixSQL(schema, destSchema, trName, trSourceDef)
+				// 在 DROP/CREATE 语句前插入 charset session 变量设置
+				if showCreateErr == nil && trResult.CharacterSetClient != "" {
+					charsetSetStmts := buildTriggerCharsetSetStatements(trResult, stcls.isMariaDBToMySQL())
+					if len(charsetSetStmts) > 0 {
+						enriched := make([]string, 0, len(charsetSetStmts)+len(tsqls))
+						enriched = append(enriched, charsetSetStmts...)
+						enriched = append(enriched, tsqls...)
+						tsqls = enriched
+					}
+				}
 				appendTriggerDefinitionFixSQLs(tsqls)
+			} else if collationMappedOnly {
+				pods.DIFFS = global.SkipDiffsCollationMapped
+				c = append(c, k)
+				global.Wlog.Debug(fmt.Sprintf("(%d) Trigger %s collation-mapped: only uca1400→0900 collation difference, no fix SQL generated", logThreadSeq, k))
 			} else {
 				pods.DIFFS = "no"
 				c = append(c, k)
@@ -4200,7 +4967,7 @@ Routine: unified comparison for PROCEDURE and FUNCTION.
 - Prefer tc.Query().Routine(); if it fails, fallback to old Proc/Func paths.
 - Use appendPod to emit pods to buffer or measuredDataPods per aggregate flag.
 */
-func showCreateRoutine(db *sql.DB, schema, name, routineType string) (string, error) {
+func showCreateRoutineOnce(db *sql.DB, schema, name, routineType string) (string, error) {
 	var query string
 	if strings.EqualFold(routineType, "PROCEDURE") {
 		query = fmt.Sprintf("SHOW CREATE PROCEDURE `%s`.`%s`", schema, name)
@@ -4254,6 +5021,151 @@ func showCreateRoutine(db *sql.DB, schema, name, routineType string) (string, er
 	return createSQL, nil
 }
 
+func showCreateRoutine(db *sql.DB, schema, name, routineType string) (string, error) {
+	candidates := []string{name}
+	lowerName := strings.ToLower(name)
+	upperName := strings.ToUpper(name)
+	if lowerName != name {
+		candidates = append(candidates, lowerName)
+	}
+	if upperName != name && upperName != lowerName {
+		candidates = append(candidates, upperName)
+	}
+
+	var lastErr error
+	for _, candidate := range candidates {
+		createSQL, err := showCreateRoutineOnce(db, schema, candidate, routineType)
+		if err == nil && strings.TrimSpace(createSQL) != "" {
+			return createSQL, nil
+		}
+		if err != nil {
+			lastErr = err
+		} else {
+			lastErr = fmt.Errorf("empty SHOW CREATE result for %s.%s %s", schema, candidate, routineType)
+		}
+	}
+	return "", fmt.Errorf("SHOW CREATE failed for %s.%s %s, candidates=%v, lastErr=%v", schema, name, routineType, candidates, lastErr)
+}
+
+// queryRoutineCharsetMetadata 从 INFORMATION_SCHEMA.ROUTINES 查询 routine 的 charset session 元数据
+func queryRoutineCharsetMetadata(db *sql.DB, schema, name, routineType string) (charsetClient, collationConn, dbCollation string) {
+	row := db.QueryRow(
+		`SELECT CHARACTER_SET_CLIENT, COLLATION_CONNECTION, DATABASE_COLLATION
+		   FROM INFORMATION_SCHEMA.ROUTINES
+		  WHERE ROUTINE_SCHEMA = ? AND ROUTINE_NAME = ? AND ROUTINE_TYPE = ?`,
+		schema, name, strings.ToUpper(routineType),
+	)
+	var cs, col, dbCol sql.NullString
+	if err := row.Scan(&cs, &col, &dbCol); err != nil {
+		global.Wlog.Warn(fmt.Sprintf("queryRoutineCharsetMetadata failed for %s.%s %s: %v", schema, name, routineType, err))
+		return "", "", ""
+	}
+	return strings.TrimSpace(cs.String), strings.TrimSpace(col.String), strings.TrimSpace(dbCol.String)
+}
+
+// buildRoutineCharsetSetStatements 生成 routine fix SQL 需要的 charset session 变量 SET 语句
+func buildRoutineCharsetSetStatements(csClient, colConn, dbCollation string, isMariaDBToMySQL bool) []string {
+	if isMariaDBToMySQL {
+		if mapped, ok := schemacompat.MapMariaDBCollationToMySQL(colConn); ok {
+			colConn = mapped
+		}
+		if mapped, ok := schemacompat.MapMariaDBCollationToMySQL(dbCollation); ok {
+			dbCollation = mapped
+		}
+	}
+
+	stmts := make([]string, 0, 3)
+	if csClient != "" {
+		stmts = append(stmts, fmt.Sprintf("SET character_set_client = %s;", csClient))
+	}
+	if colConn != "" {
+		stmts = append(stmts, fmt.Sprintf("SET collation_connection = %s;", colConn))
+	}
+	if dbCollation != "" {
+		stmts = append(stmts, fmt.Sprintf("SET collation_database = %s;", dbCollation))
+	}
+	return stmts
+}
+
+// isCharsetMetadataCollationMapped 检查源端和目标端的 charset 会话元数据是否仅存在
+// uca1400→0900 可映射的 collation 差异（MariaDB 11.5+ 默认 collation）。
+// utf8mb4_general_ci 在 MySQL 8.0 中是完全支持的 collation，不属于映射范畴，
+// 其与 utf8mb4_0900_ai_ci 的差异应视为真实差异并生成 fix SQL。
+//
+// 返回 true 当且仅当 CHARACTER_SET_CLIENT 一致、至少有一个 COLLATION 字段不同
+// 且所有差异都可通过 MapMariaDBCollationToMySQL 映射。
+func isCharsetMetadataCollationMapped(srcCSClient, srcColConn, srcDBCollation, dstCSClient, dstColConn, dstDBCollation string) bool {
+	// CHARACTER_SET_CLIENT 不同则不是纯 collation 映射
+	if !strings.EqualFold(strings.TrimSpace(srcCSClient), strings.TrimSpace(dstCSClient)) {
+		return false
+	}
+	// 比较 COLLATION_CONNECTION —— DATABASE_COLLATION 是数据库级属性，
+	// 在 MySQL 8.0 中无法按对象粒度修复，因此不纳入映射判断。
+	src := strings.TrimSpace(srcColConn)
+	dst := strings.TrimSpace(dstColConn)
+	if strings.EqualFold(src, dst) {
+		return false
+	}
+	if mapped, ok := schemacompat.MapMariaDBCollationToMySQL(src); ok && strings.EqualFold(mapped, dst) {
+		return true
+	}
+	return false
+}
+
+// hasCharsetMetadataCollationDiff 检查源端和目标端的 charset 会话元数据是否存在
+// CHARACTER_SET_CLIENT 或 COLLATION_CONNECTION 差异。
+// DATABASE_COLLATION 是数据库级属性，无法按对象粒度修复，不纳入判断。
+func hasCharsetMetadataCollationDiff(srcCSClient, srcColConn, srcDBCollation, dstCSClient, dstColConn, dstDBCollation string) bool {
+	if !strings.EqualFold(strings.TrimSpace(srcCSClient), strings.TrimSpace(dstCSClient)) {
+		return true
+	}
+	return !strings.EqualFold(strings.TrimSpace(srcColConn), strings.TrimSpace(dstColConn))
+}
+
+func (stcls *schemaTable) normalizeRoutineObjectName(name string) string {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return ""
+	}
+	// Routine names are compared in a case-insensitive way to avoid
+	// MariaDB/MySQL display-case drift (e.g. myAdd vs MYADD) causing
+	// duplicated pseudo-diffs.
+	return strings.ToUpper(trimmed)
+}
+
+func (stcls *schemaTable) normalizeRoutineObjectMap(items map[string]string) map[string]string {
+	normalized := make(map[string]string, len(items))
+	for key, value := range items {
+		if key == "DEFINER" {
+			if old, exists := normalized[key]; !exists || strings.TrimSpace(old) == "" {
+				normalized[key] = value
+			}
+			continue
+		}
+
+		bodySuffix := ""
+		baseKey := key
+		if strings.HasSuffix(baseKey, "_BODY") {
+			baseKey = strings.TrimSuffix(baseKey, "_BODY")
+			bodySuffix = "_BODY"
+		}
+
+		normalizedName := stcls.normalizeRoutineObjectName(baseKey)
+		if normalizedName == "" {
+			continue
+		}
+		normalizedKey := normalizedName + bodySuffix
+		if old, exists := normalized[normalizedKey]; exists {
+			if strings.TrimSpace(old) == "" && strings.TrimSpace(value) != "" {
+				normalized[normalizedKey] = value
+			}
+			continue
+		}
+		normalized[normalizedKey] = value
+	}
+	return normalized
+}
+
 func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 int64, routineType string) {
 	// 合并 Proc/Func 主体逻辑，统一解析与比对，统一输出字段 ProcName
 	// 解析 dtabS，构建 schemaMap 与过滤映射
@@ -4305,10 +5217,7 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 					schemaMap[schema] = 1
 					// 提取名称
 					if len(sourceParts) >= 2 && sourceParts[1] != "*" {
-						name := sourceParts[1]
-						if stcls.caseSensitiveObjectName == "no" {
-							name = strings.ToLower(name)
-						}
+						name := stcls.normalizeRoutineObjectName(sourceParts[1])
 						// 根据 routineType 放入对应过滤映射；为空则两者都放
 						key := schema + "." + name
 						if routineType == "" || strings.EqualFold(routineType, "PROCEDURE") {
@@ -4329,10 +5238,7 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 				}
 				schemaMap[schema] = 1
 				if len(parts) >= 2 && parts[1] != "*" {
-					name := parts[1]
-					if stcls.caseSensitiveObjectName == "no" {
-						name = strings.ToLower(name)
-					}
+					name := stcls.normalizeRoutineObjectName(parts[1])
 					key := schema + "." + name
 					if routineType == "" || strings.EqualFold(routineType, "PROCEDURE") {
 						procMap[key] = name
@@ -4385,7 +5291,7 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 
 			sourceProcComments := make(map[string]string)
 			destProcComments := make(map[string]string)
-			if stcls.isMySQLToMySQL() {
+			if stcls.shouldCompareRoutineMetadata() {
 				sourceProcComments = loadMySQLRoutineComments(stcls.sourceDB, schema, "PROCEDURE", logThreadSeq)
 				destProcComments = loadMySQLRoutineComments(stcls.destDB, schema, "PROCEDURE", logThreadSeq)
 			}
@@ -4398,10 +5304,7 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 						filteredSource[k] = v
 						continue
 					}
-					name := k
-					if stcls.caseSensitiveObjectName == "no" {
-						name = strings.ToLower(name)
-					}
+					name := stcls.normalizeRoutineObjectName(k)
 					key := schema + "." + name
 					if _, ok := procMap[key]; ok {
 						filteredSource[k] = v
@@ -4420,10 +5323,7 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 						filteredDest[k] = v
 						continue
 					}
-					name := k
-					if stcls.caseSensitiveObjectName == "no" {
-						name = strings.ToLower(name)
-					}
+					name := stcls.normalizeRoutineObjectName(k)
 					key := schema + "." + name
 					if _, ok := procMap[key]; ok {
 						filteredDest[k] = v
@@ -4440,23 +5340,20 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 					if k == "DEFINER" || strings.HasSuffix(k, "_BODY") {
 						continue
 					}
-					name := k
-					if stcls.caseSensitiveObjectName == "no" {
-						name = strings.ToLower(name)
-					}
+					name := stcls.normalizeRoutineObjectName(k)
 					procMap[schema+"."+name] = name
 				}
 				for k := range destProc {
 					if k == "DEFINER" || strings.HasSuffix(k, "_BODY") {
 						continue
 					}
-					name := k
-					if stcls.caseSensitiveObjectName == "no" {
-						name = strings.ToLower(name)
-					}
+					name := stcls.normalizeRoutineObjectName(k)
 					procMap[schema+"."+name] = name
 				}
 			}
+
+			sourceProc = stcls.normalizeRoutineObjectMap(sourceProc)
+			destProc = stcls.normalizeRoutineObjectMap(destProc)
 
 			// 并集与比对
 			if len(sourceProc) > 0 || len(destProc) > 0 {
@@ -4476,7 +5373,9 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 
 				for k, v := range tmpM {
 					definitionDiff := false
+					collationMappedOnly := false
 					commentDiff := false
+					definerDiff := false
 					sourceComment := ""
 
 					if v == 2 {
@@ -4495,12 +5394,35 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 						} else if srcBody != dstBody {
 							definitionDiff = true
 						}
+
+						if definitionDiff && stcls.sourceVersionInfo().Flavor == global.DatabaseFlavorMariaDB && stcls.destVersionInfo().Flavor == global.DatabaseFlavorMySQL {
+							sourceCreate, srcErr := showCreateRoutine(stcls.sourceDB, schema, k, "PROCEDURE")
+							destCreate, dstErr := showCreateRoutine(stcls.destDB, schema, k, "PROCEDURE")
+							if srcErr == nil && dstErr == nil {
+								normalizedSourceCreate := normalizeRoutineCreateSQLForCompareWithCatalog(sourceCreate, stcls.sourceVersionInfo(), stcls.destVersionInfo())
+								normalizedDestCreate := normalizeRoutineCreateSQLForCompareWithCatalog(destCreate, stcls.sourceVersionInfo(), stcls.destVersionInfo())
+								// MariaDB→MySQL：将源端归一化后的 uca1400 collation 映射为 MySQL 等价物再比较
+								normalizedSourceBeforeMapping := normalizedSourceCreate
+								normalizedSourceCreate = mapMariaDBCollationInRoutineSQL(normalizedSourceCreate)
+								if normalizedSourceCreate == normalizedDestCreate {
+									global.Wlog.Debug(fmt.Sprintf("(%d) Procedure SHOW CREATE fallback matched %s.%s after normalization (collation-mapped)", logThreadSeq, schema, k))
+									definitionDiff = false
+									if normalizedSourceBeforeMapping != normalizedSourceCreate {
+										collationMappedOnly = true
+									}
+								} else {
+									global.Wlog.Debug(fmt.Sprintf("(%d) Procedure SHOW CREATE fallback still differs %s.%s: source=%q dest=%q", logThreadSeq, schema, k, normalizedSourceCreate, normalizedDestCreate))
+								}
+							} else {
+								global.Wlog.Debug(fmt.Sprintf("(%d) Procedure SHOW CREATE fallback unavailable %s.%s: sourceErr=%v destErr=%v", logThreadSeq, schema, k, srcErr, dstErr))
+							}
+						}
 					} else {
 						// 仅一侧存在
 						definitionDiff = true
 					}
 
-					if stcls.isMySQLToMySQL() {
+					if stcls.shouldCompareRoutineMetadata() {
 						sourceComment = normalizeMetadataComment(sourceProcComments[strings.ToUpper(k)])
 						destComment := normalizeMetadataComment(destProcComments[strings.ToUpper(k)])
 						if sourceComment != destComment {
@@ -4508,12 +5430,38 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 							vlog = fmt.Sprintf("(%d) Procedure comment mismatch %s.%s: source=%q, dest=%q", logThreadSeq, schema, k, sourceComment, destComment)
 							global.Wlog.Warn(vlog)
 						}
+
+						sourceDefiner := strings.TrimSpace(extractMetadataFromProcedure(sourceProc[k])["DEFINER"])
+						destDefiner := strings.TrimSpace(extractMetadataFromProcedure(destProc[k])["DEFINER"])
+						if sourceDefiner != destDefiner {
+							definerDiff = true
+							vlog = fmt.Sprintf("(%d) Procedure definer mismatch %s.%s: source=%q, dest=%q", logThreadSeq, schema, k, sourceDefiner, destDefiner)
+							global.Wlog.Warn(vlog)
+						}
+					}
+
+					// MariaDB→MySQL：当定义和其他属性均一致时，检查 charset 会话元数据的 collation 差异
+					metadataCollationDiff := false
+					if !definitionDiff && !commentDiff && !definerDiff && !collationMappedOnly && stcls.isMariaDBToMySQL() {
+						srcCSClient, srcColConn, srcDBCollation := queryRoutineCharsetMetadata(stcls.sourceDB, schema, k, "PROCEDURE")
+						dstCSClient, dstColConn, dstDBCollation := queryRoutineCharsetMetadata(stcls.destDB, schema, k, "PROCEDURE")
+						if isCharsetMetadataCollationMapped(srcCSClient, srcColConn, srcDBCollation, dstCSClient, dstColConn, dstDBCollation) {
+							collationMappedOnly = true
+							global.Wlog.Debug(fmt.Sprintf("(%d) Procedure %s.%s charset metadata collation-mapped: uca1400→0900 drift (src=%s/%s dst=%s/%s)", logThreadSeq, schema, k, srcColConn, srcDBCollation, dstColConn, dstDBCollation))
+						} else if hasCharsetMetadataCollationDiff(srcCSClient, srcColConn, srcDBCollation, dstCSClient, dstColConn, dstDBCollation) {
+							metadataCollationDiff = true
+							global.Wlog.Warn(fmt.Sprintf("(%d) Procedure %s.%s charset metadata collation mismatch requiring fix SQL (src=%s/%s dst=%s/%s)", logThreadSeq, schema, k, srcColConn, srcDBCollation, dstColConn, dstDBCollation))
+						}
 					}
 
 					pods.ProcName = k
-					if definitionDiff || commentDiff {
+					if definitionDiff || commentDiff || definerDiff || metadataCollationDiff {
 						pods.DIFFS = "yes"
 						d = append(d, k)
+					} else if collationMappedOnly {
+						pods.DIFFS = global.SkipDiffsCollationMapped
+						c = append(c, k)
+						global.Wlog.Debug(fmt.Sprintf("(%d) Procedure %s.%s collation-mapped: only uca1400→0900 collation difference, no fix SQL generated", logThreadSeq, schema, k))
 					} else {
 						pods.DIFFS = "no"
 						c = append(c, k)
@@ -4530,7 +5478,7 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 
 						// When source comment is empty, ALTER ... COMMENT '' does not reliably
 						// clear routine comments in MySQL. Recreate the routine instead.
-						if commentDiff && !definitionDiff && stcls.isMySQLToMySQL() {
+						if commentDiff && !definitionDiff && !definerDiff && stcls.isMySQLToMySQL() {
 							if !shouldRecreateRoutineForCommentDiff(sourceComment) {
 								commentSQL := buildMySQLRoutineCommentFixSQL(destSchema, k, "PROCEDURE", sourceComment)
 								global.Wlog.Warn(fmt.Sprintf("(%d) Generating PROCEDURE comment fix SQL: %s", logThreadSeq, commentSQL))
@@ -4542,12 +5490,28 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 
 						sourceDef, err := showCreateRoutine(stcls.sourceDB, schema, k, "PROCEDURE")
 						if err != nil || len(strings.TrimSpace(sourceDef)) == 0 {
+							global.Wlog.Warn(fmt.Sprintf("(%d) SHOW CREATE PROCEDURE unavailable for %s.%s: %v; fallback to INFORMATION_SCHEMA definition", logThreadSeq, schema, k, err))
 							// 回退：使用之前采集到的定义
 							if def, ok := sourceProc[k]; ok {
 								sourceDef = def
 							}
 						}
+						// MariaDB→MySQL：映射源端定义中的 MariaDB 特有 collation
+						if stcls.isMariaDBToMySQL() {
+							sourceDef = mapMariaDBCollationInRoutineSQL(sourceDef)
+						}
 						sqls := mysql.GenerateRoutineFixSQL(schema, destSchema, k, "PROCEDURE", sourceDef)
+						// 查询 charset session 元数据并插入 SET 语句
+						csClient, colConn, dbCollation := queryRoutineCharsetMetadata(stcls.sourceDB, schema, k, "PROCEDURE")
+						if csClient != "" {
+							charsetStmts := buildRoutineCharsetSetStatements(csClient, colConn, dbCollation, stcls.isMariaDBToMySQL())
+							if len(charsetStmts) > 0 {
+								enriched := make([]string, 0, len(charsetStmts)+len(sqls))
+								enriched = append(enriched, charsetStmts...)
+								enriched = append(enriched, sqls...)
+								sqls = enriched
+							}
+						}
 						appendRoutineDefinitionFixSQLs(sqls)
 					}
 				}
@@ -4585,7 +5549,7 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 
 			sourceFuncComments := make(map[string]string)
 			destFuncComments := make(map[string]string)
-			if stcls.isMySQLToMySQL() {
+			if stcls.shouldCompareRoutineMetadata() {
 				sourceFuncComments = loadMySQLRoutineComments(stcls.sourceDB, schema, "FUNCTION", logThreadSeq)
 				destFuncComments = loadMySQLRoutineComments(stcls.destDB, schema, "FUNCTION", logThreadSeq)
 			}
@@ -4594,10 +5558,7 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 			if len(funcMap) > 0 {
 				filteredSource := make(map[string]string)
 				for k, v := range sourceFunc {
-					name := k
-					if stcls.caseSensitiveObjectName == "no" {
-						name = strings.ToLower(name)
-					}
+					name := stcls.normalizeRoutineObjectName(k)
 					key := schema + "." + name
 					if _, ok := funcMap[key]; ok {
 						filteredSource[k] = v
@@ -4607,10 +5568,7 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 
 				filteredDest := make(map[string]string)
 				for k, v := range destFunc {
-					name := k
-					if stcls.caseSensitiveObjectName == "no" {
-						name = strings.ToLower(name)
-					}
+					name := stcls.normalizeRoutineObjectName(k)
 					key := schema + "." + name
 					if _, ok := funcMap[key]; ok {
 						filteredDest[k] = v
@@ -4619,20 +5577,17 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 				destFunc = filteredDest
 			} else {
 				for k := range sourceFunc {
-					name := k
-					if stcls.caseSensitiveObjectName == "no" {
-						name = strings.ToLower(name)
-					}
+					name := stcls.normalizeRoutineObjectName(k)
 					funcMap[schema+"."+name] = name
 				}
 				for k := range destFunc {
-					name := k
-					if stcls.caseSensitiveObjectName == "no" {
-						name = strings.ToLower(name)
-					}
+					name := stcls.normalizeRoutineObjectName(k)
 					funcMap[schema+"."+name] = name
 				}
 			}
+
+			sourceFunc = stcls.normalizeRoutineObjectMap(sourceFunc)
+			destFunc = stcls.normalizeRoutineObjectMap(destFunc)
 
 			// 并集与比对
 			if len(sourceFunc) > 0 || len(destFunc) > 0 {
@@ -4645,7 +5600,9 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 				}
 				for k, v := range tmpM {
 					definitionDiff := false
+					collationMappedOnly := false
 					commentDiff := false
+					definerDiff := false
 					sourceComment := ""
 
 					if v == 2 {
@@ -4653,12 +5610,36 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 						cleanDestFunc := normalizeRoutineDefinitionForCompare(destFunc[k])
 						if cleanSourceFunc != cleanDestFunc {
 							definitionDiff = true
+							global.Wlog.Debug(fmt.Sprintf("(%d) Function definition diff %s.%s:\n  source=%q\n  dest  =%q", logThreadSeq, schema, k, cleanSourceFunc, cleanDestFunc))
+						}
+
+						if definitionDiff && stcls.sourceVersionInfo().Flavor == global.DatabaseFlavorMariaDB && stcls.destVersionInfo().Flavor == global.DatabaseFlavorMySQL {
+							sourceCreate, srcErr := showCreateRoutine(stcls.sourceDB, schema, k, "FUNCTION")
+							destCreate, dstErr := showCreateRoutine(stcls.destDB, schema, k, "FUNCTION")
+							if srcErr == nil && dstErr == nil {
+								normalizedSourceCreate := normalizeRoutineCreateSQLForCompareWithCatalog(sourceCreate, stcls.sourceVersionInfo(), stcls.destVersionInfo())
+								normalizedDestCreate := normalizeRoutineCreateSQLForCompareWithCatalog(destCreate, stcls.sourceVersionInfo(), stcls.destVersionInfo())
+								// MariaDB→MySQL：将源端归一化后的 uca1400 collation 映射为 MySQL 等价物再比较
+								normalizedSourceBeforeMapping := normalizedSourceCreate
+								normalizedSourceCreate = mapMariaDBCollationInRoutineSQL(normalizedSourceCreate)
+								if normalizedSourceCreate == normalizedDestCreate {
+									global.Wlog.Debug(fmt.Sprintf("(%d) Function SHOW CREATE fallback matched %s.%s after normalization (collation-mapped)", logThreadSeq, schema, k))
+									definitionDiff = false
+									if normalizedSourceBeforeMapping != normalizedSourceCreate {
+										collationMappedOnly = true
+									}
+								} else {
+									global.Wlog.Debug(fmt.Sprintf("(%d) Function SHOW CREATE fallback still differs %s.%s: source=%q dest=%q", logThreadSeq, schema, k, normalizedSourceCreate, normalizedDestCreate))
+								}
+							} else {
+								global.Wlog.Debug(fmt.Sprintf("(%d) Function SHOW CREATE fallback unavailable %s.%s: sourceErr=%v destErr=%v", logThreadSeq, schema, k, srcErr, dstErr))
+							}
 						}
 					} else {
 						definitionDiff = true
 					}
 
-					if stcls.isMySQLToMySQL() {
+					if stcls.shouldCompareRoutineMetadata() {
 						sourceComment = normalizeMetadataComment(sourceFuncComments[strings.ToUpper(k)])
 						destComment := normalizeMetadataComment(destFuncComments[strings.ToUpper(k)])
 						if sourceComment != destComment {
@@ -4666,12 +5647,38 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 							vlog = fmt.Sprintf("(%d) Function comment mismatch %s.%s: source=%q, dest=%q", logThreadSeq, schema, k, sourceComment, destComment)
 							global.Wlog.Warn(vlog)
 						}
+
+						sourceDefiner := strings.TrimSpace(extractMetadataFromProcedure(sourceFunc[k])["DEFINER"])
+						destDefiner := strings.TrimSpace(extractMetadataFromProcedure(destFunc[k])["DEFINER"])
+						if sourceDefiner != destDefiner {
+							definerDiff = true
+							vlog = fmt.Sprintf("(%d) Function definer mismatch %s.%s: source=%q, dest=%q", logThreadSeq, schema, k, sourceDefiner, destDefiner)
+							global.Wlog.Warn(vlog)
+						}
+					}
+
+					// MariaDB→MySQL：当定义和其他属性均一致时，检查 charset 会话元数据的 collation 差异
+					metadataCollationDiff := false
+					if !definitionDiff && !commentDiff && !definerDiff && !collationMappedOnly && stcls.isMariaDBToMySQL() {
+						srcCSClient, srcColConn, srcDBCollation := queryRoutineCharsetMetadata(stcls.sourceDB, schema, k, "FUNCTION")
+						dstCSClient, dstColConn, dstDBCollation := queryRoutineCharsetMetadata(stcls.destDB, schema, k, "FUNCTION")
+						if isCharsetMetadataCollationMapped(srcCSClient, srcColConn, srcDBCollation, dstCSClient, dstColConn, dstDBCollation) {
+							collationMappedOnly = true
+							global.Wlog.Debug(fmt.Sprintf("(%d) Function %s.%s charset metadata collation-mapped: uca1400→0900 drift (src=%s/%s dst=%s/%s)", logThreadSeq, schema, k, srcColConn, srcDBCollation, dstColConn, dstDBCollation))
+						} else if hasCharsetMetadataCollationDiff(srcCSClient, srcColConn, srcDBCollation, dstCSClient, dstColConn, dstDBCollation) {
+							metadataCollationDiff = true
+							global.Wlog.Warn(fmt.Sprintf("(%d) Function %s.%s charset metadata collation mismatch requiring fix SQL (src=%s/%s dst=%s/%s)", logThreadSeq, schema, k, srcColConn, srcDBCollation, dstColConn, dstDBCollation))
+						}
 					}
 
 					pods.ProcName = k
-					if definitionDiff || commentDiff {
+					if definitionDiff || commentDiff || definerDiff || metadataCollationDiff {
 						pods.DIFFS = "yes"
 						d = append(d, k)
+					} else if collationMappedOnly {
+						pods.DIFFS = global.SkipDiffsCollationMapped
+						c = append(c, k)
+						global.Wlog.Debug(fmt.Sprintf("(%d) Function %s.%s collation-mapped: only uca1400→0900 collation difference, no fix SQL generated", logThreadSeq, schema, k))
 					} else {
 						pods.DIFFS = "no"
 						c = append(c, k)
@@ -4688,7 +5695,7 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 
 						// When source comment is empty, ALTER ... COMMENT '' does not reliably
 						// clear routine comments in MySQL. Recreate the routine instead.
-						if commentDiff && !definitionDiff && stcls.isMySQLToMySQL() {
+						if commentDiff && !definitionDiff && !definerDiff && stcls.isMySQLToMySQL() {
 							if !shouldRecreateRoutineForCommentDiff(sourceComment) {
 								commentSQL := buildMySQLRoutineCommentFixSQL(destSchema, k, "FUNCTION", sourceComment)
 								global.Wlog.Warn(fmt.Sprintf("(%d) Generating FUNCTION comment fix SQL: %s", logThreadSeq, commentSQL))
@@ -4700,12 +5707,28 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 
 						funcSource, err := showCreateRoutine(stcls.sourceDB, schema, k, "FUNCTION")
 						if err != nil || len(strings.TrimSpace(funcSource)) == 0 {
+							global.Wlog.Warn(fmt.Sprintf("(%d) SHOW CREATE FUNCTION unavailable for %s.%s: %v; fallback to INFORMATION_SCHEMA definition", logThreadSeq, schema, k, err))
 							// 回退：使用之前采集到的定义
 							if def, ok := sourceFunc[k]; ok {
 								funcSource = def
 							}
 						}
+						// MariaDB→MySQL：映射源端定义中的 MariaDB 特有 collation
+						if stcls.isMariaDBToMySQL() {
+							funcSource = mapMariaDBCollationInRoutineSQL(funcSource)
+						}
 						funcSqls := mysql.GenerateRoutineFixSQL(schema, destSchema, k, "FUNCTION", funcSource)
+						// 查询 charset session 元数据并插入 SET 语句
+						csClient, colConn, dbCollation := queryRoutineCharsetMetadata(stcls.sourceDB, schema, k, "FUNCTION")
+						if csClient != "" {
+							charsetStmts := buildRoutineCharsetSetStatements(csClient, colConn, dbCollation, stcls.isMariaDBToMySQL())
+							if len(charsetStmts) > 0 {
+								enriched := make([]string, 0, len(charsetStmts)+len(funcSqls))
+								enriched = append(enriched, charsetStmts...)
+								enriched = append(enriched, funcSqls...)
+								funcSqls = enriched
+							}
+						}
 						appendRoutineDefinitionFixSQLs(funcSqls)
 					}
 				}
@@ -5027,6 +6050,7 @@ func (stcls *schemaTable) Partitions(dtabS []string, logThreadSeq, logThreadSeq2
 				destPartitions,
 			)
 			if handled {
+				pods.DIFFS = classifyPartitionRepairDiffState(execRepairSQLs, advisoryRepairSQLs, handled)
 				if len(execRepairSQLs) > 0 {
 					vlog = fmt.Sprintf("(%d) Generated executable partition repair SQLs for table %s.%s: %v", logThreadSeq, sourceSchema, sourceTable, execRepairSQLs)
 					global.Wlog.Warn(vlog)
@@ -5088,6 +6112,12 @@ func (stcls *schemaTable) Partitions(dtabS []string, logThreadSeq, logThreadSeq2
 			if stcls.partitionDiffsMap == nil {
 				stcls.partitionDiffsMap = make(map[string]bool)
 			}
+			if stcls.structWarnOnlyDiffsMap == nil {
+				stcls.structWarnOnlyDiffsMap = make(map[string]bool)
+			}
+			if stcls.structCollationMappedMap == nil {
+				stcls.structCollationMappedMap = make(map[string]bool)
+			}
 
 			// 确保使用干净的表名格式（不含映射后缀）
 			cleanTableKey := sourceTableKey
@@ -5097,6 +6127,9 @@ func (stcls *schemaTable) Partitions(dtabS []string, logThreadSeq, logThreadSeq2
 			}
 
 			stcls.partitionDiffsMap[cleanTableKey] = pods.DIFFS == "yes"
+			if pods.DIFFS == global.SkipDiffsWarnOnly {
+				stcls.structWarnOnlyDiffsMap[cleanTableKey] = true
+			}
 
 			vlog = fmt.Sprintf("(%d) Storing partition check result for table %s (cleaned to %s): %v",
 				logThreadSeq, sourceTableKey, cleanTableKey, stcls.partitionDiffsMap[cleanTableKey])
@@ -5643,6 +6676,7 @@ func (stcls *schemaTable) Struct(dtabS []string, logThreadSeq, logThreadSeq2 int
 	)
 	event = fmt.Sprintf("[check_table_columns]")
 	stcls.structWarnOnlyDiffsMap = make(map[string]bool)
+	stcls.structCollationMappedMap = make(map[string]bool)
 	fmt.Println("gt-checksum: Checking table structure")
 	vlog = fmt.Sprintf("(%d) %s checking table structure of %v(num[%d]) from srcDSN and dstDSN", logThreadSeq, event, dtabS, len(dtabS))
 	global.Wlog.Info(vlog)
@@ -5738,6 +6772,9 @@ func (stcls *schemaTable) Struct(dtabS []string, logThreadSeq, logThreadSeq2 int
 			}
 			if pods.DIFFS == global.SkipDiffsNo && stcls.structWarnOnlyDiffsMap[tableKey] {
 				pods.DIFFS = global.SkipDiffsWarnOnly
+			}
+			if pods.DIFFS == global.SkipDiffsNo && stcls.structCollationMappedMap[tableKey] {
+				pods.DIFFS = global.SkipDiffsCollationMapped
 			}
 
 			// 设置映射信息
@@ -5896,12 +6933,13 @@ func (stcls *schemaTable) Struct(dtabS []string, logThreadSeq, logThreadSeq2 int
 			// 检查这个特定的表是否在差异映射中
 			isDifferent, exists := collector.diffs[tableKey]
 			hasWarnOnly := stcls.structWarnOnlyDiffsMap[tableKey]
+			hasCollationMapped := stcls.structCollationMappedMap[tableKey]
 
-			vlog = fmt.Sprintf("(%d) Checking table %s.%s, current DIFFS=%s, in diff map: %v, exists: %v, warnOnly: %v",
-				logThreadSeq, pod.Schema, pod.Table, pod.DIFFS, isDifferent, exists, hasWarnOnly)
+			vlog = fmt.Sprintf("(%d) Checking table %s.%s, current DIFFS=%s, in diff map: %v, exists: %v, warnOnly: %v, collationMapped: %v",
+				logThreadSeq, pod.Schema, pod.Table, pod.DIFFS, isDifferent, exists, hasWarnOnly, hasCollationMapped)
 			global.Wlog.Debug(vlog)
 
-			// 先应用硬差异，再应用纯风险告警
+			// 先应用硬差异，再应用纯风险告警，最后应用 collation-mapped
 			if exists && isDifferent {
 				measuredDataPods[i].DIFFS = mergeStructDiffState(measuredDataPods[i].DIFFS, global.SkipDiffsYes)
 				vlog = fmt.Sprintf("(%d) Table %s.%s has structure differences, setting DIFFS to yes",
@@ -5910,6 +6948,11 @@ func (stcls *schemaTable) Struct(dtabS []string, logThreadSeq, logThreadSeq2 int
 			} else if hasWarnOnly {
 				measuredDataPods[i].DIFFS = mergeStructDiffState(measuredDataPods[i].DIFFS, global.SkipDiffsWarnOnly)
 				vlog = fmt.Sprintf("(%d) Table %s.%s only has warn-only structure risks, setting DIFFS to warn-only",
+					logThreadSeq, pod.Schema, pod.Table)
+				global.Wlog.Debug(vlog)
+			} else if hasCollationMapped {
+				measuredDataPods[i].DIFFS = mergeStructDiffState(measuredDataPods[i].DIFFS, global.SkipDiffsCollationMapped)
+				vlog = fmt.Sprintf("(%d) Table %s.%s has cross-platform collation mapping only, setting DIFFS to collation-mapped",
 					logThreadSeq, pod.Schema, pod.Table)
 				global.Wlog.Debug(vlog)
 			}
@@ -6015,7 +7058,8 @@ func SchemaTableInit(m *inputArg.ConfigParameter) *schemaTable {
 		indexDiffsMap:           make(map[string]bool),
 		partitionDiffsMap:       make(map[string]bool),
 		foreignKeyDiffsMap:      make(map[string]bool),
-		structWarnOnlyDiffsMap:  make(map[string]bool),
+		structWarnOnlyDiffsMap:    make(map[string]bool),
+		structCollationMappedMap: make(map[string]bool),
 	}
 }
 
