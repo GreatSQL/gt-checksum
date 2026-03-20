@@ -346,7 +346,18 @@ func (rc *ConfigParameter) checkPar() {
 
 	vlog = fmt.Sprintf("(%d) [%s] start init trx conn pool values.", rc.LogThreadSeq, Event)
 	global.Wlog.Debug(vlog)
-	rc.ConnPoolV.PoolMin = rc.SecondaryL.RulesV.ParallelThds*3 + 10
+	// 按 checkObject 模式设置连接池大小：
+	// data 模式：并发查询，池大小 = parallelThds + 2（精确匹配并发度，+2 为余量）
+	// struct/routine/trigger 模式：串行元数据查询，固定小池即可
+	switch rc.SecondaryL.RulesV.CheckObject {
+	case "data":
+		rc.ConnPoolV.PoolMin = rc.SecondaryL.RulesV.ParallelThds + 2
+		if rc.ConnPoolV.PoolMin < 4 {
+			rc.ConnPoolV.PoolMin = 4
+		}
+	default:
+		rc.ConnPoolV.PoolMin = 3
+	}
 	vlog = fmt.Sprintf("(%d) [%s] check trx conn pool message is {%d}.", rc.LogThreadSeq, Event, rc.ConnPoolV.PoolMin)
 	global.Wlog.Debug(vlog)
 
