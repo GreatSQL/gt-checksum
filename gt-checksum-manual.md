@@ -159,16 +159,16 @@ sbtest  F1              Function        no      no
 
 当前版本对 `MySQL` 的支持上限为 `8.4 LTS`，并按以下规则执行兼容性校验：
 
-| 场景 | `checkObject=data` | `checkObject=struct` | 说明 |
-|---|---|---|---|
-| 源端与目标端同版本主线（`5.6`、`5.7`、`8.0`、`8.4`） | 支持 | 支持 | 同时支持数据校验/修复和表结构校验/修复。 |
-| 源端版本主线小于目标端版本主线，且两端均在 `5.6`、`5.7`、`8.0`、`8.4` 范围内 | 支持 | 支持 | 例如 `5.6 -> 5.7`、`5.6 -> 8.0`、`5.7 -> 8.0`、`8.0 -> 8.4`。 |
-| 源端为 `MariaDB 10.x+`，目标端为 `MySQL 8.0/8.4` | 支持 | 支持 | `struct` 当前仅覆盖安全子集，见下方“`checkObject=struct` 的支持边界”。 |
-| 源端为 `MariaDB 10.x+`，目标端为 `MySQL 8.0` 以下版本 | 不支持 | 不支持 | 程序会在启动阶段直接退出，并提示当前组合不受支持。 |
-| 源端为 `MySQL`，目标端为 `MariaDB` | 不支持 | 不支持 | 程序会在启动阶段直接退出，并提示当前组合不受支持。 |
-| 源端与目标端均为 `MariaDB` | 不支持 | 不支持 | 当前版本未纳入正式支持范围。 |
-| 源端版本主线大于目标端版本主线 | 不支持 | 不支持 | 程序会在启动阶段直接退出，并明确提示 downgrade 场景不受支持。 |
-| 任一端版本主线不在 `5.6`、`5.7`、`8.0`、`8.4` 范围内 | 不支持 | 不支持 | 程序会在启动阶段直接退出，并提示支持的版本范围。 |
+| 场景 | `data` | `struct` | `routine` | `trigger` | 说明 |
+|---|---|---|---|---|---|
+| 源端与目标端同版本主线（`5.6`、`5.7`、`8.0`、`8.4`） | 支持 | 支持 | 支持 | 支持 | 同时支持数据、表结构、存储程序和触发器的校验与修复。 |
+| 源端版本主线小于目标端版本主线，且两端均在 `5.6`、`5.7`、`8.0`、`8.4` 范围内 | 支持 | 支持 | 支持 | 支持 | 例如 `5.6 -> 5.7`、`5.6 -> 8.0`、`5.7 -> 8.0`、`8.0 -> 8.4`。 |
+| 源端为 `MariaDB 10.x+`，目标端为 `MySQL 8.0/8.4` | 支持 | 支持 | 支持 | 支持 | `struct` 仅覆盖安全子集；`routine`/`trigger` 已支持 charset 元数据三维度比对。 |
+| 源端为 `MariaDB 10.x+`，目标端为 `MySQL 8.0` 以下版本 | 不支持 | 不支持 | 不支持 | 不支持 | 程序会在启动阶段直接退出，并提示当前组合不受支持。 |
+| 源端为 `MySQL`，目标端为 `MariaDB` | 不支持 | 不支持 | 不支持 | 不支持 | 程序会在启动阶段直接退出，并提示当前组合不受支持。 |
+| 源端与目标端均为 `MariaDB` | 不支持 | 不支持 | 不支持 | 不支持 | 当前版本未纳入正式支持范围。 |
+| 源端版本主线大于目标端版本主线 | 不支持 | 不支持 | 不支持 | 不支持 | 程序会在启动阶段直接退出，并明确提示 downgrade 场景不受支持。 |
+| 任一端版本主线不在 `5.6`、`5.7`、`8.0`、`8.4` 范围内 | 不支持 | 不支持 | 不支持 | 不支持 | 程序会在启动阶段直接退出，并提示支持的版本范围。 |
 
 ### `checkObject=data` 的前置条件
 
@@ -183,7 +183,8 @@ sbtest  F1              Function        no      no
 1. `MySQL -> MySQL`
    - 已覆盖普通列、默认值、`charset/collation`、`PRIMARY KEY`、`UNIQUE`、普通索引、外键、`CHECK` 风险输出；
    - 已内置 `utf8 -> utf8mb3`、整数显示宽度、`ZEROFILL`、`ROW_FORMAT` 默认漂移、默认 `utf8mb4` 排序规则漂移等归一化规则；
-   - `CHECK`、高风险外键不会自动执行高风险 DDL，而是保留为 `warn-only` 或 advisory 信息。
+   - `CHECK`、高风险外键不会自动执行高风险 DDL，而是保留为 `warn-only` 或 advisory 信息；
+   - 当列宽度收窄（如 `VARCHAR(200)` → `VARCHAR(100)`）时，程序会自动检查目标端是否存在超宽数据行；若存在则输出 advisory SQL，不自动执行可能导致数据截断的 ALTER 操作。
 2. `MariaDB -> MySQL 8.0/8.4`
    - 已覆盖安全子集：`JSON`、generated columns、`INET6`、`UUID`、`COMPRESSED`、`IGNORED INDEX`；
    - `MariaDB JSON` 可通过 `mariaDBJSONTargetType` 配置为 `JSON`、`LONGTEXT` 或 `TEXT`；
@@ -192,6 +193,18 @@ sbtest  F1              Function        no      no
    - `SYSTEM VERSIONING`
    - `WITHOUT OVERLAPS`
    - `SEQUENCE`
+
+### `checkObject=routine` 和 `checkObject=trigger` 的比对机制
+
+当 `checkObject` 设置为 `routine` 或 `trigger` 时，程序会分别比对源端与目标端的存储程序（`PROCEDURE`/`FUNCTION`）和触发器定义。当前版本在定义文本比对之外，还增加了以下 charset 元数据维度的比对：
+
+1. **三维度 charset 元数据比对**：程序会从 `INFORMATION_SCHEMA.ROUTINES`（或 `TRIGGERS`）中提取 `CHARACTER_SET_CLIENT`、`COLLATION_CONNECTION`、`DATABASE_COLLATION` 三个元数据字段，逐一比对源端与目标端的值。任一维度不一致时，结果会显示为 `yes`。
+
+2. **定义文本归一化**：程序在比对存储程序定义时，仅对 `CREATE PROCEDURE/FUNCTION` 头部标识符做大小写归一化，保留函数体内字符串字面量的原始大小写，避免因字面量大小写差异导致的误报。同时会剥离 MySQL 版本注释（`/*!...*/`）和整数显示宽度（如 `int(11)` → `int`）等平台差异。
+
+3. **collation 映射识别**：当源端为 `MariaDB 12.3+` 且使用 `uca1400` 系列排序规则时，程序会自动识别其与 `MySQL` 端 `uca0900` 排序规则的语义对应关系，结果显示为 `collation-mapped` 而非差异。
+
+4. **查询容错**：当 charset 元数据查询失败时（如因权限不足），程序会输出 `Warn` 级别日志并跳过该维度的比对，而非静默返回空值导致误判。
 
 ### 结构迁移专项参数
 
@@ -253,6 +266,7 @@ mariaDBJSONTargetType = LONGTEXT
 2. `COMPRESSED`
 3. `MariaDB JSON -> LONGTEXT/TEXT` 的语义降级
 4. `SYSTEM VERSIONING / WITHOUT OVERLAPS / SEQUENCE` 的 advisory-only 边界
+5. 列宽度收窄（Column Width Shrink）时目标端存在超宽数据或安全检查查询异常
 
 ### DDL 差异结果展示
 
@@ -297,7 +311,7 @@ gt_phase1_mariadb105 t_mariadb_feature_pack      struct       warn-only  file
 
 ### MariaDB 源端权限检查说明
 
-当场景为 `MariaDB 10.x+ -> MySQL 8.0/8.4` 且 `checkObject=data` 或 `checkObject=struct` 时，程序的权限检查行为如下：
+当场景为 `MariaDB 10.x+ -> MySQL 8.0/8.4` 且 `checkObject` 为 `data`、`struct`、`routine` 或 `trigger` 时，程序的权限检查行为如下：
 
 1. 源端 `MariaDB`：跳过全局权限预检查，不再要求 `SESSION_VARIABLES_ADMIN`、`REPLICATION CLIENT` 这类 `MySQL` 命名的全局权限；
 2. 目标端 `MySQL 8.0/8.4`：继续按现有逻辑检查全局权限；
@@ -686,7 +700,7 @@ result=PARTIAL_SUCCESS continue_on_error=true
 
 - 当 `checkObject=data` 且两端 DSN 中的 `charset` 参数不一致时，程序会在启动阶段直接拒绝执行；如需继续校验，请先统一连接字符集配置。
 
-- `MariaDB` 当前仅支持作为源端，目标端为 `MySQL 8.0/8.4`；其中 `checkObject=struct` 仅覆盖安全子集。`MariaDB -> MySQL 8.0` 以下版本、`MySQL -> MariaDB` 以及 `MariaDB -> MariaDB` 组合仍不受支持。
+- `MariaDB` 当前仅支持作为源端，目标端为 `MySQL 8.0/8.4`；`checkObject=struct` 仅覆盖安全子集，`checkObject=routine` 和 `checkObject=trigger` 已支持 charset 元数据三维度比对与 collation 映射。`MariaDB -> MySQL 8.0` 以下版本、`MySQL -> MariaDB` 以及 `MariaDB -> MariaDB` 组合仍不受支持。
 
 - `MariaDB JSON -> TEXT` 虽已具备规则改写和单测覆盖，但当前尚未纳入发布级实库基线；如需使用，建议先在测试环境中自行完成 fix SQL 回放与二次 compare 验证。
 
