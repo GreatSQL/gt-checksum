@@ -13,3 +13,5 @@ fixsql*
 diffs.tgz
 .gitignore
 review
+test-artifacts
+.claude
