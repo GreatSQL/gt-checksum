@@ -15,3 +15,5 @@ diffs.tgz
 review
 test-artifacts
 .claude
+testcase/README.md
+testcase/phase1/

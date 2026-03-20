@@ -692,19 +692,13 @@ result=PARTIAL_SUCCESS continue_on_error=true
 
 - 为了安全起见，当设置checkObject=data之外的其他值时，即便同时设置datafix=table，也不会直接在线完成修复，需要改成datafix=file，生成fix SQL后再由DBA手动完成。
 
-- 当设置checkObject=trigger或routine时，如果连接数据库的账号没有相应的权限而无法读取到元数据，会导致检查结果不准确。这种情况下，先授予相应权限就可以。
+- 当设置 `checkObject=trigger` 或 `routine` 时，如果连接数据库的账号没有相应的权限而无法读取到元数据，会导致检查结果不完整。当前版本在 charset 元数据查询失败时会输出 `Warn` 级别日志，但仍需先授予相应权限才能确保结果准确。
 
 - 当 `checkObject=trigger` 或 `routine` 生成的 fixSQL 中包含 `DROP + CREATE PROCEDURE/FUNCTION/TRIGGER` 时，目标库必须预先存在源端定义中的 `DEFINER` 账号及权限，否则执行会失败。这是环境约束，不是程序实现错误。建议在执行 `repairDB` 前，先对 fixSQL 中的 `DEFINER` 做一次人工检查。
 
 - 已支持 `MySQL 5.6`、`5.7`、`8.0`、`8.4` 的同版本和升级链路校验；但仍不支持 `src > dst` 的 downgrade 场景，程序会在启动阶段直接退出。
 
-- 当 `checkObject=data` 且两端 DSN 中的 `charset` 参数不一致时，程序会在启动阶段直接拒绝执行；如需继续校验，请先统一连接字符集配置。
-
-- `MariaDB` 当前仅支持作为源端，目标端为 `MySQL 8.0/8.4`；`checkObject=struct` 仅覆盖安全子集，`checkObject=routine` 和 `checkObject=trigger` 已支持 charset 元数据三维度比对与 collation 映射。`MariaDB -> MySQL 8.0` 以下版本、`MySQL -> MariaDB` 以及 `MariaDB -> MariaDB` 组合仍不受支持。
-
 - `MariaDB JSON -> TEXT` 虽已具备规则改写和单测覆盖，但当前尚未纳入发布级实库基线；如需使用，建议先在测试环境中自行完成 fix SQL 回放与二次 compare 验证。
-
-- `SYSTEM VERSIONING`、`WITHOUT OVERLAPS`、`SEQUENCE` 当前只会输出 `warn-only` 或 advisory 信息，不会自动生成可直接执行的迁移 SQL。
 
 - 不支持对非InnoDB引擎表的数据校验。
 
