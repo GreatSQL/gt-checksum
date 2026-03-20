@@ -486,13 +486,13 @@ parse_diffs_from_output() {
     fi
 }
 
-# 判定 Diffs 结果：返回 PASS / NEEDS_REPAIR / FAIL
+# 判定 Diffs 结果：返回 PASS / NEEDS_REPAIR / NO_OUTPUT
 evaluate_diffs() {
     local diffs_csv="$1"
     local src_label="$2"
 
     if [[ -z "$diffs_csv" ]]; then
-        echo "PASS"
+        echo "NO_OUTPUT"
         return
     fi
 
@@ -594,6 +594,18 @@ run_single_test_case() {
                 final_verdict="PASS"
                 break
                 ;;
+            NO_OUTPUT)
+                # gt-checksum 未产生可解析的结果行（可能崩溃或输出格式异常）
+                if [[ $gt_exit -ne 0 ]]; then
+                    final_verdict="ERROR"
+                    log_error "  [${case_id}] Round ${round}: gt-checksum 异常退出 (exit=${gt_exit}) 且无可解析输出"
+                    break
+                fi
+                # exit=0 但无输出，视为 PASS（如目标对象为空）
+                final_verdict="PASS"
+                log_warn "  [${case_id}] Round ${round}: gt-checksum 正常退出但未解析到 Diffs 行，视为 PASS"
+                break
+                ;;
             NEEDS_REPAIR)
                 if [[ $round -gt $MAX_REPAIR_ROUNDS ]]; then
                     final_verdict="FAIL"
@@ -686,9 +698,10 @@ run_final_repair() {
                 rm -rf "${repair_dir}/fixsql"
                 mkdir -p "${repair_dir}/fixsql"
 
+                local gt_exit=0
                 run_with_timeout "$CASE_TIMEOUT" \
                     "$GT_CHECKSUM" -c "${repair_dir}/gt-checksum.conf" \
-                    > "${repair_dir}/round${round}-output.txt" 2>&1 || true
+                    > "${repair_dir}/round${round}-output.txt" 2>&1 || gt_exit=$?
 
                 if [[ -f "${repair_dir}/gt-checksum.log" ]]; then
                     cp "${repair_dir}/gt-checksum.log" "${repair_dir}/round${round}-gt-checksum.log" 2>/dev/null || true
@@ -702,6 +715,16 @@ run_final_repair() {
                 if [[ "$verdict" == "PASS" ]]; then
                     log_info "  ${mode}: Diffs=no (round ${round})"
                     converged=true
+                    break
+                fi
+
+                if [[ "$verdict" == "NO_OUTPUT" ]]; then
+                    if [[ $gt_exit -ne 0 ]]; then
+                        log_error "  ${mode}: gt-checksum 异常退出 (exit=${gt_exit}) 且无可解析输出 (round ${round})"
+                    else
+                        log_warn "  ${mode}: gt-checksum 正常退出但未解析到 Diffs 行 (round ${round})，视为 PASS"
+                        converged=true
+                    fi
                     break
                 fi
 
@@ -719,7 +742,9 @@ run_final_repair() {
 
                 run_with_timeout "$CASE_TIMEOUT" \
                     "$REPAIR_DB" -conf "${repair_dir}/repairDB.conf" \
-                    > "${repair_dir}/round${round}-repair-output.txt" 2>&1 || true
+                    > "${repair_dir}/round${round}-repair-output.txt" 2>&1 || {
+                    log_warn "  ${mode}: repairDB 非零退出 (round ${round})"
+                }
             done
 
             if ! $converged; then
