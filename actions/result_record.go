@@ -8,9 +8,11 @@ import (
 )
 
 // ResultRecord is the normalized, export-stable representation of a single check result.
-// It is derived from Pod and serves as the single source of truth for both terminal output
-// and CSV export. Fields are intentionally stable across all checkObject modes; unused
-// fields are left empty rather than omitted so that CSV column order never changes.
+// It is derived from Pod and serves as the canonical model for CSV export. Terminal output
+// currently still renders directly from Pod; ResultRecord is partially reused there via
+// ShouldDisplayInTerminal() and resolveEffectiveDiffs(). Fields are intentionally stable
+// across all checkObject modes; unused fields are left empty rather than omitted so that
+// CSV column order never changes.
 type ResultRecord struct {
 	RunID       string
 	CheckTime   string

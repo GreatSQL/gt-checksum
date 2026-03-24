@@ -769,15 +769,9 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 		if hasMappings {
 			table.AddRow("Schema", "Table", "IndexColumn", "CheckObject", "Rows", "Diffs", "Datafix", "Mapping")
 			for _, pod := range terminalPods {
-				var differences = pod.DIFFS
-				for k, _ := range differencesSchemaTable {
-					if k != "" {
-						KI := strings.Split(k, "gtchecksum_gtchecksum")
-						if pod.Schema == KI[0] && pod.Table == KI[1] {
-							differences = "yes"
-						}
-					}
-				}
+				// resolveEffectiveDiffs is the single authoritative implementation of the
+				// differencesSchemaTable override logic; do not inline the map iteration here.
+				differences := resolveEffectiveDiffs(pod)
 
 				// 获取映射信息
 				mappingInfo := "-"
@@ -792,15 +786,7 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 		} else {
 			table.AddRow("Schema", "Table", "IndexColumn", "CheckObject", "Rows", "Diffs", "Datafix")
 			for _, pod := range terminalPods {
-				var differences = pod.DIFFS
-				for k, _ := range differencesSchemaTable {
-					if k != "" {
-						KI := strings.Split(k, "gtchecksum_gtchecksum")
-						if pod.Schema == KI[0] && pod.Table == KI[1] {
-							differences = "yes"
-						}
-					}
-				}
+				differences := resolveEffectiveDiffs(pod)
 				table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.IndexColumn), color.YellowString(pod.CheckObject), color.BlueString(dataResultRows(pod)), color.GreenString(differences), color.YellowString(pod.Datafix))
 			}
 		}

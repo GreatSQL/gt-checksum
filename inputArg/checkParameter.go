@@ -111,6 +111,31 @@ func (rc *ConfigParameter) checkPar() {
 		rc.SecondaryL.DsnsV.DestDrive = "godror"
 	}
 
+	// Validate result export parameters early — before any DB connections — so that
+	// misconfigured values fail fast without triggering expensive side effects.
+	rc.SecondaryL.RulesV.ResultExport = strings.TrimSpace(rc.SecondaryL.RulesV.ResultExport)
+	if rc.SecondaryL.RulesV.ResultExport == "" {
+		rc.SecondaryL.RulesV.ResultExport = "csv"
+	}
+	if rc.SecondaryL.RulesV.ResultExport != "OFF" && rc.SecondaryL.RulesV.ResultExport != "csv" {
+		fmt.Println(fmt.Sprintf("gt-checksum: resultExport must be OFF or csv. Check %s or set logLevel=debug for details", rc.SecondaryL.LogV.LogFile))
+		vlog = fmt.Sprintf("(%d) [%s] option \"resultExport\" must be OFF or csv.", rc.LogThreadSeq, Event)
+		global.Wlog.Error(vlog)
+		os.Exit(1)
+	}
+	rc.SecondaryL.RulesV.TerminalResultMode = strings.ToLower(strings.TrimSpace(rc.SecondaryL.RulesV.TerminalResultMode))
+	if rc.SecondaryL.RulesV.TerminalResultMode == "" {
+		rc.SecondaryL.RulesV.TerminalResultMode = "all"
+	}
+	if rc.SecondaryL.RulesV.TerminalResultMode != "all" && rc.SecondaryL.RulesV.TerminalResultMode != "abnormal" {
+		fmt.Println(fmt.Sprintf("gt-checksum: terminalResultMode must be all or abnormal. Check %s or set logLevel=debug for details", rc.SecondaryL.LogV.LogFile))
+		vlog = fmt.Sprintf("(%d) [%s] option \"terminalResultMode\" must be all or abnormal.", rc.LogThreadSeq, Event)
+		global.Wlog.Error(vlog)
+		os.Exit(1)
+	}
+	vlog = fmt.Sprintf("(%d) [%s] result export: resultExport=%s terminalResultMode=%s runID=%s.", rc.LogThreadSeq, Event, rc.SecondaryL.RulesV.ResultExport, rc.SecondaryL.RulesV.TerminalResultMode, rc.RunID)
+	global.Wlog.Debug(vlog)
+
 	tmpDbc := dbExec.DBConnStruct{DBDevice: rc.SecondaryL.DsnsV.SrcDrive, JDBC: rc.SecondaryL.DsnsV.SrcJdbc}
 	vlog = fmt.Sprintf("(%d) [%s] read and check if the options are correct", rc.LogThreadSeq, Event)
 	global.Wlog.Info(vlog)
@@ -359,29 +384,6 @@ func (rc *ConfigParameter) checkPar() {
 		rc.ConnPoolV.PoolMin = 3
 	}
 	vlog = fmt.Sprintf("(%d) [%s] check trx conn pool message is {%d}.", rc.LogThreadSeq, Event, rc.ConnPoolV.PoolMin)
-	global.Wlog.Debug(vlog)
-
-	rc.SecondaryL.RulesV.ResultExport = strings.TrimSpace(rc.SecondaryL.RulesV.ResultExport)
-	if rc.SecondaryL.RulesV.ResultExport == "" {
-		rc.SecondaryL.RulesV.ResultExport = "csv"
-	}
-	if rc.SecondaryL.RulesV.ResultExport != "OFF" && rc.SecondaryL.RulesV.ResultExport != "csv" {
-		fmt.Println(fmt.Sprintf("gt-checksum: resultExport must be OFF or csv. Check %s or set logLevel=debug for details", rc.SecondaryL.LogV.LogFile))
-		vlog = fmt.Sprintf("(%d) [%s] option \"resultExport\" must be OFF or csv.", rc.LogThreadSeq, Event)
-		global.Wlog.Error(vlog)
-		os.Exit(1)
-	}
-	rc.SecondaryL.RulesV.TerminalResultMode = strings.ToLower(strings.TrimSpace(rc.SecondaryL.RulesV.TerminalResultMode))
-	if rc.SecondaryL.RulesV.TerminalResultMode == "" {
-		rc.SecondaryL.RulesV.TerminalResultMode = "all"
-	}
-	if rc.SecondaryL.RulesV.TerminalResultMode != "all" && rc.SecondaryL.RulesV.TerminalResultMode != "abnormal" {
-		fmt.Println(fmt.Sprintf("gt-checksum: terminalResultMode must be all or abnormal. Check %s or set logLevel=debug for details", rc.SecondaryL.LogV.LogFile))
-		vlog = fmt.Sprintf("(%d) [%s] option \"terminalResultMode\" must be all or abnormal.", rc.LogThreadSeq, Event)
-		global.Wlog.Error(vlog)
-		os.Exit(1)
-	}
-	vlog = fmt.Sprintf("(%d) [%s] result export: resultExport=%s terminalResultMode=%s runID=%s.", rc.LogThreadSeq, Event, rc.SecondaryL.RulesV.ResultExport, rc.SecondaryL.RulesV.TerminalResultMode, rc.RunID)
 	global.Wlog.Debug(vlog)
 
 	rc.NoIndexTableTmpFile = "tmp_file"
