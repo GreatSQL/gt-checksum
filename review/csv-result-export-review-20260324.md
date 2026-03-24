@@ -1,200 +1,288 @@
-# CSV Result Export 评审报告（第四版）
+# CSV Result Export 评审报告（第五版）
 
-> 日期：2026-03-24（初版） → 2026-03-24（修订回写） → 2026-03-24（复审回写） → 2026-03-24（第三轮修复回写）
-> 评审对象：实际实现代码（v1.3.0 分支，最新提交 `62228da`）
-> 本版根据第三轮复审（第三版报告 M1/M2/L1/L2 四项发现）完成对应代码修复后回写
+> 日期：2026-03-24
+> 评审对象：v1.3.0 分支，最新提交 `62228da`
+> 本版为第四轮修复后完整现状回写，供 Codex 下一轮审计使用
 
 ---
 
 ## 总体结论
 
-第三版报告发现的 4 项问题（2 中优先级 + 2 低优先级）均已修复。当前实现：
+历经三轮审计、四轮代码修复，CSV 结果导出功能已达到生产可用状态。当前实现：
 
 - **功能正确性**：`高`
-- **架构可维护性**：`中高`（`differencesSchemaTable` override 逻辑已完全统一；终端/CSV 双路径为已知遗留，不影响当前正确性）
+- **架构可维护性**：`中高`
 - **文档与实现一致性**：`高`
-- **测试覆盖**：`高`（`actions` 包 58 个测试全部通过，CSV 专项 36 个，含目录创建和权限断言）
+- **测试覆盖**：`高`（`actions` 包 58 个测试全部通过，CSV 专项 36 个）
 
 ---
 
-## 第三版报告问题修复状态
+## 已验证文件清单
 
-### M1：`differencesSchemaTable` override 逻辑在终端 data 渲染中仍有重复（中优先级）✅ 已修复
+| 文件 | 版本（commit） |
+|------|---------------|
+| `actions/result_record.go` | `e8ddfe1` |
+| `actions/result_export_csv.go` | `3ad5d05` |
+| `actions/terminal_result_output.go` | `e8ddfe1` |
+| `actions/result_record_test.go` | `c8271f1` |
+| `actions/result_export_csv_test.go` | `62228da` |
+| `inputArg/getConf.go` | `23cfc70` |
+| `inputArg/checkParameter.go` | `e8ddfe1` |
+| `inputArg/inputInit.go` | `aeba3b8` |
+| `inputArg/flagHelp.go` | `aeba3b8` |
+| `gt-checksum.go` | `ae75af9` |
+| `gc-sample.conf` | `6b2cd2a` |
+| `README.md` | `6b2cd2a` |
+| `gt-checksum-manual.md` | `c8271f1` |
 
-**原状态：** `terminal_result_output.go:767-804` 中有两个手工遍历 `differencesSchemaTable` 的循环，与 `resolveEffectiveDiffs()` 形成重复实现。
+已执行校验：
 
-**修复内容（`actions/terminal_result_output.go`）：**
+```bash
+go test ./actions/... -count=1   # 强制跳过缓存
+go build ./actions/... ./inputArg/...
+```
+
+结果：
+
+```
+ok  gt-checksum/actions  0.682s   (58 个测试，0 失败)
+编译成功，无错误
+```
+
+---
+
+## 完整实现描述
+
+### 1. 配置层（`inputArg/`）
+
+#### 1.1 新增参数
+
+**`inputArg/inputInit.go`**
 
 ```go
-// 修复前
-for k, _ := range differencesSchemaTable {
-    if k != "" {
-        KI := strings.Split(k, "gtchecksum_gtchecksum")
-        if pod.Schema == KI[0] && pod.Table == KI[1] {
-            differences = "yes"
-        }
-    }
+// RulesS 新增
+ResultExport       string  // "csv" | "OFF"
+ResultFile         string  // 自定义输出路径
+TerminalResultMode string  // "all" | "abnormal"
+
+// ConfigParameter 新增
+RunID                 string  // YYYYMMDDHHmmss，init() 首行生成
+CliResultExport       string
+CliResultFile         string
+CliTerminalResultMode string
+```
+
+RunID 生成：`rc.RunID = time.Now().Format("20060102150405")`（精度秒级，同一秒内多次启动会产生相同值）。
+
+**`inputArg/flagHelp.go`**
+
+- 版本号更新为 `1.3.0`
+- 新增三个 `cli.StringFlag`：`resultExport`、`resultFile`、`terminalResultMode`
+
+#### 1.2 参数解析（`inputArg/getConf.go`）
+
+配置文件值解析（三层优先级：默认值 → 配置文件 → CLI）：
+
+```go
+// 配置文件非法值：透传原始值，由 checkParameter.go 捕获并退出
+switch resultExportValue {
+case "", "CSV": rc.SecondaryL.RulesV.ResultExport = "csv"
+case "OFF":     rc.SecondaryL.RulesV.ResultExport = "OFF"
+default:        rc.SecondaryL.RulesV.ResultExport = resultExportValue // checkPar 拦截
 }
 
-// 修复后
-// resolveEffectiveDiffs is the single authoritative implementation of the
-// differencesSchemaTable override logic; do not inline the map iteration here.
-differences := resolveEffectiveDiffs(pod)
+// CLI 非法值：即时 fail-fast
+} else {
+    fmt.Fprintf(os.Stderr, "gt-checksum: invalid value for --resultExport: %q (must be OFF or csv)\n", rc.CliResultExport)
+    os.Exit(1)
+}
 ```
 
-两处循环均已替换，data 模式下 `differencesSchemaTable` override 现在**全程仅有一处实现**（`result_record.go:62-76`）。D1 设计缺陷完全消除。
+`terminalResultMode` 同理。
 
----
+#### 1.3 参数校验（`inputArg/checkParameter.go`）
 
-### M2：配置文件非法值校验发生在 DB 建连之后，不是真正的 fail-fast（中优先级）✅ 已修复
-
-**原状态：** `resultExport`/`terminalResultMode` 合法性检查在 `checkParameter.go:364`，而 DB 连接在 `checkParameter.go:114` 就已建立，导致非法配置文件值仍会触发数据库连接尝试。
-
-**修复内容（`inputArg/checkParameter.go`）：**
+校验块**位于 DB 建连之前**（`checkParameter.go:114`，DB 建连在 `checkParameter.go:139`）：
 
 ```go
-func (rc *ConfigParameter) checkPar() {
-    // ...DSN 驱动名规范化...
-
-    // Validate result export parameters early — before any DB connections — so that
-    // misconfigured values fail fast without triggering expensive side effects.
-    rc.SecondaryL.RulesV.ResultExport = strings.TrimSpace(rc.SecondaryL.RulesV.ResultExport)
-    if rc.SecondaryL.RulesV.ResultExport == "" {
-        rc.SecondaryL.RulesV.ResultExport = "csv"
-    }
-    if rc.SecondaryL.RulesV.ResultExport != "OFF" && rc.SecondaryL.RulesV.ResultExport != "csv" {
-        // os.Exit(1) ← 在 DB 建连之前
-    }
-    // terminalResultMode 同理...
-
-    tmpDbc := dbExec.DBConnStruct{...}  // ← DB 连接在此之后
-    srcDB, err := tmpDbc.OpenDB()
-    ...
+// checkPar() 开头，DB 建连之前
+rc.SecondaryL.RulesV.ResultExport = strings.TrimSpace(rc.SecondaryL.RulesV.ResultExport)
+if rc.SecondaryL.RulesV.ResultExport == "" {
+    rc.SecondaryL.RulesV.ResultExport = "csv"
+}
+if rc.SecondaryL.RulesV.ResultExport != "OFF" && rc.SecondaryL.RulesV.ResultExport != "csv" {
+    // os.Exit(1) ← 不触发 DB 连接
+}
+// terminalResultMode 同理
+// ...
+tmpDbc := dbExec.DBConnStruct{...}   // ← DB 建连在此之后
+srcDB, err := tmpDbc.OpenDB()
 ```
 
-原位置（`checkPar()` 末尾）的重复校验块已移除。
+**完整 fail-fast 行为对照：**
 
-**行为对比（最终状态）：**
-
-| 场景 | 当前行为 |
-|------|---------|
-| 配置文件 `resultExport=BAD` | DB 建连之前即报错退出（真正的 fail-fast） |
-| CLI `--resultExport BAD` | `getConf.go` 立即 `stderr + os.Exit(1)`，早于任何参数解析后步骤 |
-| 配置文件 `terminalResultMode=BAD` | DB 建连之前即报错退出 |
+| 场景 | 行为 |
+|------|------|
+| 配置文件 `resultExport=BAD` | DB 建连前报错退出 |
+| 配置文件 `terminalResultMode=BAD` | DB 建连前报错退出 |
+| CLI `--resultExport BAD` | `getConf.go` 立即 `stderr + os.Exit(1)` |
 | CLI `--terminalResultMode BAD` | `getConf.go` 立即 `stderr + os.Exit(1)` |
 
 ---
 
-### L1：`result_record.go` 注释仍声称 ResultRecord 是"终端+CSV 单一数据源"（低优先级）✅ 已修复
+### 2. 结果标准化层（`actions/result_record.go`）
 
-**原状态：** `actions/result_record.go:10-13` 注释：
-```go
-// It is derived from Pod and serves as the single source of truth for both terminal output
-// and CSV export.
-```
+#### 2.1 ResultRecord 结构体（13 字段）
 
-**修复后：**
 ```go
 // ResultRecord is the normalized, export-stable representation of a single check result.
 // It is derived from Pod and serves as the canonical model for CSV export. Terminal output
 // currently still renders directly from Pod; ResultRecord is partially reused there via
-// ShouldDisplayInTerminal() and resolveEffectiveDiffs(). Fields are intentionally stable
-// across all checkObject modes; unused fields are left empty rather than omitted so that
-// CSV column order never changes.
+// ShouldDisplayInTerminal() and resolveEffectiveDiffs().
+type ResultRecord struct {
+    RunID, CheckTime, CheckObject string
+    Schema, Table, ObjectName, ObjectType string
+    IndexColumn, Rows, Diffs, Datafix string
+    Mapping, Definer string
+}
 ```
 
-注释现在准确描述当前事实：ResultRecord 是 CSV 的规范模型，终端通过两个 helper 函数部分复用其语义。
+#### 2.2 核心函数
 
----
-
-### L2：测试覆盖结论偏宽，缺少目录创建和权限专项测试（低优先级）✅ 已修复
-
-**原状态：** `WriteCSVResults` 的 `os.MkdirAll` 和 `0600` 权限行为无专项测试。
-
-**新增测试（`actions/result_export_csv_test.go`）：**
+**`normalizeCheckObject(raw string) string`**
 
 ```go
-func TestWriteCSVResults_autoCreatesParentDir(t *testing.T) {
-    // resultFile 指向不存在的子目录，WriteCSVResults 应自动创建
-    dir := filepath.Join(t.TempDir(), "subdir", "nested")
-    path := filepath.Join(dir, "result.csv")
-    if err := WriteCSVResults(path, nil); err != nil {
-        t.Fatalf("WriteCSVResults failed with non-existent parent dir: %v", err)
-    }
-    // 验证文件存在
-}
-
-func TestWriteCSVResults_filePermission0600(t *testing.T) {
-    // 验证输出文件权限为 0600
-    const want = os.FileMode(0600)
-    if got := info.Mode().Perm(); got != want {
-        t.Errorf("file permission = %04o, want %04o", got, want)
-    }
+// Pod.CheckObject 内部值 "Procedure"/"Function" → 用户配置值 "routine"
+switch strings.ToLower(strings.TrimSpace(raw)) {
+case "procedure", "function": return "routine"
+default: return strings.ToLower(strings.TrimSpace(raw))
 }
 ```
 
-两个测试均通过。
+**`resolveEffectiveDiffs(pod Pod) string`（单一权威实现）**
+
+```go
+// differencesSchemaTable override 的唯一实现，三处调用方均使用此函数：
+// 1. terminal_result_output.go 预过滤（terminalPods 构建）
+// 2. terminal_result_output.go data 渲染（两个循环）
+// 3. normalizePodToRecord（CSV 规范化）
+func resolveEffectiveDiffs(pod Pod) string {
+    if strings.ToLower(pod.CheckObject) != "data" {
+        return pod.DIFFS
+    }
+    for k := range differencesSchemaTable {
+        if k == "" { continue }
+        parts := strings.SplitN(k, "gtchecksum_gtchecksum", 2)
+        if len(parts) == 2 && pod.Schema == parts[0] && pod.Table == parts[1] {
+            return "yes"
+        }
+    }
+    return pod.DIFFS
+}
+```
+
+**字段规则：**
+
+- `Table`：仅 `table`/`sequence` 类型填充，routine/trigger 为空
+- `Rows`：`DDL-yes` 时强制置空（与终端 `dataResultRows` 语义一致）
+- `CheckObject`：通过 `normalizeCheckObject` 规范化，`routine` 模式下 Procedure/Function 均输出 `routine`
+
+**`ShouldDisplayInTerminal(record ResultRecord, mode string) bool`**
+
+用于 `terminalResultMode=abnormal` 时过滤终端显示行；在终端预过滤和 CSV 路径均已生效。
 
 ---
 
-## 验证范围
+### 3. CSV 导出器（`actions/result_export_csv.go`）
 
-最新提交后的测试结果：
-
-```bash
-go test ./actions/...
+```go
+func WriteCSVResults(path string, records []ResultRecord) error {
+    // 自动创建父目录
+    if dir := filepath.Dir(path); dir != "." && dir != "" {
+        if err := os.MkdirAll(dir, 0755); err != nil {
+            return fmt.Errorf("result csv: mkdir %q: %w", dir, err)
+        }
+    }
+    // 权限 0600（仅属主可读写）
+    f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+    // UTF-8 BOM + encoding/csv（13 列固定列头）
+}
 ```
 
-```text
-ok  gt-checksum/actions  0.496s   (58 个测试用例，全部 PASS)
-```
+- `resultExport=OFF` 时 `ExportResultsIfNeeded` 直接返回，不写文件
+- 导出失败返回 error，主程序打印 Warning，不影响退出码
+- 列头固定，列顺序在 v1.3.x 内稳定
 
 ---
 
-## 当前实现架构总览
+### 4. 终端输出（`actions/terminal_result_output.go`）
 
-```
-gt-checksum.go
-│
-├── actions.CheckResultOut(m)          ← 终端渲染（基于 Pod）
-│       │
-│       └── terminalPods 预过滤
-│               resolveEffectiveDiffs(p)           ← 复用单一 override 实现
-│               ShouldDisplayInTerminal(rec, mode) ← 生产代码中真正调用
-│       │
-│       └── data 模式表格渲染
-│               resolveEffectiveDiffs(pod)          ← 复用同一实现（D1 完全消除）
-│
-├── actions.BuildResultRecords(m)      ← Pod → []ResultRecord 规范化
-│       │
-│       ├── normalizeCheckObject()     ← Procedure/Function → routine
-│       ├── resolveEffectiveDiffs()    ← 单一权威实现（三处调用方均使用此函数）
-│       └── resolveObjectIdentity()
-│
-└── actions.ExportResultsIfNeeded(m, records)
-        │
-        └── WriteCSVResults(path, records)
-                ├── os.MkdirAll(dir, 0755)   ← 自动创建父目录
-                ├── OpenFile(..., 0600)       ← 权限 0600
-                ├── UTF-8 BOM
-                └── encoding/csv（13 列固定列头）
+#### 4.1 terminalPods 预过滤
+
+```go
+terminalPods := measuredDataPods
+if m.SecondaryL.RulesV.TerminalResultMode == "abnormal" {
+    terminalPods = make([]Pod, 0, len(measuredDataPods))
+    for _, p := range measuredDataPods {
+        if ShouldDisplayInTerminal(ResultRecord{Diffs: resolveEffectiveDiffs(p)}, "abnormal") {
+            terminalPods = append(terminalPods, p)
+        }
+    }
+}
 ```
 
-**参数校验流程（当前实际行为）：**
+#### 4.2 data 模式渲染
 
+```go
+case "data":
+    for _, pod := range terminalPods {
+        // resolveEffectiveDiffs is the single authoritative implementation of the
+        // differencesSchemaTable override logic; do not inline the map iteration here.
+        differences := resolveEffectiveDiffs(pod)
+        // ...
+    }
 ```
-配置文件非法值 → getConf.go 透传原始值
-                         ↓
-                checkParameter.go 前段（DB 建连之前）检测 → os.Exit(1)
-                                                           ↑
-                                                    真正的 fail-fast
 
-CLI 非法值    → getConf.go 立即 os.Exit(1) + stderr（早于 checkPar）
-```
+**`differencesSchemaTable` override 调用点统计：**
+
+| 位置 | 用途 | 实现方式 |
+|------|------|---------|
+| `terminal_result_output.go:243` | terminalPods 预过滤 | `resolveEffectiveDiffs(p)` |
+| `terminal_result_output.go:774` | data 渲染（hasMappings=true） | `resolveEffectiveDiffs(pod)` |
+| `terminal_result_output.go:789` | data 渲染（hasMappings=false） | `resolveEffectiveDiffs(pod)` |
+| `result_record.go:83` | CSV 规范化 | `resolveEffectiveDiffs(pod)` |
+
+三处调用方均通过 `resolveEffectiveDiffs()`，原始 map 遍历逻辑仅在该函数内存在一份。
 
 ---
 
-## 测试覆盖（当前状态）
+### 5. 主程序接入（`gt-checksum.go`）
+
+```go
+actions.CheckResultOut(m)                    // 终端渲染（依赖 measuredDataPods）
+resultRecords := actions.BuildResultRecords(m) // 必须在 CheckResultOut 之后调用
+if err := actions.ExportResultsIfNeeded(m, resultRecords); err != nil {
+    fmt.Printf("Warning: failed to export result file: %v\n", err)
+}
+actions.LogMemoryPeakSummary()
+```
+
+> **已知隐式顺序依赖**：`BuildResultRecords` 读取 `measuredDataPods`，该全局变量由 `CheckResultOut` 内部填充。类型系统无法约束调用顺序，由注释约定。主程序当前调用顺序正确。
+
+---
+
+### 6. 文档同步状态
+
+| 文档 | 更新内容 |
+|------|---------|
+| `README.md` | v1.3.0 关键变化 4 条、CSV 快速运行示例、参数表 |
+| `gc-sample.conf` | 新增 `resultExport`/`resultFile`/`terminalResultMode` 配置块及注释 |
+| `gt-checksum-manual.md` | 新增"结果文件导出"章节（含 CSV 列头说明、参数表、使用示例、注意事项）；修正 CLI 参数列表说明；补充 RunID 精度说明、`resultFile` 父目录行为和 0600 权限说明 |
+| `CHANGELOG.md` | v1.3.0 条目含 `#I6KMQF` issue 引用 |
+
+---
+
+## 测试覆盖
 
 ### `actions/result_record_test.go`（22 个测试函数）
 
@@ -214,81 +302,64 @@ CLI 非法值    → getConf.go 立即 os.Exit(1) + stderr（早于 checkPar）
 | `csvHeader` | 2 | 列头数量、列名稳定性 |
 | `recordToCSVRow` | 1 | 字段顺序与列头对齐 |
 | `ResolveResultFilePath` | 3 | 默认命名、自定义路径、TrimSpace |
-| `WriteCSVResults` | 7 | UTF-8 BOM、列头存在、逗号转义、引号转义、行数正确、**父目录自动创建**、**0600 权限** |
+| `WriteCSVResults` | 7 | UTF-8 BOM、列头存在、逗号转义、引号转义、行数正确、**父目录自动创建**、**0600 文件权限** |
 | `ExportResultsIfNeeded` | 2 | OFF 不生成文件、csv 正确创建 |
 
 **说明：**
 
-- `22 + 14 = 36` 个是 CSV 结果导出相关的专项测试
-- `actions` 包总量 58 个（含既有能力测试），不等于 CSV 专项覆盖数
-- 仍未覆盖的场景：`CheckResultOut()` → `BuildResultRecords()` 顺序依赖的集成行为（属遗留 L2 范畴）
-
-**全量运行结果：**
-
-```
-ok  gt-checksum/actions  0.496s  (58 个测试，0 失败)
-```
+- CSV 结果导出专项测试：`22 + 14 = 36` 个
+- `actions` 包总量：58 个（含既有能力测试，不等于 CSV 专项覆盖数）
+- 全量运行：`ok gt-checksum/actions 0.682s`，0 失败
 
 ---
 
-## 遗留已知问题（不影响当前版本可用性）
+## 已知遗留问题
+
+以下问题经评估均不影响 v1.3.0 的功能正确性和外部接口稳定性，列为后续迭代事项。
 
 ### L-a：终端与 CSV 仍为两套渲染路径
 
-- 终端渲染直接使用 `Pod`，CSV 导出基于 `ResultRecord`
-- 预过滤器和 data 渲染均已调用 `resolveEffectiveDiffs()`，但终端完整渲染仍未切换到 `ResultRecord`
-- **影响**：两套路径在字段语义上尚未完全统一，未来如需扩展字段仍需双处修改
-- **建议**：后续版本将终端渲染也切换到 `ResultRecord`，彻底统一数据源
+- 终端渲染直接操作 `Pod`，CSV 导出基于 `ResultRecord`
+- `resolveEffectiveDiffs()` 和 `ShouldDisplayInTerminal()` 已将两条路径在 override 和过滤逻辑上收敛
+- 后续可将终端渲染切换到 `ResultRecord`，彻底统一数据源
 
 ### L-b：`BuildResultRecords` 与 `CheckResultOut` 存在隐式调用顺序依赖
 
-- `BuildResultRecords(m)` 依赖 `measuredDataPods`，必须在 `CheckResultOut` 之后调用
-- 类型系统无法约束顺序，依赖注释约定；主程序调用顺序当前正确
-- **建议**：将 `measuredDataPods` 改为显式参数传递，消除全局状态隐式依赖
+- `BuildResultRecords(m)` 读取包级变量 `measuredDataPods`，必须在 `CheckResultOut` 之后调用
+- 函数注释已明确此前置条件，主程序调用顺序当前正确
+- 后续可将 `measuredDataPods` 改为显式参数传递
 
-### L-c：`RunID` 精度为秒级，不具备严格唯一性
+### L-c：RunID 精度为秒级，不具备严格唯一性
 
-- 同一秒内多次启动会产生相同 RunID 和 CSV 文件名（新文件覆盖旧文件）
+- 同一秒内多次启动产生相同 RunID，导致 CSV 文件名冲突（新覆盖旧）
 - 文档已说明此限制
-- **建议**：如需严格唯一，可附加 PID 或随机后缀
+- 后续可附加 PID 或随机后缀
 
-### L-d：`actions` 包级全局状态无 reset
+### L-d：`actions` 包级全局状态（`measuredDataPods`、`differencesSchemaTable`）无 reset 函数
 
-- `measuredDataPods`、`differencesSchemaTable` 是包级变量，无对应清空函数
-- 单次 CLI 进程中不影响正确性；同进程多轮执行或集成测试复用时存在状态污染风险
-- **建议**：新增 `actions.ResetResultState()`，在 `main()` 启动早期调用
+- 单次 CLI 进程中不影响正确性
+- 同进程多轮执行或集成测试复用 `main` 逻辑时存在状态污染风险
+- 后续可新增 `actions.ResetResultState()`
 
 ---
 
 ## CSV 字段稳定性承诺
 
-| 承诺级别 | 字段 | 说明 |
-|---------|------|------|
-| **稳定，不会变更** | 全部 13 列列名和列顺序 | 在 v1.3.x 内保证不变 |
-| **值域稳定** | `CheckObject` | 固定为 `data / struct / routine / trigger` |
-| **值域稳定** | `Diffs` | 固定为 `yes / no / DDL-yes / warn-only / collation-mapped` |
-| **值域稳定** | `ObjectType` | 固定为 `table / procedure / function / trigger / sequence` |
-| **可为空** | `Table`、`IndexColumn`、`Rows`、`Mapping`、`Definer` | 未使用时为空字符串，不会省略列 |
+| 承诺级别 | 内容 |
+|---------|------|
+| **稳定** | 全部 13 列列名和列顺序在 v1.3.x 内不变 |
+| **值域稳定** | `CheckObject`：`data / struct / routine / trigger` |
+| **值域稳定** | `Diffs`：`yes / no / DDL-yes / warn-only / collation-mapped` |
+| **值域稳定** | `ObjectType`：`table / procedure / function / trigger / sequence` |
+| **可为空** | `Table`、`IndexColumn`、`Rows`、`Mapping`、`Definer`：未使用时为空字符串，列始终存在 |
 
 ---
 
 ## 安全性说明
 
-| 项目 | 当前状态 |
-|------|---------|
+| 项目 | 当前值 |
+|------|-------|
 | CSV 文件权限 | `0600`（仅属主可读写） |
-| 父目录权限 | `0755`（自动创建时使用） |
-| CSV 字段转义 | 使用标准库 `encoding/csv` 自动处理逗号、引号、换行 |
-
----
-
-## 总结
-
-第三版报告发现的全部 4 项问题已修复：
-
-1. **M1（D1 完全消除）**：data 模式终端渲染的两处 `differencesSchemaTable` 手工遍历已替换为 `resolveEffectiveDiffs(pod)`，全代码库中该 override 逻辑现仅有一处实现
-2. **M2（真正 fail-fast）**：`resultExport`/`terminalResultMode` 合法性校验前移至 DB 建连之前，配置文件非法值现在不会触发数据库连接
-3. **L1（注释准确）**：`ResultRecord` 类型注释修正，不再声称"终端+CSV 单一数据源"
-4. **L2（测试补全）**：新增目录自动创建和 0600 权限两组专项断言测试，CSV 专项测试从 34 增至 36
-
-当前实现已满足"长期可维护、可被自动化消费的稳定接口"的基本要求。遗留 L-a～L-d 四项均不影响当前版本的正确使用，已有明确改进路径。
+| 父目录创建权限 | `0755` |
+| 字段转义 | 标准库 `encoding/csv`，自动处理逗号、引号、换行 |
+| BOM | `0xEF 0xBB 0xBF`，确保 Excel 正确识别 UTF-8 |
