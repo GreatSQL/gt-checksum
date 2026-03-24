@@ -1,24 +1,9 @@
 ## 1.2.5
-- [功能新增]: 新增 `MariaDB 10.x+ -> MySQL 8.0/8.4` 的全链路支持，当前同时覆盖 `checkObject=data`、`struct`、`routine`、`trigger` 四种模式；`struct` 模式已覆盖 `JSON`、generated columns、`INET6`、`UUID`、`COMPRESSED`、`IGNORED INDEX` 等对象；`routine` 与 `trigger` 的 charset 元数据比对已扩展到 `CHARACTER_SET_CLIENT`、`COLLATION_CONNECTION`、`DATABASE_COLLATION` 三维度；当目标端 `MySQL` 版本低于 `8.0`，或组合为 `MySQL -> MariaDB`、`MariaDB -> MariaDB` 时，程序会在启动阶段直接拒绝执行。
-- [功能新增]: 新增 `MariaDB 12.3+` 到 `MySQL 8.0/8.4` 的 `uca1400` 到 `uca0900` collation 映射识别，当源端使用 `uca1400` 系列排序规则时，程序会自动映射到 `MySQL` 对应的 `uca0900` 排序规则，结果显示为 `collation-mapped` 而非误报差异。
-- [功能新增]: 新增 `MySQL 5.6`、`5.7`、`8.0`、`8.4` 版本矩阵支持，支持同版本及 `srcDSN <= dstDSN` 的升级链路执行数据校验/修复和表结构校验/修复，覆盖普通列、默认值、`charset/collation`、`PRIMARY KEY`、`UNIQUE`、普通索引、外键和 `CHECK` 风险输出；对 `srcDSN > dstDSN` 的 downgrade 场景启动即失败退出。
-- [功能新增]: 新增 `checkObject=data` 模式下源端与目标端 DSN `charset` 一致性校验，避免字符集不兼容导致数据校验与修复结果失真。
-- [功能新增]: 新增参数 `mariaDBJSONTargetType`，支持将 `MariaDB JSON` alias 按策略改写为 `JSON`、`LONGTEXT` 或 `TEXT`，并在 `LONGTEXT` 路径上完成”生成 fix SQL -> repairDB 回放 -> 二次 compare”的闭环验证。
-- [功能优化]: 优化存储程序比较质量：大小写归一化由全量 `ToLower()` 改为仅对 `CREATE PROCEDURE/FUNCTION` 头部标识符做定向归一化，保留函数体内字符串字面量的原始大小写；charset 元数据查询失败时新增 `Warn` 级别日志，便于排查因权限不足导致的比对结果不完整。
-- [功能优化]: 优化内部代码质量：Column Shrink Guard 安全检查由 `SELECT COUNT(*)` 全表扫描改为 `SELECT 1 ... LIMIT 1` 短路查询；统一 DEFAULT 值脱壳逻辑，将 `schemacompat.UnwrapQuotedDefaultLiteral()` 导出为唯一公共入口，删除 `MySQL` 包中的重复实现。
-- [功能优化]: 优化 `checkObject=data` 的结果汇总逻辑，DDL 不一致表会稳定保留在最终结果集中，`Diffs` 明确显示为 `DDL-yes`，且 `Rows` 列固定留空以避免终端表格错位。
-- [功能优化]: 统一 repair SQL 和在线修复前置 `session` 语句的生成方式，使用 MySQL versioned comments 兼容 `sql_require_primary_key` 与 `sql_generate_invisible_primary_key`，提升 `MySQL 5.6/5.7/8.0/8.4` 修复链路兼容性。
-- [功能优化]: 优化结构比较的 warn/advisory 边界：`CHECK` 括号噪音已归一化；`SYSTEM VERSIONING`、`WITHOUT OVERLAPS`、`SEQUENCE` 会被明确识别与告警，不再以普通 `DDL mismatch` 模糊报出；`MySQL 8.4` 外键新增合法性预检与 advisory-only 建议，`CHECK`、非标准外键及 `MariaDB` 专属高风险对象不再自动执行高风险 DDL。
-- [功能优化]: 新增统一的 canonical schema model 与 capability catalog，将列、索引、主键、唯一约束、外键、`CHECK`、`ROW_FORMAT`、显示宽度、`utf8/utf8mb3`、`ZEROFILL`、默认 `utf8mb4` 排序规则漂移纳入统一语义比较与归一化链路。
-- [测试完善]: 新增多源数据库回归测试脚本 `scripts/regression-test.sh`，支持 7 个源端 × 2 个目标端 × 4 种 `checkObject` 模式的自动化回归矩阵，包含数据库连通性检查、自动初始化、多轮修复循环与标准化报告输出；新增 `--final-repair` 选项用于多模式测试后的完整修复验证。
-- [测试完善]: 新增 26 个纯函数单元测试，覆盖 `normalizeRoutineDefinitionForCompare`、`normalizeRoutineCreateSQLForCompareWithCatalog`、`isCharsetMetadataCollationMapped`、`hasCharsetMetadataCollationDiff`、`BuildColumnShrinkGuard`、`StripMySQLMetadataOnlyExtraTokens` 等核心比较与归一化函数。
-- [测试完善]: 新增表结构迁移统一测试基线脚本 `scripts/struct-migration-test-baseline.sh`，固化构建步骤与单元测试命令；补充结构回归基线与 fix SQL 回放标准作业说明，覆盖 MySQL 版本矩阵与 MariaDB 安全子集主路径；补充触发器场景测试说明，明确 `account` 表触发器可能导致首次修复后 `tmp_account` 表再次出现数据变化的识别方法。
-- [问题修复]: 修复 `checkObject=routine` 和 `checkObject=trigger` 场景下 charset 元数据比对函数调用仅传递 4 个参数（缺少 `CHARACTER_SET_CLIENT`）导致编译失败的问题，现已统一为包含 `srcCSClient`、`dstCSClient` 在内的 6 参数调用。
-- [问题修复]: 修复结构比较中的多处误报：`CHECK` 仅有外层括号差异时被误判为结构差异（已归一化为 `no`）；列级 collation 修复 SQL 已包含 `CONVERT TO CHARACTER SET` 时，表级 collation advisory 仍重复输出同一操作；主键 `pri / PRIMARY` canonical key 残余误报、映射场景下 `CREATE TABLE` 目标表名错误保留为源表名，以及 `Index / Partitions / Foreign` 在映射规则下可能查错目标对象。
-- [问题修复]: 修复 `MySQL 5.6/5.7 -> 8.0/8.4` 数据校验阶段直接查询 `INFORMATION_SCHEMA.STATISTICS.IS_VISIBLE` 导致的 `Error 1054` 问题，低版本实例会自动回退到兼容查询语句。
-- [问题修复]: 修复 `checkObject=data` 的 DDL-yes 链路两处问题：`tables=...` 场景下 DDL 不一致表在最终报告中可能丢失；当全部候选表都存在 DDL 差异时直接退出并提示 `No valid tables in checklist`，现改为跳过数据校验并输出 DDL 差异结果。
-- [问题修复]: 修复 `srcDSN`、`dstDSN` 中 `charset` 参数提取不完整的问题，现可正确解析 `?charset=`、`&charset=` 及大小写不同的连接参数。
-- [问题修复]: 优化 `MariaDB` 源端场景下的全局权限预检查逻辑，启动阶段不再把 `SESSION_VARIABLES_ADMIN` 一类 `MySQL 8.0` 专属权限误判为 `MariaDB` 必需项；同时将终端缺权提示改为通用描述，具体缺失权限以 debug 日志为准。
+- [功能新增]: 新增 `MySQL 5.6/5.7/8.0/8.4` 同版本及升级链路支持，覆盖 `data`、`struct`、`routine`、`trigger` 四种校验模式；downgrade 或不支持的版本组合会在启动阶段直接拒绝执行。
+- [功能新增]: 扩展 `MariaDB 10.x+ / 12.3+ -> MySQL 8.0/8.4` 支持至全部四种 `checkObject` 模式；新增参数 `mariaDBJSONTargetType` 支持 `MariaDB JSON` alias 改写为 `JSON`、`LONGTEXT` 或 `TEXT`；支持 `uca1400 -> uca0900` collation 自动映射，减少跨版本误报。
+- [功能优化]: 统一结构语义比较与风险分级，将 `CHECK`、显示宽度、`utf8/utf8mb3`、`ZEROFILL`、`ROW_FORMAT`、默认 collation 漂移等差异收敛为 `warn-only` / `advisory-only` 分层输出；补齐 `routine` / `trigger` charset 元数据三维度比对；`checkObject=data` 新增 DSN charset 一致性预检，DDL 差异表稳定保留并显示 `DDL-yes`。
+- [问题修复]: 修复多类结构比较误报（`CHECK` 括号噪音、主键 canonical key 残余、映射场景目标表名错误、collation advisory 重复输出等），以及 `MySQL 5.6/5.7` 查询 `INFORMATION_SCHEMA.STATISTICS.IS_VISIBLE` 的低版本兼容问题和 `checkObject=data` DDL-yes 链路结果丢失问题。
+- [问题修复]: 修复 DSN `charset` 参数提取不完整、`MariaDB` 源端全局权限预检查误判，以及 `struct` / `routine` / `trigger` 模式连接池过大导致的 `Too many connections` 问题（#IEYE7P）。
 
 ## 1.2.4
 - 支持Oracle=>MySQL的单向数据校验和修复，目前支持NUMBER/CHAR/NCHAR/VARCHAR2/FLOAT/DECIMAL/DATE/TIMESTAMP/CLOB等多个常用类型
