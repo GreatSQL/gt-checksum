@@ -2,7 +2,7 @@
 [![](https://img.shields.io/badge/GreatSQL-论坛-brightgreen.svg)](https://greatsql.cn/forum.php)
 [![](https://img.shields.io/badge/GreatSQL-博客-brightgreen.svg)](https://greatsql.cn/home.php?mod=space&uid=10&do=blog&view=me&from=space)
 [![](https://img.shields.io/badge/License-Apache_v2.0-blue.svg)](https://gitee.com/GreatSQL/gt-checksum/blob/master/LICENSE)
-[![](https://img.shields.io/badge/release-1.2.5-blue.svg)](https://gitee.com/GreatSQL/gt-checksum/releases)
+[![](https://img.shields.io/badge/release-1.3.0-blue.svg)](https://gitee.com/GreatSQL/gt-checksum/releases)
 
 # gt-checksum
 **gt-checksum** 是GreatSQL社区开源的数据库校验及修复工具，支持MySQL、Oracle等主流数据库。
@@ -12,6 +12,17 @@
 MySQL DBA经常使用 **pt-table-checksum** 和 **pt-table-sync** 进行数据校验及修复，但这两个工具并不支持MySQL MGR架构，以及国内常见的上云下云业务场景，还有MySQL、Oracle间的异构数据库等多种场景。
 
 因此，我们开发了 **gt-checksum** 工具，旨在支持更多业务场景并解决现有痛点。
+
+## v1.3.0 关键变化
+
+- **[功能新增]** 新增统一运行标识 `RunID`（格式 `YYYYMMDDHHmmss`），每次运行只生成一次，用于结果文件命名与日志关联。
+- **[功能新增]** 新增结果 CSV 自动导出能力：每次校验结束后可自动生成 `gt-checksum-result-<RunID>.csv`；文件为 UTF-8 BOM 编码（Excel 可直接打开），列头固定，包含所有校验对象的完整结果。通过新参数控制：
+  - `resultExport`：`OFF` / `csv`（默认 `csv`），设为 `OFF` 时不生成文件。
+  - `resultFile`：自定义 CSV 输出路径；不填时使用默认命名。
+- **[功能新增]** 新增 `terminalResultMode` 参数（`all` / `abnormal`，默认 `all`）：设为 `abnormal` 时终端仅显示存在差异的行（`yes` / `DDL-yes` / `warn-only`），方便快速定位问题；CSV 始终导出完整结果，不受此参数影响。
+- 以上参数均支持 CLI 方式覆盖（`--resultExport` / `--resultFile` / `--terminalResultMode`），对齐现有 `--showActualRows` 风格。
+
+已发布版本 `v1.2.5` 的主要变更见下方摘要及 [CHANGELOG](./CHANGELOG.md)。
 
 ## v1.2.5 关键变化
 
@@ -60,7 +71,7 @@ gt-checksum is reading configuration files
 
 ```bash
 $  gt-checksum -v
-gt-checksum version 1.2.5
+gt-checksum version 1.3.0
 ```
 
 - 查看使用帮助
@@ -109,6 +120,21 @@ Total execution time: 0.11s
 ```
 
 > 开始执行数据校验前，要先在源和目标数据库创建相应的专属账号并授权。更多详情见手册中的 [**数据库授权**](./gt-checksum-manual.md#数据库授权) 章节。
+
+每次校验结束后，当前目录下还会自动生成结果 CSV 文件（默认开启），例如：`gt-checksum-result-20260323195530.csv`。使用 Excel 或命令行可直接查看完整校验结果：
+
+```bash
+$ cat gt-checksum-result-20260323195530.csv
+
+RunID,CheckTime,CheckObject,Schema,Table,ObjectName,ObjectType,IndexColumn,Rows,Diffs,Datafix,Mapping,Definer
+20260323195530,2026-03-23 19:55:31,data,sbtest,sbtest2,sbtest2,table,id,4999,yes,file,,
+```
+
+如需只在终端显示差异行，可配置 `terminalResultMode=abnormal`（CSV 仍输出完整结果）：
+
+```bash
+$ gt-checksum -c ./gc.conf --terminalResultMode abnormal
+```
 
 查看运行目录下是否生成修复SQL文件目录，例如：fixsql-20260129154514
 
@@ -181,6 +207,16 @@ go build -o oracle_random_data_load oracle_random_data_load.go
 ## 配置参数
 
 配置文件中所有参数的详解可参考模板文件 [gc-sample.conf](./gc-sample.conf)。
+
+v1.3.0 新增参数如下：
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `resultExport` | `csv` | 结果导出格式，`OFF` 不生成文件，`csv` 自动生成 CSV |
+| `resultFile` | 空 | 自定义 CSV 输出路径，空时自动命名为 `gt-checksum-result-<RunID>.csv` |
+| `terminalResultMode` | `all` | 终端输出模式，`all` 显示全部，`abnormal` 仅显示差异行 |
+
+以上三个参数均支持 CLI 覆盖：`--resultExport`、`--resultFile`、`--terminalResultMode`。
 
 ## 问题反馈
 

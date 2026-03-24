@@ -318,6 +318,91 @@ gt_phase1_mariadb105 t_mariadb_feature_pack      struct       warn-only  file
 3. 源端与目标端表级权限：`checkObject=data` 仍按既有逻辑检查 `SELECT` 以及 `datafix=table` 时所需的对象权限；`checkObject=struct` 则需确保可读取相关元数据并具备目标端执行 fix SQL 所需的对象级 DDL 权限；
 4. 如果终端提示 `Missing required global privileges`，请优先打开 debug 日志，根据日志中源端/目标端各自的权限检查结果确认具体缺失项，而不要仅凭终端输出中的概括性提示判断。
 
+## 结果文件导出
+
+`gt-checksum` v1.3.0 新增统一的校验结果 CSV 导出能力（关联需求 #I6KMQF）。
+
+### 功能概述
+
+- 每次运行结束后自动生成一个结果 CSV 文件，默认命名为 `gt-checksum-result-<RunID>.csv`（`RunID` 格式 `YYYYMMDDHHmmss`，每次运行唯一）。
+- CSV 文件使用 **UTF-8 BOM** 编码，可被 Excel 直接打开，无需额外配置。
+- CSV 列头固定，包含全部 13 列，适用于 `data`、`struct`、`routine`、`trigger` 四种模式，不使用的列留空而不是省略。
+- CSV 始终包含**完整结果**，不受 `terminalResultMode` 过滤影响。
+
+### CSV 列头说明
+
+| 列名 | 说明 |
+|------|------|
+| `RunID` | 本次运行唯一标识（`YYYYMMDDHHmmss`） |
+| `CheckTime` | 结果导出时间（`YYYY-MM-DD HH:MM:SS`） |
+| `CheckObject` | 校验模式：`data` / `struct` / `routine` / `trigger` |
+| `Schema` | 对象所在 schema |
+| `Table` | 表名；非表对象（routine / trigger）时为空 |
+| `ObjectName` | 统一对象名（表名、存储过程名、函数名、触发器名） |
+| `ObjectType` | `table` / `procedure` / `function` / `trigger` / `sequence` |
+| `IndexColumn` | 仅 `data` 模式使用，显示校验所用索引列 |
+| `Rows` | 行数（`DDL-yes` 时为空） |
+| `Diffs` | 差异状态：`yes` / `no` / `DDL-yes` / `warn-only` / `collation-mapped` |
+| `Datafix` | 修复方式：`file` / `table` |
+| `Mapping` | schema/table 映射说明（无映射时为空） |
+| `Definer` | routine / trigger 场景下的 DEFINER |
+
+### 结果导出相关参数
+
+| 参数 | 默认值 | 可选值 | 说明 |
+|------|--------|--------|------|
+| `resultExport` | `csv` | `OFF` / `csv` | 是否导出 CSV；`OFF` 时不生成文件 |
+| `resultFile` | 空 | 任意路径字符串 | 自定义导出路径；空时自动生成 `gt-checksum-result-<RunID>.csv` |
+| `terminalResultMode` | `all` | `all` / `abnormal` | 终端显示模式；`abnormal` 只显示差异行，不影响 CSV 内容 |
+
+以上参数均支持 CLI 覆盖，高于配置文件：
+
+```bash
+# 禁用 CSV 导出
+gt-checksum -c gc.conf --resultExport OFF
+
+# 自定义 CSV 路径
+gt-checksum -c gc.conf --resultFile ./output/result.csv
+
+# 终端只显示差异行
+gt-checksum -c gc.conf --terminalResultMode abnormal
+```
+
+### 使用示例
+
+执行数据校验并查看 CSV 结果：
+
+```bash
+$ gt-checksum -c gc.conf
+
+...
+Result exported to: gt-checksum-result-20260323195530.csv
+```
+
+```bash
+$ head -3 gt-checksum-result-20260323195530.csv
+
+RunID,CheckTime,CheckObject,Schema,Table,ObjectName,ObjectType,IndexColumn,Rows,Diffs,Datafix,Mapping,Definer
+20260323195530,2026-03-23 19:55:31,data,sbtest,sbtest1,sbtest1,table,id,10000,no,file,,
+20260323195530,2026-03-23 19:55:31,data,sbtest,sbtest2,sbtest2,table,id,4999,yes,file,,
+```
+
+终端只显示有差异的行：
+
+```bash
+$ gt-checksum -c gc.conf --terminalResultMode abnormal
+
+** gt-checksum Overview of results **
+Schema  Table    IndexColumn  CheckObject  Rows  Diffs  Datafix
+sbtest  sbtest2  id           data         4999  yes    file
+
+Result exported to: gt-checksum-result-20260323195530.csv
+```
+
+> **注意**：`resultExport=OFF` 时不生成 CSV 文件，行为与 v1.2.x 一致。CSV 导出失败（如目录不存在、无写权限）时只输出 Warning，不影响校验主流程的退出码。
+
+---
+
 ## 配置参数详解
 
 **gt-checksum** 支持命令行参数与配置文件方式运行，但命令行仅支持 `-c/-f`, `-h`, `-v` 等基础参数，其余参数通过配置文件指定。
@@ -332,6 +417,14 @@ gt_phase1_mariadb105 t_mariadb_feature_pack      struct       warn-only  file
   ```bash
   $ gt-checksum -c ./gc.conf
   ```
+
+- `--showActualRows`。类型：**string**，可选值：`ON` / `OFF`。作用：覆盖配置文件中的 `showActualRows` 参数。
+
+- `--resultExport`。类型：**string**，可选值：`OFF` / `csv`。作用：覆盖配置文件中的 `resultExport` 参数，控制是否生成 CSV 结果文件。
+
+- `--resultFile`。类型：**string**。作用：覆盖配置文件中的 `resultFile` 参数，指定 CSV 输出文件路径。
+
+- `--terminalResultMode`。类型：**string**，可选值：`all` / `abnormal`。作用：覆盖配置文件中的 `terminalResultMode` 参数，控制终端结果显示模式。
 
 - `--help / -h`。作用：查看帮助内容。
 
@@ -686,7 +779,7 @@ result=PARTIAL_SUCCESS continue_on_error=true
 
 ## 已知缺陷/问题
 
-截止最新的v1.2.5版本，已知存在以下几个约束/问题。
+截止当前的v1.3.0开发版本，已知存在以下几个约束/问题。
 
 - 当存在触发器时，因为触发器的作用，可能导致在修复完一个表后，触发其他表被改变，从而看起来像是修复后仍不一致的情况。这种情况下，需要先临时删除触发器进行修复，完成后在重新创建触发器。
 

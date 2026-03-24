@@ -72,6 +72,9 @@ INSERT INTO teststring(f1,f2,f3,f4,f5,f6,f7,f8,f9) VALUES('1','abcde','abc123','
 INSERT INTO teststring(f1,f2,f3,f4,f5,f6,f7,f8,f9) VALUES('2','fghij','def456','efgh.5678',"hello, i\'m gt-checksum",'hello ','hello gt-checksum','b','cc,dd');
 INSERT INTO teststring(f1,f2,f3,f4,f5,f6,f7,f8,f9) VALUES('3','klmno','ghi789','ijkl.9012',"a\\\b\\'c",'hello ','hello gt-checksum','c','cc,dd');
 
+-- 测试view
+create view v_teststring as select * from teststring where f1>'3';
+
 DROP TABLE IF EXISTS testbin;
 CREATE TABLE testbin(
     f1 BINARY,
