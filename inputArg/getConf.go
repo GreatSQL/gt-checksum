@@ -303,7 +303,9 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 		}
 	}
 
-	// Result export parameters
+	// Result export parameters.
+	// Invalid values are passed through as-is so that checkParameter.go can
+	// report a clear error and call os.Exit(1) (fail-fast, not silent default).
 	resultExportValue := strings.ToUpper(strings.TrimSpace(getLastConfigValue("resultExport")))
 	switch resultExportValue {
 	case "", "CSV":
@@ -311,8 +313,7 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 	case "OFF":
 		rc.SecondaryL.RulesV.ResultExport = "OFF"
 	default:
-		fmt.Println("Using default value 'csv' for option resultExport")
-		rc.SecondaryL.RulesV.ResultExport = "csv"
+		rc.SecondaryL.RulesV.ResultExport = resultExportValue // checkPar will reject and exit
 	}
 
 	resultFileValue := strings.TrimSpace(getLastConfigValue("resultFile"))
@@ -325,21 +326,23 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 	case "abnormal":
 		rc.SecondaryL.RulesV.TerminalResultMode = "abnormal"
 	default:
-		fmt.Println("Using default value 'all' for option terminalResultMode")
-		rc.SecondaryL.RulesV.TerminalResultMode = "all"
+		rc.SecondaryL.RulesV.TerminalResultMode = terminalResultModeValue // checkPar will reject and exit
 	}
 
-	// CLI overrides for result export options
+	// CLI overrides for result export options.
+	// Invalid CLI values are fatal: the user explicitly supplied a bad argument.
 	if rc.CliResultExport != "" {
 		override := strings.ToUpper(strings.TrimSpace(rc.CliResultExport))
 		if override == "OFF" || override == "CSV" {
-			rc.SecondaryL.RulesV.ResultExport = strings.ToLower(override)
 			if override == "OFF" {
 				rc.SecondaryL.RulesV.ResultExport = "OFF"
+			} else {
+				rc.SecondaryL.RulesV.ResultExport = "csv"
 			}
 			fmt.Printf("Using system parameter resultExport=%s\n", rc.SecondaryL.RulesV.ResultExport)
 		} else {
-			fmt.Printf("Ignoring invalid system parameter resultExport=%s, use config/default value %s\n", rc.CliResultExport, rc.SecondaryL.RulesV.ResultExport)
+			fmt.Fprintf(os.Stderr, "gt-checksum: invalid value for --resultExport: %q (must be OFF or csv)\n", rc.CliResultExport)
+			os.Exit(1)
 		}
 	}
 	if rc.CliResultFile != "" {
@@ -352,7 +355,8 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 			rc.SecondaryL.RulesV.TerminalResultMode = override
 			fmt.Printf("Using system parameter terminalResultMode=%s\n", override)
 		} else {
-			fmt.Printf("Ignoring invalid system parameter terminalResultMode=%s, use config/default value %s\n", rc.CliTerminalResultMode, rc.SecondaryL.RulesV.TerminalResultMode)
+			fmt.Fprintf(os.Stderr, "gt-checksum: invalid value for --terminalResultMode: %q (must be all or abnormal)\n", rc.CliTerminalResultMode)
+			os.Exit(1)
 		}
 	}
 

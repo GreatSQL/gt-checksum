@@ -43,24 +43,44 @@ func BuildResultRecords(m *inputArg.ConfigParameter) []ResultRecord {
 	return records
 }
 
+// normalizeCheckObject maps the internal pod CheckObject value (which may be
+// "Procedure" or "Function" in routine mode) to the canonical user-facing mode
+// name as configured by the checkObject parameter.
+func normalizeCheckObject(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "procedure", "function":
+		return "routine"
+	default:
+		return strings.ToLower(strings.TrimSpace(raw))
+	}
+}
+
+// resolveEffectiveDiffs returns the effective Diffs value for a pod.
+// For data-mode pods, differencesSchemaTable may promote the stored DIFFS to "yes".
+// This is the single authoritative implementation of that override logic; both
+// terminal pre-filtering and CSV normalization must use this function.
+func resolveEffectiveDiffs(pod Pod) string {
+	if strings.ToLower(pod.CheckObject) != "data" {
+		return pod.DIFFS
+	}
+	for k := range differencesSchemaTable {
+		if k == "" {
+			continue
+		}
+		parts := strings.SplitN(k, "gtchecksum_gtchecksum", 2)
+		if len(parts) == 2 && pod.Schema == parts[0] && pod.Table == parts[1] {
+			return "yes"
+		}
+	}
+	return pod.DIFFS
+}
+
 // normalizePodToRecord converts a single Pod into a stable ResultRecord.
 func normalizePodToRecord(m *inputArg.ConfigParameter, pod Pod, checkTime string) ResultRecord {
 	schema, objectName, objectType := resolveObjectIdentity(pod)
 
-	// For data mode, differencesSchemaTable may override DIFFS to "yes".
-	diffs := pod.DIFFS
-	if strings.ToLower(pod.CheckObject) == "data" {
-		for k := range differencesSchemaTable {
-			if k == "" {
-				continue
-			}
-			parts := strings.SplitN(k, "gtchecksum_gtchecksum", 2)
-			if len(parts) == 2 && pod.Schema == parts[0] && pod.Table == parts[1] {
-				diffs = "yes"
-				break
-			}
-		}
-	}
+	// Resolve effective Diffs, applying differencesSchemaTable override for data mode.
+	diffs := resolveEffectiveDiffs(pod)
 
 	// DDL-yes rows are always empty (consistent with dataResultRows helper).
 	rows := pod.Rows
@@ -77,7 +97,7 @@ func normalizePodToRecord(m *inputArg.ConfigParameter, pod Pod, checkTime string
 	return ResultRecord{
 		RunID:       m.RunID,
 		CheckTime:   checkTime,
-		CheckObject: pod.CheckObject,
+		CheckObject: normalizeCheckObject(pod.CheckObject),
 		Schema:      schema,
 		Table:       table,
 		ObjectName:  objectName,
