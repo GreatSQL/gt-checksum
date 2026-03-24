@@ -288,3 +288,35 @@ func TestExportResultsIfNeeded_csvCreated(t *testing.T) {
 		t.Errorf("CSV file not created: %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// WriteCSVResults — 目录自动创建 + 文件权限
+// ---------------------------------------------------------------------------
+
+func TestWriteCSVResults_autoCreatesParentDir(t *testing.T) {
+	// resultFile 指向一个不存在的子目录，WriteCSVResults 应当自动创建
+	dir := filepath.Join(t.TempDir(), "subdir", "nested")
+	path := filepath.Join(dir, "result.csv")
+	if err := WriteCSVResults(path, nil); err != nil {
+		t.Fatalf("WriteCSVResults failed with non-existent parent dir: %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("CSV file not found after auto-create: %v", err)
+	}
+}
+
+func TestWriteCSVResults_filePermission0600(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "result.csv")
+	if err := WriteCSVResults(path, nil); err != nil {
+		t.Fatalf("WriteCSVResults failed: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat failed: %v", err)
+	}
+	// 期望权限为 0600（仅属主可读写）
+	const want = os.FileMode(0600)
+	if got := info.Mode().Perm(); got != want {
+		t.Errorf("file permission = %04o, want %04o", got, want)
+	}
+}
