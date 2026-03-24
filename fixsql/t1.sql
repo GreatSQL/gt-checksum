@@ -1,0 +1,7 @@
+SET NAMES utf8mb4;
+SET FOREIGN_KEY_CHECKS=0;
+SET UNIQUE_CHECKS=0;
+BEGIN;
+DELETE FROM `sbtest`.`t1` WHERE `id` = '1.01' AND `code` = 'a' LIMIT 1;
+DELETE FROM `sbtest`.`t1` WHERE `id` = '4.30' AND `code` IS NULL LIMIT 1;
+COMMIT;
