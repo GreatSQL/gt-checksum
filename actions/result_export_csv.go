@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"gt-checksum/inputArg"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -62,9 +63,15 @@ func ResolveResultFilePath(m *inputArg.ConfigParameter) string {
 
 // WriteCSVResults writes records to path as a UTF-8 BOM CSV file using the fixed
 // column schema defined in csvHeader(). The file is created (or truncated) at path.
+// Parent directories are created automatically if they do not exist.
 // Fields containing commas, double-quotes, or newlines are escaped by encoding/csv.
 func WriteCSVResults(path string, records []ResultRecord) error {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if dir := filepath.Dir(path); dir != "." && dir != "" {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("result csv: mkdir %q: %w", dir, err)
+		}
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil {
 		return fmt.Errorf("result csv: open %q: %w", path, err)
 	}

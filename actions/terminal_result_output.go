@@ -238,21 +238,9 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 	if m.SecondaryL.RulesV.TerminalResultMode == "abnormal" {
 		terminalPods = make([]Pod, 0, len(measuredDataPods))
 		for _, p := range measuredDataPods {
-			diffs := p.DIFFS
-			// For data-mode pods, differencesSchemaTable may promote DIFFS to "yes".
-			if strings.ToLower(p.CheckObject) == "data" {
-				for k := range differencesSchemaTable {
-					if k == "" {
-						continue
-					}
-					parts := strings.SplitN(k, "gtchecksum_gtchecksum", 2)
-					if len(parts) == 2 && p.Schema == parts[0] && p.Table == parts[1] {
-						diffs = "yes"
-						break
-					}
-				}
-			}
-			if diffs == "yes" || diffs == "DDL-yes" || diffs == "warn-only" {
+			// resolveEffectiveDiffs handles the differencesSchemaTable override for data mode.
+			// ShouldDisplayInTerminal encapsulates the abnormal filter logic.
+			if ShouldDisplayInTerminal(ResultRecord{Diffs: resolveEffectiveDiffs(p)}, "abnormal") {
 				terminalPods = append(terminalPods, p)
 			}
 		}
