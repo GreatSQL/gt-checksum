@@ -303,6 +303,59 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 		}
 	}
 
+	// Result export parameters
+	resultExportValue := strings.ToUpper(strings.TrimSpace(getLastConfigValue("resultExport")))
+	switch resultExportValue {
+	case "", "CSV":
+		rc.SecondaryL.RulesV.ResultExport = "csv"
+	case "OFF":
+		rc.SecondaryL.RulesV.ResultExport = "OFF"
+	default:
+		fmt.Println("Using default value 'csv' for option resultExport")
+		rc.SecondaryL.RulesV.ResultExport = "csv"
+	}
+
+	resultFileValue := strings.TrimSpace(getLastConfigValue("resultFile"))
+	rc.SecondaryL.RulesV.ResultFile = resultFileValue
+
+	terminalResultModeValue := strings.ToLower(strings.TrimSpace(getLastConfigValue("terminalResultMode")))
+	switch terminalResultModeValue {
+	case "", "all":
+		rc.SecondaryL.RulesV.TerminalResultMode = "all"
+	case "abnormal":
+		rc.SecondaryL.RulesV.TerminalResultMode = "abnormal"
+	default:
+		fmt.Println("Using default value 'all' for option terminalResultMode")
+		rc.SecondaryL.RulesV.TerminalResultMode = "all"
+	}
+
+	// CLI overrides for result export options
+	if rc.CliResultExport != "" {
+		override := strings.ToUpper(strings.TrimSpace(rc.CliResultExport))
+		if override == "OFF" || override == "CSV" {
+			rc.SecondaryL.RulesV.ResultExport = strings.ToLower(override)
+			if override == "OFF" {
+				rc.SecondaryL.RulesV.ResultExport = "OFF"
+			}
+			fmt.Printf("Using system parameter resultExport=%s\n", rc.SecondaryL.RulesV.ResultExport)
+		} else {
+			fmt.Printf("Ignoring invalid system parameter resultExport=%s, use config/default value %s\n", rc.CliResultExport, rc.SecondaryL.RulesV.ResultExport)
+		}
+	}
+	if rc.CliResultFile != "" {
+		rc.SecondaryL.RulesV.ResultFile = strings.TrimSpace(rc.CliResultFile)
+		fmt.Printf("Using system parameter resultFile=%s\n", rc.SecondaryL.RulesV.ResultFile)
+	}
+	if rc.CliTerminalResultMode != "" {
+		override := strings.ToLower(strings.TrimSpace(rc.CliTerminalResultMode))
+		if override == "all" || override == "abnormal" {
+			rc.SecondaryL.RulesV.TerminalResultMode = override
+			fmt.Printf("Using system parameter terminalResultMode=%s\n", override)
+		} else {
+			fmt.Printf("Ignoring invalid system parameter terminalResultMode=%s, use config/default value %s\n", rc.CliTerminalResultMode, rc.SecondaryL.RulesV.TerminalResultMode)
+		}
+	}
+
 	//Repair 获取相关参数
 	fixTrxNumValue := getLastConfigValue("fixTrxNum")
 	if fixTrxNumValue != "" {

@@ -47,6 +47,10 @@ type RulesS struct {
 	// MariaDBJSONTargetType controls how MariaDB JSON alias columns are rewritten on MySQL targets.
 	MariaDBJSONTargetType string
 	IsRoutineCheck        bool // 标记是否同时检查存储过程和函数
+	// Result export options
+	ResultExport       string // OFF | csv
+	ResultFile         string // explicit output path; empty = auto-generate from RunID
+	TerminalResultMode string // all | abnormal
 }
 
 type LogS struct {
@@ -88,6 +92,11 @@ type ConfigParameter struct {
 	CliShowActualRows   string
 	LogThreadSeq        int64
 	NoIndexTableTmpFile string
+	// RunID is a stable identifier for this run, generated once at startup (format: YYYYMMDDHHmmss).
+	RunID                string
+	CliResultExport      string
+	CliResultFile        string
+	CliTerminalResultMode string
 }
 
 var rc ConfigParameter
@@ -96,6 +105,8 @@ func init() {
 	if strings.HasSuffix(filepath.Base(os.Args[0]), ".test") {
 		return
 	}
+	// Generate a stable run identifier at the very start of the process.
+	rc.RunID = time.Now().Format("20060102150405")
 	rc.cliHelp()
 	fmt.Println("Initializing gt-checksum")
 	fmt.Println("Reading configuration files")

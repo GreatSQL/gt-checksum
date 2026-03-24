@@ -44,7 +44,7 @@ func (rc *ConfigParameter) cliHelp() {
 	app.Usage = "opensource MySQL database checksum and sync tool by GreatSQL" //应用功能说明
 	app.Author = "GreatSQL"                                                    //作者
 	app.Email = "GreatSQL <greatsql@greatdb.com>"                              //邮箱
-	app.Version = "1.2.5"
+	app.Version = "1.3.0"
 	app.Flags = []cli.Flag{
 		cli.StringFlag{
 			Name:        "c,f",                                                        //命令名称
@@ -75,6 +75,24 @@ func (rc *ConfigParameter) cliHelp() {
 			Usage:       "Override showActualRows from system parameter, values: ON|OFF, e.g. --showActualRows ON",
 			Value:       "",
 			Destination: &rc.CliShowActualRows,
+		},
+		cli.StringFlag{
+			Name:        "resultExport",
+			Usage:       "Override resultExport from system parameter, values: OFF|csv, e.g. --resultExport csv",
+			Value:       "",
+			Destination: &rc.CliResultExport,
+		},
+		cli.StringFlag{
+			Name:        "resultFile",
+			Usage:       "Override resultFile path, e.g. --resultFile ./out/result.csv",
+			Value:       "",
+			Destination: &rc.CliResultFile,
+		},
+		cli.StringFlag{
+			Name:        "terminalResultMode",
+			Usage:       "Override terminalResultMode from system parameter, values: all|abnormal, e.g. --terminalResultMode abnormal",
+			Value:       "",
+			Destination: &rc.CliTerminalResultMode,
 		},
 	}
 	app.Action = func(c *cli.Context) { //应用执行函数
