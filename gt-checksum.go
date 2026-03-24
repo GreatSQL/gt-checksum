@@ -212,6 +212,13 @@ func main() {
 	fmt.Println("")
 	fmt.Println("** gt-checksum Overview of results **")
 	actions.CheckResultOut(m)
+
+	// Export result CSV (honours resultExport=OFF to skip).
+	resultRecords := actions.BuildResultRecords(m)
+	if err := actions.ExportResultsIfNeeded(m, resultRecords); err != nil {
+		fmt.Printf("Warning: failed to export result file: %v\n", err)
+	}
+
 	actions.LogMemoryPeakSummary()
 
 	// 输出性能指标

@@ -232,6 +232,32 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 		}
 	}
 
+	// Build a filtered pod slice for terminal display based on terminalResultMode.
+	// CSV export always receives the full result set via BuildResultRecords (see gt-checksum.go).
+	terminalPods := measuredDataPods
+	if m.SecondaryL.RulesV.TerminalResultMode == "abnormal" {
+		terminalPods = make([]Pod, 0, len(measuredDataPods))
+		for _, p := range measuredDataPods {
+			diffs := p.DIFFS
+			// For data-mode pods, differencesSchemaTable may promote DIFFS to "yes".
+			if strings.ToLower(p.CheckObject) == "data" {
+				for k := range differencesSchemaTable {
+					if k == "" {
+						continue
+					}
+					parts := strings.SplitN(k, "gtchecksum_gtchecksum", 2)
+					if len(parts) == 2 && p.Schema == parts[0] && p.Table == parts[1] {
+						diffs = "yes"
+						break
+					}
+				}
+			}
+			if diffs == "yes" || diffs == "DDL-yes" || diffs == "warn-only" {
+				terminalPods = append(terminalPods, p)
+			}
+		}
+	}
+
 	table := uitable.New()
 	table.MaxColWidth = 200
 	table.RightAlign(20)
@@ -247,7 +273,7 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 			table.AddRow("Schema", "RoutineName", "CheckObject", "DIFFS", "Datafix")
 		}
 
-		for _, pod := range measuredDataPods {
+		for _, pod := range terminalPods {
 			// 仅输出存储过程/存储函数的记录
 			lc := strings.ToLower(pod.CheckObject)
 			if lc != "procedure" && lc != "function" {
@@ -322,7 +348,7 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 			table.AddRow("Schema", "Table", "CheckObject", "Diffs", "Datafix")
 		}
 
-		for _, pod := range measuredDataPods {
+		for _, pod := range terminalPods {
 			// Keep structure-level rows and schema-object warnings in the same output.
 			if !isStructOutputPod(pod) {
 				continue
@@ -388,7 +414,7 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 			table.AddRow("Schema", "Table", "CheckObject", "Diffs", "Datafix")
 		}
 
-		for _, pod := range measuredDataPods {
+		for _, pod := range terminalPods {
 			// 检查Table字段是否包含schema.table或schema:table格式
 			tableName := pod.Table
 			schemaName := pod.Schema
@@ -450,7 +476,7 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 			table.AddRow("Schema", "Table", "CheckObject", "Diffs", "Datafix")
 		}
 
-		for _, pod := range measuredDataPods {
+		for _, pod := range terminalPods {
 			// 检查Table字段是否包含schema.table或schema:table格式
 			tableName := pod.Table
 			schemaName := pod.Schema
@@ -512,7 +538,7 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 			table.AddRow("Schema", "Table", "CheckObject", "Diffs", "Datafix")
 		}
 
-		for _, pod := range measuredDataPods {
+		for _, pod := range terminalPods {
 			// 检查Table字段是否包含schema.table或schema:table格式
 			tableName := pod.Table
 			schemaName := pod.Schema
@@ -574,7 +600,7 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 			table.AddRow("Schema", "funcName", "CheckObject", "DIFFS", "Datafix")
 		}
 
-		for _, pod := range measuredDataPods {
+		for _, pod := range terminalPods {
 			// 检查Schema和FuncName字段
 			schemaName := pod.Schema
 			funcName := pod.FuncName
@@ -635,7 +661,7 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 			table.AddRow("Schema", "ProcName", "CheckObject", "DIFFS", "Datafix")
 		}
 
-		for _, pod := range measuredDataPods {
+		for _, pod := range terminalPods {
 			// 检查Schema和ProcName字段
 			schemaName := pod.Schema
 			procName := pod.ProcName
@@ -696,7 +722,7 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 			table.AddRow("Schema", "TriggerName", "CheckObject", "Diffs", "Datafix")
 		}
 
-		for _, pod := range measuredDataPods {
+		for _, pod := range terminalPods {
 			// 检查Schema和TriggerName字段
 			schemaName := pod.Schema
 			triggerName := pod.TriggerName
@@ -754,7 +780,7 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 		// 直接使用rows模式的代码，不再使用switch
 		if hasMappings {
 			table.AddRow("Schema", "Table", "IndexColumn", "CheckObject", "Rows", "Diffs", "Datafix", "Mapping")
-			for _, pod := range measuredDataPods {
+			for _, pod := range terminalPods {
 				var differences = pod.DIFFS
 				for k, _ := range differencesSchemaTable {
 					if k != "" {
@@ -777,7 +803,7 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 			}
 		} else {
 			table.AddRow("Schema", "Table", "IndexColumn", "CheckObject", "Rows", "Diffs", "Datafix")
-			for _, pod := range measuredDataPods {
+			for _, pod := range terminalPods {
 				var differences = pod.DIFFS
 				for k, _ := range differencesSchemaTable {
 					if k != "" {
