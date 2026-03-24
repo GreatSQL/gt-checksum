@@ -216,3 +216,89 @@ func TestShouldDisplayInTerminal_unknownModeFallsThrough(t *testing.T) {
 		t.Errorf("unknown mode should default to show-all")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// normalizeCheckObject
+// ---------------------------------------------------------------------------
+
+func TestNormalizeCheckObject_procedureBecomesRoutine(t *testing.T) {
+	if got := normalizeCheckObject("Procedure"); got != "routine" {
+		t.Errorf("normalizeCheckObject(Procedure) = %q, want routine", got)
+	}
+}
+
+func TestNormalizeCheckObject_functionBecomesRoutine(t *testing.T) {
+	if got := normalizeCheckObject("Function"); got != "routine" {
+		t.Errorf("normalizeCheckObject(Function) = %q, want routine", got)
+	}
+}
+
+func TestNormalizeCheckObject_lowercasePassThrough(t *testing.T) {
+	for _, raw := range []string{"data", "struct", "trigger", "sequence"} {
+		if got := normalizeCheckObject(raw); got != raw {
+			t.Errorf("normalizeCheckObject(%q) = %q, want %q", raw, got, raw)
+		}
+	}
+}
+
+func TestNormalizeCheckObject_uppercaseLowered(t *testing.T) {
+	if got := normalizeCheckObject("DATA"); got != "data" {
+		t.Errorf("normalizeCheckObject(DATA) = %q, want data", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// resolveEffectiveDiffs
+// ---------------------------------------------------------------------------
+
+func TestResolveEffectiveDiffs_nonDataModePassThrough(t *testing.T) {
+	pod := Pod{CheckObject: "struct", DIFFS: "no"}
+	if got := resolveEffectiveDiffs(pod); got != "no" {
+		t.Errorf("resolveEffectiveDiffs struct no-diff = %q, want no", got)
+	}
+}
+
+func TestResolveEffectiveDiffs_dataModePlainDiff(t *testing.T) {
+	// Empty differencesSchemaTable — DIFFS passed through as-is.
+	pod := Pod{CheckObject: "data", Schema: "db1", Table: "t1", DIFFS: "yes"}
+	if got := resolveEffectiveDiffs(pod); got != "yes" {
+		t.Errorf("resolveEffectiveDiffs data yes = %q, want yes", got)
+	}
+}
+
+func TestResolveEffectiveDiffs_dataModeOverridesViaDiffTable(t *testing.T) {
+	// Simulate a pod whose DIFFS is "no" but the table appears in differencesSchemaTable.
+	origTable := differencesSchemaTable
+	differencesSchemaTable = map[string]string{"db1gtchecksum_gtchecksumorders": ""}
+	defer func() { differencesSchemaTable = origTable }()
+
+	pod := Pod{CheckObject: "data", Schema: "db1", Table: "orders", DIFFS: "no"}
+	if got := resolveEffectiveDiffs(pod); got != "yes" {
+		t.Errorf("resolveEffectiveDiffs data with override = %q, want yes", got)
+	}
+}
+
+func TestNormalizePodToRecord_routineCheckObjectIsRoutine(t *testing.T) {
+	m := mockConfig("20260323120000", "all")
+	// Simulate what schema_tab_struct.go sets for a stored procedure.
+	pod := Pod{Schema: "db1", ProcName: "sp_calc", CheckObject: "Procedure", DIFFS: "no"}
+	rec := normalizePodToRecord(m, pod, "2026-03-23 12:00:00")
+	if rec.CheckObject != "routine" {
+		t.Errorf("CheckObject = %q, want routine", rec.CheckObject)
+	}
+	if rec.ObjectType != "procedure" {
+		t.Errorf("ObjectType = %q, want procedure", rec.ObjectType)
+	}
+}
+
+func TestNormalizePodToRecord_functionCheckObjectIsRoutine(t *testing.T) {
+	m := mockConfig("20260323120000", "all")
+	pod := Pod{Schema: "db1", FuncName: "fn_sum", CheckObject: "Function", DIFFS: "no"}
+	rec := normalizePodToRecord(m, pod, "2026-03-23 12:00:00")
+	if rec.CheckObject != "routine" {
+		t.Errorf("CheckObject = %q, want routine", rec.CheckObject)
+	}
+	if rec.ObjectType != "function" {
+		t.Errorf("ObjectType = %q, want function", rec.ObjectType)
+	}
+}

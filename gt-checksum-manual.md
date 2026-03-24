@@ -324,7 +324,7 @@ gt_phase1_mariadb105 t_mariadb_feature_pack      struct       warn-only  file
 
 ### 功能概述
 
-- 每次运行结束后自动生成一个结果 CSV 文件，默认命名为 `gt-checksum-result-<RunID>.csv`（`RunID` 格式 `YYYYMMDDHHmmss`，每次运行唯一）。
+- 每次运行结束后自动生成一个结果 CSV 文件，默认命名为 `gt-checksum-result-<RunID>.csv`（`RunID` 格式 `YYYYMMDDHHmmss`，精度为秒级；同一秒内多次启动会产生相同 RunID）。
 - CSV 文件使用 **UTF-8 BOM** 编码，可被 Excel 直接打开，无需额外配置。
 - CSV 列头固定，包含全部 13 列，适用于 `data`、`struct`、`routine`、`trigger` 四种模式，不使用的列留空而不是省略。
 - CSV 始终包含**完整结果**，不受 `terminalResultMode` 过滤影响。
@@ -333,9 +333,9 @@ gt_phase1_mariadb105 t_mariadb_feature_pack      struct       warn-only  file
 
 | 列名 | 说明 |
 |------|------|
-| `RunID` | 本次运行唯一标识（`YYYYMMDDHHmmss`） |
+| `RunID` | 本次运行标识（`YYYYMMDDHHmmss`，精度秒级） |
 | `CheckTime` | 结果导出时间（`YYYY-MM-DD HH:MM:SS`） |
-| `CheckObject` | 校验模式：`data` / `struct` / `routine` / `trigger` |
+| `CheckObject` | 用户请求的校验模式：`data` / `struct` / `routine` / `trigger`；`routine` 模式下存储过程和函数均统一显示为 `routine`，具体类型见 `ObjectType` |
 | `Schema` | 对象所在 schema |
 | `Table` | 表名；非表对象（routine / trigger）时为空 |
 | `ObjectName` | 统一对象名（表名、存储过程名、函数名、触发器名） |
@@ -380,11 +380,16 @@ Result exported to: gt-checksum-result-20260323195530.csv
 ```
 
 ```bash
-$ head -3 gt-checksum-result-20260323195530.csv
-
-RunID,CheckTime,CheckObject,Schema,Table,ObjectName,ObjectType,IndexColumn,Rows,Diffs,Datafix,Mapping,Definer
-20260323195530,2026-03-23 19:55:31,data,sbtest,sbtest1,sbtest1,table,id,10000,no,file,,
-20260323195530,2026-03-23 19:55:31,data,sbtest,sbtest2,sbtest2,table,id,4999,yes,file,,
+# CSV 文件含 UTF-8 BOM，直接用 cat/head 输出会在首行前显示 BOM 字符。
+# 推荐用 python 或 Excel 查看，也可用 tail -n +1 跳过 BOM：
+$ python3 -c "
+import csv, sys
+with open('gt-checksum-result-20260323195530.csv', encoding='utf-8-sig') as f:
+    for row in csv.reader(f): print(row)
+" | head -3
+['RunID', 'CheckTime', 'CheckObject', 'Schema', 'Table', 'ObjectName', 'ObjectType', 'IndexColumn', 'Rows', 'Diffs', 'Datafix', 'Mapping', 'Definer']
+['20260323195530', '2026-03-23 19:55:31', 'data', 'sbtest', 'sbtest1', 'sbtest1', 'table', 'id', '10000', 'no', 'file', '', '']
+['20260323195530', '2026-03-23 19:55:31', 'data', 'sbtest', 'sbtest2', 'sbtest2', 'table', 'id', '4999', 'yes', 'file', '', '']
 ```
 
 终端只显示有差异的行：
@@ -399,13 +404,17 @@ sbtest  sbtest2  id           data         4999  yes    file
 Result exported to: gt-checksum-result-20260323195530.csv
 ```
 
-> **注意**：`resultExport=OFF` 时不生成 CSV 文件，行为与 v1.2.x 一致。CSV 导出失败（如目录不存在、无写权限）时只输出 Warning，不影响校验主流程的退出码。
+> **注意**：
+> - `resultExport=OFF` 时不生成 CSV 文件，行为与 v1.2.x 一致。
+> - `resultFile` 指定自定义路径时，如果父目录不存在会自动创建（v1.3.0 起）。
+> - CSV 导出失败（如无写权限）时只输出 Warning，不影响校验主流程的退出码。
+> - CSV 文件权限为 `0600`（仅文件属主可读写）。如需调整，请在导出后手动 `chmod`。
 
 ---
 
 ## 配置参数详解
 
-**gt-checksum** 支持命令行参数与配置文件方式运行，但命令行仅支持 `-c/-f`, `-h`, `-v` 等基础参数，其余参数通过配置文件指定。
+**gt-checksum** 支持命令行参数与配置文件方式运行。大多数参数通过配置文件指定；部分高频参数支持 CLI 覆盖（优先级高于配置文件），包括 `--showActualRows`、`--resultExport`、`--resultFile`、`--terminalResultMode`。
 
 配置文件中所有参数的详解可参考模板文件 [gc-sample.conf](./gc-sample.conf)。
 
