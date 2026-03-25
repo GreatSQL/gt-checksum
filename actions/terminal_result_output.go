@@ -139,7 +139,6 @@ func getSchemaMappings() map[string]string {
 }
 
 var measuredDataPods []Pod
-var differencesSchemaTable = make(map[string]string)
 
 func CheckResultOut(m *inputArg.ConfigParameter) {
 	// 在函数开始时，将跳过的表添加到measuredDataPods中
@@ -238,7 +237,6 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 	if m.SecondaryL.RulesV.TerminalResultMode == "abnormal" {
 		terminalPods = make([]Pod, 0, len(measuredDataPods))
 		for _, p := range measuredDataPods {
-			// resolveEffectiveDiffs handles the differencesSchemaTable override for data mode.
 			// ShouldDisplayInTerminal encapsulates the abnormal filter logic.
 			if ShouldDisplayInTerminal(ResultRecord{Diffs: resolveEffectiveDiffs(p)}, "abnormal") {
 				terminalPods = append(terminalPods, p)
@@ -769,8 +767,6 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 		if hasMappings {
 			table.AddRow("Schema", "Table", "IndexColumn", "CheckObject", "Rows", "Diffs", "Datafix", "Mapping")
 			for _, pod := range terminalPods {
-				// resolveEffectiveDiffs is the single authoritative implementation of the
-				// differencesSchemaTable override logic; do not inline the map iteration here.
 				differences := resolveEffectiveDiffs(pod)
 
 				// 获取映射信息

@@ -320,7 +320,7 @@ gt_phase1_mariadb105 t_mariadb_feature_pack      struct       warn-only  file
 
 ## 结果文件导出
 
-`gt-checksum` v1.3.0 新增统一的校验结果 CSV 导出能力（关联需求 #I6KMQF）。
+`gt-checksum` v1.3.0 新增统一的校验结果 CSV 导出能力（#I6KMQF）。
 
 ### 功能概述
 
@@ -408,7 +408,6 @@ Result exported to: gt-checksum-result-20260323195530.csv
 > - `resultExport=OFF` 时不生成 CSV 文件，行为与 v1.2.x 一致。
 > - `resultFile` 指定自定义路径时，如果父目录不存在会自动创建（v1.3.0 起）。
 > - CSV 导出失败（如无写权限）时只输出 Warning，不影响校验主流程的退出码。
-> - CSV 文件权限为 `0600`（仅文件属主可读写）。如需调整，请在导出后手动 `chmod`。
 
 ---
 
@@ -788,9 +787,11 @@ result=PARTIAL_SUCCESS continue_on_error=true
 
 ## 已知缺陷/问题
 
-截止当前的v1.3.0开发版本，已知存在以下几个约束/问题。
+截止当前的 v1.3.0 版本，已知存在以下几个约束/问题。
 
 - 当存在触发器时，因为触发器的作用，可能导致在修复完一个表后，触发其他表被改变，从而看起来像是修复后仍不一致的情况。这种情况下，需要先临时删除触发器进行修复，完成后在重新创建触发器。
+
+- 当表校验结果仅存在partition定义不一致时，报告Diffs=yes，但生成的fixSQL中的SQL语句是被注释的，不会被repairDB执行，需要DBA手动调整修复，避免误操作导致数据丢失。
 
 - 为了安全起见，当设置checkObject=data之外的其他值时，即便同时设置datafix=table，也不会直接在线完成修复，需要改成datafix=file，生成fix SQL后再由DBA手动完成。
 
@@ -803,10 +804,6 @@ result=PARTIAL_SUCCESS continue_on_error=true
 - `MariaDB JSON -> TEXT` 虽已具备规则改写和单测覆盖，但当前尚未纳入发布级实库基线；如需使用，建议先在测试环境中自行完成 fix SQL 回放与二次 compare 验证。
 
 - 不支持对非InnoDB引擎表的数据校验。
-
-- 当添加的字段是主键/外键约束字段或包含索引时，会多一个额外的`ADD PRIMARY KEY/ADD CONSTRAINT/ADD KEY`操作，需要手动删掉，或者执行时加上"-f"强制忽略错误即可。
-
-- 当表的partition定义生成报告（Diffs=no）但不生成fixSQL（生成提示信息，没有具体SQL，需要DBA手动调整修复）。
 
 ## 问题反馈
 

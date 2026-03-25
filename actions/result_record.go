@@ -58,22 +58,12 @@ func normalizeCheckObject(raw string) string {
 }
 
 // resolveEffectiveDiffs returns the effective Diffs value for a pod.
-// For data-mode pods, differencesSchemaTable may promote the stored DIFFS to "yes".
-// This is the single authoritative implementation of that override logic; both
-// terminal pre-filtering and CSV normalization must use this function.
+// Pod.DIFFS is always set to the correct value before the pod is appended to
+// measuredDataPods (both index and no-index data paths set it synchronously),
+// so this function is a direct passthrough. It is retained as the single call
+// site for Diffs resolution so that terminal pre-filtering and CSV normalization
+// remain consistent without duplicating logic.
 func resolveEffectiveDiffs(pod Pod) string {
-	if strings.ToLower(pod.CheckObject) != "data" {
-		return pod.DIFFS
-	}
-	for k := range differencesSchemaTable {
-		if k == "" {
-			continue
-		}
-		parts := strings.SplitN(k, "gtchecksum_gtchecksum", 2)
-		if len(parts) == 2 && pod.Schema == parts[0] && pod.Table == parts[1] {
-			return "yes"
-		}
-	}
 	return pod.DIFFS
 }
 
@@ -81,7 +71,7 @@ func resolveEffectiveDiffs(pod Pod) string {
 func normalizePodToRecord(m *inputArg.ConfigParameter, pod Pod, checkTime string) ResultRecord {
 	schema, objectName, objectType := resolveObjectIdentity(pod)
 
-	// Resolve effective Diffs, applying differencesSchemaTable override for data mode.
+	// Resolve effective Diffs through the shared helper so terminal and CSV stay aligned.
 	diffs := resolveEffectiveDiffs(pod)
 
 	// DDL-yes rows are always empty (consistent with dataResultRows helper).

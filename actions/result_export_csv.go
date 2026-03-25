@@ -64,6 +64,7 @@ func ResolveResultFilePath(m *inputArg.ConfigParameter) string {
 // WriteCSVResults writes records to path as a UTF-8 BOM CSV file using the fixed
 // column schema defined in csvHeader(). The file is created (or truncated) at path.
 // Parent directories are created automatically if they do not exist.
+// The resulting file is always chmod'ed to 0600, even when overwriting an existing file.
 // Fields containing commas, double-quotes, or newlines are escaped by encoding/csv.
 func WriteCSVResults(path string, records []ResultRecord) error {
 	if dir := filepath.Dir(path); dir != "." && dir != "" {
@@ -76,6 +77,9 @@ func WriteCSVResults(path string, records []ResultRecord) error {
 		return fmt.Errorf("result csv: open %q: %w", path, err)
 	}
 	defer f.Close()
+	if err := f.Chmod(0600); err != nil {
+		return fmt.Errorf("result csv: chmod %q: %w", path, err)
+	}
 
 	// Write UTF-8 BOM so that Excel auto-detects the encoding.
 	if _, err := f.Write(utf8BOM); err != nil {

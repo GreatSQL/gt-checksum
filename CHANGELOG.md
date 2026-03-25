@@ -1,8 +1,6 @@
 ## 1.3.0
-- [功能新增]: 新增统一运行标识 `RunID`（格式 `YYYYMMDDHHmmss`），每次运行生成一次，贯穿结果文件命名与日志关联。（关联需求 #I6KMQF）
-- [功能新增]: 新增结果自动导出为 CSV 文件能力；新增参数 `resultExport`（`OFF` / `csv`，默认 `csv`）和 `resultFile`（自定义导出路径，默认 `gt-checksum-result-<RunID>.csv`）。CSV 文件为 UTF-8 BOM 编码，列头固定，可被 Excel 直接打开，包含所有校验结果（不受终端过滤影响）。（关联需求 #I6KMQF）
-- [功能新增]: 新增参数 `terminalResultMode`（`all` / `abnormal`，默认 `all`）；设置为 `abnormal` 时终端仅显示存在差异的行（`yes` / `DDL-yes` / `warn-only`），CSV 始终输出完整结果。
-- [功能新增]: 以上三个参数均支持 CLI 覆盖（`--resultExport` / `--resultFile` / `--terminalResultMode`）。
+- [功能新增]: 新增结果自动导出为 CSV 文件能力；新增参数 `resultExport`（`OFF` / `csv`，默认 `csv`）和 `resultFile`（自定义导出路径，默认 `gt-checksum-result-<RunID>.csv`）。CSV 文件为 UTF-8 BOM 编码，列头固定，可被 Excel 直接打开，包含所有校验结果（不受终端过滤影响）；`resultFile` 指定路径时如父目录不存在会自动创建。（issue #I6KMQF）。
+- [功能新增]: 新增参数 `terminalResultMode`（`all` / `abnormal`，默认 `all`）；设置为 `abnormal` 时终端仅显示存在差异的行（`yes` / `DDL-yes` / `warn-only`），CSV 始终输出完整结果；以上三个参数均支持 CLI 覆盖（`--resultExport` / `--resultFile` / `--terminalResultMode`）。
 
 ## 1.2.5
 - [功能新增]: 新增 `MySQL 5.6/5.7/8.0/8.4` 同版本及升级链路支持，覆盖 `data`、`struct`、`routine`、`trigger` 四种校验模式；downgrade 或不支持的版本组合会在启动阶段直接拒绝执行。

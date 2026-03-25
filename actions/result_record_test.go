@@ -259,22 +259,17 @@ func TestResolveEffectiveDiffs_nonDataModePassThrough(t *testing.T) {
 }
 
 func TestResolveEffectiveDiffs_dataModePlainDiff(t *testing.T) {
-	// Empty differencesSchemaTable — DIFFS passed through as-is.
 	pod := Pod{CheckObject: "data", Schema: "db1", Table: "t1", DIFFS: "yes"}
 	if got := resolveEffectiveDiffs(pod); got != "yes" {
 		t.Errorf("resolveEffectiveDiffs data yes = %q, want yes", got)
 	}
 }
 
-func TestResolveEffectiveDiffs_dataModeOverridesViaDiffTable(t *testing.T) {
-	// Simulate a pod whose DIFFS is "no" but the table appears in differencesSchemaTable.
-	origTable := differencesSchemaTable
-	differencesSchemaTable = map[string]string{"db1gtchecksum_gtchecksumorders": ""}
-	defer func() { differencesSchemaTable = origTable }()
-
+func TestResolveEffectiveDiffs_dataModeNoDiff(t *testing.T) {
+	// A data pod with DIFFS="no" should pass through as-is.
 	pod := Pod{CheckObject: "data", Schema: "db1", Table: "orders", DIFFS: "no"}
-	if got := resolveEffectiveDiffs(pod); got != "yes" {
-		t.Errorf("resolveEffectiveDiffs data with override = %q, want yes", got)
+	if got := resolveEffectiveDiffs(pod); got != "no" {
+		t.Errorf("resolveEffectiveDiffs data no-diff = %q, want no", got)
 	}
 }
 

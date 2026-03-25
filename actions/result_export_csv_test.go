@@ -306,17 +306,36 @@ func TestWriteCSVResults_autoCreatesParentDir(t *testing.T) {
 }
 
 func TestWriteCSVResults_filePermission0600(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "result.csv")
-	if err := WriteCSVResults(path, nil); err != nil {
-		t.Fatalf("WriteCSVResults failed: %v", err)
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat failed: %v", err)
-	}
-	// 期望权限为 0600（仅属主可读写）
 	const want = os.FileMode(0600)
-	if got := info.Mode().Perm(); got != want {
-		t.Errorf("file permission = %04o, want %04o", got, want)
-	}
+
+	t.Run("new file", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "result.csv")
+		if err := WriteCSVResults(path, nil); err != nil {
+			t.Fatalf("WriteCSVResults failed: %v", err)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat failed: %v", err)
+		}
+		if got := info.Mode().Perm(); got != want {
+			t.Errorf("file permission = %04o, want %04o", got, want)
+		}
+	})
+
+	t.Run("existing file", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "result.csv")
+		if err := os.WriteFile(path, []byte("legacy"), 0644); err != nil {
+			t.Fatalf("seed file failed: %v", err)
+		}
+		if err := WriteCSVResults(path, nil); err != nil {
+			t.Fatalf("WriteCSVResults failed: %v", err)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat failed: %v", err)
+		}
+		if got := info.Mode().Perm(); got != want {
+			t.Errorf("file permission = %04o, want %04o", got, want)
+		}
+	})
 }
