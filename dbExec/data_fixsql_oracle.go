@@ -16,5 +16,6 @@ func newOracleDataAbnormalFix(dafs DataAbnormalFixStruct) DataAbnormalFixInterfa
 		IndexType:       dafs.IndexType,
 		IndexColumn:     dafs.IndexColumn,
 		DatafixType:     dafs.DatafixType,
+		SourceSchema:    dafs.SourceSchema,
 	}
 }
