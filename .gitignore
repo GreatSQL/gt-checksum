@@ -17,3 +17,5 @@ test-artifacts
 .claude
 testcase/README.md
 testcase/phase1/
+oracle_random_data_load
+.gitignore

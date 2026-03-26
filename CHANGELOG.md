@@ -4,6 +4,7 @@
 - [功能新增]: 新增参数 `terminalResultMode`（`all` / `abnormal`，默认 `all`）；设置为 `abnormal` 时终端仅显示存在差异的行（`yes` / `DDL-yes` / `warn-only`），CSV 始终输出完整结果；以上三个参数均支持 CLI 覆盖（`--resultExport` / `--resultFile` / `--terminalResultMode`）。
 - [功能优化]: `ObjectTypeMap` 元数据查询性能优化；引入候选 schema 约束机制（`CandidateSchemas`），将 `INFORMATION_SCHEMA.TABLES` 扫描范围从实例全量收窄为本轮实际涉及的 schema 列表（`WHERE TABLE_SCHEMA IN (...)`），减少大实例上的不必要元数据开销；无候选集时保持原有全量扫描作为兜底，行为向后兼容。
 - [测试完善]: 新增 VIEW struct 专项单元测试，覆盖：归一化规则（DEFINER/ALGORITHM/SQL SECURITY 剥离、空白折叠、body 大小写保留）、跨 schema 映射归一化、advisory SQL 生成（ALGORITHM 保留/SQL SECURITY 保留/WITH CHECK OPTION 保留/DEFINER 剥除）、fail-closed 路径（不可解析 DDL 输出 `suggested SQL: none`）、VIEW 缺失/多余/差异/列元数据漂移分支、data 模式过滤、ignoreTables 过滤、ObjectKind 路由；新增 `extractCandidateSchemas` 函数专项测试（正常去重、空 map 返回空切片）。
+- [问题修复]: 此前已修复 连接oracle执行exec dbms_stats.gather_table_stats报错问题，本次补充测例（#I6NPC1）。
 
 ## 1.2.5
 - [功能新增]: 新增 `MySQL 5.6/5.7/8.0/8.4` 同版本及升级链路支持，覆盖 `data`、`struct`、`routine`、`trigger` 四种校验模式；downgrade 或不支持的版本组合会在启动阶段直接拒绝执行。
