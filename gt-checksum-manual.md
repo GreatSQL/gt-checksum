@@ -68,7 +68,7 @@ $ gt-checksum -c ./gc.conf
 | checkObject | MySQL 所需权限（名称 / 来源 / 说明） | Oracle 所需权限（名称 / 来源 / 说明） | 版本差异与说明 |
 |---|---|---|---|
 | `data` | 1) `REPLICATION CLIENT`（系统权限，程序启动时检查）<br>2) `SESSION_VARIABLES_ADMIN`（系统权限，程序启动时检查）<br>3) `SELECT`（对象权限，表/库/全局任一层级可覆盖）<br>4) 若 `datafix=table`：`INSERT`、`DELETE`、`ALTER`（对象权限） | 1) `SELECT ANY DICTIONARY`（系统权限，程序启动时检查）<br>2) `SELECT`（对象权限）<br>3) 若 `datafix=table`：`INSERT`、`DELETE`（对象权限）或 `INSERT ANY TABLE`、`DELETE ANY TABLE`（系统权限） | MySQL 5.7 无 `SESSION_VARIABLES_ADMIN`；MySQL 8.0 及以上建议授予。Oracle 12c+ 存在 `READ` 对象权限，但当前实现按 `SELECT` 语义检查。 |
-| `struct` | 程序仍执行全局权限检查；结构比对会读取 `INFORMATION_SCHEMA.COLUMNS`、`INFORMATION_SCHEMA.STATISTICS`、`INFORMATION_SCHEMA.PARTITIONS`、`INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS`等。建议至少具备目标对象与上述元数据表 `SELECT` 权限。 | 程序仍执行全局权限检查；结构比对会读取 `DBA_TAB_COLUMNS`、`DBA_COL_COMMENTS`、`USER_CONSTRAINTS`、`ALL_TABLES`，并调用 `DBMS_METADATA.GET_DDL('TABLE',...)`。建议具备 `SELECT ANY DICTIONARY` 及元数据访问能力。 | 当前实现中，`checkObject=struct` 已合并执行表结构、索引、分区、外键检查。 |
+| `struct` | 程序仍执行全局权限检查；结构比对会读取 `INFORMATION_SCHEMA.COLUMNS`、`INFORMATION_SCHEMA.STATISTICS`、`INFORMATION_SCHEMA.PARTITIONS`、`INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS`等。建议至少具备目标对象与上述元数据表 `SELECT` 权限。**若校验对象中包含视图（VIEW），还需额外授予 `SHOW VIEW` 权限**（MySQL 5.7+），否则 `SHOW CREATE VIEW` 会报 `Error 1142: SHOW VIEW command denied`。 | 程序仍执行全局权限检查；结构比对会读取 `DBA_TAB_COLUMNS`、`DBA_COL_COMMENTS`、`USER_CONSTRAINTS`、`ALL_TABLES`，并调用 `DBMS_METADATA.GET_DDL('TABLE',...)`。建议具备 `SELECT ANY DICTIONARY` 及元数据访问能力。 | 当前实现中，`checkObject=struct` 已合并执行表结构、索引、分区、外键检查；VIEW 专项支持仅限 MySQL→MySQL 场景。 |
 | `routine` | 读取 `INFORMATION_SCHEMA.PARAMETERS`、`INFORMATION_SCHEMA.ROUTINES`。为确保可读取完整定义，建议授予 `SHOW_ROUTINE`（系统权限）或等效的全局读取能力。 | 读取 `ALL_PROCEDURES`，并调用 `DBMS_METADATA.GET_DDL('PROCEDURE'/'FUNCTION',...)`。建议具备 `SELECT ANY DICTIONARY` 与 `DBMS_METADATA` 访问能力。 | MySQL 8.0.20+ 引入 `SHOW_ROUTINE` 权限语义更清晰；低版本通常通过更高权限覆盖。 |
 | `trigger` | 读取 `INFORMATION_SCHEMA.TRIGGERS`，并执行 `SHOW CREATE TRIGGER`。建议授予 `TRIGGER`（对象权限）。 | 读取 `ALL_TRIGGERS`，并调用 `DBMS_METADATA.GET_DDL('TRIGGER',...)`。建议具备 `SELECT ANY DICTIONARY` 与元数据访问能力。 | Oracle 11g/12c/19c/23c 在 `ALL_TRIGGERS` 视图语义上基本一致（返回当前用户可访问对象）。 |
 
@@ -193,6 +193,75 @@ sbtest  F1              Function        no      no
    - `SYSTEM VERSIONING`
    - `WITHOUT OVERLAPS`
    - `SEQUENCE`
+4. **VIEW（视图）支持**（MySQL → MySQL 限定）：
+   - `checkObject=struct` 会自动识别 `tables` 参数中的视图对象，并对视图定义进行比对；
+   - 差异时 `Diffs=yes`，`ObjectType=view`；修复 SQL 以 advisory 注释形式写入 fixsql 文件，不自动执行；
+   - 差异来源分两层：① VIEW 定义（`SHOW CREATE VIEW`）不一致时，advisory 中给出 `CREATE OR REPLACE VIEW` 建议 SQL；② 定义文本一致但列元数据（类型、nullable、charset、collation）存在漂移时，advisory 中标注 `suggested SQL: none`，**不提供可执行修复 SQL**（此类漂移通常源于底层表结构差异，单纯重建视图无法修复）；
+   - `DEFINER` 账号不计入差异判断（advisory 日志中仅做记录）；
+   - `ALGORITHM=UNDEFINED` 与省略等价处理，不触发 `Diffs=yes`；`ALGORITHM=MERGE` / `TEMPTABLE` 等非默认值会保留在 advisory 建议 SQL 中；
+   - **SQL SECURITY 差异不计入 `Diffs=yes`**：迁移时从 `DEFINER` 改为 `INVOKER` 属常见合理变更；程序仅在运行日志中输出 `Warn` 级别提示（含源/目标各自的值），方便 DBA 知晓但无需处理；advisory 建议 SQL 中会保留源端的 SQL SECURITY 设置，DBA 可在手工应用时自行调整；
+   - **跨 schema 映射支持**：`tables=db1.*:db2.*` 场景下，部分 MySQL 版本的 `SHOW CREATE VIEW` 输出会在视图名前附加 schema 前缀（如 `` `db1`.`v1` ``），程序在归一化时会自动剥除该前缀，不产生误报；
+   - `checkObject=data` 模式下视图会被自动跳过，不产生误报；
+   - 仅支持 MySQL→MySQL，其他驱动组合（如 Oracle→MySQL）视图条目会被忽略并打印 Warn 日志；
+   - **终端输出**：`checkObject=struct` 模式下，终端结果表格新增 `ObjectType` 列，可直观区分 `table` 行与 `view` 行；
+   - **前置权限要求**：`SHOW CREATE VIEW` 依赖 `SHOW VIEW` 权限（MySQL 5.7+）；校验账号需对被检视图具备该权限，否则报 `Error 1142: SHOW VIEW command denied`。授权示例：`GRANT SELECT, SHOW VIEW ON db1.* TO 'checksum'@'%';`
+
+### VIEW struct 校验配置示例与输出样本
+
+以下示例对 `appdb.v_order_summary` 视图进行 MySQL→MySQL 结构一致性校验：
+
+```ini
+srcDSN = mysql|checksum:Checksum@3306@tcp(src-host:3306)/information_schema?charset=utf8mb4
+dstDSN = mysql|checksum:Checksum@3306@tcp(dst-host:3307)/information_schema?charset=utf8mb4
+tables = appdb.v_order_summary
+checkObject = struct
+datafix = file
+fixFilePerTable = ON
+fixFileDir = ./fixsql-view-check
+```
+
+执行后终端输出示例（定义一致，无差异）：
+
+```text
+Checksum Results Overview
+Schema  Table            ObjectType  CheckObject  Diffs  Datafix
+appdb   v_order_summary  view        struct       no     no
+```
+
+执行后终端输出示例（定义存在差异）：
+
+```text
+Checksum Results Overview
+Schema  Table            ObjectType  CheckObject  Diffs  Datafix
+appdb   v_order_summary  view        struct       yes    file
+```
+
+VIEW 定义差异时生成的 advisory fixsql（`./fixsql-view-check/appdb/v_order_summary.sql`）示例：
+
+```sql
+-- gt-checksum advisory begin: appdb.v_order_summary VIEW definition
+-- generated as manual review SQL only; these statements are not auto-executed by gt-checksum
+-- level: advisory-only
+-- kind: VIEW DEFINITION
+-- reason: VIEW definition differs
+-- DROP VIEW IF EXISTS `appdb`.`v_order_summary`;
+-- CREATE OR REPLACE SQL SECURITY DEFINER VIEW `appdb`.`v_order_summary` AS SELECT ...;
+-- gt-checksum advisory end: appdb.v_order_summary VIEW definition
+```
+
+列元数据漂移时的 advisory 输出（`suggested SQL: none`）：
+
+```sql
+-- gt-checksum advisory begin: appdb.v_order_summary VIEW definition
+-- generated as manual review SQL only; these statements are not auto-executed by gt-checksum
+-- level: advisory-only
+-- kind: VIEW COLUMN METADATA
+-- reason: column metadata drift - column[0] differs: src="id|int|NO||" dst="id|bigint|NO||"
+-- suggested SQL: none
+-- gt-checksum advisory end: appdb.v_order_summary VIEW definition
+```
+
+> **注意**：VIEW 的 advisory fixsql 全部以 `--` 注释形式输出，`repairDB` 工具不会自动执行这些语句；DBA 需手动审阅后决定是否应用。
 
 ### `checkObject=routine` 和 `checkObject=trigger` 的比对机制
 
@@ -238,6 +307,19 @@ fixFilePerTable = ON
 fixFileDir = ./fixsql-struct-mysql57-to80
 ```
 
+以下示例表示执行 `MySQL 8.0 -> MySQL 8.0` 的视图定义一致性校验（VIEW struct 专项）：
+
+```ini
+srcDSN = mysql|checksum:Checksum@3306@tcp(src-mysql80-host:3306)/information_schema?charset=utf8mb4
+dstDSN = mysql|checksum:Checksum@3306@tcp(dst-mysql80-host:3307)/information_schema?charset=utf8mb4
+# 明确列出要校验的视图（也可以与表混合）
+tables = appdb.v_order_summary:appdb.v_order_summary,appdb.v_daily_sales:appdb.v_daily_sales
+checkObject = struct
+datafix = file
+fixFilePerTable = ON
+fixFileDir = ./fixsql-view-struct
+```
+
 以下示例表示执行 `MariaDB 10.5 -> MySQL 8.0` 的安全子集表结构校验与 fix SQL 生成，并将 `JSON` alias 降级为 `LONGTEXT`：
 
 ```ini
@@ -267,6 +349,11 @@ mariaDBJSONTargetType = LONGTEXT
 3. `MariaDB JSON -> LONGTEXT/TEXT` 的语义降级
 4. `SYSTEM VERSIONING / WITHOUT OVERLAPS / SEQUENCE` 的 advisory-only 边界
 5. 列宽度收窄（Column Width Shrink）时目标端存在超宽数据或安全检查查询异常
+
+对于 VIEW 对象，以下情形结果显示为 `Diffs=yes` 但 advisory 标注 `suggested SQL: none`，需要 DBA 手工处理：
+
+6. VIEW 定义文本一致，但底层列元数据（类型、nullable、charset、collation）已漂移——通常意味着底层基表结构已变更，需先修复基表后 VIEW 才能恢复一致；
+7. SQL SECURITY 差异**不在此列**：此类差异仅记录 Warn 日志，不标记 `Diffs=yes`，无需额外处理（DBA 可从日志中确认差异值后决定是否手工统一）。
 
 ### DDL 差异结果展示
 
@@ -337,9 +424,9 @@ gt_phase1_mariadb105 t_mariadb_feature_pack      struct       warn-only  file
 | `CheckTime` | 结果导出时间（`YYYY-MM-DD HH:MM:SS`） |
 | `CheckObject` | 用户请求的校验模式：`data` / `struct` / `routine` / `trigger`；`routine` 模式下存储过程和函数均统一显示为 `routine`，具体类型见 `ObjectType` |
 | `Schema` | 对象所在 schema |
-| `Table` | 表名；非表对象（routine / trigger）时为空 |
-| `ObjectName` | 统一对象名（表名、存储过程名、函数名、触发器名） |
-| `ObjectType` | `table` / `procedure` / `function` / `trigger` / `sequence` |
+| `Table` | 表名；非表对象（view / routine / trigger）时为空 |
+| `ObjectName` | 统一对象名（表名、视图名、存储过程名、函数名、触发器名） |
+| `ObjectType` | `table` / `view` / `procedure` / `function` / `trigger` / `sequence` |
 | `IndexColumn` | 仅 `data` 模式使用，显示校验所用索引列 |
 | `Rows` | 行数（`DDL-yes` 时为空） |
 | `Diffs` | 差异状态：`yes` / `no` / `DDL-yes` / `warn-only` / `collation-mapped` |

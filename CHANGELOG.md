@@ -1,6 +1,9 @@
 ## 1.3.0
-- [功能新增]: 新增结果自动导出为 CSV 文件能力；新增参数 `resultExport`（`OFF` / `csv`，默认 `csv`）和 `resultFile`（自定义导出路径，默认 `gt-checksum-result-<RunID>.csv`）。CSV 文件为 UTF-8 BOM 编码，列头固定，可被 Excel 直接打开，包含所有校验结果（不受终端过滤影响）；`resultFile` 指定路径时如父目录不存在会自动创建。（issue #I6KMQF）。
+- [功能新增]: `checkObject=struct` 模式新增 VIEW（视图）支持（仅限 MySQL→MySQL）。自动识别 `tables` 参数中的视图对象并进行定义比对；差异时 `Diffs=yes`，`ObjectType=view`；修复 SQL 以 advisory 注释形式写入 fixsql 文件，不自动执行；`checkObject=data` 模式自动跳过视图对象，不再产生误报。VIEW 比对策略：① DEFINER 账号不计入差异；② `ALGORITHM=UNDEFINED`（默认值）与省略等价处理，不触发差异；③ SQL SECURITY 差异仅记录 Warn 日志，不计入 `Diffs=yes`（迁移时账号重构属常见合理变更）；④ 除定义文本外还对列元数据（类型、nullable、charset、collation）进行独立比对；定义文本一致但列元数据漂移时，advisory 中标注 `suggested SQL: none`；⑤ 跨 schema 映射（`db1.*:db2.*`）下，视图定义中的 schema 前缀参与归一化，不产生误报。终端 struct 模式结果表格新增 `ObjectType` 列，可直观区分 table / view 行。(issue #I899YZ)
+- [功能新增]: 新增结果自动导出为 CSV 文件能力；新增参数 `resultExport`（`OFF` / `csv`，默认 `csv`）和 `resultFile`（自定义导出路径，默认 `gt-checksum-result-<RunID>.csv`）。CSV 文件为 UTF-8 BOM 编码，列头固定，可被 Excel 直接打开，包含所有校验结果（不受终端过滤影响）；`resultFile` 指定路径时如父目录不存在会自动创建。（issue #I6KMQF）
 - [功能新增]: 新增参数 `terminalResultMode`（`all` / `abnormal`，默认 `all`）；设置为 `abnormal` 时终端仅显示存在差异的行（`yes` / `DDL-yes` / `warn-only`），CSV 始终输出完整结果；以上三个参数均支持 CLI 覆盖（`--resultExport` / `--resultFile` / `--terminalResultMode`）。
+- [功能优化]: `ObjectTypeMap` 元数据查询性能优化；引入候选 schema 约束机制（`CandidateSchemas`），将 `INFORMATION_SCHEMA.TABLES` 扫描范围从实例全量收窄为本轮实际涉及的 schema 列表（`WHERE TABLE_SCHEMA IN (...)`），减少大实例上的不必要元数据开销；无候选集时保持原有全量扫描作为兜底，行为向后兼容。
+- [测试完善]: 新增 VIEW struct 专项单元测试，覆盖：归一化规则（DEFINER/ALGORITHM/SQL SECURITY 剥离、空白折叠、body 大小写保留）、跨 schema 映射归一化、advisory SQL 生成（ALGORITHM 保留/SQL SECURITY 保留/WITH CHECK OPTION 保留/DEFINER 剥除）、fail-closed 路径（不可解析 DDL 输出 `suggested SQL: none`）、VIEW 缺失/多余/差异/列元数据漂移分支、data 模式过滤、ignoreTables 过滤、ObjectKind 路由；新增 `extractCandidateSchemas` 函数专项测试（正常去重、空 map 返回空切片）。
 
 ## 1.2.5
 - [功能新增]: 新增 `MySQL 5.6/5.7/8.0/8.4` 同版本及升级链路支持，覆盖 `data`、`struct`、`routine`、`trigger` 四种校验模式；downgrade 或不支持的版本组合会在启动阶段直接拒绝执行。
