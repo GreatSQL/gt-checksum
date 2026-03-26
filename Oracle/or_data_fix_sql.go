@@ -134,34 +134,59 @@ Oracle 生成索引修复语句
 */
 func (or *OracleDataAbnormalFixStruct) FixAlterIndexSqlExec(e, f []string, si map[string][]string, sourceDrive string, logThreadSeq int64) []string {
 	var sqlS []string
-	var targetSchema = or.Schema // 默认使用目标schema
+	targetSchema := oracleIdentifier(or.Schema)
+	targetTable := oracleIdentifier(or.Table)
 
-	// 处理需要删除的索引
+	// 处理需要删除的索引（Oracle 语法）
 	for _, v := range e {
 		var strsql string
 		switch or.IndexType {
 		case "pri":
-			strsql = fmt.Sprintf("ALTER TABLE %s.%s DROP PRIMARY KEY;", targetSchema, or.Table)
-		case "uni":
-			strsql = fmt.Sprintf("ALTER TABLE %s.%s DROP INDEX %s;", targetSchema, or.Table, v)
-		case "mul":
-			strsql = fmt.Sprintf("ALTER TABLE %s.%s DROP INDEX %s;", targetSchema, or.Table, v)
+			// Oracle 支持 ALTER TABLE ... DROP PRIMARY KEY
+			strsql = fmt.Sprintf("ALTER TABLE %s.%s DROP PRIMARY KEY;", targetSchema, targetTable)
+		case "uni", "mul":
+			// Oracle DROP INDEX 是独立语句，非 ALTER TABLE ... DROP INDEX
+			strsql = fmt.Sprintf("DROP INDEX %s.%s;", targetSchema, oracleIdentifier(v))
 		}
-		sqlS = append(sqlS, strsql)
+		if strsql != "" {
+			sqlS = append(sqlS, strsql)
+		}
 	}
 
-	// 处理需要添加的索引
+	// 处理需要添加的索引（Oracle 语法）
 	for _, v := range f {
+		// 从 si map 提取该索引的列名（与 MySQL 路径一致）
+		var cols []string
+		for _, vi := range si[v] {
+			parts := strings.Split(vi, "/*seq*/")
+			if len(parts) > 0 {
+				cols = append(cols, oracleIdentifier(strings.TrimSpace(parts[0])))
+			}
+		}
+		// si 无数据时回退到 or.IndexColumn
+		if len(cols) == 0 {
+			for _, col := range or.IndexColumn {
+				cols = append(cols, oracleIdentifier(col))
+			}
+		}
+		colStr := strings.Join(cols, ", ")
+
 		var strsql string
 		switch or.IndexType {
 		case "pri":
-			strsql = fmt.Sprintf("ALTER TABLE %s.%s ADD PRIMARY KEY(%s);", targetSchema, or.Table, strings.Join(or.IndexColumn, ","))
+			strsql = fmt.Sprintf("ALTER TABLE %s.%s ADD PRIMARY KEY (%s);", targetSchema, targetTable, colStr)
 		case "uni":
-			strsql = fmt.Sprintf("ALTER TABLE %s.%s ADD UNIQUE INDEX %s(%s);", targetSchema, or.Table, v, strings.Join(or.IndexColumn, ","))
+			// Oracle 创建唯一索引：CREATE UNIQUE INDEX schema.name ON schema.table (cols)
+			strsql = fmt.Sprintf("CREATE UNIQUE INDEX %s.%s ON %s.%s (%s);",
+				targetSchema, oracleIdentifier(v), targetSchema, targetTable, colStr)
 		case "mul":
-			strsql = fmt.Sprintf("ALTER TABLE %s.%s ADD INDEX %s(%s);", targetSchema, or.Table, v, strings.Join(or.IndexColumn, ","))
+			// Oracle 创建普通索引：CREATE INDEX schema.name ON schema.table (cols)
+			strsql = fmt.Sprintf("CREATE INDEX %s.%s ON %s.%s (%s);",
+				targetSchema, oracleIdentifier(v), targetSchema, targetTable, colStr)
 		}
-		sqlS = append(sqlS, strsql)
+		if strsql != "" {
+			sqlS = append(sqlS, strsql)
+		}
 	}
 
 	return sqlS
@@ -174,7 +199,8 @@ func (or *OracleDataAbnormalFixStruct) FixAlterColumnSqlDispos(alterType string,
 func (or *OracleDataAbnormalFixStruct) FixAlterColumnSqlGenerate(modifyColumn []string, logThreadSeq int64) []string {
 	var alterSql []string
 	if len(modifyColumn) > 0 {
-		alterSql = append(alterSql, fmt.Sprintf("ALTER TABLE %s.%s %s", or.Schema, or.Table, strings.Join(modifyColumn, ",")))
+		alterSql = append(alterSql, fmt.Sprintf("ALTER TABLE %s.%s %s",
+			oracleIdentifier(or.Schema), oracleIdentifier(or.Table), strings.Join(modifyColumn, ",")))
 	}
 	return alterSql
 }
@@ -182,30 +208,24 @@ func (or *OracleDataAbnormalFixStruct) FixAlterColumnSqlGenerate(modifyColumn []
 // FixAlterColumnAndIndexSqlGenerate 合并列修复和索引修复操作
 // 注意：Oracle不支持在单个ALTER TABLE语句中合并列和索引操作
 func (or *OracleDataAbnormalFixStruct) FixAlterColumnAndIndexSqlGenerate(columnOperations, indexOperations []string, logThreadSeq int64) []string {
-	// Oracle不支持在单个ALTER TABLE语句中合并列和索引操作
-	// 分别生成列修复和索引修复SQL
 	var alterSql []string
 
-	// 生成列修复SQL
+	// 生成列修复SQL（仍使用 ALTER TABLE，Oracle 列操作支持）
 	if len(columnOperations) > 0 {
-		alterSql = append(alterSql, fmt.Sprintf("ALTER TABLE %s.%s %s", or.Schema, or.Table, strings.Join(columnOperations, ",")))
+		alterSql = append(alterSql, fmt.Sprintf("ALTER TABLE %s.%s %s",
+			oracleIdentifier(or.Schema), oracleIdentifier(or.Table), strings.Join(columnOperations, ",")))
 	}
 
-	// 生成索引修复SQL
-	if len(indexOperations) > 0 {
-		alterSql = append(alterSql, fmt.Sprintf("ALTER TABLE %s.%s %s", or.Schema, or.Table, strings.Join(indexOperations, ",")))
-	}
+	// 索引修复SQL（CREATE INDEX / DROP INDEX）是独立语句，直接追加
+	alterSql = append(alterSql, indexOperations...)
 
 	return alterSql
 }
 
-// FixAlterIndexSqlGenerate 合并索引操作
+// FixAlterIndexSqlGenerate 返回索引操作语句集合
+// Oracle 的索引 DDL（CREATE INDEX / DROP INDEX）是独立语句，无需合并进 ALTER TABLE
 func (or *OracleDataAbnormalFixStruct) FixAlterIndexSqlGenerate(indexOperations []string, logThreadSeq int64) []string {
-	var alterSql []string
-	if len(indexOperations) > 0 {
-		alterSql = append(alterSql, fmt.Sprintf("ALTER TABLE %s.%s %s", or.Schema, or.Table, strings.Join(indexOperations, ",")))
-	}
-	return alterSql
+	return indexOperations
 }
 
 // FixTableCharsetSqlGenerate 生成表级别字符集转换的SQL语句
