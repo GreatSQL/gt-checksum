@@ -486,6 +486,46 @@ parse_diffs_from_output() {
     fi
 }
 
+# 检查 fixsql 目录中的所有 .sql 文件是否均为 advisory-only（无可执行 SQL）。
+# VIEW 差异的修复建议以注释形式写入（-- advisory begin ... -- advisory end），
+# repairDB 无法执行这类文件；检测到 advisory-only 时回归测试应视为 PASS-ADVISORY
+# 而非触发修复循环。
+# 返回值：0 = advisory-only，1 = 含可执行 SQL
+fixsql_is_advisory_only() {
+    local fixsql_dir="$1"
+    local sql_files
+    sql_files=$(find "$fixsql_dir" -name "*.sql" -type f 2>/dev/null)
+    if [[ -z "$sql_files" ]]; then
+        return 1  # 无文件，不视为 advisory-only
+    fi
+    # 检查是否存在既非空行也非注释行的内容
+    local exec_lines
+    exec_lines=$(echo "$sql_files" | xargs grep -hv '^\s*--\|^\s*$' 2>/dev/null | wc -l | tr -d ' ')
+    [[ "$exec_lines" -eq 0 ]]
+}
+
+# 仅当 fixsql 全为 advisory-only，且 advisory kind 全部属于 VIEW 相关项时返回成功。
+# 这样可以避免把 TABLE/CHECK/partition 等其他 advisory-only 结果误判成 VIEW 已收敛。
+fixsql_is_view_advisory_only() {
+    local fixsql_dir="$1"
+    local sql_files
+    sql_files=$(find "$fixsql_dir" -name "*.sql" -type f 2>/dev/null)
+    if [[ -z "$sql_files" ]]; then
+        return 1
+    fi
+    fixsql_is_advisory_only "$fixsql_dir" || return 1
+
+    local kind_lines
+    kind_lines=$(echo "$sql_files" | xargs grep -hE '^\s*--\s*kind:' 2>/dev/null || true)
+    if [[ -z "$kind_lines" ]]; then
+        return 1
+    fi
+
+    local non_view_kind
+    non_view_kind=$(echo "$kind_lines" | grep -viE 'VIEW DEFINITION|VIEW COLUMN METADATA' || true)
+    [[ -z "$non_view_kind" ]]
+}
+
 # 判定 Diffs 结果：返回 PASS / NEEDS_REPAIR / NO_OUTPUT
 evaluate_diffs() {
     local diffs_csv="$1"
@@ -622,6 +662,15 @@ run_single_test_case() {
                     break
                 fi
 
+                # VIEW 差异的修复建议均以 advisory 注释形式写入，无可执行 SQL。
+                # repairDB 对这类文件无法做任何修复；直接判定为 PASS-ADVISORY，
+                # 不进入无意义的修复循环。
+                if fixsql_is_view_advisory_only "${case_dir}/fixsql"; then
+                    final_verdict="PASS-ADVISORY"
+                    log_info "  [${case_id}] Round ${round}: fixsql 均为 advisory-only (VIEW 差异)，视为 PASS-ADVISORY"
+                    break
+                fi
+
                 # 运行 repairDB
                 local repair_output="${case_dir}/round${round}-repair-output.txt"
                 run_with_timeout "$CASE_TIMEOUT" \
@@ -737,6 +786,13 @@ run_final_repair() {
                 fixsql_count=$(find "${repair_dir}/fixsql" -name "*.sql" -type f 2>/dev/null | wc -l | tr -d ' ')
                 if [[ "$fixsql_count" -eq 0 ]]; then
                     log_warn "  ${mode}: Diffs=${diffs} 但未生成 fixsql"
+                    break
+                fi
+
+                # VIEW advisory-only fixsql 无可执行 SQL，跳过 repairDB
+                if fixsql_is_view_advisory_only "${repair_dir}/fixsql"; then
+                    log_info "  ${mode}: fixsql 均为 advisory-only (VIEW 差异)，跳过 repairDB，视为收敛"
+                    converged=true
                     break
                 fi
 
@@ -954,10 +1010,11 @@ main() {
         verdict="$(cat "${ARTIFACTS_DIR}/cases/${case_id}/verdict" 2>/dev/null || echo "ERROR")"
 
         case "$verdict" in
-            PASS)    PASSED=$((PASSED + 1));   log_info "[${case_num}/${total_cases}] PASS" ;;
-            FAIL)    FAILED=$((FAILED + 1));   log_error "[${case_num}/${total_cases}] FAIL" ;;
-            TIMEOUT) TIMEOUTS=$((TIMEOUTS + 1)); log_error "[${case_num}/${total_cases}] TIMEOUT" ;;
-            *)       ERRORS=$((ERRORS + 1));   log_error "[${case_num}/${total_cases}] ERROR: ${verdict}" ;;
+            PASS)              PASSED=$((PASSED + 1));   log_info  "[${case_num}/${total_cases}] PASS" ;;
+            PASS-ADVISORY)     PASSED=$((PASSED + 1));   log_info  "[${case_num}/${total_cases}] PASS-ADVISORY (VIEW advisory diffs)" ;;
+            FAIL)              FAILED=$((FAILED + 1));   log_error "[${case_num}/${total_cases}] FAIL" ;;
+            TIMEOUT)           TIMEOUTS=$((TIMEOUTS + 1)); log_error "[${case_num}/${total_cases}] TIMEOUT" ;;
+            *)                 ERRORS=$((ERRORS + 1));   log_error "[${case_num}/${total_cases}] ERROR: ${verdict}" ;;
         esac
     done
 
