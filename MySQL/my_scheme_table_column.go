@@ -16,6 +16,10 @@ type QueryTable struct {
 	Db                      *sql.DB
 	Datafix                 string
 	CaseSensitiveObjectName string
+	// CandidateSchemas, when non-empty, restricts ObjectTypeMap to query only
+	// the listed schemas instead of all non-system schemas. Used by
+	// SchemaTableFilter to avoid a full INFORMATION_SCHEMA scan.
+	CandidateSchemas        []string
 	TmpTableFileName        string
 	ColumnName              []string
 	ChanrowCount            int
@@ -259,6 +263,62 @@ func (my *QueryTable) DatabaseNameList(db *sql.DB, logThreadSeq int64) (map[stri
 	logMsg = fmt.Sprintf("(%d) [%s] Complete the library and table information query of the %s database.", logThreadSeq, Event, DBType)
 	global.Wlog.Debug(logMsg)
 	defer dispos.SqlRows.Close()
+	return A, nil
+}
+
+// ObjectTypeMap returns a map from the canonical "schema/*schema&table*/table" key
+// (same format as DatabaseNameList) to the object's TABLE_TYPE value ("BASE TABLE"
+// or "VIEW"). This lets callers distinguish ordinary tables from views without an
+// additional per-object round-trip query.
+func (my *QueryTable) ObjectTypeMap(db *sql.DB, logThreadSeq int64) (map[string]string, error) {
+	var (
+		A      = make(map[string]string)
+		Event  = "Q_Object_Type_Map"
+		logMsg string
+		err    error
+	)
+	var query string
+	if len(my.CandidateSchemas) > 0 {
+		// Restrict to the candidate schemas supplied by the caller so that large
+		// instances do not pay the cost of a full INFORMATION_SCHEMA scan.
+		quoted := make([]string, len(my.CandidateSchemas))
+		for i, s := range my.CandidateSchemas {
+			quoted[i] = fmt.Sprintf("'%s'", strings.ReplaceAll(s, "'", "''"))
+		}
+		query = fmt.Sprintf(
+			"SELECT TABLE_SCHEMA AS databaseName, TABLE_NAME AS tableName, TABLE_TYPE AS tableType FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA IN (%s);",
+			strings.Join(quoted, ","),
+		)
+	} else {
+		excludeSchema := "'information_Schema','performance_Schema','sys','mysql'"
+		query = fmt.Sprintf(
+			"SELECT TABLE_SCHEMA AS databaseName, TABLE_NAME AS tableName, TABLE_TYPE AS tableType FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA NOT IN (%s);",
+			excludeSchema,
+		)
+	}
+	logMsg = fmt.Sprintf("(%d) [%s] Querying TABLE_TYPE metadata. SQL: {%s}", logThreadSeq, Event, query)
+	global.Wlog.Debug(logMsg)
+	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
+	if dispos.SqlRows, err = dispos.DBSQLforExec(query); err != nil {
+		return nil, err
+	}
+	defer dispos.SqlRows.Close()
+	tableData, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
+	if err != nil {
+		return nil, err
+	}
+	for i := range tableData {
+		gd := fmt.Sprintf("%v", tableData[i]["databaseName"])
+		gt := fmt.Sprintf("%v", tableData[i]["tableName"])
+		tp := fmt.Sprintf("%v", tableData[i]["tableType"])
+		if strings.ToLower(my.CaseSensitiveObjectName) == "no" {
+			gd = strings.ToLower(gd)
+			gt = strings.ToLower(gt)
+		}
+		A[fmt.Sprintf("%v/*schema&table*/%v", gd, gt)] = tp
+	}
+	logMsg = fmt.Sprintf("(%d) [%s] TABLE_TYPE metadata query complete (entries=%d).", logThreadSeq, Event, len(A))
+	global.Wlog.Debug(logMsg)
 	return A, nil
 }
 

@@ -162,6 +162,12 @@ func trimOracleIdentifierQuote(s string) string {
 	return s
 }
 
+// ObjectTypeMap returns an empty map for Oracle: VIEW struct-check is not
+// supported in this release. Callers treat an absent key as "BASE TABLE".
+func (or *QueryTable) ObjectTypeMap(_ *sql.DB, _ int64) (map[string]string, error) {
+	return make(map[string]string), nil
+}
+
 /*
 Oracle 通过查询表的元数据信息获取列名
 */
