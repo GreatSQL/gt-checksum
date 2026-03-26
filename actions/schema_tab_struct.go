@@ -47,6 +47,45 @@ var routineCollationPattern = regexp.MustCompile(`COLLATION_CONNECTION\s*=\s*(\w
 var routineDatabaseCollationPattern = regexp.MustCompile(`DATABASE\s+COLLATION\s*=\s*(\w+)`)
 var createTableTargetIdentifierPattern = regexp.MustCompile(`(?i)(CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?)` + `(?:(` + "`[^`]+`" + `)\.)?(` + "`[^`]+`" + `)`)
 
+// viewDefinerPattern matches the DEFINER clause in SHOW CREATE VIEW output, including
+// both backtick-quoted and plain identifiers, so it can be stripped for comparison.
+var viewDefinerPattern = regexp.MustCompile(`(?i)DEFINER\s*=\s*` + "`[^`]*`" + `@` + "`[^`]*`" + `\s*`)
+
+// viewAlgorithmUndefinedPattern matches the ALGORITHM=UNDEFINED clause.
+// ALGORITHM=UNDEFINED is the MySQL default and is semantically identical to omitting
+// the ALGORITHM clause entirely; some MySQL versions/configurations include it in
+// SHOW CREATE VIEW output while others omit it, which would otherwise cause false
+// positives on otherwise-identical VIEW definitions.
+var viewAlgorithmUndefinedPattern = regexp.MustCompile(`(?i)\bALGORITHM\s*=\s*UNDEFINED\s*`)
+var viewExtractAlgorithmPattern = regexp.MustCompile(`(?i)\bALGORITHM\s*=\s*(UNDEFINED|MERGE|TEMPTABLE)\b`)
+
+// viewSQLSecurityPattern matches the SQL SECURITY clause (DEFINER or INVOKER).
+// In MySQL→MySQL migration scenarios, SQL SECURITY often legitimately changes
+// (e.g. DEFINER on source, INVOKER on target after account restructuring).
+// Per the cc design document §四, SQL SECURITY differences are downgraded to
+// warn-log only in the first version and must not trigger Diffs=yes on their own.
+var viewSQLSecurityPattern = regexp.MustCompile(`(?i)\bSQL\s+SECURITY\s+(?:DEFINER|INVOKER)\s*`)
+
+// viewExtractSQLSecurityPattern captures the SQL SECURITY value so it can be
+// logged when source and destination differ (warn-only, never Diffs=yes).
+var viewExtractSQLSecurityPattern = regexp.MustCompile(`(?i)\bSQL\s+SECURITY\s+(DEFINER|INVOKER)\b`)
+
+var viewWhitespaceNormPattern = regexp.MustCompile(`\s+`)
+
+// viewHeaderBodyPattern splits a SHOW CREATE VIEW DDL into two capture groups:
+//
+//	(1) the CREATE … VIEW `name` header (keywords + identifiers only — safe to lowercase)
+//	(2) the AS <select-body> tail (may contain string literals — must NOT be lowercased)
+//
+// The header stops at the last backtick-quoted identifier before "AS"; the body begins at "AS ".
+var viewHeaderBodyPattern = regexp.MustCompile(`(?is)^(create\s+.*?view\s+(?:` + "`[^`]+`" + `\.)?` + "`[^`]+`" + `\s+)(as\s+.*)$`)
+
+// viewSchemaInHeaderPattern matches a schema-qualified VIEW identifier in the
+// normalised (lowercased) header, e.g. `db1`.`v1` .  It captures only the view
+// part so the schema prefix can be stripped — preventing false Diffs=yes when
+// source and destination use different schema names (cross-schema mapping).
+var viewSchemaInHeaderPattern = regexp.MustCompile("`[^`]+`" + `\.(` + "`[^`]+`" + `\s*)$`)
+
 type partitionMetadata struct {
 	Name        string
 	Ordinal     int
@@ -451,11 +490,15 @@ type schemaTable struct {
 	ignoredMatchedTables []string
 	// Keep per-run struct diff state on the schemaTable instance so repeated or
 	// concurrent checks do not share mutable package-level maps.
-	indexDiffsMap          map[string]bool
-	partitionDiffsMap      map[string]bool
-	foreignKeyDiffsMap     map[string]bool
-	structWarnOnlyDiffsMap    map[string]bool
+	indexDiffsMap            map[string]bool
+	partitionDiffsMap        map[string]bool
+	foreignKeyDiffsMap       map[string]bool
+	structWarnOnlyDiffsMap   map[string]bool
 	structCollationMappedMap map[string]bool
+	// objectKinds maps "schema/*schema&table*/table" (same key format as
+	// DatabaseNameList) to the TABLE_TYPE value ("BASE TABLE" or "VIEW").
+	// Populated once in SchemaTableFilter; absent key means "BASE TABLE".
+	objectKinds map[string]string
 }
 
 func cloneSQLStatements(sqls []string) []string {
@@ -975,6 +1018,10 @@ func escapeSQLLiteral(value string) string {
 	return strings.ReplaceAll(value, "'", "''")
 }
 
+func escapeMySQLIdentifier(value string) string {
+	return strings.ReplaceAll(value, "`", "``")
+}
+
 func isOracleDrive(drive string) bool {
 	return drive == "godror" || strings.EqualFold(drive, "oracle")
 }
@@ -1414,7 +1461,7 @@ var mysqlTableAutoIncrementOptionPattern = regexp.MustCompile(`(?i)\)\s*ENGINE\s
 var mysqlAlterTableStatementPattern = regexp.MustCompile("(?is)^\\s*ALTER\\s+TABLE\\s+((?:`[^`]+`\\.`[^`]+`)|(?:[^\\s]+))\\s+(.*?);?\\s*$")
 
 func queryMySQLCreateTableStatement(db *sql.DB, schema, table string) (string, error) {
-	query := fmt.Sprintf("SHOW CREATE TABLE `%s`.`%s`", schema, table)
+	query := fmt.Sprintf("SHOW CREATE TABLE `%s`.`%s`", escapeMySQLIdentifier(schema), escapeMySQLIdentifier(table))
 	var (
 		objectName string
 		createStmt string
@@ -1958,7 +2005,13 @@ func mergeAlterTableStatements(sqls []string, logThreadSeq int64) []string {
 	return merged
 }
 
-func (stcls *schemaTable) tableExistsByDrive(db *sql.DB, drive, schema, table string) (bool, error) {
+// tableExistsByDrive reports whether an object exists in the given database.
+// objectKind: "" or "table" → require TABLE_TYPE='BASE TABLE';
+//
+//	"view"  → require TABLE_TYPE='VIEW'.
+//
+// Oracle only queries all_tables (views are ignored, objectKind has no effect).
+func (stcls *schemaTable) tableExistsByDrive(db *sql.DB, drive, schema, table, objectKind string) (bool, error) {
 	var (
 		count int
 		query string
@@ -1971,17 +2024,23 @@ func (stcls *schemaTable) tableExistsByDrive(db *sql.DB, drive, schema, table st
 			escapeSQLLiteral(table),
 		)
 	} else {
+		tableTypeCond := " AND TABLE_TYPE='BASE TABLE'"
+		if strings.ToLower(strings.TrimSpace(objectKind)) == "view" {
+			tableTypeCond = " AND TABLE_TYPE='VIEW'"
+		}
 		if strings.ToLower(stcls.caseSensitiveObjectName) == "yes" {
 			query = fmt.Sprintf(
-				"SELECT COUNT(1) FROM information_schema.TABLES WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s'",
+				"SELECT COUNT(1) FROM information_schema.TABLES WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s'%s",
 				escapeSQLLiteral(schema),
 				escapeSQLLiteral(table),
+				tableTypeCond,
 			)
 		} else {
 			query = fmt.Sprintf(
-				"SELECT COUNT(1) FROM information_schema.TABLES WHERE LOWER(TABLE_SCHEMA)=LOWER('%s') AND LOWER(TABLE_NAME)=LOWER('%s')",
+				"SELECT COUNT(1) FROM information_schema.TABLES WHERE LOWER(TABLE_SCHEMA)=LOWER('%s') AND LOWER(TABLE_NAME)=LOWER('%s')%s",
 				escapeSQLLiteral(schema),
 				escapeSQLLiteral(table),
+				tableTypeCond,
 			)
 		}
 	}
@@ -1990,6 +2049,466 @@ func (stcls *schemaTable) tableExistsByDrive(db *sql.DB, drive, schema, table st
 		return false, err
 	}
 	return count > 0, nil
+}
+
+// splitTableViewEntries partitions a dtabS slice into BASE-TABLE entries and VIEW entries.
+// Entries whose source part maps to "VIEW" in objectKinds are placed in viewEntries;
+// everything else (or when objectKinds is empty) goes to tableEntries.
+func splitTableViewEntries(dtabS []string, objectKinds map[string]string, caseSensitive string) (tableEntries, viewEntries []string) {
+	for _, entry := range dtabS {
+		srcPart := entry
+		if idx := strings.Index(entry, ":"); idx >= 0 {
+			srcPart = entry[:idx]
+		}
+		parts := strings.SplitN(srcPart, ".", 2)
+		if len(parts) == 2 {
+			key := fmt.Sprintf("%s/*schema&table*/%s", parts[0], parts[1])
+			if strings.EqualFold(caseSensitive, "no") {
+				key = strings.ToLower(key)
+			}
+			if objectKinds[key] == "VIEW" {
+				viewEntries = append(viewEntries, entry)
+				continue
+			}
+		}
+		tableEntries = append(tableEntries, entry)
+	}
+	return
+}
+
+// queryMySQLCreateViewStatement runs SHOW CREATE VIEW and returns the raw DDL string.
+func queryMySQLCreateViewStatement(db *sql.DB, schema, view string) (string, error) {
+	query := fmt.Sprintf("SHOW CREATE VIEW `%s`.`%s`", escapeMySQLIdentifier(schema), escapeMySQLIdentifier(view))
+	rows, err := db.Query(query)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	cols, err := rows.Columns()
+	if err != nil {
+		return "", err
+	}
+	if len(cols) < 2 {
+		return "", fmt.Errorf("SHOW CREATE VIEW %s.%s: unexpected column count %d", schema, view, len(cols))
+	}
+	if !rows.Next() {
+		return "", fmt.Errorf("SHOW CREATE VIEW %s.%s: no rows returned", schema, view)
+	}
+	dest := make([]interface{}, len(cols))
+	raw := make([]sql.RawBytes, len(cols))
+	for i := range raw {
+		dest[i] = &raw[i]
+	}
+	if err := rows.Scan(dest...); err != nil {
+		return "", err
+	}
+	// Column index 1 is always "Create View"
+	return string(raw[1]), rows.Err()
+}
+
+// normalizeViewCreateSQLForCompare normalises a SHOW CREATE VIEW DDL for comparison.
+//
+// Strategy:
+//   - Strip the DEFINER clause entirely (account differences must not trigger Diffs=yes).
+//   - Strip ALGORITHM=UNDEFINED (the default value; some MySQL versions include it in
+//     SHOW CREATE VIEW output, others omit it — both are semantically identical).
+//   - Strip SQL SECURITY clause (DEFINER/INVOKER); in migration scenarios this often
+//     legitimately changes, so it must not trigger Diffs=yes on its own (cc §四).
+//   - Collapse whitespace throughout.
+//   - Lowercase only the header (CREATE … VIEW `name`), which contains only keywords and
+//     backtick-quoted identifiers; the SELECT body is left in its original case to avoid
+//     false-negatives or false-positives caused by string literals or column aliases.
+//
+// The header/body split is performed by viewHeaderBodyPattern which captures everything up
+// to and including the last backtick-quoted VIEW identifier as group 1, and "AS <body>"
+// as group 2.  If the pattern does not match (unexpected DDL format) the entire string is
+// lowercased as a safe fallback.
+func normalizeViewCreateSQLForCompare(createSQL string) string {
+	// Step 1: strip DEFINER
+	s := viewDefinerPattern.ReplaceAllString(createSQL, "")
+	// Step 1b: strip ALGORITHM=UNDEFINED (default; equivalent to omitting ALGORITHM)
+	s = viewAlgorithmUndefinedPattern.ReplaceAllString(s, "")
+	// Step 1c: strip SQL SECURITY clause (migration-safe change; not a structural diff)
+	s = viewSQLSecurityPattern.ReplaceAllString(s, "")
+	// Step 2: collapse whitespace
+	s = viewWhitespaceNormPattern.ReplaceAllString(s, " ")
+	s = strings.TrimSpace(s)
+	// Step 3: lowercase only the header, preserve SELECT body case
+	if m := viewHeaderBodyPattern.FindStringSubmatch(s); len(m) == 3 {
+		header := strings.ToLower(m[1])
+		// Step 3b: strip optional schema prefix from the view identifier in the
+		// header (e.g. `db1`.`v1` → `v1`), so that cross-schema mappings do not
+		// produce false Diffs=yes when the two sides use different schema names.
+		header = viewSchemaInHeaderPattern.ReplaceAllString(header, "$1")
+		return header + m[2]
+	}
+	// Fallback: the DDL did not match expected format; lowercase everything.
+	return strings.ToLower(s)
+}
+
+func effectiveViewSQLSecurity(createSQL string) string {
+	if secMatch := viewExtractSQLSecurityPattern.FindStringSubmatch(createSQL); len(secMatch) == 2 {
+		return strings.ToUpper(strings.TrimSpace(secMatch[1]))
+	}
+	// MySQL defaults VIEW SQL SECURITY to DEFINER when the clause is omitted.
+	return "DEFINER"
+}
+
+func warnViewSQLSecurityDifference(logThreadSeq int64, sourceSchema, sourceViewName, srcCreateSQL, dstCreateSQL string) bool {
+	srcSec := effectiveViewSQLSecurity(srcCreateSQL)
+	dstSec := effectiveViewSQLSecurity(dstCreateSQL)
+	if srcSec == dstSec {
+		return false
+	}
+	if global.Wlog != nil {
+		global.Wlog.Warn(fmt.Sprintf("(%d) [check_view_struct] VIEW %s.%s SQL SECURITY differs: src=%s dst=%s (not counted as Diffs=yes)",
+			logThreadSeq, sourceSchema, sourceViewName, srcSec, dstSec))
+	}
+	return true
+}
+
+// queryMySQLViewColumnSignature queries INFORMATION_SCHEMA.COLUMNS for a view and returns
+// a slice of canonical column descriptors ordered by ORDINAL_POSITION.  Each descriptor
+// has the form "name|column_type|is_nullable|charset|collation".
+//
+// charset and collation are normalised to empty string when NULL (non-character columns).
+// This lets the caller detect column-level metadata drift (type, nullability, charset,
+// collation) independently of the CREATE VIEW DDL comparison.
+func queryMySQLViewColumnSignature(db *sql.DB, schema, view string, caseSensitive string) ([]string, error) {
+	var query string
+	if strings.ToLower(strings.TrimSpace(caseSensitive)) == "yes" {
+		query = fmt.Sprintf(
+			"SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE,"+
+				" COALESCE(CHARACTER_SET_NAME,''), COALESCE(COLLATION_NAME,'')"+
+				" FROM INFORMATION_SCHEMA.COLUMNS"+
+				" WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s'"+
+				" ORDER BY ORDINAL_POSITION",
+			escapeSQLLiteral(schema), escapeSQLLiteral(view),
+		)
+	} else {
+		query = fmt.Sprintf(
+			"SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE,"+
+				" COALESCE(CHARACTER_SET_NAME,''), COALESCE(COLLATION_NAME,'')"+
+				" FROM INFORMATION_SCHEMA.COLUMNS"+
+				" WHERE LOWER(TABLE_SCHEMA)=LOWER('%s') AND LOWER(TABLE_NAME)=LOWER('%s')"+
+				" ORDER BY ORDINAL_POSITION",
+			escapeSQLLiteral(schema), escapeSQLLiteral(view),
+		)
+	}
+
+	rows, err := db.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var sigs []string
+	for rows.Next() {
+		var colName, colType, isNullable, charset, collation string
+		if err := rows.Scan(&colName, &colType, &isNullable, &charset, &collation); err != nil {
+			return nil, err
+		}
+		// Normalise: lowercase column type and charset/collation names for comparison;
+		// leave column name in original case (case-sensitive schemas may differ).
+		if strings.EqualFold(caseSensitive, "no") {
+			colName = strings.ToLower(colName)
+		}
+		sigs = append(sigs, fmt.Sprintf("%s|%s|%s|%s|%s",
+			colName,
+			strings.ToLower(colType),
+			strings.ToUpper(isNullable), // YES / NO — normalise to upper
+			strings.ToLower(charset),
+			strings.ToLower(collation),
+		))
+	}
+	return sigs, rows.Err()
+}
+
+// viewColumnSignaturesEqual returns true when src and dst have identical column signatures.
+// It also returns a human-readable reason string when they differ (empty when equal).
+func viewColumnSignaturesEqual(src, dst []string) (bool, string) {
+	if len(src) != len(dst) {
+		return false, fmt.Sprintf("column count differs (src=%d dst=%d)", len(src), len(dst))
+	}
+	for i := range src {
+		if src[i] != dst[i] {
+			return false, fmt.Sprintf("column[%d] differs: src=%q dst=%q", i, src[i], dst[i])
+		}
+	}
+	return true, ""
+}
+
+// buildViewColumnMetadataAdvisoryLines constructs an advisory block for the case where
+// the normalised CREATE VIEW DDL is identical but column-level metadata (type, nullability,
+// charset, collation) differs between source and destination.  Because there is no safe
+// automatic SQL fix for this situation, the block uses "suggested SQL: none".
+func buildViewColumnMetadataAdvisoryLines(destSchema, viewName, diffReason string) []string {
+	scope := fmt.Sprintf("%s.%s VIEW definition", destSchema, viewName)
+	return []string{
+		fmt.Sprintf("-- gt-checksum advisory begin: %s", scope),
+		"-- generated as manual review SQL only; these statements are not auto-executed by gt-checksum",
+		"-- level: advisory-only",
+		"-- kind: VIEW COLUMN METADATA",
+		fmt.Sprintf("-- reason: column metadata drift — %s", diffReason),
+		"-- suggested SQL: none",
+		fmt.Sprintf("-- gt-checksum advisory end: %s", scope),
+	}
+}
+
+// buildCreateOrReplaceViewSQL transforms a SHOW CREATE VIEW DDL into a
+// CREATE OR REPLACE VIEW statement targeting destSchema.destView.
+// It strips the DEFINER clause, preserves explicit SQL SECURITY and any
+// non-default ALGORITHM, collapses whitespace, and rewrites the header so the
+// DBA can apply it directly to the destination database. The boolean result is
+// true only when the rewrite is known-safe; otherwise callers must treat the
+// suggestion as unavailable and avoid emitting executable-looking SQL.
+func buildCreateOrReplaceViewSQL(srcCreateSQL, destSchema, destView string) (string, bool) {
+	s := viewDefinerPattern.ReplaceAllString(srcCreateSQL, "")
+	s = viewWhitespaceNormPattern.ReplaceAllString(strings.TrimSpace(s), " ")
+	// Use the header/body split regex to separate "CREATE … VIEW `name`" from "AS …".
+	if m := viewHeaderBodyPattern.FindStringSubmatch(s); len(m) == 3 {
+		header := strings.TrimSpace(m[1])
+		body := strings.TrimSpace(m[2]) // preserve SELECT body case and trailing CHECK OPTION
+
+		algorithmClause := ""
+		if algMatch := viewExtractAlgorithmPattern.FindStringSubmatch(header); len(algMatch) == 2 {
+			alg := strings.ToUpper(strings.TrimSpace(algMatch[1]))
+			if alg != "" && alg != "UNDEFINED" {
+				algorithmClause = fmt.Sprintf(" ALGORITHM=%s", alg)
+			}
+		}
+
+		securityClause := ""
+		if secMatch := viewExtractSQLSecurityPattern.FindStringSubmatch(header); len(secMatch) == 2 {
+			securityClause = fmt.Sprintf(" SQL SECURITY %s", strings.ToUpper(strings.TrimSpace(secMatch[1])))
+		}
+
+		return fmt.Sprintf("CREATE OR REPLACE%s%s VIEW `%s`.`%s` %s;",
+			algorithmClause, securityClause, escapeMySQLIdentifier(destSchema), escapeMySQLIdentifier(destView), body), true
+	}
+	return "", false
+}
+
+// buildViewAdvisoryLines constructs the advisory SQL block for a VIEW difference
+// (DDL mismatch or VIEW missing on destination).  Format follows the gt-checksum
+// advisory convention used by SEQUENCE and constraint advisories.
+//
+// Suggested SQL:
+//   - DROP VIEW IF EXISTS `dest`.`view`;
+//   - CREATE OR REPLACE VIEW `dest`.`view` AS … (derived from source DDL)
+func buildViewAdvisoryLines(destSchema, viewName, srcCreateSQL, reason string) []string {
+	scope := fmt.Sprintf("%s.%s VIEW definition", destSchema, viewName)
+	createOrReplace, ok := buildCreateOrReplaceViewSQL(srcCreateSQL, destSchema, viewName)
+	lines := []string{
+		fmt.Sprintf("-- gt-checksum advisory begin: %s", scope),
+		"-- generated as manual review SQL only; these statements are not auto-executed by gt-checksum",
+		"-- level: advisory-only",
+		"-- kind: VIEW DEFINITION",
+	}
+	if ok {
+		lines = append(lines,
+			fmt.Sprintf("-- reason: %s", reason),
+			fmt.Sprintf("-- DROP VIEW IF EXISTS `%s`.`%s`;", escapeMySQLIdentifier(destSchema), escapeMySQLIdentifier(viewName)),
+			fmt.Sprintf("-- %s", createOrReplace),
+		)
+	} else {
+		lines = append(lines,
+			fmt.Sprintf("-- reason: %s; unable to rewrite VIEW DDL safely", reason),
+			"-- suggested SQL: none",
+		)
+	}
+	lines = append(lines, fmt.Sprintf("-- gt-checksum advisory end: %s", scope))
+	return lines
+}
+
+// buildViewDropAdvisoryLines constructs the advisory SQL block for the case where
+// the VIEW exists on the destination but not on the source ("extra on target").
+// The only safe suggestion is a DROP — no CREATE can be inferred.
+func buildViewDropAdvisoryLines(destSchema, viewName string) []string {
+	scope := fmt.Sprintf("%s.%s VIEW definition", destSchema, viewName)
+	return []string{
+		fmt.Sprintf("-- gt-checksum advisory begin: %s", scope),
+		"-- generated as manual review SQL only; these statements are not auto-executed by gt-checksum",
+		"-- level: advisory-only",
+		"-- kind: VIEW DEFINITION",
+		"-- reason: VIEW exists on target but not on source",
+		fmt.Sprintf("-- DROP VIEW IF EXISTS `%s`.`%s`;", escapeMySQLIdentifier(destSchema), escapeMySQLIdentifier(viewName)),
+		fmt.Sprintf("-- gt-checksum advisory end: %s", scope),
+	}
+}
+
+// writeViewAdvisoryForDest temporarily sets stcls.table to destViewName, writes the
+// advisory fix SQL, then restores stcls.table — regardless of whether
+// writeAdvisoryFixSql succeeds or panics.  Using defer guarantees the restore
+// even in exceptional code paths.
+func (stcls *schemaTable) writeViewAdvisoryForDest(destViewName string, lines []string, logThreadSeq int64) error {
+	orig := stcls.table
+	stcls.table = destViewName
+	defer func() { stcls.table = orig }()
+	return stcls.writeAdvisoryFixSql(lines, logThreadSeq)
+}
+
+// checkViewStruct compares VIEW definitions between source and destination and appends
+// Pod entries to measuredDataPods.  Advisory fix SQL is written when datafix=file.
+// VIEW struct check is only performed for MySQL→MySQL; other drive combinations are skipped.
+func (stcls *schemaTable) checkViewStruct(viewEntries []string, logThreadSeq, logThreadSeq2 int64) error {
+	if len(viewEntries) == 0 {
+		return nil
+	}
+	if stcls.sourceDrive != "mysql" || stcls.destDrive != "mysql" {
+		global.Wlog.Warn(fmt.Sprintf("(%d) VIEW struct check skipped: only MySQL→MySQL is supported (src=%s, dst=%s)",
+			logThreadSeq, stcls.sourceDrive, stcls.destDrive))
+		return nil
+	}
+
+	fmt.Println("gt-checksum: Checking view definitions")
+	global.Wlog.Info(fmt.Sprintf("(%d) [check_view_struct] checking view definitions of %v (num[%d])",
+		logThreadSeq, viewEntries, len(viewEntries)))
+
+	for _, entry := range viewEntries {
+		sourceTable := entry
+		destTable := entry
+		if strings.Contains(entry, ":") {
+			parts := strings.SplitN(entry, ":", 2)
+			sourceTable = parts[0]
+			destTable = parts[1]
+		}
+		srcParts := strings.SplitN(sourceTable, ".", 2)
+		dstParts := strings.SplitN(destTable, ".", 2)
+		if len(srcParts) < 2 || len(dstParts) < 2 {
+			global.Wlog.Warn(fmt.Sprintf("(%d) [check_view_struct] skipping malformed entry: %s", logThreadSeq, entry))
+			continue
+		}
+		sourceSchema, sourceViewName := srcParts[0], srcParts[1]
+		destSchema, destViewName := dstParts[0], dstParts[1]
+
+		pod := Pod{
+			Datafix:     stcls.datafix,
+			CheckObject: "struct",
+			ObjectKind:  "view",
+			Schema:      sourceSchema,
+			Table:       sourceViewName,
+		}
+		if sourceSchema != destSchema {
+			pod.MappingInfo = fmt.Sprintf("Schema: %s:%s", sourceSchema, destSchema)
+		}
+
+		srcExists, err := stcls.tableExistsByDrive(stcls.sourceDB, stcls.sourceDrive, sourceSchema, sourceViewName, "view")
+		if err != nil {
+			global.Wlog.Error(fmt.Sprintf("(%d) [check_view_struct] error checking source view %s.%s: %v",
+				logThreadSeq, sourceSchema, sourceViewName, err))
+			return err
+		}
+		dstExists, err := stcls.tableExistsByDrive(stcls.destDB, stcls.destDrive, destSchema, destViewName, "view")
+		if err != nil {
+			global.Wlog.Error(fmt.Sprintf("(%d) [check_view_struct] error checking dest view %s.%s: %v",
+				logThreadSeq, destSchema, destViewName, err))
+			return err
+		}
+
+		switch {
+		case !srcExists && !dstExists:
+			pod.DIFFS = global.SkipDiffsYes
+			global.Wlog.Warn(fmt.Sprintf("(%d) [check_view_struct] VIEW %s.%s missing on both sides",
+				logThreadSeq, sourceSchema, sourceViewName))
+		case !srcExists:
+			pod.DIFFS = global.SkipDiffsYes
+			global.Wlog.Warn(fmt.Sprintf("(%d) [check_view_struct] VIEW %s.%s missing on source, advisory DROP generated",
+				logThreadSeq, sourceSchema, sourceViewName))
+			advisoryLines := buildViewDropAdvisoryLines(destSchema, destViewName)
+			if wErr := stcls.writeViewAdvisoryForDest(destViewName, advisoryLines, logThreadSeq); wErr != nil {
+				global.Wlog.Error(fmt.Sprintf("(%d) [check_view_struct] failed to write DROP advisory for %s.%s: %v",
+					logThreadSeq, destSchema, destViewName, wErr))
+			}
+		case !dstExists:
+			pod.DIFFS = global.SkipDiffsYes
+			global.Wlog.Warn(fmt.Sprintf("(%d) [check_view_struct] VIEW %s.%s missing on destination",
+				logThreadSeq, destSchema, destViewName))
+			srcCreateSQL, qErr := queryMySQLCreateViewStatement(stcls.sourceDB, sourceSchema, sourceViewName)
+			if qErr != nil {
+				global.Wlog.Error(fmt.Sprintf("(%d) [check_view_struct] SHOW CREATE VIEW %s.%s failed: %v",
+					logThreadSeq, sourceSchema, sourceViewName, qErr))
+			} else {
+				advisoryLines := buildViewAdvisoryLines(destSchema, destViewName, srcCreateSQL, "VIEW missing on target")
+				if wErr := stcls.writeViewAdvisoryForDest(destViewName, advisoryLines, logThreadSeq); wErr != nil {
+					global.Wlog.Error(fmt.Sprintf("(%d) [check_view_struct] failed to write advisory SQL for %s.%s: %v",
+						logThreadSeq, destSchema, destViewName, wErr))
+				}
+			}
+		default:
+			// Both exist: compare normalised DDL, then column signatures.
+			srcCreateSQL, qErr := queryMySQLCreateViewStatement(stcls.sourceDB, sourceSchema, sourceViewName)
+			if qErr != nil {
+				global.Wlog.Error(fmt.Sprintf("(%d) [check_view_struct] SHOW CREATE VIEW source %s.%s failed: %v",
+					logThreadSeq, sourceSchema, sourceViewName, qErr))
+				return qErr
+			}
+			dstCreateSQL, qErr := queryMySQLCreateViewStatement(stcls.destDB, destSchema, destViewName)
+			if qErr != nil {
+				global.Wlog.Error(fmt.Sprintf("(%d) [check_view_struct] SHOW CREATE VIEW dest %s.%s failed: %v",
+					logThreadSeq, destSchema, destViewName, qErr))
+				return qErr
+			}
+			srcNorm := normalizeViewCreateSQLForCompare(srcCreateSQL)
+			dstNorm := normalizeViewCreateSQLForCompare(dstCreateSQL)
+			ddlDiffers := srcNorm != dstNorm
+
+			// SQL SECURITY warn log: emit a Warn so it is visible in logs even though
+			// it does NOT count as Diffs=yes (e.g. DEFINER→INVOKER during migration).
+			// Omitted clause is treated as the MySQL default "DEFINER", matching the
+			// normalization logic used for DDL comparison.
+			warnViewSQLSecurityDifference(logThreadSeq, sourceSchema, sourceViewName, srcCreateSQL, dstCreateSQL)
+
+			// Column-signature comparison (covers nullable/charset/collation drift that
+			// SHOW CREATE VIEW may not surface, e.g. v_teststring-style cases).
+			srcCols, colErr := queryMySQLViewColumnSignature(stcls.sourceDB, sourceSchema, sourceViewName, stcls.caseSensitiveObjectName)
+			if colErr != nil {
+				global.Wlog.Warn(fmt.Sprintf("(%d) [check_view_struct] column signature query failed for source %s.%s: %v (skipping column check)",
+					logThreadSeq, sourceSchema, sourceViewName, colErr))
+				srcCols = nil
+			}
+			dstCols, colErr := queryMySQLViewColumnSignature(stcls.destDB, destSchema, destViewName, stcls.caseSensitiveObjectName)
+			if colErr != nil {
+				global.Wlog.Warn(fmt.Sprintf("(%d) [check_view_struct] column signature query failed for dest %s.%s: %v (skipping column check)",
+					logThreadSeq, destSchema, destViewName, colErr))
+				dstCols = nil
+			}
+			colsEqual, colDiffReason := viewColumnSignaturesEqual(srcCols, dstCols)
+			// colsEqual is vacuously true when either query failed (both nil slices have length 0).
+			// Guard: treat nil result as "unknown" and do not trigger Diffs=yes on col side alone.
+			colsDiffer := !colsEqual && srcCols != nil && dstCols != nil
+
+			switch {
+			case ddlDiffers:
+				pod.DIFFS = global.SkipDiffsYes
+				global.Wlog.Debug(fmt.Sprintf("(%d) [check_view_struct] VIEW %s.%s DDL differs\n  src: %s\n  dst: %s",
+					logThreadSeq, sourceSchema, sourceViewName, srcNorm, dstNorm))
+				advisoryReason := "VIEW definition differs"
+				advisoryLines := buildViewAdvisoryLines(destSchema, destViewName, srcCreateSQL, advisoryReason)
+				if wErr := stcls.writeViewAdvisoryForDest(destViewName, advisoryLines, logThreadSeq); wErr != nil {
+					global.Wlog.Error(fmt.Sprintf("(%d) [check_view_struct] failed to write advisory SQL for %s.%s: %v",
+						logThreadSeq, destSchema, destViewName, wErr))
+				}
+			case colsDiffer:
+				// DDL is identical but column-level metadata drifted (type, nullability,
+				// charset or collation).  Mark as yes; advisory SQL has no auto-fix,
+				// so the block carries "suggested SQL: none" per plan §10.5.
+				pod.DIFFS = global.SkipDiffsYes
+				global.Wlog.Debug(fmt.Sprintf("(%d) [check_view_struct] VIEW %s.%s column metadata differs: %s",
+					logThreadSeq, sourceSchema, sourceViewName, colDiffReason))
+				advisoryLines := buildViewColumnMetadataAdvisoryLines(destSchema, destViewName, colDiffReason)
+				if wErr := stcls.writeViewAdvisoryForDest(destViewName, advisoryLines, logThreadSeq); wErr != nil {
+					global.Wlog.Error(fmt.Sprintf("(%d) [check_view_struct] failed to write column advisory for %s.%s: %v",
+						logThreadSeq, destSchema, destViewName, wErr))
+				}
+			default:
+				pod.DIFFS = global.SkipDiffsNo
+			}
+		}
+
+		measuredDataPods = append(measuredDataPods, pod)
+	}
+	return nil
 }
 
 /*
@@ -2068,13 +2587,13 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 		global.Wlog.Debug(vlog)
 
 		// 检查源表和目标表是否存在（按驱动走不同元数据查询）
-		sourceTableExists, err := stcls.tableExistsByDrive(stcls.sourceDB, stcls.sourceDrive, sourceSchema, sourceTableName)
+		sourceTableExists, err := stcls.tableExistsByDrive(stcls.sourceDB, stcls.sourceDrive, sourceSchema, sourceTableName, "table")
 		if err != nil {
 			vlog = fmt.Sprintf("(%d) %s Error checking source table existence %s.%s: %v", logThreadSeq, event, sourceSchema, sourceTableName, err)
 			global.Wlog.Error(vlog)
 			return nil, nil, err
 		}
-		destTableExists, err := stcls.tableExistsByDrive(stcls.destDB, stcls.destDrive, destSchema, destTableName)
+		destTableExists, err := stcls.tableExistsByDrive(stcls.destDB, stcls.destDrive, destSchema, destTableName, "table")
 		if err != nil {
 			vlog = fmt.Sprintf("(%d) %s Error checking target table existence %s.%s: %v", logThreadSeq, event, destSchema, destTableName, err)
 			global.Wlog.Error(vlog)
@@ -3100,18 +3619,18 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 					}
 
 					// MariaDB LEFT JOIN information_schema.COLLATIONS 可能返回空的 TableCharset，
-				// 在比较前从 collation 名推断 charset，避免误判为 charset mismatch
-				if strings.TrimSpace(sourceMeta.TableCharset) == "" && strings.TrimSpace(sourceMeta.TableCollation) != "" {
-					inferred := schemacompat.InferCharsetFromCollation(sourceMeta.TableCollation)
-					if inferred != "" {
-						vlog = fmt.Sprintf("(%d) %s Source table charset was empty, inferred as %s from collation %s for %s.%s",
-							logThreadSeq, event, inferred, sourceMeta.TableCollation, sourceSchema, stcls.table)
-						global.Wlog.Warn(vlog)
-						sourceMeta.TableCharset = inferred
+					// 在比较前从 collation 名推断 charset，避免误判为 charset mismatch
+					if strings.TrimSpace(sourceMeta.TableCharset) == "" && strings.TrimSpace(sourceMeta.TableCollation) != "" {
+						inferred := schemacompat.InferCharsetFromCollation(sourceMeta.TableCollation)
+						if inferred != "" {
+							vlog = fmt.Sprintf("(%d) %s Source table charset was empty, inferred as %s from collation %s for %s.%s",
+								logThreadSeq, event, inferred, sourceMeta.TableCollation, sourceSchema, stcls.table)
+							global.Wlog.Warn(vlog)
+							sourceMeta.TableCharset = inferred
+						}
 					}
-				}
 
-				charsetDecision := schemacompat.DecideCharsetCompatibility(sourceMeta.TableCharset, destMeta.TableCharset)
+					charsetDecision := schemacompat.DecideCharsetCompatibility(sourceMeta.TableCharset, destMeta.TableCharset)
 					if charsetDecision.IsMismatch() {
 						tableCharsetDifferent = true
 						vlog = fmt.Sprintf("(%d) %s Table charset mismatch: source=%s, dest=%s, reason=%s", logThreadSeq, event, sourceMeta.TableCharset, destMeta.TableCharset, charsetDecision.Reason)
@@ -3185,16 +3704,16 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 							vlog = fmt.Sprintf("(%d) %s Table collation warning: source=%s, dest=%s, reason=%s", logThreadSeq, event, sourceMeta.TableCollation, destMeta.TableCollation, collationDecision.Reason)
 							global.Wlog.Warn(vlog)
 							tableAdvisorySuggestions = append(tableAdvisorySuggestions, schemacompat.ConstraintRepairSuggestion{
-								Kind:       "TABLE COLLATION",
-								Level:      schemacompat.ConstraintRepairLevelAdvisoryOnly,
-								Reason:     collationDecision.Reason,
+								Kind:   "TABLE COLLATION",
+								Level:  schemacompat.ConstraintRepairLevelAdvisoryOnly,
+								Reason: collationDecision.Reason,
 								Statements: func() []string {
-								advisoryCollation := sourceMeta.TableCollation
-								if mapped, ok := schemacompat.MapMariaDBCollationToMySQL(advisoryCollation); ok {
-									advisoryCollation = mapped
-								}
-								return fixer.FixTableCharsetSqlGenerate(sourceMeta.TableCharset, advisoryCollation, logThreadSeq)
-							}(),
+									advisoryCollation := sourceMeta.TableCollation
+									if mapped, ok := schemacompat.MapMariaDBCollationToMySQL(advisoryCollation); ok {
+										advisoryCollation = mapped
+									}
+									return fixer.FixTableCharsetSqlGenerate(sourceMeta.TableCharset, advisoryCollation, logThreadSeq)
+								}(),
 							})
 						}
 					} else if collationDecision.IsMismatch() {
@@ -3637,6 +4156,33 @@ type TableMapping struct {
 	DestTable    string // 目标端表名
 }
 
+var schemaTableFilterDatabaseNameList = func(tc dbExec.TableColumnNameStruct, db *sql.DB, logThreadSeq int64) (map[string]int, error) {
+	return tc.Query().DatabaseNameList(db, logThreadSeq)
+}
+
+var schemaTableFilterObjectTypeMap = func(tc dbExec.TableColumnNameStruct, db *sql.DB, logThreadSeq int64) (map[string]string, error) {
+	return tc.Query().ObjectTypeMap(db, logThreadSeq)
+}
+
+// extractCandidateSchemas returns the distinct schema names present in the
+// DatabaseNameList key set (format: "schema/*schema&table*/table").
+// The result is used to constrain the ObjectTypeMap metadata query to only the
+// schemas relevant for this run instead of performing a full-instance scan.
+func extractCandidateSchemas(candidates map[string]int) []string {
+	seen := make(map[string]struct{}, len(candidates))
+	for key := range candidates {
+		const sep = "/*schema&table*/"
+		if idx := strings.Index(key, sep); idx > 0 {
+			seen[key[:idx]] = struct{}{}
+		}
+	}
+	schemas := make([]string, 0, len(seen))
+	for s := range seen {
+		schemas = append(schemas, s)
+	}
+	return schemas
+}
+
 func (stcls *schemaTable) SchemaTableFilter(logThreadSeq1, logThreadSeq2 int64) ([]string, error) {
 	var (
 		vlog            string
@@ -3665,9 +4211,29 @@ func (stcls *schemaTable) SchemaTableFilter(logThreadSeq1, logThreadSeq2 int64) 
 	}
 	vlog = fmt.Sprintf("(%d) Obtain source databases list", logThreadSeq1)
 	global.Wlog.Debug(vlog)
-	if dbCheckNameList, err = tc.Query().DatabaseNameList(stcls.sourceDB, logThreadSeq2); err != nil {
+	if dbCheckNameList, err = schemaTableFilterDatabaseNameList(tc, stcls.sourceDB, logThreadSeq2); err != nil {
 		return f, err
 	}
+
+	// Populate the per-run object-type map (table vs. view).
+	// A failed query is non-fatal: we log a warning and continue with an empty
+	// map, which preserves the previous behaviour of treating every object as a
+	// BASE TABLE.
+	//
+	// Pass the candidate schema set extracted from dbCheckNameList so that
+	// the driver can restrict the INFORMATION_SCHEMA.TABLES scan to only the
+	// schemas relevant to this run, avoiding a costly full-instance scan.
+	tc.CandidateSchemas = extractCandidateSchemas(dbCheckNameList)
+	if kinds, kindErr := schemaTableFilterObjectTypeMap(tc, stcls.sourceDB, logThreadSeq2); kindErr != nil {
+		vlog = fmt.Sprintf("(%d) ObjectTypeMap query failed (non-fatal, treating all objects as BASE TABLE): %v", logThreadSeq1, kindErr)
+		global.Wlog.Warn(vlog)
+		stcls.objectKinds = make(map[string]string)
+	} else {
+		stcls.objectKinds = kinds
+		vlog = fmt.Sprintf("(%d) ObjectTypeMap loaded: %d entries", logThreadSeq1, len(kinds))
+		global.Wlog.Debug(vlog)
+	}
+
 	sampleLimit := 8
 	if len(dbCheckNameList) <= sampleLimit {
 		vlog = fmt.Sprintf("(%d) Source databases list(size=%d): %v", logThreadSeq1, len(dbCheckNameList), dbCheckNameList)
@@ -3717,7 +4283,7 @@ func (stcls *schemaTable) SchemaTableFilter(logThreadSeq1, logThreadSeq2 int64) 
 			CaseSensitiveObjectName: stcls.caseSensitiveObjectName,
 		}
 
-		destDbList, err := tcDest.Query().DatabaseNameList(stcls.destDB, logThreadSeq2)
+		destDbList, err := schemaTableFilterDatabaseNameList(tcDest, stcls.destDB, logThreadSeq2)
 		if err != nil {
 			vlog = fmt.Sprintf("(%d) Error getting destination databases list: %v", logThreadSeq1, err)
 			global.Wlog.Error(vlog)
@@ -4083,6 +4649,41 @@ func (stcls *schemaTable) SchemaTableFilter(logThreadSeq1, logThreadSeq2 int64) 
 
 		vlog = fmt.Sprintf("Final mapped table: %s", mappedTableName)
 		global.Wlog.Debug(vlog)
+	}
+
+	// For data mode: remove VIEW objects from the check list.
+	// Views do not store data independently; including them causes the checksum
+	// to run against the view's underlying query, which can hang when the
+	// DEFINER account no longer exists (issue #I899YZ).
+	if strings.EqualFold(stcls.checkRules.CheckObject, "data") && len(stcls.objectKinds) > 0 {
+		filtered := f[:0]
+		skipped := 0
+		for _, entry := range f {
+			// entry format: "srcSchema.srcTable:dstSchema.dstTable"
+			srcPart := entry
+			if idx := strings.Index(entry, ":"); idx >= 0 {
+				srcPart = entry[:idx]
+			}
+			parts := strings.SplitN(srcPart, ".", 2)
+			if len(parts) == 2 {
+				key := fmt.Sprintf("%s/*schema&table*/%s", parts[0], parts[1])
+				if strings.EqualFold(strings.ToLower(stcls.caseSensitiveObjectName), "no") {
+					key = strings.ToLower(key)
+				}
+				if stcls.objectKinds[key] == "VIEW" {
+					vlog = fmt.Sprintf("(%d) Skipping VIEW in data mode: %s", logThreadSeq1, srcPart)
+					global.Wlog.Info(vlog)
+					skipped++
+					continue
+				}
+			}
+			filtered = append(filtered, entry)
+		}
+		if skipped > 0 {
+			f = filtered
+			vlog = fmt.Sprintf("(%d) data mode: skipped %d VIEW object(s), %d object(s) remain.", logThreadSeq1, skipped, len(f))
+			global.Wlog.Info(vlog)
+		}
 	}
 
 	vlog = fmt.Sprintf("(%d) Obtain schema.table %s success, num [%d].", logThreadSeq1, f, len(f))
@@ -6677,6 +7278,13 @@ func (stcls *schemaTable) Struct(dtabS []string, logThreadSeq, logThreadSeq2 int
 	event = fmt.Sprintf("[check_table_columns]")
 	stcls.structWarnOnlyDiffsMap = make(map[string]bool)
 	stcls.structCollationMappedMap = make(map[string]bool)
+
+	// Split dtabS into BASE TABLE entries and VIEW entries.
+	// dtabS is reassigned here so all downstream code (Index/Partitions/Foreign)
+	// automatically operates only on real tables.
+	var viewEntries []string
+	dtabS, viewEntries = splitTableViewEntries(dtabS, stcls.objectKinds, stcls.caseSensitiveObjectName)
+
 	fmt.Println("gt-checksum: Checking table structure")
 	vlog = fmt.Sprintf("(%d) %s checking table structure of %v(num[%d]) from srcDSN and dstDSN", logThreadSeq, event, dtabS, len(dtabS))
 	global.Wlog.Info(vlog)
@@ -6962,6 +7570,12 @@ func (stcls *schemaTable) Struct(dtabS []string, logThreadSeq, logThreadSeq2 int
 	fmt.Println("gt-checksum: Table structure verification completed")
 	vlog = fmt.Sprintf("(%d) %s check source and target DB table struct complete", logThreadSeq, event)
 	global.Wlog.Info(vlog)
+
+	// 5. Process any VIEW entries that were split off at the top.
+	if err := stcls.checkViewStruct(viewEntries, logThreadSeq, logThreadSeq2); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -7038,27 +7652,27 @@ func SchemaTableInit(m *inputArg.ConfigParameter) *schemaTable {
 	}
 
 	return &schemaTable{
-		ignoreTable:             m.SecondaryL.SchemaV.IgnoreTables,
-		table:                   m.SecondaryL.SchemaV.Tables,
-		sourceDrive:             m.SecondaryL.DsnsV.SrcDrive,
-		destDrive:               m.SecondaryL.DsnsV.DestDrive,
-		sourceVersion:           sourceVersion,
-		destVersion:             destVersion,
-		sourceDB:                sdb,
-		destDB:                  ddb,
-		caseSensitiveObjectName: m.SecondaryL.SchemaV.CaseSensitiveObjectName,
-		datafix:                 m.SecondaryL.RepairV.Datafix,
-		sfile:                   m.SecondaryL.RepairV.FixFileFINE,
-		datafixSql:              m.SecondaryL.RepairV.FixFileDir,
-		fixFilePerTable:         m.SecondaryL.RepairV.FixFilePerTable,
-		djdbc:                   m.SecondaryL.DsnsV.DestJdbc,
-		checkRules:              m.SecondaryL.RulesV,
-		tableMappings:           tableMappings,
-		columnRepairMap:         make(map[string][]string),
-		indexDiffsMap:           make(map[string]bool),
-		partitionDiffsMap:       make(map[string]bool),
-		foreignKeyDiffsMap:      make(map[string]bool),
-		structWarnOnlyDiffsMap:    make(map[string]bool),
+		ignoreTable:              m.SecondaryL.SchemaV.IgnoreTables,
+		table:                    m.SecondaryL.SchemaV.Tables,
+		sourceDrive:              m.SecondaryL.DsnsV.SrcDrive,
+		destDrive:                m.SecondaryL.DsnsV.DestDrive,
+		sourceVersion:            sourceVersion,
+		destVersion:              destVersion,
+		sourceDB:                 sdb,
+		destDB:                   ddb,
+		caseSensitiveObjectName:  m.SecondaryL.SchemaV.CaseSensitiveObjectName,
+		datafix:                  m.SecondaryL.RepairV.Datafix,
+		sfile:                    m.SecondaryL.RepairV.FixFileFINE,
+		datafixSql:               m.SecondaryL.RepairV.FixFileDir,
+		fixFilePerTable:          m.SecondaryL.RepairV.FixFilePerTable,
+		djdbc:                    m.SecondaryL.DsnsV.DestJdbc,
+		checkRules:               m.SecondaryL.RulesV,
+		tableMappings:            tableMappings,
+		columnRepairMap:          make(map[string][]string),
+		indexDiffsMap:            make(map[string]bool),
+		partitionDiffsMap:        make(map[string]bool),
+		foreignKeyDiffsMap:       make(map[string]bool),
+		structWarnOnlyDiffsMap:   make(map[string]bool),
 		structCollationMappedMap: make(map[string]bool),
 	}
 }
