@@ -105,8 +105,23 @@ func normalizePodToRecord(m *inputArg.ConfigParameter, pod Pod, checkTime string
 
 // resolveObjectIdentity extracts the canonical (schema, objectName, objectType) from a Pod,
 // normalizing any colon- or dot-encoded schema prefixes that the internal Pod fields carry.
+//
+// When pod.ObjectKind is set to a recognised value ("view"), it takes priority over the
+// CheckObject-based derivation so that VIEW objects in struct mode are correctly labelled
+// as ObjectType="view" rather than the default "table".  All other ObjectKind values (or
+// the empty string) fall through to the existing CheckObject switch, preserving all
+// pre-Phase-1 behaviour with zero risk to existing code paths.
 func resolveObjectIdentity(pod Pod) (schema, objectName, objectType string) {
 	schema = pod.Schema
+
+	// ObjectKind override — only "view" is recognised in Phase 1.
+	if strings.ToLower(strings.TrimSpace(pod.ObjectKind)) == "view" {
+		objectName = pod.Table
+		objectType = "view"
+		schema, objectName = normalizeSchemaObjectName(schema, objectName)
+		return schema, objectName, objectType
+	}
+
 	lc := strings.ToLower(strings.TrimSpace(pod.CheckObject))
 
 	switch lc {

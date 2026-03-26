@@ -28,6 +28,10 @@ type Bar struct {
 
 type Pod struct {
 	Schema, Table, IndexColumn, Rows, DIFFS, CheckObject, Datafix, FuncName, Definer, ProcName, TriggerName, MappingInfo string
+	// ObjectKind holds the actual object type ("table", "view", …).
+	// When empty, resolveObjectIdentity() falls back to the existing
+	// CheckObject-based derivation — preserving all pre-Phase-1 behaviour.
+	ObjectKind string
 }
 
 func isStructOutputPod(pod Pod) bool {
@@ -52,6 +56,11 @@ func skippedTableDiffs(skipped global.SkippedTable) string {
 		return diffs
 	}
 	return global.SkipDiffsYes
+}
+
+func structResultObjectType(pod Pod) string {
+	_, _, objectType := resolveObjectIdentity(pod)
+	return objectType
 }
 
 // 获取表的映射信息
@@ -329,9 +338,9 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 
 	case "struct":
 		if hasMappings {
-			table.AddRow("Schema", "Table", "CheckObject", "Diffs", "Datafix", "Mapping")
+			table.AddRow("Schema", "Table", "ObjectType", "CheckObject", "Diffs", "Datafix", "Mapping")
 		} else {
-			table.AddRow("Schema", "Table", "CheckObject", "Diffs", "Datafix")
+			table.AddRow("Schema", "Table", "ObjectType", "CheckObject", "Diffs", "Datafix")
 		}
 
 		for _, pod := range terminalPods {
@@ -387,9 +396,9 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 			}
 
 			if hasMappings {
-				table.AddRow(color.RedString(schemaName), color.WhiteString(tableName), color.RedString(pod.CheckObject), color.GreenString(pod.DIFFS), color.YellowString(pod.Datafix), color.CyanString(mappingInfo))
+				table.AddRow(color.RedString(schemaName), color.WhiteString(tableName), color.BlueString(structResultObjectType(pod)), color.RedString(pod.CheckObject), color.GreenString(pod.DIFFS), color.YellowString(pod.Datafix), color.CyanString(mappingInfo))
 			} else {
-				table.AddRow(color.RedString(schemaName), color.WhiteString(tableName), color.RedString(pod.CheckObject), color.GreenString(pod.DIFFS), color.YellowString(pod.Datafix))
+				table.AddRow(color.RedString(schemaName), color.WhiteString(tableName), color.BlueString(structResultObjectType(pod)), color.RedString(pod.CheckObject), color.GreenString(pod.DIFFS), color.YellowString(pod.Datafix))
 			}
 		}
 		fmt.Println(table)
