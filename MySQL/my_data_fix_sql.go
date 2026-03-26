@@ -29,6 +29,17 @@ var (
 	databaseCacheMutex   sync.RWMutex
 )
 
+// mysqlQuoteIdent 对 MySQL 标识符加反引号，并对内部反引号做双写转义。
+func mysqlQuoteIdent(name string) string {
+	return "`" + strings.ReplaceAll(name, "`", "``") + "`"
+}
+
+// alterTablePrefixRe 匹配 "ALTER TABLE `schema`.`table` OPERATION[;]"
+// 并将 OPERATION 部分捕获为 group 1。
+// 标识符可以是反引号引用（含内部 “ 转义）或不含空格的裸名。
+var alterTablePrefixRe = regexp.MustCompile(
+	"(?i)^ALTER\\s+TABLE\\s+(?:`(?:[^`]|``)*`|\\S+)\\.(?:`(?:[^`]|``)*`|\\S+)\\s+(.+?)\\s*;?\\s*$")
+
 type MysqlDataAbnormalFixStruct struct {
 	Schema                  string
 	Table                   string
@@ -45,6 +56,51 @@ type MysqlDataAbnormalFixStruct struct {
 	CaseSensitiveObjectName string            // 是否区分对象名大小写
 	IndexVisibilityMap      map[string]string // 索引可见性信息
 	ForeignKeyDefinitions   map[string]string // 外键DDL定义信息
+}
+
+type foreignKeyColumn struct {
+	ordinalPosition  int
+	columnName       string
+	referencedSchema string
+	referencedTable  string
+	referencedColumn string
+}
+
+func buildForeignKeyDDLForFix(fkName string, infoRows []foreignKeyColumn, sourceSchema string) (string, bool) {
+	if len(infoRows) == 0 {
+		return "", false
+	}
+
+	sort.Slice(infoRows, func(i, j int) bool {
+		return infoRows[i].ordinalPosition < infoRows[j].ordinalPosition
+	})
+
+	referencedSchema := infoRows[0].referencedSchema
+	if referencedSchema == "" {
+		referencedSchema = sourceSchema
+	}
+
+	referencedTable := infoRows[0].referencedTable
+	sourceColumns := make([]string, 0, len(infoRows))
+	referencedColumns := make([]string, 0, len(infoRows))
+	for _, item := range infoRows {
+		if item.referencedTable == "" || item.referencedColumn == "" {
+			return "", false
+		}
+		sourceColumns = append(sourceColumns, mysqlQuoteIdent(item.columnName))
+		referencedColumns = append(referencedColumns, mysqlQuoteIdent(item.referencedColumn))
+	}
+
+	if referencedTable == "" {
+		return "", false
+	}
+
+	return fmt.Sprintf("CONSTRAINT %s FOREIGN KEY (%s) REFERENCES %s.%s (%s)",
+		mysqlQuoteIdent(fkName),
+		strings.Join(sourceColumns, ","),
+		mysqlQuoteIdent(referencedSchema),
+		mysqlQuoteIdent(referencedTable),
+		strings.Join(referencedColumns, ",")), true
 }
 
 /*
@@ -889,13 +945,6 @@ func (my *MysqlDataAbnormalFixStruct) LoadForeignKeyDefinitions(db *sql.DB, logT
 		return err
 	}
 
-	type foreignKeyColumn struct {
-		ordinalPosition  int
-		columnName       string
-		referencedSchema string
-		referencedTable  string
-		referencedColumn string
-	}
 	fkInfoMap := make(map[string][]foreignKeyColumn)
 
 	for rows.Next() {
@@ -941,40 +990,13 @@ func (my *MysqlDataAbnormalFixStruct) LoadForeignKeyDefinitions(db *sql.DB, logT
 
 	// 构建完整的外键DDL定义
 	for fkName, infoRows := range fkInfoMap {
-		if len(infoRows) == 0 {
-			continue
-		}
-		sort.Slice(infoRows, func(i, j int) bool {
-			return infoRows[i].ordinalPosition < infoRows[j].ordinalPosition
-		})
-
-		referencedSchema := infoRows[0].referencedSchema
-		if referencedSchema == "" {
-			referencedSchema = sourceSchema
-		}
-
-		referencedTable := infoRows[0].referencedTable
-		sourceColumns := make([]string, 0, len(infoRows))
-		referencedColumns := make([]string, 0, len(infoRows))
-		valid := true
-		for _, item := range infoRows {
-			if item.referencedTable == "" || item.referencedColumn == "" {
-				valid = false
-				break
-			}
-			sourceColumns = append(sourceColumns, fmt.Sprintf("`%s`", item.columnName))
-			referencedColumns = append(referencedColumns, fmt.Sprintf("`%s`", item.referencedColumn))
-		}
-
-		if !valid || referencedTable == "" {
+		fkDDL, ok := buildForeignKeyDDLForFix(fkName, infoRows, sourceSchema)
+		if !ok {
 			vlog = fmt.Sprintf("(%d) Invalid foreign key info for %s: missing referenced table or column",
 				logThreadSeq, fkName)
 			global.Wlog.Warn(vlog)
 			continue
 		}
-
-		fkDDL := fmt.Sprintf("CONSTRAINT `%s` FOREIGN KEY (%s) REFERENCES `%s`.`%s` (%s)",
-			fkName, strings.Join(sourceColumns, ","), referencedSchema, referencedTable, strings.Join(referencedColumns, ","))
 		my.ForeignKeyDefinitions[fkName] = fkDDL
 		vlog = fmt.Sprintf("(%d) Found foreign key: %s", logThreadSeq, fkDDL)
 		global.Wlog.Debug(vlog)
@@ -1021,7 +1043,7 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterIndexSqlExec(e, f []string, si map
 		// 构建SQL语句
 		if isForeignKey {
 			// 生成外键约束的SQL
-			strsql = fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD %s;", targetSchema, my.Table, fkDDL)
+			strsql = fmt.Sprintf("ALTER TABLE %s.%s ADD %s;", mysqlQuoteIdent(targetSchema), mysqlQuoteIdent(my.Table), fkDDL)
 			vlog := fmt.Sprintf("(%d) Generating foreign key SQL: %s", logThreadSeq, strsql)
 			global.Wlog.Debug(vlog)
 		} else {
@@ -1034,11 +1056,11 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterIndexSqlExec(e, f []string, si map
 			}
 			switch my.IndexType {
 			case "pri":
-				strsql = fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD PRIMARY KEY(`%s`);", targetSchema, my.Table, strings.Join(c, "`,`"))
+				strsql = fmt.Sprintf("ALTER TABLE %s.%s ADD PRIMARY KEY(`%s`);", mysqlQuoteIdent(targetSchema), mysqlQuoteIdent(my.Table), strings.Join(c, "`,`"))
 			case "uni":
-				strsql = fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD UNIQUE INDEX %s(`%s`)%s;", targetSchema, my.Table, v, strings.Join(c, "`,`"), invisibleClause)
+				strsql = fmt.Sprintf("ALTER TABLE %s.%s ADD UNIQUE INDEX %s(`%s`)%s;", mysqlQuoteIdent(targetSchema), mysqlQuoteIdent(my.Table), mysqlQuoteIdent(v), strings.Join(c, "`,`"), invisibleClause)
 			case "mul":
-				strsql = fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD INDEX %s(`%s`)%s;", targetSchema, my.Table, v, strings.Join(c, "`,`"), invisibleClause)
+				strsql = fmt.Sprintf("ALTER TABLE %s.%s ADD INDEX %s(`%s`)%s;", mysqlQuoteIdent(targetSchema), mysqlQuoteIdent(my.Table), mysqlQuoteIdent(v), strings.Join(c, "`,`"), invisibleClause)
 			}
 		}
 		sqlS = append(sqlS, strsql)
@@ -1053,16 +1075,16 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterIndexSqlExec(e, f []string, si map
 
 		if isForeignKey {
 			// 删除外键约束
-			strsql = fmt.Sprintf("ALTER TABLE `%s`.`%s` DROP FOREIGN KEY `%s`;", targetSchema, my.Table, v)
+			strsql = fmt.Sprintf("ALTER TABLE %s.%s DROP FOREIGN KEY %s;", mysqlQuoteIdent(targetSchema), mysqlQuoteIdent(my.Table), mysqlQuoteIdent(v))
 		} else {
 			// 处理普通索引、唯一索引和主键索引
 			switch my.IndexType {
 			case "pri":
-				strsql = fmt.Sprintf("ALTER TABLE `%s`.`%s` DROP PRIMARY KEY;", targetSchema, my.Table)
+				strsql = fmt.Sprintf("ALTER TABLE %s.%s DROP PRIMARY KEY;", mysqlQuoteIdent(targetSchema), mysqlQuoteIdent(my.Table))
 			case "uni":
-				strsql = fmt.Sprintf("ALTER TABLE `%s`.`%s` DROP INDEX %s;", targetSchema, my.Table, v)
+				strsql = fmt.Sprintf("ALTER TABLE %s.%s DROP INDEX %s;", mysqlQuoteIdent(targetSchema), mysqlQuoteIdent(my.Table), mysqlQuoteIdent(v))
 			case "mul":
-				strsql = fmt.Sprintf("ALTER TABLE `%s`.`%s` DROP INDEX %s;", targetSchema, my.Table, v)
+				strsql = fmt.Sprintf("ALTER TABLE %s.%s DROP INDEX %s;", mysqlQuoteIdent(targetSchema), mysqlQuoteIdent(my.Table), mysqlQuoteIdent(v))
 			}
 		}
 		sqlS = append(sqlS, strsql)
@@ -1328,7 +1350,7 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterColumnSqlGenerate(modifyColumn []s
 	)
 
 	if len(modifyColumn) > 0 {
-		alterSql = append(alterSql, fmt.Sprintf("ALTER TABLE `%s`.`%s` %s;", targetSchema, my.Table, strings.Join(modifyColumn, ",")))
+		alterSql = append(alterSql, fmt.Sprintf("ALTER TABLE %s.%s %s;", mysqlQuoteIdent(targetSchema), mysqlQuoteIdent(my.Table), strings.Join(modifyColumn, ",")))
 	}
 	return alterSql
 }
@@ -1389,28 +1411,15 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterColumnAndIndexSqlGenerate(columnOp
 		// 提取操作内容（去除ALTER TABLE前缀和分号）
 		var operationContents []string
 		for _, op := range allOperations {
-			// 去除ALTER TABLE前缀
-			op = strings.TrimSpace(op)
-			if strings.HasPrefix(strings.ToUpper(op), "ALTER TABLE") {
-				// 找到第一个空格后的内容
-				parts := strings.SplitN(op, " ", 4)
-				if len(parts) >= 4 {
-					// 获取操作内容部分
-					operationContent := strings.TrimSpace(parts[3])
-					// 去除末尾的分号
-					operationContent = strings.TrimSuffix(operationContent, ";")
-					operationContents = append(operationContents, operationContent)
-				}
-			} else {
-				// 如果不是ALTER TABLE语句，直接使用并去除分号
-				op = strings.TrimSuffix(op, ";")
-				operationContents = append(operationContents, op)
+			content := normalizeAlterOperationContent(op)
+			if content != "" {
+				operationContents = append(operationContents, content)
 			}
 		}
 
 		if len(operationContents) > 0 {
 			// 生成单个ALTER TABLE语句，包含所有操作
-			alterSql = append(alterSql, fmt.Sprintf("ALTER TABLE `%s`.`%s` %s;", targetSchema, my.Table, strings.Join(operationContents, ", ")))
+			alterSql = append(alterSql, fmt.Sprintf("ALTER TABLE %s.%s %s;", mysqlQuoteIdent(targetSchema), mysqlQuoteIdent(my.Table), strings.Join(operationContents, ", ")))
 
 			// 添加调试日志
 			vlog := fmt.Sprintf("(%d) Generated combined ALTER TABLE SQL for %s.%s: %d column operations, %d index operations",
@@ -1428,9 +1437,10 @@ func normalizeAlterOperationContent(op string) string {
 		return ""
 	}
 	if strings.HasPrefix(strings.ToUpper(op), "ALTER TABLE") {
-		parts := strings.SplitN(op, " ", 4)
-		if len(parts) >= 4 {
-			op = strings.TrimSpace(parts[3])
+		// 用正则提取操作片段，支持含空格的反引号标识符（BUG-5 修复）
+		m := alterTablePrefixRe.FindStringSubmatch(op)
+		if m != nil {
+			return strings.TrimSpace(m[1])
 		}
 	}
 	return strings.TrimSpace(strings.TrimSuffix(op, ";"))
@@ -1547,28 +1557,15 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterIndexSqlGenerate(indexOperations [
 		// 提取操作内容（去除ALTER TABLE前缀和分号）
 		var operationContents []string
 		for _, op := range indexOperations {
-			// 去除ALTER TABLE前缀
-			op = strings.TrimSpace(op)
-			if strings.HasPrefix(strings.ToUpper(op), "ALTER TABLE") {
-				// 找到第一个空格后的内容
-				parts := strings.SplitN(op, " ", 4)
-				if len(parts) >= 4 {
-					// 获取操作内容部分
-					operationContent := strings.TrimSpace(parts[3])
-					// 去除末尾的分号
-					operationContent = strings.TrimSuffix(operationContent, ";")
-					operationContents = append(operationContents, operationContent)
-				}
-			} else {
-				// 如果不是ALTER TABLE语句，直接使用并去除分号
-				op = strings.TrimSuffix(op, ";")
-				operationContents = append(operationContents, op)
+			content := normalizeAlterOperationContent(op)
+			if content != "" {
+				operationContents = append(operationContents, content)
 			}
 		}
 
 		if len(operationContents) > 0 {
 			// 生成单个ALTER TABLE语句，包含所有索引操作
-			alterSql = append(alterSql, fmt.Sprintf("ALTER TABLE `%s`.`%s` %s;", targetSchema, my.Table, strings.Join(operationContents, ", ")))
+			alterSql = append(alterSql, fmt.Sprintf("ALTER TABLE %s.%s %s;", mysqlQuoteIdent(targetSchema), mysqlQuoteIdent(my.Table), strings.Join(operationContents, ", ")))
 
 			// 添加调试日志
 			vlog := fmt.Sprintf("(%d) Generated combined ALTER TABLE SQL for %s.%s: %d index operations",
@@ -1604,11 +1601,11 @@ func (my *MysqlDataAbnormalFixStruct) FixTableCharsetSqlGenerate(charset, collat
 
 	// 生成表级别字符集转换的SQL语句
 	if strings.TrimSpace(collation) == "" {
-		alterSql = append(alterSql, fmt.Sprintf("ALTER TABLE `%s`.`%s` CONVERT TO CHARACTER SET %s;",
-			targetSchema, my.Table, trimmedCharset))
+		alterSql = append(alterSql, fmt.Sprintf("ALTER TABLE %s.%s CONVERT TO CHARACTER SET %s;",
+			mysqlQuoteIdent(targetSchema), mysqlQuoteIdent(my.Table), trimmedCharset))
 	} else {
-		alterSql = append(alterSql, fmt.Sprintf("ALTER TABLE `%s`.`%s` CONVERT TO CHARACTER SET %s COLLATE %s;",
-			targetSchema, my.Table, trimmedCharset, collation))
+		alterSql = append(alterSql, fmt.Sprintf("ALTER TABLE %s.%s CONVERT TO CHARACTER SET %s COLLATE %s;",
+			mysqlQuoteIdent(targetSchema), mysqlQuoteIdent(my.Table), trimmedCharset, collation))
 	}
 
 	// 添加日志，方便调试
@@ -1627,7 +1624,7 @@ func (my *MysqlDataAbnormalFixStruct) FixTableAutoIncrementSqlGenerate(nextValue
 		targetSchema = my.Schema
 	)
 
-	alterSql = append(alterSql, fmt.Sprintf("ALTER TABLE `%s`.`%s` AUTO_INCREMENT=%d;", targetSchema, my.Table, nextValue))
+	alterSql = append(alterSql, fmt.Sprintf("ALTER TABLE %s.%s AUTO_INCREMENT=%d;", mysqlQuoteIdent(targetSchema), mysqlQuoteIdent(my.Table), nextValue))
 
 	vlog := fmt.Sprintf("(%d) Generated table AUTO_INCREMENT SQL: %s", logThreadSeq, alterSql[0])
 	if global.Wlog != nil {
@@ -1970,13 +1967,13 @@ func GenerateRoutineFixSQL(sourceSchema, destSchema, name, routineType, sourceDe
 		}
 	}
 
-	drop := fmt.Sprintf("DROP %s IF EXISTS `%s`.`%s`;", upperType, destSchema, name)
+	drop := fmt.Sprintf("DROP %s IF EXISTS %s.%s;", upperType, mysqlQuoteIdent(destSchema), mysqlQuoteIdent(name))
 	return []string{drop, createStmt}
 }
 
 // GenerateTriggerFixSQL builds DROP + CREATE statements for trigger
 func GenerateTriggerFixSQL(sourceSchema, destSchema, name, sourceDef string) []string {
-	drop := fmt.Sprintf("DROP TRIGGER IF EXISTS `%s`.`%s`;", destSchema, name)
+	drop := fmt.Sprintf("DROP TRIGGER IF EXISTS %s.%s;", mysqlQuoteIdent(destSchema), mysqlQuoteIdent(name))
 
 	// 处理源端定义中的schema名称替换
 	processedDef := processTriggerSchemaNames(sourceDef, sourceSchema, destSchema)
