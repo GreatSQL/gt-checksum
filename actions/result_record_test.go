@@ -78,6 +78,14 @@ func TestResolveObjectIdentity_structMode(t *testing.T) {
 	}
 }
 
+func TestResolveObjectIdentity_structModeViewOverride(t *testing.T) {
+	pod := Pod{Schema: "db1", Table: "v_users", CheckObject: "struct", ObjectKind: "view"}
+	schema, objectName, objectType := resolveObjectIdentity(pod)
+	if schema != "db1" || objectName != "v_users" || objectType != "view" {
+		t.Errorf("got schema=%q objectName=%q objectType=%q", schema, objectName, objectType)
+	}
+}
+
 func TestResolveObjectIdentity_procedure(t *testing.T) {
 	pod := Pod{Schema: "db1", ProcName: "sp_calc", CheckObject: "procedure"}
 	schema, objectName, objectType := resolveObjectIdentity(pod)
@@ -217,6 +225,20 @@ func TestShouldDisplayInTerminal_unknownModeFallsThrough(t *testing.T) {
 	}
 }
 
+func TestStructResultObjectType_defaultsToTable(t *testing.T) {
+	pod := Pod{Schema: "db1", Table: "orders", CheckObject: "struct"}
+	if got := structResultObjectType(pod); got != "table" {
+		t.Fatalf("expected table, got %q", got)
+	}
+}
+
+func TestStructResultObjectType_viewOverride(t *testing.T) {
+	pod := Pod{Schema: "db1", Table: "v_orders", CheckObject: "struct", ObjectKind: "view"}
+	if got := structResultObjectType(pod); got != "view" {
+		t.Fatalf("expected view, got %q", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // normalizeCheckObject
 // ---------------------------------------------------------------------------
@@ -295,5 +317,63 @@ func TestNormalizePodToRecord_functionCheckObjectIsRoutine(t *testing.T) {
 	}
 	if rec.ObjectType != "function" {
 		t.Errorf("ObjectType = %q, want function", rec.ObjectType)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// VIEW ObjectKind → ObjectType routing (Phase 2)
+// ---------------------------------------------------------------------------
+
+func TestResolveObjectIdentity_viewObjectKind(t *testing.T) {
+	pod := Pod{Schema: "db1", Table: "v_orders", CheckObject: "struct", ObjectKind: "view"}
+	schema, objectName, objectType := resolveObjectIdentity(pod)
+	if schema != "db1" {
+		t.Errorf("schema = %q, want db1", schema)
+	}
+	if objectName != "v_orders" {
+		t.Errorf("objectName = %q, want v_orders", objectName)
+	}
+	if objectType != "view" {
+		t.Errorf("objectType = %q, want view", objectType)
+	}
+}
+
+func TestResolveObjectIdentity_viewObjectKindCaseInsensitive(t *testing.T) {
+	pod := Pod{Schema: "db1", Table: "v_orders", CheckObject: "struct", ObjectKind: "VIEW"}
+	_, _, objectType := resolveObjectIdentity(pod)
+	if objectType != "view" {
+		t.Errorf("objectType = %q, want view (ObjectKind='VIEW' should be case-insensitive)", objectType)
+	}
+}
+
+func TestResolveObjectIdentity_emptyObjectKindFallsThrough(t *testing.T) {
+	// Empty ObjectKind must fall through to CheckObject-based logic (no regressions).
+	pod := Pod{Schema: "db1", Table: "orders", CheckObject: "struct", ObjectKind: ""}
+	_, _, objectType := resolveObjectIdentity(pod)
+	if objectType != "table" {
+		t.Errorf("objectType = %q, want table when ObjectKind is empty", objectType)
+	}
+}
+
+func TestNormalizePodToRecord_viewObjectType(t *testing.T) {
+	m := mockConfig("20260323120000", "all")
+	pod := Pod{Schema: "db1", Table: "v_orders", CheckObject: "struct", ObjectKind: "view", DIFFS: "yes"}
+	rec := normalizePodToRecord(m, pod, "2026-03-23 12:00:00")
+	if rec.ObjectType != "view" {
+		t.Errorf("ObjectType = %q, want view", rec.ObjectType)
+	}
+	if rec.ObjectName != "v_orders" {
+		t.Errorf("ObjectName = %q, want v_orders", rec.ObjectName)
+	}
+	// Table field is empty for non-table object types (consistent with routine/trigger).
+	if rec.Table != "" {
+		t.Errorf("Table = %q, want empty for view records", rec.Table)
+	}
+	if rec.Diffs != "yes" {
+		t.Errorf("Diffs = %q, want yes", rec.Diffs)
+	}
+	// VIEW pods keep CheckObject=struct in the result record (cc §5.3).
+	if rec.CheckObject != "struct" {
+		t.Errorf("CheckObject = %q, want struct (VIEW pods must retain CheckObject=struct)", rec.CheckObject)
 	}
 }
