@@ -397,8 +397,6 @@ generate_test_matrix() {
 generate_gt_checksum_config() {
     local src_port="$1" dst_port="$2" mode="$3" case_dir="$4"
 
-    local fix_per_table="ON"
-
     cat > "${case_dir}/gt-checksum.conf" <<EOF
 srcDSN=mysql|${DB_USER}:${DB_PASS}@tcp(${DB_HOST}:${src_port})/information_schema?charset=utf8mb4
 dstDSN=mysql|${DB_USER}:${DB_PASS}@tcp(${DB_HOST}:${dst_port})/information_schema?charset=utf8mb4
@@ -412,7 +410,6 @@ checkObject=${mode}
 memoryLimit=3000
 datafix=file
 fixFileDir=${case_dir}/fixsql
-fixFilePerTable=${fix_per_table}
 logFile=${case_dir}/gt-checksum.log
 logLevel=debug
 EOF
