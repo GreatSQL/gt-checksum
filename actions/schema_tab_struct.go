@@ -540,10 +540,9 @@ type schemaTable struct {
 	sourceDB                *sql.DB
 	destDB                  *sql.DB
 	caseSensitiveObjectName string
-	datafix                 string
-	sfile                   *os.File
-	datafixSql              string
-	fixFilePerTable         string
+	datafix           string
+	datafixSql        string
+	fixFileObjectType string // 文件名中的对象类型前缀，如 "table"/"view"/"trigger"/"routine"
 	djdbc                   string
 	checkRules              inputArg.RulesS
 	// 添加表映射规则
@@ -1969,21 +1968,19 @@ func (stcls *schemaTable) writeAdvisoryFixSql(sqls []string, logThreadSeq int64)
 		return nil
 	}
 
-	if stcls.sfile != nil {
-		return mysql.WriteFixIfNeededFile(stcls.datafix, stcls.sfile, sqls, logThreadSeq, stcls.djdbc)
+	objType := stcls.fixFileObjectType
+	if objType == "" {
+		objType = "table"
 	}
-
-	if stcls.fixFilePerTable == "ON" {
-		tableFileName := fmt.Sprintf("%s/%s.sql", stcls.datafixSql, stcls.table)
-		file, err := os.OpenFile(tableFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-		if err != nil {
-			return fmt.Errorf("failed to open advisory fix file %s: %v", tableFileName, err)
-		}
-		defer file.Close()
-		return mysql.WriteFixIfNeededFile(stcls.datafix, file, sqls, logThreadSeq, stcls.djdbc)
+	tableFileName := fmt.Sprintf("%s/%s.%s.%s.sql",
+		stcls.datafixSql, objType,
+		fixFileNameEncode(stcls.schema), fixFileNameEncode(stcls.table))
+	file, err := os.OpenFile(tableFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open advisory fix file %s: %v", tableFileName, err)
 	}
-
-	return nil
+	defer file.Close()
+	return mysql.WriteFixIfNeededFile(stcls.datafix, file, sqls, logThreadSeq, stcls.djdbc)
 }
 
 type alterTableMergeBucket struct {
@@ -2539,8 +2536,13 @@ func buildViewDropAdvisoryLines(destSchema, viewName string) []string {
 // even in exceptional code paths.
 func (stcls *schemaTable) writeViewAdvisoryForDest(destViewName string, lines []string, logThreadSeq int64) error {
 	orig := stcls.table
+	origType := stcls.fixFileObjectType
 	stcls.table = destViewName
-	defer func() { stcls.table = orig }()
+	stcls.fixFileObjectType = "view"
+	defer func() {
+		stcls.table = orig
+		stcls.fixFileObjectType = origType
+	}()
 	return stcls.writeAdvisoryFixSql(lines, logThreadSeq)
 }
 
@@ -5317,19 +5319,6 @@ func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 in
 		sourceTrigger, destTrigger map[string]string
 		err                        error
 	)
-	triggerDefFixSQLs := make([]string, 0)
-	appendTriggerDefinitionFixSQLs := func(sqls []string) {
-		for _, s := range sqls {
-			ts := strings.TrimSpace(s)
-			if ts == "" {
-				continue
-			}
-			if strings.HasPrefix(strings.ToUpper(ts), "DROP ") && !strings.HasSuffix(ts, ";") {
-				ts += ";"
-			}
-			triggerDefFixSQLs = append(triggerDefFixSQLs, ts)
-		}
-	}
 
 	vlog = fmt.Sprintf("(%d) Start init check source and target DB Trigger. to check it...", logThreadSeq)
 	global.Wlog.Info(vlog)
@@ -5655,7 +5644,21 @@ func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 in
 						tsqls = enriched
 					}
 				}
-				appendTriggerDefinitionFixSQLs(tsqls)
+				// 每个 trigger 写入独立文件（trigger.schema.triggername.sql）
+				out := make([]string, 0, len(tsqls)+2)
+				out = append(out, "DELIMITER $$")
+				for _, stmt := range tsqls {
+					out = append(out, stmt+"\n$$")
+				}
+				out = append(out, "DELIMITER ;")
+				origSchema, origTable, origObjType := stcls.schema, stcls.table, stcls.fixFileObjectType
+				stcls.schema = schema
+				stcls.table = trName
+				stcls.fixFileObjectType = "trigger"
+				if werr := stcls.writeFixSql(out, logThreadSeq); werr != nil {
+					global.Wlog.Error(fmt.Sprintf("(%d) failed to write trigger fix SQL for %s.%s: %v", logThreadSeq, schema, trName, werr))
+				}
+				stcls.schema, stcls.table, stcls.fixFileObjectType = origSchema, origTable, origObjType
 			} else if collationMappedOnly {
 				pods.DIFFS = global.SkipDiffsCollationMapped
 				c = append(c, k)
@@ -5669,17 +5672,6 @@ func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 in
 			vlog = fmt.Sprintf("(%d) The source target segment databases %s Trigger data verification is completed", logThreadSeq, schema)
 			global.Wlog.Debug(vlog)
 			measuredDataPods = append(measuredDataPods, pods)
-		}
-	}
-	if len(triggerDefFixSQLs) > 0 {
-		out := make([]string, 0, len(triggerDefFixSQLs)+2)
-		out = append(out, "DELIMITER $$")
-		for _, stmt := range triggerDefFixSQLs {
-			out = append(out, stmt+"\n$$")
-		}
-		out = append(out, "DELIMITER ;")
-		if err := stcls.writeFixSql(out, logThreadSeq); err != nil {
-			global.Wlog.Error(fmt.Sprintf("(%d) failed to write trigger definition fix SQLs: %v", logThreadSeq, err))
 		}
 	}
 	vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment table Trigger data. normal databases message is {%s} num [%d] abnormal databases message is {%s} num [%d]", logThreadSeq, c, len(c), d, len(d))
@@ -6001,32 +5993,6 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 	schemaMap := make(map[string]int)
 	procMap := make(map[string]string)
 	funcMap := make(map[string]string)
-	// 收集 routine 修复 SQL，统一仅在末尾输出 DELIMITER ;
-	// 避免多次写入时被去重逻辑打乱 DELIMITER 的位置。
-	routineDefFixSQLs := make([]string, 0)
-	routineCommentFixSQLs := make([]string, 0)
-
-	appendRoutineDefinitionFixSQLs := func(sqls []string) {
-		for _, s := range sqls {
-			ts := strings.TrimSpace(s)
-			if ts == "" {
-				continue
-			}
-			if strings.HasPrefix(strings.ToUpper(ts), "DROP ") && !strings.HasSuffix(ts, ";") {
-				ts += ";"
-			}
-			routineDefFixSQLs = append(routineDefFixSQLs, ts)
-		}
-	}
-
-	appendRoutineCommentFixSQL := func(sql string) {
-		ts := strings.TrimSpace(sql)
-		if ts == "" {
-			return
-		}
-		routineCommentFixSQLs = append(routineCommentFixSQLs, ts)
-	}
-
 	if stcls.caseSensitiveObjectName == "no" {
 		// 统一转小写的辅助闭包
 		lower := func(s string) string { return strings.ToLower(s) }
@@ -6311,7 +6277,14 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 							if !shouldRecreateRoutineForCommentDiff(sourceComment) {
 								commentSQL := buildMySQLRoutineCommentFixSQL(destSchema, k, "PROCEDURE", sourceComment)
 								global.Wlog.Warn(fmt.Sprintf("(%d) Generating PROCEDURE comment fix SQL: %s", logThreadSeq, commentSQL))
-								appendRoutineCommentFixSQL(commentSQL)
+								origSchema, origTable, origObjType := stcls.schema, stcls.table, stcls.fixFileObjectType
+								stcls.schema = schema
+								stcls.table = k
+								stcls.fixFileObjectType = "routine"
+								if werr := stcls.writeFixSql([]string{commentSQL}, logThreadSeq); werr != nil {
+									global.Wlog.Error(fmt.Sprintf("(%d) failed to write routine comment fix SQL for %s.%s: %v", logThreadSeq, schema, k, werr))
+								}
+								stcls.schema, stcls.table, stcls.fixFileObjectType = origSchema, origTable, origObjType
 								continue
 							}
 							global.Wlog.Warn(fmt.Sprintf("(%d) PROCEDURE %s.%s source comment is empty, recreating routine instead of ALTER COMMENT", logThreadSeq, schema, k))
@@ -6341,7 +6314,31 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 								sqls = enriched
 							}
 						}
-						appendRoutineDefinitionFixSQLs(sqls)
+						normalizedSqls := make([]string, 0, len(sqls))
+						for _, s := range sqls {
+							ts := strings.TrimSpace(s)
+							if ts == "" {
+								continue
+							}
+							if strings.HasPrefix(strings.ToUpper(ts), "DROP ") && !strings.HasSuffix(ts, ";") {
+								ts += ";"
+							}
+							normalizedSqls = append(normalizedSqls, ts)
+						}
+						out := make([]string, 0, len(normalizedSqls)+2)
+						out = append(out, "DELIMITER $$")
+						for _, stmt := range normalizedSqls {
+							out = append(out, stmt+"\n$$")
+						}
+						out = append(out, "DELIMITER ;")
+						origSchema, origTable, origObjType := stcls.schema, stcls.table, stcls.fixFileObjectType
+						stcls.schema = schema
+						stcls.table = k
+						stcls.fixFileObjectType = "routine"
+						if werr := stcls.writeFixSql(out, logThreadSeq); werr != nil {
+							global.Wlog.Error(fmt.Sprintf("(%d) failed to write procedure fix SQL for %s.%s: %v", logThreadSeq, schema, k, werr))
+						}
+						stcls.schema, stcls.table, stcls.fixFileObjectType = origSchema, origTable, origObjType
 					}
 				}
 			}
@@ -6528,7 +6525,14 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 							if !shouldRecreateRoutineForCommentDiff(sourceComment) {
 								commentSQL := buildMySQLRoutineCommentFixSQL(destSchema, k, "FUNCTION", sourceComment)
 								global.Wlog.Warn(fmt.Sprintf("(%d) Generating FUNCTION comment fix SQL: %s", logThreadSeq, commentSQL))
-								appendRoutineCommentFixSQL(commentSQL)
+								origSchema, origTable, origObjType := stcls.schema, stcls.table, stcls.fixFileObjectType
+								stcls.schema = schema
+								stcls.table = k
+								stcls.fixFileObjectType = "routine"
+								if werr := stcls.writeFixSql([]string{commentSQL}, logThreadSeq); werr != nil {
+									global.Wlog.Error(fmt.Sprintf("(%d) failed to write routine comment fix SQL for %s.%s: %v", logThreadSeq, schema, k, werr))
+								}
+								stcls.schema, stcls.table, stcls.fixFileObjectType = origSchema, origTable, origObjType
 								continue
 							}
 							global.Wlog.Warn(fmt.Sprintf("(%d) FUNCTION %s.%s source comment is empty, recreating routine instead of ALTER COMMENT", logThreadSeq, schema, k))
@@ -6558,7 +6562,31 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 								funcSqls = enriched
 							}
 						}
-						appendRoutineDefinitionFixSQLs(funcSqls)
+						normalizedFuncSqls := make([]string, 0, len(funcSqls))
+						for _, s := range funcSqls {
+							ts := strings.TrimSpace(s)
+							if ts == "" {
+								continue
+							}
+							if strings.HasPrefix(strings.ToUpper(ts), "DROP ") && !strings.HasSuffix(ts, ";") {
+								ts += ";"
+							}
+							normalizedFuncSqls = append(normalizedFuncSqls, ts)
+						}
+						out := make([]string, 0, len(normalizedFuncSqls)+2)
+						out = append(out, "DELIMITER $$")
+						for _, stmt := range normalizedFuncSqls {
+							out = append(out, stmt+"\n$$")
+						}
+						out = append(out, "DELIMITER ;")
+						origSchema, origTable, origObjType := stcls.schema, stcls.table, stcls.fixFileObjectType
+						stcls.schema = schema
+						stcls.table = k
+						stcls.fixFileObjectType = "routine"
+						if werr := stcls.writeFixSql(out, logThreadSeq); werr != nil {
+							global.Wlog.Error(fmt.Sprintf("(%d) failed to write function fix SQL for %s.%s: %v", logThreadSeq, schema, k, werr))
+						}
+						stcls.schema, stcls.table, stcls.fixFileObjectType = origSchema, origTable, origObjType
 					}
 				}
 			}
@@ -6569,24 +6597,6 @@ func (stcls *schemaTable) Routine(dtabS []string, logThreadSeq, logThreadSeq2 in
 		}
 	}
 
-	// 先写 comment-only 修复 SQL，再写 routine 定义 SQL。
-	// routine 定义统一包裹一次 DELIMITER，确保 DELIMITER ; 始终在末尾。
-	if len(routineCommentFixSQLs) > 0 {
-		if err := stcls.writeFixSql(routineCommentFixSQLs, logThreadSeq); err != nil {
-			global.Wlog.Error(fmt.Sprintf("(%d) failed to write routine comment fix SQLs: %v", logThreadSeq, err))
-		}
-	}
-	if len(routineDefFixSQLs) > 0 {
-		out := make([]string, 0, len(routineDefFixSQLs)+2)
-		out = append(out, "DELIMITER $$")
-		for _, stmt := range routineDefFixSQLs {
-			out = append(out, stmt+"\n$$")
-		}
-		out = append(out, "DELIMITER ;")
-		if err := stcls.writeFixSql(out, logThreadSeq); err != nil {
-			global.Wlog.Error(fmt.Sprintf("(%d) failed to write routine definition fix SQLs: %v", logThreadSeq, err))
-		}
-	}
 }
 
 /*
@@ -7890,9 +7900,7 @@ func SchemaTableInit(m *inputArg.ConfigParameter) *schemaTable {
 		destDB:                   ddb,
 		caseSensitiveObjectName:  m.SecondaryL.SchemaV.CaseSensitiveObjectName,
 		datafix:                  m.SecondaryL.RepairV.Datafix,
-		sfile:                    m.SecondaryL.RepairV.FixFileFINE,
 		datafixSql:               m.SecondaryL.RepairV.FixFileDir,
-		fixFilePerTable:          m.SecondaryL.RepairV.FixFilePerTable,
 		djdbc:                    m.SecondaryL.DsnsV.DestJdbc,
 		checkRules:               m.SecondaryL.RulesV,
 		tableMappings:            tableMappings,
@@ -7906,7 +7914,7 @@ func SchemaTableInit(m *inputArg.ConfigParameter) *schemaTable {
 }
 
 /*
-writeFixSql 处理不同的修复SQL文件写入逻辑，支持 fixFilePerTable 设置为 ON 的独立文件情况
+writeFixSql 处理修复SQL文件写入逻辑，每对象写入独立文件（type.schema.object.sql）
 */
 func (stcls *schemaTable) writeFixSql(sqls []string, logThreadSeq int64) error {
 	if len(sqls) == 0 {
@@ -7940,27 +7948,23 @@ func (stcls *schemaTable) writeFixSql(sqls []string, logThreadSeq int64) error {
 		return nil
 	}
 
-	// 如果 fixFilePerTable=OFF, 且 sfile 不为 nil, 直接写入总文件
-	if stcls.sfile != nil {
-		return mysql.WriteFixIfNeededFile(stcls.datafix, stcls.sfile, sqls, logThreadSeq, stcls.djdbc)
+	objType := stcls.fixFileObjectType
+	if objType == "" {
+		objType = "table"
 	}
-
-	// 如果 fixFilePerTable=ON, sfile 会为 nil, 需要针对当前表创建独立的SQL文件
-	if stcls.fixFilePerTable == "ON" {
-		tableFileName := fmt.Sprintf("%s/%s.sql", stcls.datafixSql, stcls.table)
-		file, err := os.OpenFile(tableFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-		if err != nil {
-			return fmt.Errorf("failed to open fix file %s: %v", tableFileName, err)
-		}
-		defer file.Close()
-
-		vlog := fmt.Sprintf("(%d) Opened table specific fix file %s for struct repair", logThreadSeq, tableFileName)
-		global.Wlog.Debug(vlog)
-
-		return mysql.WriteFixIfNeededFile(stcls.datafix, file, sqls, logThreadSeq, stcls.djdbc)
+	tableFileName := fmt.Sprintf("%s/%s.%s.%s.sql",
+		stcls.datafixSql, objType,
+		fixFileNameEncode(stcls.schema), fixFileNameEncode(stcls.table))
+	file, err := os.OpenFile(tableFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open fix file %s: %v", tableFileName, err)
 	}
+	defer file.Close()
 
-	return nil
+	vlog := fmt.Sprintf("(%d) Opened object-specific fix file %s", logThreadSeq, tableFileName)
+	global.Wlog.Debug(vlog)
+
+	return mysql.WriteFixIfNeededFile(stcls.datafix, file, sqls, logThreadSeq, stcls.djdbc)
 }
 
 /*

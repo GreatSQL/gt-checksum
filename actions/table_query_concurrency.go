@@ -22,7 +22,6 @@ type SchedulePlan struct {
 	datafixType              string
 	datafixSql               string
 	sdrive, ddrive           string
-	sfile                    *os.File
 	checkObject              string
 	checkNoIndexTable        string //是否检查无索引表
 	tableAllCol              map[string]global.TableAllColumnInfoS
@@ -44,7 +43,6 @@ type SchedulePlan struct {
 	tableMappings             map[string]string // 表映射关系
 	bar                       *Bar              // 进度条
 	forceFullTableCheck       bool              // 是否强制进行全表检查
-	fixFilePerTable           string            // 是否每个表一个独立的修复文件
 }
 
 // getDisplayTableName 返回表的显示名称，包含映射关系信息
@@ -303,7 +301,6 @@ func CheckTableQuerySchedule(sdb, ddb *global.Pool, tableIndexColumnMap map[stri
 		ddrive:                  m.SecondaryL.DsnsV.DestDrive,
 		mqQueueDepth:            m.SecondaryL.RulesV.QueueSize,
 		checkNoIndexTable:       m.SecondaryL.SchemaV.CheckNoIndexTable,
-		sfile:                   m.SecondaryL.RepairV.FixFileFINE,
 		checkObject:             m.SecondaryL.RulesV.CheckObject,
 		TmpFileName:             m.NoIndexTableTmpFile,
 		caseSensitiveObjectName: m.SecondaryL.SchemaV.CaseSensitiveObjectName,
@@ -313,7 +310,6 @@ func CheckTableQuerySchedule(sdb, ddb *global.Pool, tableIndexColumnMap map[stri
 		deleteSqlSize:           m.SecondaryL.RepairV.DeleteSqlSize * 1024,
 		djdbc:                   m.SecondaryL.DsnsV.DestJdbc,
 		tableMappings:           tableMappings,
-		fixFilePerTable:         m.SecondaryL.RepairV.FixFilePerTable,
 	}
 }
 

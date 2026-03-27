@@ -16,7 +16,6 @@ import (
 	"math"
 	"math/rand"
 	"os"
-	"path/filepath"
 	"regexp"
 	"runtime"
 	"sort"
@@ -2090,24 +2089,16 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 	var (
 		deleteWriter *sqlRollingWriter
 		insertWriter *sqlRollingWriter
-		sharedWriter *sqlRollingWriter
 	)
 	if sp.datafixType != "table" {
-		if sp.fixFilePerTable == "ON" && (sp.datafixType == "file" || sp.datafixType == "yes") {
-			deleteWriter = sp.newSQLRollingWriter("DELETE", maxStmtPerFile, maxFileSizeBytes, logThreadSeq)
-			insertWriter = sp.newSQLRollingWriter("INSERT", maxStmtPerFile, maxFileSizeBytes, logThreadSeq)
-		} else {
-			sharedWriter = sp.newSQLRollingWriter("ALL", maxStmtPerFile, maxFileSizeBytes, logThreadSeq)
-		}
+		deleteWriter = sp.newSQLRollingWriter("DELETE", maxStmtPerFile, maxFileSizeBytes, logThreadSeq)
+		insertWriter = sp.newSQLRollingWriter("INSERT", maxStmtPerFile, maxFileSizeBytes, logThreadSeq)
 	}
 	if deleteWriter != nil {
 		defer deleteWriter.close()
 	}
 	if insertWriter != nil {
 		defer insertWriter.close()
-	}
-	if sharedWriter != nil {
-		defer sharedWriter.close()
 	}
 
 	processDeleteBatch := func(batch []string) error {
@@ -2116,11 +2107,8 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 			return nil
 		}
 		if sp.datafixType == "table" {
-			writeOptimizedSqlChunk(optimized, sp.datafixType, sp.sfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
+			writeOptimizedSqlChunk(optimized, sp.datafixType, nil, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
 			return nil
-		}
-		if sharedWriter != nil {
-			return sharedWriter.write(optimized)
 		}
 		return deleteWriter.write(optimized)
 	}
@@ -2130,131 +2118,66 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 			return nil
 		}
 		if sp.datafixType == "table" {
-			writeOptimizedSqlChunk(optimized, sp.datafixType, sp.sfile, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
+			writeOptimizedSqlChunk(optimized, sp.datafixType, nil, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
 			return nil
-		}
-		if sharedWriter != nil {
-			return sharedWriter.write(optimized)
 		}
 		return insertWriter.write(optimized)
 	}
 
-	useDirectStreamPath := sp.datafixType != "table" &&
-		sp.fixFilePerTable == "ON" &&
-		(sp.datafixType == "file" || sp.datafixType == "yes")
-	if useDirectStreamPath {
-		global.Wlog.Info(fmt.Sprintf("(%d) Using direct fixsql stream path for %s.%s (skip stage tmp files)",
-			logThreadSeq, sp.schema, sp.table))
-		deleteBatch := make([]string, 0, stageBatchStmt)
-		insertBatch := make([]string, 0, stageBatchStmt)
-		var deleteBatchBytes int64
-		var insertBatchBytes int64
+	global.Wlog.Info(fmt.Sprintf("(%d) Writing per-object fixsql for %s.%s",
+		logThreadSeq, sp.schema, sp.table))
+	deleteBatch := make([]string, 0, stageBatchStmt)
+	insertBatch := make([]string, 0, stageBatchStmt)
+	var deleteBatchBytes int64
+	var insertBatchBytes int64
 
-		flushDelete := func() {
-			if len(deleteBatch) == 0 {
-				return
-			}
-			if err := processDeleteBatch(deleteBatch); err != nil {
-				sp.getErr(fmt.Sprintf("Failed streaming DELETE fixsql for %s.%s", sp.schema, sp.table), err)
-			}
-			deleteBatch = deleteBatch[:0]
-			deleteBatchBytes = 0
+	flushDelete := func() {
+		if len(deleteBatch) == 0 {
+			return
 		}
-		flushInsert := func() {
-			if len(insertBatch) == 0 {
-				return
-			}
-			if err := processInsertBatch(insertBatch); err != nil {
-				sp.getErr(fmt.Sprintf("Failed streaming INSERT fixsql for %s.%s", sp.schema, sp.table), err)
-			}
-			insertBatch = insertBatch[:0]
-			insertBatchBytes = 0
+		if err := processDeleteBatch(deleteBatch); err != nil {
+			sp.getErr(fmt.Sprintf("Failed streaming DELETE fixsql for %s.%s", sp.schema, sp.table), err)
 		}
+		deleteBatch = deleteBatch[:0]
+		deleteBatchBytes = 0
+	}
+	flushInsert := func() {
+		if len(insertBatch) == 0 {
+			return
+		}
+		if err := processInsertBatch(insertBatch); err != nil {
+			sp.getErr(fmt.Sprintf("Failed streaming INSERT fixsql for %s.%s", sp.schema, sp.table), err)
+		}
+		insertBatch = insertBatch[:0]
+		insertBatchBytes = 0
+	}
 
-		for v := range fixSQL {
-			sqlType := detectFixSQLType(v)
-			if sqlType == "" {
-				continue
+	for v := range fixSQL {
+		sqlType := detectFixSQLType(v)
+		if sqlType == "" {
+			continue
+		}
+		sp.pods.DIFFS = "yes"
+		sqlBytes := int64(len(v) + 1)
+		switch sqlType {
+		case "DELETE":
+			if len(deleteBatch) > 0 && (len(deleteBatch) >= stageBatchStmt || deleteBatchBytes+sqlBytes > stageBatchBytes) {
+				flushDelete()
 			}
-			sp.pods.DIFFS = "yes"
-			sqlBytes := int64(len(v) + 1)
-			switch sqlType {
-			case "DELETE":
-				if len(deleteBatch) > 0 && (len(deleteBatch) >= stageBatchStmt || deleteBatchBytes+sqlBytes > stageBatchBytes) {
-					flushDelete()
-				}
-				deleteBatch = append(deleteBatch, v)
-				deleteBatchBytes += sqlBytes
-				deleteCount++
-			case "INSERT":
-				if len(insertBatch) > 0 && (len(insertBatch) >= stageBatchStmt || insertBatchBytes+sqlBytes > stageBatchBytes) {
-					flushInsert()
-				}
-				insertBatch = append(insertBatch, v)
-				insertBatchBytes += sqlBytes
-				insertCount++
+			deleteBatch = append(deleteBatch, v)
+			deleteBatchBytes += sqlBytes
+			deleteCount++
+		case "INSERT":
+			if len(insertBatch) > 0 && (len(insertBatch) >= stageBatchStmt || insertBatchBytes+sqlBytes > stageBatchBytes) {
+				flushInsert()
 			}
-		}
-		flushDelete()
-		flushInsert()
-	} else {
-		global.Wlog.Info(fmt.Sprintf("(%d) Using stage file fixsql path for %s.%s",
-			logThreadSeq, sp.schema, sp.table))
-		stageDir := os.TempDir()
-		if sp.datafixType == "file" && sp.datafixSql != "" {
-			stageDir = sp.datafixSql
-		}
-		deleteStageFile, err := os.CreateTemp(stageDir, fmt.Sprintf("%s-delete-stage-*.tmp", sp.table))
-		if err != nil {
-			sp.getErr(fmt.Sprintf("Failed to create delete stage file for %s.%s", sp.schema, sp.table), err)
-		}
-		insertStageFile, err := os.CreateTemp(stageDir, fmt.Sprintf("%s-insert-stage-*.tmp", sp.table))
-		if err != nil {
-			sp.getErr(fmt.Sprintf("Failed to create insert stage file for %s.%s", sp.schema, sp.table), err)
-		}
-		deleteStagePath := deleteStageFile.Name()
-		insertStagePath := insertStageFile.Name()
-		defer os.Remove(deleteStagePath)
-		defer os.Remove(insertStagePath)
-
-		deleteStageWriter := bufio.NewWriterSize(deleteStageFile, 4*1024*1024)
-		insertStageWriter := bufio.NewWriterSize(insertStageFile, 4*1024*1024)
-
-		for v := range fixSQL {
-			sqlType := detectFixSQLType(v)
-			if sqlType == "" {
-				continue
-			}
-			sp.pods.DIFFS = "yes"
-			switch sqlType {
-			case "DELETE":
-				if _, err := deleteStageWriter.WriteString(v + "\n"); err != nil {
-					sp.getErr(fmt.Sprintf("Failed writing delete stage file for %s.%s", sp.schema, sp.table), err)
-				}
-				deleteCount++
-			case "INSERT":
-				if _, err := insertStageWriter.WriteString(v + "\n"); err != nil {
-					sp.getErr(fmt.Sprintf("Failed writing insert stage file for %s.%s", sp.schema, sp.table), err)
-				}
-				insertCount++
-			}
-		}
-		if err := deleteStageWriter.Flush(); err != nil {
-			sp.getErr(fmt.Sprintf("Failed flushing delete stage file for %s.%s", sp.schema, sp.table), err)
-		}
-		if err := insertStageWriter.Flush(); err != nil {
-			sp.getErr(fmt.Sprintf("Failed flushing insert stage file for %s.%s", sp.schema, sp.table), err)
-		}
-		deleteStageFile.Close()
-		insertStageFile.Close()
-
-		if err := processSQLStageFile(deleteStagePath, stageBatchStmt, stageBatchBytes, processDeleteBatch); err != nil {
-			sp.getErr(fmt.Sprintf("Failed processing delete stage file for %s.%s", sp.schema, sp.table), err)
-		}
-		if err := processSQLStageFile(insertStagePath, stageBatchStmt, stageBatchBytes, processInsertBatch); err != nil {
-			sp.getErr(fmt.Sprintf("Failed processing insert stage file for %s.%s", sp.schema, sp.table), err)
+			insertBatch = append(insertBatch, v)
+			insertBatchBytes += sqlBytes
+			insertCount++
 		}
 	}
+	flushDelete()
+	flushInsert()
 
 	if deleteCount > 0 || insertCount > 0 {
 		vlog = fmt.Sprintf("(%d) Repair statements generated for %s.%s: DELETE=%d, INSERT=%d",
@@ -2289,8 +2212,7 @@ type sqlRollingWriter struct {
 	maxStmt  int
 	maxBytes int64
 
-	sharedFile *os.File
-	pathFunc   func(fileSeq int) (string, bool)
+	pathFunc func(fileSeq int) (string, bool)
 
 	fileSeq    int
 	current    *os.File
@@ -2303,11 +2225,7 @@ func (w *sqlRollingWriter) ensureFile() error {
 		return nil
 	}
 	w.fileSeq++
-	path, useShared := w.pathFunc(w.fileSeq)
-	if useShared && w.sharedFile != nil {
-		w.current = w.sharedFile
-		return nil
-	}
+	path, _ := w.pathFunc(w.fileSeq)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return err
@@ -2317,7 +2235,7 @@ func (w *sqlRollingWriter) ensureFile() error {
 }
 
 func (w *sqlRollingWriter) rotate() error {
-	if w.current != nil && w.current != w.sharedFile {
+	if w.current != nil {
 		if err := w.current.Close(); err != nil {
 			return err
 		}
@@ -2402,45 +2320,13 @@ func (w *sqlRollingWriter) write(sqls []string) error {
 }
 
 func (sp *SchedulePlan) newSQLRollingWriter(sqlType string, maxStmtPerFile int, maxFileSizeBytes int64, logThreadSeq int64) *sqlRollingWriter {
-	baseFilePath := ""
-	if sp.sfile != nil {
-		baseFilePath = sp.sfile.Name()
-	}
-	if baseFilePath == "" {
-		baseFilePath = fmt.Sprintf("%s/datafix.sql", sp.datafixSql)
-	}
-	ext := filepath.Ext(baseFilePath)
-	if ext == "" {
-		ext = ".sql"
-	}
-	baseName := strings.TrimSuffix(baseFilePath, ext)
-	if sp.fixFilePerTable == "ON" && (sp.datafixType == "file" || sp.datafixType == "yes") {
-		pathFunc := func(fileSeq int) (string, bool) {
-			if sqlType == "DELETE" {
-				return fmt.Sprintf("%s/%s-DELETE-%d.sql", sp.datafixSql, sp.table, fileSeq), false
-			}
-			return fmt.Sprintf("%s/%s-%d.sql", sp.datafixSql, sp.table, fileSeq), false
-		}
-		return &sqlRollingWriter{
-			datafixType: sp.datafixType,
-			ddrive:      sp.ddrive,
-			djdbc:       sp.djdbc,
-			logThread:   logThreadSeq,
-			fixTrxNum:   sp.fixTrxNum,
-			maxStmt:     maxStmtPerFile,
-			maxBytes:    maxFileSizeBytes,
-			pathFunc:    pathFunc,
-		}
-	}
-
 	pathFunc := func(fileSeq int) (string, bool) {
-		if fileSeq == 1 {
-			if sp.sfile != nil {
-				return baseFilePath, true
-			}
-			return baseFilePath, false
+		if sqlType == "DELETE" {
+			return fmt.Sprintf("%s/table.%s.%s-DELETE-%d.sql",
+				sp.datafixSql, fixFileNameEncode(sp.schema), fixFileNameEncode(sp.table), fileSeq), false
 		}
-		return fmt.Sprintf("%s-%d%s", baseName, fileSeq, ext), false
+		return fmt.Sprintf("%s/table.%s.%s-%d.sql",
+			sp.datafixSql, fixFileNameEncode(sp.schema), fixFileNameEncode(sp.table), fileSeq), false
 	}
 	return &sqlRollingWriter{
 		datafixType: sp.datafixType,
@@ -2450,7 +2336,6 @@ func (sp *SchedulePlan) newSQLRollingWriter(sqlType string, maxStmtPerFile int, 
 		fixTrxNum:   sp.fixTrxNum,
 		maxStmt:     maxStmtPerFile,
 		maxBytes:    maxFileSizeBytes,
-		sharedFile:  sp.sfile,
 		pathFunc:    pathFunc,
 	}
 }
