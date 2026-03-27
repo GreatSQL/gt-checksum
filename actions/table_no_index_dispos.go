@@ -379,7 +379,28 @@ func (sp *SchedulePlan) FixSqlExec(sqlStrExec <-chan string, logThreadSeq int64)
 		sqlSlice []string
 		noIndexD = make(chan struct{}, sp.concurrency)
 		increSeq int
+		// fileMu serialises all writes to the per-table fix file so that
+		// concurrent goroutines cannot interleave preamble/BEGIN/COMMIT blocks.
+		fileMu sync.Mutex
 	)
+	tableFileName := fmt.Sprintf("%s/table.%s.%s.sql",
+		sp.datafixSql, fixFileNameEncode(sp.schema), fixFileNameEncode(sp.table))
+	writeToFile := func(sqls []string) error {
+		fileMu.Lock()
+		defer fileMu.Unlock()
+		localFile, err := os.OpenFile(tableFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err != nil {
+			return fmt.Errorf("failed to open fix file %s: %w", tableFileName, err)
+		}
+		if err := ApplyDataFix(sqls, sp.datafixType, localFile, sp.ddrive, sp.djdbc, logThreadSeq); err != nil {
+			localFile.Close()
+			return fmt.Errorf("failed to write fix SQL file %s: %w", tableFileName, err)
+		}
+		if err := localFile.Close(); err != nil {
+			return fmt.Errorf("failed to close fix SQL file %s: %w", tableFileName, err)
+		}
+		return nil
+	}
 	displayTableName := sp.getDisplayTableName()
 	vlog = fmt.Sprintf("(%d) Start to generate delete and insert sql statements for table %s.", logThreadSeq, displayTableName)
 	global.Wlog.Debug(vlog)
@@ -392,25 +413,14 @@ func (sp *SchedulePlan) FixSqlExec(sqlStrExec <-chan string, logThreadSeq int64)
 		case v, ok := <-sqlStrExec:
 			if !ok {
 				if len(noIndexD) == 0 {
-					if len(sqlSlice) > 0 {
-						// 检查是否设置了fixFilePerTable=ON
-						if sp.fixFilePerTable == "ON" && sp.datafixType == "file" {
-							// 生成表级别的修复文件
-							tableFileName := fmt.Sprintf("%s/%s.sql", sp.datafixSql, sp.table)
-							var err error
-							localFile, err := os.OpenFile(tableFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-							if err != nil {
-								sp.getErr(fmt.Sprintf("Failed to open fix file %s", tableFileName), err)
-							} else {
+						if len(sqlSlice) > 0 {
+							if sp.datafixType == "file" {
 								vlog = fmt.Sprintf("(%d) Opened fix file %s", logThreadSeq, tableFileName)
 								global.Wlog.Debug(vlog)
-								ApplyDataFix(sqlSlice, sp.datafixType, localFile, sp.ddrive, sp.djdbc, logThreadSeq)
-								localFile.Close()
+								if err := writeToFile(sqlSlice); err != nil {
+									sp.getErr("Failed to write no-index fix SQL", err)
+								}
 							}
-						} else {
-							// 当fixFilePerTable=OFF时，使用单个文件
-							ApplyDataFix(sqlSlice, sp.datafixType, sp.sfile, sp.ddrive, sp.djdbc, logThreadSeq)
-						}
 						displayTableName := sp.getDisplayTableName()
 						vlog = fmt.Sprintf("(%d) The delete repair sql statements of table %s are generated.", logThreadSeq, displayTableName)
 						global.Wlog.Debug(vlog)
@@ -435,23 +445,13 @@ func (sp *SchedulePlan) FixSqlExec(sqlStrExec <-chan string, logThreadSeq int64)
 							<-noIndexD
 						}()
 
-						// 检查是否设置了fixFilePerTable=ON
-						if sp.fixFilePerTable == "ON" && sp.datafixType == "file" {
-							// 生成表级别的修复文件
-							tableFileName := fmt.Sprintf("%s/%s.sql", sp.datafixSql, sp.table)
-							localFile, err := os.OpenFile(tableFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-							if err != nil {
-								sp.getErr(fmt.Sprintf("Failed to open fix file %s", tableFileName), err)
-							} else {
+							if sp.datafixType == "file" {
 								vlog = fmt.Sprintf("(%d) Opened fix file %s", logThreadSeq, tableFileName)
 								global.Wlog.Debug(vlog)
-								ApplyDataFix(sqlSlice1, sp.datafixType, localFile, sp.ddrive, sp.djdbc, logThreadSeq)
-								localFile.Close()
+								if err := writeToFile(a); err != nil {
+									sp.getErr("Failed to write no-index fix SQL", err)
+								}
 							}
-						} else {
-							// 当fixFilePerTable=OFF时，使用单个文件
-							ApplyDataFix(sqlSlice1, sp.datafixType, sp.sfile, sp.ddrive, sp.djdbc, logThreadSeq)
-						}
 						displayTableName := sp.getDisplayTableName()
 						vlog = fmt.Sprintf("(%d) The delete repair sql statements of table %s are generated.", logThreadSeq, displayTableName)
 						global.Wlog.Debug(vlog)
