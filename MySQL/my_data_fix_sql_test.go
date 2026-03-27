@@ -2,6 +2,7 @@ package mysql
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -280,5 +281,64 @@ func TestBuildForeignKeyDDLForFix_QuotesFKColumnsWithBacktick(t *testing.T) {
 	}
 	if !strings.Contains(ddl, "REFERENCES `ref``db`.`parent``table` (`id``1`,`id``2`)") {
 		t.Errorf("referenced identifiers not escaped correctly: %s", ddl)
+	}
+}
+
+func TestCheckAndCleanupEmptyFixFile_RemovesEmptyFile(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "table.appdb.empty.sql")
+	if err := os.WriteFile(file, nil, 0600); err != nil {
+		t.Fatalf("write empty file: %v", err)
+	}
+
+	if err := CheckAndCleanupEmptyFixFile(dir); err != nil {
+		t.Fatalf("cleanup failed: %v", err)
+	}
+	if _, err := os.Stat(file); !os.IsNotExist(err) {
+		t.Fatalf("expected empty file to be removed, stat err=%v", err)
+	}
+}
+
+func TestCheckAndCleanupEmptyFixFile_RemovesPreambleOnlyFile(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "table.appdb.preamble.sql")
+	content := strings.Join([]string{
+		"SET NAMES utf8mb4;",
+		"SET FOREIGN_KEY_CHECKS = 0;",
+		"BEGIN;",
+		"COMMIT;",
+		"",
+	}, "\n")
+	if err := os.WriteFile(file, []byte(content), 0600); err != nil {
+		t.Fatalf("write preamble-only file: %v", err)
+	}
+
+	if err := CheckAndCleanupEmptyFixFile(dir); err != nil {
+		t.Fatalf("cleanup failed: %v", err)
+	}
+	if _, err := os.Stat(file); !os.IsNotExist(err) {
+		t.Fatalf("expected preamble-only file to be removed, stat err=%v", err)
+	}
+}
+
+func TestCheckAndCleanupEmptyFixFile_KeepsActualFixSQL(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "table.appdb.data.sql")
+	content := strings.Join([]string{
+		"SET NAMES utf8mb4;",
+		"BEGIN;",
+		"INSERT INTO `t1` VALUES (1);",
+		"COMMIT;",
+		"",
+	}, "\n")
+	if err := os.WriteFile(file, []byte(content), 0600); err != nil {
+		t.Fatalf("write fix file: %v", err)
+	}
+
+	if err := CheckAndCleanupEmptyFixFile(dir); err != nil {
+		t.Fatalf("cleanup failed: %v", err)
+	}
+	if _, err := os.Stat(file); err != nil {
+		t.Fatalf("expected file with actual fix SQL to remain, stat err=%v", err)
 	}
 }

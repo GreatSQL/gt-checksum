@@ -1634,15 +1634,6 @@ func (my *MysqlDataAbnormalFixStruct) FixTableAutoIncrementSqlGenerate(nextValue
 	return alterSql
 }
 
-// WriteFixIfNeeded writes fix SQLs to file when datafix is "file"
-func WriteFixIfNeeded(datafix, fixFileDir string, sqls []string, logThreadSeq int64) error {
-	if strings.EqualFold(datafix, "file") && len(sqls) > 0 && strings.TrimSpace(fixFileDir) != "" {
-		// 在指定目录下创建datafix.sql文件
-		fixFileName := fmt.Sprintf("%s/datafix.sql", fixFileDir)
-		return writeFixSQLToFile(fixFileName, sqls, logThreadSeq)
-	}
-	return nil
-}
 
 // 包级变量，用于存储已写入文件的SQL语句，实现跨函数调用的去重
 var writtenSqlMap sync.Map
@@ -1981,7 +1972,8 @@ func GenerateTriggerFixSQL(sourceSchema, destSchema, name, sourceDef string) []s
 	return []string{drop, strings.TrimSpace(processedDef)}
 }
 
-// CheckAndCleanupEmptyFixFile 检查是否有修复SQL被写入，如果没有则删除空的datafix.sql文件
+// CheckAndCleanupEmptyFixFile removes empty per-object fix files and files that
+// contain only session preamble / transaction wrappers but no actual repair SQL.
 func CheckAndCleanupEmptyFixFile(fixFileDir string) error {
 	// 检查目录是否存在
 	if _, err := os.Stat(fixFileDir); err != nil {
@@ -1999,39 +1991,27 @@ func CheckAndCleanupEmptyFixFile(fixFileDir string) error {
 		if !file.IsDir() && strings.HasSuffix(file.Name(), ".sql") {
 			filePath := fmt.Sprintf("%s/%s", fixFileDir, file.Name())
 
-			// 读取文件内容
-			content, err := os.ReadFile(filePath)
+			info, err := file.Info()
 			if err != nil {
-				return fmt.Errorf("failed to read fix SQL file %s: %v", file.Name(), err)
+				return fmt.Errorf("failed to stat fix SQL file %s: %v", file.Name(), err)
 			}
 
-			// 检查文件内容是否为空或只包含SET语句
-			trimmedContent := strings.TrimSpace(string(content))
-			if trimmedContent == "" {
-				// 文件为空，删除它
+			// 快速路径：物理为空直接删除，无需读内容
+			if info.Size() == 0 {
 				if err := os.Remove(filePath); err != nil {
 					return fmt.Errorf("failed to remove empty fix SQL file %s: %v", file.Name(), err)
 				}
 				continue
 			}
 
-			// 检查文件是否只包含SET语句和事务控制语句
-			lines := strings.Split(trimmedContent, "\n")
-			hasActualFixSql := false
-
-			for _, line := range lines {
-				trimmedLine := strings.TrimSpace(line)
-				if trimmedLine == "" || strings.HasPrefix(trimmedLine, "SET ") || trimmedLine == "BEGIN;" || trimmedLine == "COMMIT;" {
-					// 跳过空行、SET语句和事务控制语句
-					continue
+				// 慢路径：流式扫描非空文件，仅在必要时继续向后读取。
+				hasActualFixSql, err := fixSQLFileHasActualStatements(filePath)
+				if err != nil {
+					return fmt.Errorf("failed to scan fix SQL file %s: %v", file.Name(), err)
 				}
-				// 找到实际的修复SQL语句
-				hasActualFixSql = true
-				break
-			}
 
 			if !hasActualFixSql {
-				// 文件只包含SET语句和事务控制语句，删除它
+				// 文件只包含preamble和事务控制语句，删除它
 				if err := os.Remove(filePath); err != nil {
 					return fmt.Errorf("failed to remove empty fix SQL file %s: %v", file.Name(), err)
 				}
@@ -2040,6 +2020,30 @@ func CheckAndCleanupEmptyFixFile(fixFileDir string) error {
 	}
 
 	return nil
+}
+
+func fixSQLFileHasActualStatements(filePath string) (bool, error) {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 8*1024*1024)
+
+	for scanner.Scan() {
+		trimmedLine := strings.TrimSpace(scanner.Text())
+		if trimmedLine == "" || strings.HasPrefix(trimmedLine, "SET ") || trimmedLine == "BEGIN;" || trimmedLine == "COMMIT;" {
+			continue
+		}
+		return true, nil
+	}
+	if err := scanner.Err(); err != nil {
+		return false, err
+	}
+	return false, nil
 }
 
 // processRoutineSchemaNames 处理存储过程和函数定义中的schema名称替换
