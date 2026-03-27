@@ -3,7 +3,9 @@
 - [功能新增]: 新增结果自动导出为 CSV 文件能力；新增参数 `resultExport`（`OFF` / `csv`，默认 `csv`）和 `resultFile`（自定义导出路径，默认 `gt-checksum-result-<RunID>.csv`）。CSV 文件为 UTF-8 BOM 编码，列头固定，可被 Excel 直接打开，包含所有校验结果（不受终端过滤影响）；`resultFile` 指定路径时如父目录不存在会自动创建。（issue #I6KMQF）
 - [功能新增]: 新增参数 `terminalResultMode`（`all` / `abnormal`，默认 `all`）；设置为 `abnormal` 时终端仅显示存在差异的行（`yes` / `DDL-yes` / `warn-only`），CSV 始终输出完整结果；以上三个参数均支持 CLI 覆盖（`--resultExport` / `--resultFile` / `--terminalResultMode`）。
 - [功能优化]: `ObjectTypeMap` 元数据查询性能优化；引入候选 schema 约束机制（`CandidateSchemas`），将 `INFORMATION_SCHEMA.TABLES` 扫描范围从实例全量收窄为本轮实际涉及的 schema 列表（`WHERE TABLE_SCHEMA IN (...)`），减少大实例上的不必要元数据开销；无候选集时保持原有全量扫描作为兜底，行为向后兼容。
+- [测试完善]: 补充 VIEW advisory SQL 修复相关单元测试，覆盖：DROP VIEW 不再出现的反向断言、`SET character_set_client = DEFAULT` 对称恢复断言、MariaDB uca1400 collation 自动映射路径验证。
 - [测试完善]: 新增 VIEW struct 专项单元测试，覆盖：归一化规则（DEFINER/ALGORITHM/SQL SECURITY 剥离、空白折叠、body 大小写保留）、跨 schema 映射归一化、advisory SQL 生成（ALGORITHM 保留/SQL SECURITY 保留/WITH CHECK OPTION 保留/DEFINER 剥除）、fail-closed 路径（不可解析 DDL 输出 `suggested SQL: none`）、VIEW 缺失/多余/差异/列元数据漂移分支、data 模式过滤、ignoreTables 过滤、ObjectKind 路由；新增 `extractCandidateSchemas` 函数专项测试（正常去重、空 map 返回空切片）。
+- [问题修复]: 修复 VIEW advisory SQL 四项问题：① `SET character_set_client` 设置后缺少 `DEFAULT` 恢复，导致 repairDB 单连接执行时后续对象字符集上下文被污染；② advisory 块误含 `DROP VIEW IF EXISTS`，`CREATE OR REPLACE VIEW` 已可原子替换视图，先 DROP 引入缺失窗口及失败后永久删除风险；③ MariaDB 11.5+ 源端 uca1400 排序规则未映射为 MySQL 等价值，`SET collation_connection` 在 MySQL 8.0/8.4 执行报错；④ VIEW 列元数据硬差异路径误生成可执行重建 SQL，此类漂移源于底层基表变更，统一回退为 `suggested SQL: none`。
 - [问题修复]: 此前已修复 连接oracle执行exec dbms_stats.gather_table_stats报错问题，本次补充测例（#I6NPC1）。
 
 ## 1.2.5

@@ -195,12 +195,13 @@ sbtest  F1              Function        no      no
    - `SEQUENCE`
 4. **VIEW（视图）支持**（MySQL → MySQL 限定）：
    - `checkObject=struct` 会自动识别 `tables` 参数中的视图对象，并对视图定义进行比对；
-   - 差异时 `Diffs=yes`，`ObjectType=view`；修复 SQL 以 advisory 注释形式写入 fixsql 文件，不自动执行；
-   - 差异来源分两层：① VIEW 定义（`SHOW CREATE VIEW`）不一致时，advisory 中给出 `CREATE OR REPLACE VIEW` 建议 SQL；② 定义文本一致但列元数据（类型、nullable、charset、collation）存在漂移时，advisory 中标注 `suggested SQL: none`，**不提供可执行修复 SQL**（此类漂移通常源于底层表结构差异，单纯重建视图无法修复）；
+   - 差异时 `Diffs=yes`，`ObjectType=view`；修复建议以 advisory 块形式写入 fixsql 文件，gt-checksum 本身不自动执行，DBA 手工审阅后可通过 repairDB 应用；
+   - 差异来源分两层：① VIEW 定义（`SHOW CREATE VIEW`）不一致时，advisory 块中输出可执行的 `CREATE OR REPLACE VIEW` 建议 SQL（含前后字符集 SESSION 变量设置）；② 定义文本一致但列元数据（类型、nullable、charset、collation）存在漂移时，advisory 块标注 `suggested SQL: none`，**不提供可执行修复 SQL**（此类漂移通常源于底层基表结构变更，单纯重建视图无法修复）；
    - `DEFINER` 账号不计入差异判断（advisory 日志中仅做记录）；
    - `ALGORITHM=UNDEFINED` 与省略等价处理，不触发 `Diffs=yes`；`ALGORITHM=MERGE` / `TEMPTABLE` 等非默认值会保留在 advisory 建议 SQL 中；
    - **SQL SECURITY 差异不计入 `Diffs=yes`**：迁移时从 `DEFINER` 改为 `INVOKER` 属常见合理变更；程序仅在运行日志中输出 `Warn` 级别提示（含源/目标各自的值），方便 DBA 知晓但无需处理；advisory 建议 SQL 中会保留源端的 SQL SECURITY 设置，DBA 可在手工应用时自行调整；
    - **跨 schema 映射支持**：`tables=db1.*:db2.*` 场景下，部分 MySQL 版本的 `SHOW CREATE VIEW` 输出会在视图名前附加 schema 前缀（如 `` `db1`.`v1` ``），程序在归一化时会自动剥除该前缀，不产生误报；
+   - **MariaDB 源端 collation 自动映射**：当源端为 MariaDB 11.5+（排序规则含 `uca1400`，如 `utf8mb4_uca1400_ai_ci`）时，advisory 块中的 `SET collation_connection` 语句会自动映射为 MySQL 等价排序规则（如 `utf8mb4_0900_ai_ci`），避免在 MySQL 8.0/8.4 上执行时报错；
    - `checkObject=data` 模式下视图会被自动跳过，不产生误报；
    - 仅支持 MySQL→MySQL，其他驱动组合（如 Oracle→MySQL）视图条目会被忽略并打印 Warn 日志；
    - **终端输出**：`checkObject=struct` 模式下，终端结果表格新增 `ObjectType` 列，可直观区分 `table` 行与 `view` 行；
@@ -240,20 +241,25 @@ VIEW 定义差异时生成的 advisory fixsql（`./fixsql-view-check/appdb/v_ord
 
 ```sql
 -- gt-checksum advisory begin: appdb.v_order_summary VIEW definition
--- generated as manual review SQL only; these statements are not auto-executed by gt-checksum
+-- generated as executable SQL; review before applying in the target session
 -- level: advisory-only
 -- kind: VIEW DEFINITION
 -- reason: VIEW definition differs
--- DROP VIEW IF EXISTS `appdb`.`v_order_summary`;
--- CREATE OR REPLACE SQL SECURITY DEFINER VIEW `appdb`.`v_order_summary` AS SELECT ...;
+SET character_set_client = utf8mb4;
+SET collation_connection = utf8mb4_0900_ai_ci;
+CREATE OR REPLACE SQL SECURITY DEFINER VIEW `appdb`.`v_order_summary` AS SELECT ...;
+SET collation_connection = DEFAULT;
+SET character_set_client = DEFAULT;
 -- gt-checksum advisory end: appdb.v_order_summary VIEW definition
 ```
+
+> **说明**：advisory 块内的 `SET`、`CREATE OR REPLACE VIEW` 为可执行 SQL，`repairDB` 会在执行 fixsql 文件时顺序执行这些语句。`SET character_set_client` / `SET collation_connection` 在 VIEW 重建前后成对设置和恢复，确保同一连接中后续对象的字符集上下文不受影响。当源端字符集信息不可用时，这两条 `SET` 语句不会输出。
 
 列元数据漂移时的 advisory 输出（`suggested SQL: none`）：
 
 ```sql
 -- gt-checksum advisory begin: appdb.v_order_summary VIEW definition
--- generated as manual review SQL only; these statements are not auto-executed by gt-checksum
+-- generated as executable SQL; review before applying in the target session
 -- level: advisory-only
 -- kind: VIEW COLUMN METADATA
 -- reason: column metadata drift - column[0] differs: src="id|int|NO||" dst="id|bigint|NO||"
@@ -261,7 +267,7 @@ VIEW 定义差异时生成的 advisory fixsql（`./fixsql-view-check/appdb/v_ord
 -- gt-checksum advisory end: appdb.v_order_summary VIEW definition
 ```
 
-> **注意**：VIEW 的 advisory fixsql 全部以 `--` 注释形式输出，`repairDB` 工具不会自动执行这些语句；DBA 需手动审阅后决定是否应用。
+> **注意**：列元数据漂移（列类型、nullable、charset 不一致）通常源于底层基表结构已变更，仅重建视图无法修复。此类场景 advisory 标注 `suggested SQL: none`，DBA 需先修复底层基表后再重新校验视图。
 
 ### `checkObject=routine` 和 `checkObject=trigger` 的比对机制
 
