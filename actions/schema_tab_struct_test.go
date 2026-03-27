@@ -305,6 +305,70 @@ func TestNormalizeViewCreateSQL_crossSchemaMappingNoDiff(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// normalizeViewWhereOuterParens
+// ---------------------------------------------------------------------------
+
+func TestNormalizeViewWhereOuterParens_simpleCondition(t *testing.T) {
+	// Core scenario: MariaDB vs MySQL 8.0 parenthesis difference.
+	in := "AS select `t`.`f1` AS `f1` from `t` where (`t`.`f1` > '3')"
+	want := "AS select `t`.`f1` AS `f1` from `t` where `t`.`f1` > '3'"
+	if got := normalizeViewWhereOuterParens(in); got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestNormalizeViewWhereOuterParens_noParens(t *testing.T) {
+	// Already in canonical form (MariaDB style) — must be unchanged.
+	in := "AS select `f1` from `t` where `f1` > '3'"
+	if got := normalizeViewWhereOuterParens(in); got != in {
+		t.Errorf("no-paren body should be unchanged, got %q", got)
+	}
+}
+
+func TestNormalizeViewWhereOuterParens_nestedParens(t *testing.T) {
+	// Outer paren wraps condition that itself contains parens (IN clause).
+	in := "AS select f1 from t where (f1 IN (1, 2, 3))"
+	want := "AS select f1 from t where f1 IN (1, 2, 3)"
+	if got := normalizeViewWhereOuterParens(in); got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestNormalizeViewWhereOuterParens_withGroupBy(t *testing.T) {
+	// Outer paren before GROUP BY clause should also be stripped.
+	in := "AS select f1, count(*) from t where (f1 > '3') group by f1"
+	want := "AS select f1, count(*) from t where f1 > '3' group by f1"
+	if got := normalizeViewWhereOuterParens(in); got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestNormalizeViewWhereOuterParens_partialParenNotStripped(t *testing.T) {
+	// "where (a > 1) and b < 2" — outer paren does NOT span the full condition.
+	// Must NOT be stripped to avoid changing the semantics.
+	in := "AS select f1 from t where (f1 > '3') and f2 = 'x'"
+	if got := normalizeViewWhereOuterParens(in); got != in {
+		t.Errorf("partial-paren body should be unchanged, got %q", got)
+	}
+}
+
+// TestNormalizeViewCreateSQL_mariaDBvsMySQL80WhereParens is the regression test
+// for the actual MariaDB→MySQL 8.0 scenario: identical views that differ only in
+// whether the WHERE body is parenthesized must normalize to the same string.
+func TestNormalizeViewCreateSQL_mariaDBvsMySQL80WhereParens(t *testing.T) {
+	// MariaDB SHOW CREATE VIEW — no outer parens on WHERE condition.
+	srcDDL := "CREATE ALGORITHM=UNDEFINED DEFINER=`checksum`@`%` SQL SECURITY DEFINER VIEW `v_teststring` AS select `teststring`.`f1` AS `f1` from `teststring` where `teststring`.`f1` > '3'"
+	// MySQL 8.0 SHOW CREATE VIEW — MySQL 8.0 wraps the WHERE condition in parens.
+	dstDDL := "CREATE ALGORITHM=UNDEFINED DEFINER=`checksum`@`%` SQL SECURITY DEFINER VIEW `v_teststring` AS select `teststring`.`f1` AS `f1` from `teststring` where (`teststring`.`f1` > '3')"
+	srcNorm := normalizeViewCreateSQLForCompare(srcDDL)
+	dstNorm := normalizeViewCreateSQLForCompare(dstDDL)
+	if srcNorm != dstNorm {
+		t.Errorf("MariaDB vs MySQL 8.0 WHERE paren difference should normalize to equal;\n  src: %q\n  dst: %q",
+			srcNorm, dstNorm)
+	}
+}
+
 // TestCheckViewStruct_sqlSecurityDiffIsNotDiffsYes verifies that when src has
 // SQL SECURITY DEFINER and dst has SQL SECURITY INVOKER, the normalised DDL is
 // identical — meaning the comparison produces ddlDiffers=false (Diffs=no).
@@ -422,11 +486,78 @@ func TestViewColumnSignaturesEqual_collationDiff(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// viewColumnSignaturesCollationOnly
+// ---------------------------------------------------------------------------
+
+func TestViewColumnSignaturesCollationOnly_trueWhenOnlyCollationDiffers(t *testing.T) {
+	// Mirrors the MySQL 5.7→8.0 utf8mb4_general_ci→utf8mb4_0900_ai_ci scenario.
+	src := []string{
+		"f1|char(1)|YES|utf8mb4|utf8mb4_general_ci",
+		"f2|varchar(100)|NO|utf8mb4|utf8mb4_general_ci",
+	}
+	dst := []string{
+		"f1|char(1)|YES|utf8mb4|utf8mb4_0900_ai_ci",
+		"f2|varchar(100)|NO|utf8mb4|utf8mb4_0900_ai_ci",
+	}
+	if !viewColumnSignaturesCollationOnly(src, dst) {
+		t.Errorf("collation-only diff should return true")
+	}
+}
+
+func TestViewColumnSignaturesCollationOnly_falseWhenTypeDiffers(t *testing.T) {
+	src := []string{"id|int|NO||"}
+	dst := []string{"id|bigint|NO||"}
+	if viewColumnSignaturesCollationOnly(src, dst) {
+		t.Errorf("type difference should return false")
+	}
+}
+
+func TestViewColumnSignaturesCollationOnly_falseWhenCharsetDiffers(t *testing.T) {
+	src := []string{"f1|varchar(10)|YES|utf8mb4|utf8mb4_general_ci"}
+	dst := []string{"f1|varchar(10)|YES|latin1|latin1_swedish_ci"}
+	if viewColumnSignaturesCollationOnly(src, dst) {
+		t.Errorf("charset difference should return false")
+	}
+}
+
+func TestViewColumnSignaturesCollationOnly_falseWhenCountDiffers(t *testing.T) {
+	src := []string{"f1|char(1)|YES|utf8mb4|utf8mb4_general_ci"}
+	dst := []string{"f1|char(1)|YES|utf8mb4|utf8mb4_0900_ai_ci", "f2|int|NO||"}
+	if viewColumnSignaturesCollationOnly(src, dst) {
+		t.Errorf("count difference should return false")
+	}
+}
+
+func TestViewColumnSignaturesCollationOnly_falseWhenEqual(t *testing.T) {
+	sig := []string{"f1|char(1)|YES|utf8mb4|utf8mb4_general_ci"}
+	if viewColumnSignaturesCollationOnly(sig, sig) {
+		t.Errorf("equal signatures should return false (no drift)")
+	}
+}
+
+func TestBuildViewColumnCollationDriftAdvisoryLines_containsExpectedFields(t *testing.T) {
+	lines := buildViewColumnCollationDriftAdvisoryLines("db1", "v1", "column[0] differs: collation")
+	mustContainLine(t, lines, "warn-only")
+	mustContainLine(t, lines, "VIEW COLUMN COLLATION DRIFT")
+	mustContainLine(t, lines, "column[0] differs: collation")
+	mustContainLine(t, lines, "base-table")
+	mustContainLine(t, lines, "advisory begin")
+	mustContainLine(t, lines, "advisory end")
+	// Must NOT contain executable SQL (no DROP VIEW / CREATE OR REPLACE).
+	for _, l := range lines {
+		if contains(strings.ToUpper(l), "DROP VIEW") || contains(strings.ToUpper(l), "CREATE OR REPLACE") {
+			t.Errorf("collation-drift advisory must not contain DDL SQL: %q", l)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
 // buildViewColumnMetadataAdvisoryLines
 // ---------------------------------------------------------------------------
 
 func TestBuildViewColumnMetadataAdvisoryLines_suggestedSQLNone(t *testing.T) {
-	lines := buildViewColumnMetadataAdvisoryLines("db1", "v1", "column[0] differs")
+	// No srcCreateSQL / colConn → falls back to "suggested SQL: none".
+	lines := buildViewColumnMetadataAdvisoryLines("db1", "v1", "column[0] differs", "", "", "")
 	found := false
 	for _, l := range lines {
 		if contains(l, "suggested SQL: none") {
@@ -435,12 +566,12 @@ func TestBuildViewColumnMetadataAdvisoryLines_suggestedSQLNone(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("column-metadata advisory must contain 'suggested SQL: none'")
+		t.Errorf("column-metadata advisory without colConn must contain 'suggested SQL: none'")
 	}
 }
 
 func TestBuildViewColumnMetadataAdvisoryLines_kindLine(t *testing.T) {
-	lines := buildViewColumnMetadataAdvisoryLines("db1", "v1", "reason")
+	lines := buildViewColumnMetadataAdvisoryLines("db1", "v1", "reason", "", "", "")
 	found := false
 	for _, l := range lines {
 		if contains(l, "VIEW COLUMN METADATA") {
@@ -450,6 +581,29 @@ func TestBuildViewColumnMetadataAdvisoryLines_kindLine(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("column-metadata advisory must contain 'kind: VIEW COLUMN METADATA'")
+	}
+}
+
+func TestBuildViewColumnMetadataAdvisoryLines_withCollation(t *testing.T) {
+	// When colConn is provided with valid srcCreateSQL, block must contain executable SET + CREATE (no DROP).
+	srcDDL := "CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`%` SQL SECURITY DEFINER VIEW `db1`.`v1` AS SELECT id FROM t"
+	lines := buildViewColumnMetadataAdvisoryLines("db1", "v1", "column[0] differs: collation", srcDDL, "utf8mb4", "utf8mb4_general_ci")
+	mustContainLine(t, lines, "SET collation_connection = utf8mb4_general_ci;")
+	mustContainLine(t, lines, "CREATE OR REPLACE")
+	mustContainLine(t, lines, "SET collation_connection = DEFAULT;")
+	mustContainLine(t, lines, "SET character_set_client = DEFAULT;")
+	mustContainLine(t, lines, "VIEW COLUMN METADATA")
+	// No "suggested SQL: none" when fix SQL is available.
+	for _, l := range lines {
+		if contains(l, "suggested SQL: none") {
+			t.Errorf("advisory with colConn must not contain 'suggested SQL: none': %q", l)
+		}
+	}
+	// DROP VIEW must not appear; CREATE OR REPLACE is sufficient.
+	for _, l := range lines {
+		if contains(strings.ToUpper(l), "DROP VIEW") {
+			t.Errorf("advisory must not contain DROP VIEW; CREATE OR REPLACE is sufficient: %q", l)
+		}
 	}
 }
 
@@ -514,7 +668,7 @@ func TestSplitTableViewEntries_caseInsensitiveKey(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBuildViewAdvisoryLines_containsBeginEnd(t *testing.T) {
-	lines := buildViewAdvisoryLines("db1", "v1", "CREATE VIEW `v1` AS SELECT 1", "VIEW definition differs")
+	lines := buildViewAdvisoryLines("db1", "v1", "CREATE VIEW `v1` AS SELECT 1", "VIEW definition differs", "", "")
 	firstLine := lines[0]
 	lastLine := lines[len(lines)-1]
 	if !contains(firstLine, "advisory begin") {
@@ -525,26 +679,51 @@ func TestBuildViewAdvisoryLines_containsBeginEnd(t *testing.T) {
 	}
 }
 
-func TestBuildViewAdvisoryLines_allCommented(t *testing.T) {
-	lines := buildViewAdvisoryLines("db1", "v1", "CREATE VIEW `v1` AS SELECT 1", "reason")
+func TestBuildViewAdvisoryLines_metaLinesCommented(t *testing.T) {
+	// Metadata lines (begin/end/level/kind/reason) must be comments.
+	// SQL statements (CREATE OR REPLACE VIEW) must NOT be commented.
+	lines := buildViewAdvisoryLines("db1", "v1", "CREATE VIEW `v1` AS SELECT 1", "reason", "", "")
 	for _, line := range lines {
-		if len(line) == 0 || line[0] != '-' {
-			t.Errorf("all advisory lines should start with '--': %q", line)
+		if contains(strings.ToUpper(line), "CREATE OR REPLACE") {
+			if len(line) > 0 && line[0] == '-' {
+				t.Errorf("SQL statement should NOT be commented out: %q", line)
+			}
 		}
 	}
 }
 
-func TestBuildViewAdvisoryLines_containsDropView(t *testing.T) {
-	lines := buildViewAdvisoryLines("db1", "v1", "CREATE VIEW `v1` AS SELECT 1", "missing")
-	found := false
+func TestBuildViewAdvisoryLines_noDropView(t *testing.T) {
+	// CREATE OR REPLACE VIEW is sufficient for both "missing" and "definition differs" scenarios.
+	// DROP VIEW must NOT be generated to avoid a deletion window if CREATE fails.
+	lines := buildViewAdvisoryLines("db1", "v1", "CREATE VIEW `v1` AS SELECT 1", "missing", "", "")
 	for _, l := range lines {
-		if contains(l, "DROP VIEW") {
-			found = true
-			break
+		if contains(strings.ToUpper(l), "DROP VIEW") {
+			t.Errorf("advisory lines must not contain DROP VIEW; CREATE OR REPLACE is sufficient: %q", l)
 		}
 	}
-	if !found {
-		t.Errorf("advisory lines should contain DROP VIEW statement")
+}
+
+func TestBuildViewAdvisoryLines_withCollation(t *testing.T) {
+	// When csClient+colConn are provided, SET statements must be present with symmetric DEFAULT restores.
+	// DROP VIEW must NOT appear; CREATE OR REPLACE is sufficient.
+	srcDDL := "CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`%` SQL SECURITY DEFINER VIEW `db1`.`v1` AS SELECT id FROM t"
+	lines := buildViewAdvisoryLines("db1", "v1", srcDDL, "VIEW definition differs", "utf8mb4", "utf8mb4_general_ci")
+	mustContainLine(t, lines, "SET character_set_client = utf8mb4;")
+	mustContainLine(t, lines, "SET collation_connection = utf8mb4_general_ci;")
+	mustContainLine(t, lines, "SET collation_connection = DEFAULT;")
+	mustContainLine(t, lines, "SET character_set_client = DEFAULT;")
+	mustContainLine(t, lines, "CREATE OR REPLACE")
+	// SET statements must be executable (no -- prefix).
+	for _, l := range lines {
+		if (contains(l, "SET collation_connection") || contains(l, "SET character_set_client")) && len(l) > 0 && l[0] == '-' {
+			t.Errorf("SET statement must not be commented: %q", l)
+		}
+	}
+	// DROP VIEW must not appear.
+	for _, l := range lines {
+		if contains(strings.ToUpper(l), "DROP VIEW") {
+			t.Errorf("advisory must not contain DROP VIEW: %q", l)
+		}
 	}
 }
 
@@ -612,7 +791,7 @@ func TestBuildCreateOrReplaceViewSQL_unparseableReturnsUnsafe(t *testing.T) {
 }
 
 func TestBuildViewAdvisoryLines_unparseableDDLUsesSuggestedSQLNone(t *testing.T) {
-	lines := buildViewAdvisoryLines("db1", "v1", "CREATE VIEW", "VIEW definition differs")
+	lines := buildViewAdvisoryLines("db1", "v1", "CREATE VIEW", "VIEW definition differs", "", "")
 	mustContainLine(t, lines, "suggested SQL: none")
 	for _, l := range lines {
 		if contains(l, "DROP VIEW IF EXISTS") || contains(l, "CREATE OR REPLACE") {
@@ -652,7 +831,7 @@ func TestCheckViewStruct_definitionDiff(t *testing.T) {
 		t.Fatalf("different SELECT bodies should NOT normalize to the same string")
 	}
 	// Advisory must contain level/kind/CREATE OR REPLACE VIEW.
-	lines := buildViewAdvisoryLines("db1", "v1", srcDDL, "VIEW definition differs")
+	lines := buildViewAdvisoryLines("db1", "v1", srcDDL, "VIEW definition differs", "", "")
 	mustContainLine(t, lines, "level: advisory-only")
 	mustContainLine(t, lines, "kind: VIEW DEFINITION")
 	mustContainLine(t, lines, "CREATE OR REPLACE")
@@ -661,10 +840,9 @@ func TestCheckViewStruct_definitionDiff(t *testing.T) {
 // Test 5: missingOnTarget — source has view, dest does not → advisory with CREATE OR REPLACE VIEW.
 func TestCheckViewStruct_missingOnTarget(t *testing.T) {
 	srcDDL := "CREATE ALGORITHM=UNDEFINED DEFINER=`app`@`%` SQL SECURITY DEFINER VIEW `db1`.`v1` AS SELECT id FROM t"
-	lines := buildViewAdvisoryLines("db1", "v1", srcDDL, "VIEW missing on target")
+	lines := buildViewAdvisoryLines("db1", "v1", srcDDL, "VIEW missing on target", "", "")
 	mustContainLine(t, lines, "VIEW missing on target")
 	mustContainLine(t, lines, "CREATE OR REPLACE")
-	mustContainLine(t, lines, "DROP VIEW IF EXISTS")
 	mustContainLine(t, lines, "level: advisory-only")
 	mustContainLine(t, lines, "kind: VIEW DEFINITION")
 	// DEFINER must not appear in the suggested SQL.
@@ -723,16 +901,17 @@ func TestCheckViewStruct_columnMetadataDiff(t *testing.T) {
 
 	// The advisory generated for this case must use the column-metadata format
 	// (suggested SQL: none) — not a CREATE OR REPLACE advisory.
-	advisoryLines := buildViewColumnMetadataAdvisoryLines("db1", "v_orders", reason)
+	// No colConn provided → falls back to "suggested SQL: none".
+	advisoryLines := buildViewColumnMetadataAdvisoryLines("db1", "v_orders", reason, "", "", "")
 	mustContainLine(t, advisoryLines, "suggested SQL: none")
 	mustContainLine(t, advisoryLines, "VIEW COLUMN METADATA")
 	mustContainLine(t, advisoryLines, "level: advisory-only")
 
-	// The advisory must NOT suggest a CREATE OR REPLACE VIEW (column drift cannot
-	// be fixed by simply recreating the view from the same DDL).
+	// The advisory must NOT suggest a CREATE OR REPLACE VIEW when colConn is empty
+	// (column type drift cannot be fixed by recreating the view with a different collation).
 	for _, l := range advisoryLines {
 		if contains(strings.ToUpper(l), "CREATE OR REPLACE VIEW") {
-			t.Errorf("column-metadata advisory must not contain CREATE OR REPLACE VIEW: %q", l)
+			t.Errorf("column-metadata advisory without colConn must not contain CREATE OR REPLACE VIEW: %q", l)
 		}
 	}
 }
@@ -972,6 +1151,56 @@ func TestExtractCandidateSchemas(t *testing.T) {
 func TestExtractCandidateSchemas_empty(t *testing.T) {
 	if got := extractCandidateSchemas(map[string]int{}); len(got) != 0 {
 		t.Errorf("expected empty slice, got %v", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// VIEW advisory uca1400 collation mapping (MariaDB 11.5+ → MySQL 8.0/8.4)
+// ---------------------------------------------------------------------------
+
+// TestBuildViewAdvisoryLines_uca1400MappedToMySQL verifies that the
+// utf8mb4_uca1400_ai_ci collation (MariaDB 11.5+) is mapped to
+// utf8mb4_0900_ai_ci before being embedded in the SET statement so the
+// generated SQL is executable on MySQL 8.0/8.4.
+func TestBuildViewAdvisoryLines_uca1400MappedToMySQL(t *testing.T) {
+	srcDDL := "CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`%` SQL SECURITY DEFINER VIEW `db1`.`v1` AS SELECT id FROM t"
+	// Simulate the mapping applied in checkViewStruct: pass already-mapped collation.
+	lines := buildViewAdvisoryLines("db1", "v1", srcDDL, "VIEW definition differs", "utf8mb4", "utf8mb4_0900_ai_ci")
+	// The SET line must use the MySQL-compatible collation, not uca1400.
+	mustContainLine(t, lines, "SET collation_connection = utf8mb4_0900_ai_ci;")
+	mustContainLine(t, lines, "SET character_set_client = DEFAULT;")
+	mustContainLine(t, lines, "SET collation_connection = DEFAULT;")
+	for _, l := range lines {
+		if contains(l, "uca1400") {
+			t.Errorf("advisory must not contain MariaDB-only uca1400 collation: %q", l)
+		}
+	}
+	// DROP VIEW must not appear.
+	for _, l := range lines {
+		if contains(strings.ToUpper(l), "DROP VIEW") {
+			t.Errorf("advisory must not contain DROP VIEW: %q", l)
+		}
+	}
+}
+
+// TestBuildViewColumnMetadataAdvisoryLines_uca1400MappedToMySQL mirrors the
+// same scenario for the column-metadata advisory builder.
+func TestBuildViewColumnMetadataAdvisoryLines_uca1400MappedToMySQL(t *testing.T) {
+	srcDDL := "CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`%` SQL SECURITY DEFINER VIEW `db1`.`v1` AS SELECT id FROM t"
+	lines := buildViewColumnMetadataAdvisoryLines("db1", "v1", "column[0] differs: collation", srcDDL, "utf8mb4", "utf8mb4_0900_ai_ci")
+	mustContainLine(t, lines, "SET collation_connection = utf8mb4_0900_ai_ci;")
+	mustContainLine(t, lines, "SET character_set_client = DEFAULT;")
+	mustContainLine(t, lines, "SET collation_connection = DEFAULT;")
+	for _, l := range lines {
+		if contains(l, "uca1400") {
+			t.Errorf("column-metadata advisory must not contain MariaDB-only uca1400 collation: %q", l)
+		}
+	}
+	// DROP VIEW must not appear.
+	for _, l := range lines {
+		if contains(strings.ToUpper(l), "DROP VIEW") {
+			t.Errorf("column-metadata advisory must not contain DROP VIEW: %q", l)
+		}
 	}
 }
 
