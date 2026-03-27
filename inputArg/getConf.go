@@ -447,24 +447,9 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 		rc.SecondaryL.RepairV.Datafix = "file"
 	}
 
-	// Get fixFilePerTable parameter
-	fixFilePerTableValue := getLastConfigValue("fixFilePerTable")
-	if fixFilePerTableValue != "" {
-		validValues := []string{"ON", "OFF"}
-		valid := false
-		for _, v := range validValues {
-			if fixFilePerTableValue == v {
-				valid = true
-				break
-			}
-		}
-		if valid {
-			rc.SecondaryL.RepairV.FixFilePerTable = fixFilePerTableValue
-		} else {
-			rc.SecondaryL.RepairV.FixFilePerTable = "OFF"
-		}
-	} else {
-		rc.SecondaryL.RepairV.FixFilePerTable = "OFF"
+	// fixFilePerTable 参数已废弃（v1.3.0 起移除），每对象独立文件为唯一输出模式
+	if getLastConfigValue("fixFilePerTable") != "" {
+		fmt.Println("gt-checksum: [WARN] fixFilePerTable 参数已废弃，每对象独立文件为唯一输出模式，该配置项将被忽略")
 	}
 
 	if rc.SecondaryL.RepairV.Datafix == "file" {

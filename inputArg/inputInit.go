@@ -63,9 +63,7 @@ type RepairS struct {
 	FixTrxSize      int
 	InsertSqlSize   int
 	DeleteSqlSize   int
-	FixFileDir      string
-	FixFileFINE     *os.File
-	FixFilePerTable string
+	FixFileDir string
 }
 type SecondaryLevel struct {
 	DsnsV   DSNsS

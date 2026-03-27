@@ -278,35 +278,12 @@ func (rc *ConfigParameter) checkPar() {
 	vlog = fmt.Sprintf("(%d) [%s] start init data fix file values.", rc.LogThreadSeq, Event)
 	global.Wlog.Debug(vlog)
 	if rc.SecondaryL.RepairV.Datafix == "file" {
-		// 只有当fixFilePerTable=OFF时，才创建datafix.sql文件
-		if rc.SecondaryL.RepairV.FixFilePerTable == "OFF" {
-			// 构建datafix.sql文件路径
-			datafixFilePath := fmt.Sprintf("%s/datafix.sql", rc.SecondaryL.RepairV.FixFileDir)
-			vlog = fmt.Sprintf("(%d) [%s] Open repair file {%s} handle.", rc.LogThreadSeq, Event, datafixFilePath)
-			global.Wlog.Debug(vlog)
-			if _, err = os.Stat(datafixFilePath); err == nil {
-				os.Remove(datafixFilePath)
-			}
-		}
 		// 确保目录存在
 		if _, err := os.Stat(rc.SecondaryL.RepairV.FixFileDir); os.IsNotExist(err) {
 			if err := os.MkdirAll(rc.SecondaryL.RepairV.FixFileDir, 0755); err != nil {
 				fmt.Printf("Error: Failed to create directory '%s': %v\n", rc.SecondaryL.RepairV.FixFileDir, err)
 				os.Exit(1)
 			}
-		}
-		// 只有当fixFilePerTable=OFF时，才打开datafix.sql文件
-		if rc.SecondaryL.RepairV.FixFilePerTable == "OFF" {
-			datafixFilePath := fmt.Sprintf("%s/datafix.sql", rc.SecondaryL.RepairV.FixFileDir)
-			rc.SecondaryL.RepairV.FixFileFINE, err = os.OpenFile(datafixFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
-			if err != nil {
-				fmt.Println(fmt.Sprintf("gt-checksum: Failed to open fixFileDir. Check %s or set logLevel=debug for details", rc.SecondaryL.LogV.LogFile))
-				vlog = fmt.Sprintf("(%d) [%s] Repair the file {%s} handle opening failure, the failure information is {%s}.", rc.LogThreadSeq, Event, datafixFilePath, err)
-				global.Wlog.Error(vlog)
-				os.Exit(1)
-			}
-			vlog = fmt.Sprintf("(%d) [%s] check data fix file parameter message is {%s}.", rc.LogThreadSeq, Event, datafixFilePath)
-			global.Wlog.Debug(vlog)
 		}
 	}
 	for _, v := range []int{rc.SecondaryL.RulesV.ChanRowCount, rc.SecondaryL.RulesV.QueueSize, rc.SecondaryL.RulesV.ParallelThds} {
