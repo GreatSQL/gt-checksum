@@ -86,6 +86,72 @@ var viewHeaderBodyPattern = regexp.MustCompile(`(?is)^(create\s+.*?view\s+(?:` +
 // source and destination use different schema names (cross-schema mapping).
 var viewSchemaInHeaderPattern = regexp.MustCompile("`[^`]+`" + `\.(` + "`[^`]+`" + `\s*)$`)
 
+// viewWhereOuterParensRe detects a WHERE clause whose condition starts with '('.
+// MySQL 8.0 unconditionally wraps the entire WHERE condition in parentheses when
+// storing the view definition (e.g. "where (`f1` > '3')"), while MariaDB and
+// MySQL 5.7 omit the outer parens ("where `f1` > '3'").  Both forms are
+// semantically identical and are normalised to the unparenthesized form.
+var viewWhereOuterParensRe = regexp.MustCompile(`(?i)\bwhere\s+\(`)
+
+// normalizeViewWhereOuterParens strips a single layer of redundant outer parentheses
+// from the WHERE clause body when they wrap the entire condition up to the next
+// top-level SQL clause or end of string.
+//
+// Safe cases (stripped):
+//
+//	"where (f1 > '3')"                    → "where f1 > '3'"
+//	"where (f1 > '3') group by f1"        → "where f1 > '3' group by f1"
+//	"where (a IN (1,2,3))"                → "where a IN (1,2,3)"
+//
+// NOT stripped (returned unchanged):
+//
+//	"where (a > 1) and (b < 2)"           ← outer paren does not span entire condition
+//	"where a > 1"                         ← no outer paren present
+func normalizeViewWhereOuterParens(body string) string {
+	loc := viewWhereOuterParensRe.FindStringIndex(body)
+	if loc == nil {
+		return body
+	}
+	openPos := loc[1] - 1 // position of the '(' immediately after WHERE
+	// Walk forward to find the balanced closing ')'.
+	depth := 0
+	closePos := -1
+	for i := openPos; i < len(body); i++ {
+		switch body[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				closePos = i
+			}
+		}
+		if closePos >= 0 {
+			break
+		}
+	}
+	if closePos < 0 {
+		return body // unbalanced parens — do not modify
+	}
+	// Only strip when nothing after the closing paren except whitespace or a
+	// top-level SQL clause.  This avoids incorrectly stripping cases like
+	// "where (a > 1) and b < 2" where the outer paren is NOT redundant.
+	after := strings.TrimSpace(body[closePos+1:])
+	afterUp := strings.ToUpper(after)
+	topLevel := after == "" || after == ";" ||
+		strings.HasPrefix(afterUp, "GROUP BY") ||
+		strings.HasPrefix(afterUp, "HAVING") ||
+		strings.HasPrefix(afterUp, "ORDER BY") ||
+		strings.HasPrefix(afterUp, "LIMIT") ||
+		strings.HasPrefix(afterUp, "UNION") ||
+		strings.HasPrefix(afterUp, "EXCEPT") ||
+		strings.HasPrefix(afterUp, "INTERSECT")
+	if !topLevel {
+		return body
+	}
+	return body[:openPos] + body[openPos+1:closePos] + body[closePos+1:]
+}
+
 type partitionMetadata struct {
 	Name        string
 	Ordinal     int
@@ -2106,6 +2172,26 @@ func queryMySQLCreateViewStatement(db *sql.DB, schema, view string) (string, err
 	return string(raw[1]), rows.Err()
 }
 
+// queryMySQLViewCharsetMetadata queries INFORMATION_SCHEMA.VIEWS for the
+// CHARACTER_SET_CLIENT and COLLATION_CONNECTION recorded when the view was created.
+// These session-level values control the collation of view columns on recreation,
+// so they must be re-applied when rebuilding the view on a target with different
+// server defaults (e.g. MySQL 5.7 utf8mb4_general_ci → MySQL 8.0 utf8mb4_0900_ai_ci).
+// Returns empty strings on error; callers treat empty strings as "unknown" and skip injection.
+func queryMySQLViewCharsetMetadata(db *sql.DB, schema, view string) (csClient, colConn string) {
+	row := db.QueryRow(
+		`SELECT COALESCE(CHARACTER_SET_CLIENT,''), COALESCE(COLLATION_CONNECTION,'')
+		   FROM INFORMATION_SCHEMA.VIEWS
+		  WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?`,
+		schema, view,
+	)
+	var cs, col sql.NullString
+	if err := row.Scan(&cs, &col); err != nil {
+		return "", ""
+	}
+	return strings.TrimSpace(cs.String), strings.TrimSpace(col.String)
+}
+
 // normalizeViewCreateSQLForCompare normalises a SHOW CREATE VIEW DDL for comparison.
 //
 // Strategy:
@@ -2140,7 +2226,11 @@ func normalizeViewCreateSQLForCompare(createSQL string) string {
 		// header (e.g. `db1`.`v1` → `v1`), so that cross-schema mappings do not
 		// produce false Diffs=yes when the two sides use different schema names.
 		header = viewSchemaInHeaderPattern.ReplaceAllString(header, "$1")
-		return header + m[2]
+		// Step 3c: strip redundant outer parentheses from the WHERE clause body.
+		// MySQL 8.0 wraps the entire WHERE condition in parens ("where (expr)");
+		// MariaDB / MySQL 5.7 do not.  Both are semantically identical.
+		body := normalizeViewWhereOuterParens(m[2])
+		return header + body
 	}
 	// Fallback: the DDL did not match expected format; lowercase everything.
 	return strings.ToLower(s)
@@ -2238,21 +2328,113 @@ func viewColumnSignaturesEqual(src, dst []string) (bool, string) {
 	return true, ""
 }
 
-// buildViewColumnMetadataAdvisoryLines constructs an advisory block for the case where
-// the normalised CREATE VIEW DDL is identical but column-level metadata (type, nullability,
-// charset, collation) differs between source and destination.  Because there is no safe
-// automatic SQL fix for this situation, the block uses "suggested SQL: none".
-func buildViewColumnMetadataAdvisoryLines(destSchema, viewName, diffReason string) []string {
+// viewColumnSignaturesCollationOnly returns true when src and dst differ only in
+// collation — not in column count, name, type, nullability, or charset.
+//
+// This pattern occurs in MySQL 5.7→8.0 migrations where the server-default utf8mb4
+// collation changed from utf8mb4_general_ci to utf8mb4_0900_ai_ci.  VIEW columns
+// reflect the underlying BASE TABLE column's collation at runtime (IS.COLUMNS is
+// dynamic; SHOW CREATE VIEW's collation_connection is static metadata written at
+// creation time and does not affect IS.COLUMNS).  Recreating the view with a
+// different collation_connection does NOT change IS.COLUMNS for simple column
+// references — only ALTERing the base table column fixes it.
+//
+// Callers should downgrade the severity from Diffs=yes to warn-only for this case,
+// consistent with how table-struct collation drift is treated.
+func viewColumnSignaturesCollationOnly(src, dst []string) bool {
+	if len(src) != len(dst) {
+		return false
+	}
+	anyDrift := false
+	for i := range src {
+		if src[i] == dst[i] {
+			continue
+		}
+		// Signature format: colName|colType|isNullable|charset|collation
+		srcP := strings.SplitN(src[i], "|", 5)
+		dstP := strings.SplitN(dst[i], "|", 5)
+		if len(srcP) != 5 || len(dstP) != 5 {
+			return false // unparseable — treat as hard diff
+		}
+		// name, type, nullability, charset must all match
+		if srcP[0] != dstP[0] || srcP[1] != dstP[1] || srcP[2] != dstP[2] || srcP[3] != dstP[3] {
+			return false
+		}
+		// collation differs — this is allowed for collation-only drift
+		anyDrift = true
+	}
+	return anyDrift
+}
+
+// buildViewColumnCollationDriftAdvisoryLines constructs an advisory block for the case
+// where VIEW column signatures differ ONLY in collation (same type/nullability/charset).
+//
+// Root cause: IS.COLUMNS.COLLATION_NAME for VIEW columns is derived at runtime from the
+// underlying BASE TABLE column's collation.  SHOW CREATE VIEW's collation_connection is
+// static metadata written at creation time and has no effect on IS.COLUMNS for simple
+// column references.  Recreating the view does NOT fix the IS.COLUMNS difference; only
+// ALTERing the underlying table column collation does.
+//
+// Severity is downgraded to warn-only (not Diffs=yes) because this drift is a known
+// MySQL 5.7→8.0 default-collation change (utf8mb4_general_ci→utf8mb4_0900_ai_ci) and
+// is structurally equivalent to how table-level collation drift is treated.
+func buildViewColumnCollationDriftAdvisoryLines(destSchema, viewName, diffReason string) []string {
 	scope := fmt.Sprintf("%s.%s VIEW definition", destSchema, viewName)
 	return []string{
 		fmt.Sprintf("-- gt-checksum advisory begin: %s", scope),
-		"-- generated as manual review SQL only; these statements are not auto-executed by gt-checksum",
+		"-- generated as manual review note; no executable SQL is available",
+		"-- level: warn-only",
+		"-- kind: VIEW COLUMN COLLATION DRIFT",
+		fmt.Sprintf("-- reason: %s", diffReason),
+		"-- root-cause: VIEW column COLLATION_NAME in IS.COLUMNS reflects the underlying base-table",
+		"--   column collation at runtime, not the VIEW's stored collation_connection metadata.",
+		"--   On MySQL 5.7→8.0 migrations the default utf8mb4 collation changed from",
+		"--   utf8mb4_general_ci to utf8mb4_0900_ai_ci, which propagates to all views over it.",
+		"--   SHOW CREATE VIEW may show identical collation_connection on both sides but",
+		"--   IS.COLUMNS still differs because the base-table columns have different collations.",
+		"-- suggested fix: ALTER the underlying base-table column(s) to explicitly specify",
+		"--   the target collation, then re-run checkObject=struct on the base table(s).",
+		"--   Example: ALTER TABLE `<base_table>` MODIFY COLUMN `<col>` <type>",
+		"--             CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;",
+		fmt.Sprintf("-- gt-checksum advisory end: %s", scope),
+	}
+}
+
+// buildViewColumnMetadataAdvisoryLines constructs an advisory block for the case where
+// the normalised CREATE VIEW DDL is identical but column-level metadata (type, nullability,
+// charset, collation) differs between source and destination.
+//
+// When srcCreateSQL and colConn are provided, the block contains executable SQL that sets
+// the session collation to match the source before recreating the view.  This is the
+// primary fix path for the MySQL 5.7→8.0 utf8mb4_general_ci→utf8mb4_0900_ai_ci drift.
+// When csClient/colConn are empty the block falls back to "suggested SQL: none".
+func buildViewColumnMetadataAdvisoryLines(destSchema, viewName, diffReason, srcCreateSQL, csClient, colConn string) []string {
+	scope := fmt.Sprintf("%s.%s VIEW definition", destSchema, viewName)
+	lines := []string{
+		fmt.Sprintf("-- gt-checksum advisory begin: %s", scope),
+		"-- generated as executable SQL; review before applying in the target session",
 		"-- level: advisory-only",
 		"-- kind: VIEW COLUMN METADATA",
 		fmt.Sprintf("-- reason: column metadata drift — %s", diffReason),
-		"-- suggested SQL: none",
-		fmt.Sprintf("-- gt-checksum advisory end: %s", scope),
 	}
+	createOrReplace, ok := buildCreateOrReplaceViewSQL(srcCreateSQL, destSchema, viewName)
+	if ok && colConn != "" {
+		if csClient != "" {
+			lines = append(lines, fmt.Sprintf("SET character_set_client = %s;", csClient))
+		}
+		lines = append(lines,
+			fmt.Sprintf("SET collation_connection = %s;", colConn),
+			createOrReplace,
+			"SET collation_connection = DEFAULT;",
+		)
+		if csClient != "" {
+			lines = append(lines, "SET character_set_client = DEFAULT;")
+		}
+	} else {
+		lines = append(lines, "-- suggested SQL: none")
+	}
+	lines = append(lines, fmt.Sprintf("-- gt-checksum advisory end: %s", scope))
+	return lines
 }
 
 // buildCreateOrReplaceViewSQL transforms a SHOW CREATE VIEW DDL into a
@@ -2290,27 +2472,41 @@ func buildCreateOrReplaceViewSQL(srcCreateSQL, destSchema, destView string) (str
 }
 
 // buildViewAdvisoryLines constructs the advisory SQL block for a VIEW difference
-// (DDL mismatch or VIEW missing on destination).  Format follows the gt-checksum
-// advisory convention used by SEQUENCE and constraint advisories.
+// (DDL mismatch or VIEW missing on destination).
 //
-// Suggested SQL:
-//   - DROP VIEW IF EXISTS `dest`.`view`;
-//   - CREATE OR REPLACE VIEW `dest`.`view` AS … (derived from source DDL)
-func buildViewAdvisoryLines(destSchema, viewName, srcCreateSQL, reason string) []string {
+// When csClient/colConn are non-empty (from INFORMATION_SCHEMA.VIEWS on the source),
+// SET character_set_client / SET collation_connection statements are injected before
+// the CREATE OR REPLACE VIEW so that the recreated view inherits the correct column
+// collation metadata even when the target server has a different default collation
+// (e.g. MySQL 5.7 utf8mb4_general_ci → MySQL 8.0 utf8mb4_0900_ai_ci).
+//
+// All SQL statements in the block are executable; only the surrounding metadata lines
+// are comments.  The block is written to the advisory fix file for DBA review and
+// sequential execution in a single session.
+func buildViewAdvisoryLines(destSchema, viewName, srcCreateSQL, reason, csClient, colConn string) []string {
 	scope := fmt.Sprintf("%s.%s VIEW definition", destSchema, viewName)
 	createOrReplace, ok := buildCreateOrReplaceViewSQL(srcCreateSQL, destSchema, viewName)
 	lines := []string{
 		fmt.Sprintf("-- gt-checksum advisory begin: %s", scope),
-		"-- generated as manual review SQL only; these statements are not auto-executed by gt-checksum",
+		"-- generated as executable SQL; review before applying in the target session",
 		"-- level: advisory-only",
 		"-- kind: VIEW DEFINITION",
 	}
 	if ok {
-		lines = append(lines,
-			fmt.Sprintf("-- reason: %s", reason),
-			fmt.Sprintf("-- DROP VIEW IF EXISTS `%s`.`%s`;", escapeMySQLIdentifier(destSchema), escapeMySQLIdentifier(viewName)),
-			fmt.Sprintf("-- %s", createOrReplace),
-		)
+		lines = append(lines, fmt.Sprintf("-- reason: %s", reason))
+		if csClient != "" {
+			lines = append(lines, fmt.Sprintf("SET character_set_client = %s;", csClient))
+		}
+		if colConn != "" {
+			lines = append(lines, fmt.Sprintf("SET collation_connection = %s;", colConn))
+		}
+		lines = append(lines, createOrReplace)
+		if colConn != "" {
+			lines = append(lines, "SET collation_connection = DEFAULT;")
+		}
+		if csClient != "" {
+			lines = append(lines, "SET character_set_client = DEFAULT;")
+		}
 	} else {
 		lines = append(lines,
 			fmt.Sprintf("-- reason: %s; unable to rewrite VIEW DDL safely", reason),
@@ -2429,7 +2625,13 @@ func (stcls *schemaTable) checkViewStruct(viewEntries []string, logThreadSeq, lo
 				global.Wlog.Error(fmt.Sprintf("(%d) [check_view_struct] SHOW CREATE VIEW %s.%s failed: %v",
 					logThreadSeq, sourceSchema, sourceViewName, qErr))
 			} else {
-				advisoryLines := buildViewAdvisoryLines(destSchema, destViewName, srcCreateSQL, "VIEW missing on target")
+				srcCSClient, srcColConn := queryMySQLViewCharsetMetadata(stcls.sourceDB, sourceSchema, sourceViewName)
+				if stcls.isMariaDBToMySQL() {
+					if mapped, ok := schemacompat.MapMariaDBCollationToMySQL(srcColConn); ok {
+						srcColConn = mapped
+					}
+				}
+				advisoryLines := buildViewAdvisoryLines(destSchema, destViewName, srcCreateSQL, "VIEW missing on target", srcCSClient, srcColConn)
 				if wErr := stcls.writeViewAdvisoryForDest(destViewName, advisoryLines, logThreadSeq); wErr != nil {
 					global.Wlog.Error(fmt.Sprintf("(%d) [check_view_struct] failed to write advisory SQL for %s.%s: %v",
 						logThreadSeq, destSchema, destViewName, wErr))
@@ -2459,6 +2661,15 @@ func (stcls *schemaTable) checkViewStruct(viewEntries []string, logThreadSeq, lo
 			// normalization logic used for DDL comparison.
 			warnViewSQLSecurityDifference(logThreadSeq, sourceSchema, sourceViewName, srcCreateSQL, dstCreateSQL)
 
+			// Fetch source charset/collation metadata once; reused by both advisory builders.
+			// Errors are non-fatal: empty strings cause the SET injection to be skipped.
+			srcCSClient, srcColConn := queryMySQLViewCharsetMetadata(stcls.sourceDB, sourceSchema, sourceViewName)
+			if stcls.isMariaDBToMySQL() {
+				if mapped, ok := schemacompat.MapMariaDBCollationToMySQL(srcColConn); ok {
+					srcColConn = mapped
+				}
+			}
+
 			// Column-signature comparison (covers nullable/charset/collation drift that
 			// SHOW CREATE VIEW may not surface, e.g. v_teststring-style cases).
 			srcCols, colErr := queryMySQLViewColumnSignature(stcls.sourceDB, sourceSchema, sourceViewName, stcls.caseSensitiveObjectName)
@@ -2483,23 +2694,40 @@ func (stcls *schemaTable) checkViewStruct(viewEntries []string, logThreadSeq, lo
 				pod.DIFFS = global.SkipDiffsYes
 				global.Wlog.Debug(fmt.Sprintf("(%d) [check_view_struct] VIEW %s.%s DDL differs\n  src: %s\n  dst: %s",
 					logThreadSeq, sourceSchema, sourceViewName, srcNorm, dstNorm))
-				advisoryReason := "VIEW definition differs"
-				advisoryLines := buildViewAdvisoryLines(destSchema, destViewName, srcCreateSQL, advisoryReason)
+				advisoryLines := buildViewAdvisoryLines(destSchema, destViewName, srcCreateSQL, "VIEW definition differs", srcCSClient, srcColConn)
 				if wErr := stcls.writeViewAdvisoryForDest(destViewName, advisoryLines, logThreadSeq); wErr != nil {
 					global.Wlog.Error(fmt.Sprintf("(%d) [check_view_struct] failed to write advisory SQL for %s.%s: %v",
 						logThreadSeq, destSchema, destViewName, wErr))
 				}
 			case colsDiffer:
-				// DDL is identical but column-level metadata drifted (type, nullability,
-				// charset or collation).  Mark as yes; advisory SQL has no auto-fix,
-				// so the block carries "suggested SQL: none" per plan §10.5.
-				pod.DIFFS = global.SkipDiffsYes
-				global.Wlog.Debug(fmt.Sprintf("(%d) [check_view_struct] VIEW %s.%s column metadata differs: %s",
-					logThreadSeq, sourceSchema, sourceViewName, colDiffReason))
-				advisoryLines := buildViewColumnMetadataAdvisoryLines(destSchema, destViewName, colDiffReason)
-				if wErr := stcls.writeViewAdvisoryForDest(destViewName, advisoryLines, logThreadSeq); wErr != nil {
-					global.Wlog.Error(fmt.Sprintf("(%d) [check_view_struct] failed to write column advisory for %s.%s: %v",
-						logThreadSeq, destSchema, destViewName, wErr))
+				// DDL is identical but column-level metadata drifted.
+				// Distinguish collation-only drift (warn-only) from hard differences
+				// (type/nullability/charset changed → Diffs=yes).
+				if viewColumnSignaturesCollationOnly(srcCols, dstCols) {
+					// Collation-only drift: IS.COLUMNS reflects the BASE TABLE column's
+					// collation at runtime.  Recreating the view does NOT fix this;
+					// the underlying table column must be ALTERed.  Downgrade to warn-only.
+					pod.DIFFS = global.SkipDiffsWarnOnly
+					global.Wlog.Warn(fmt.Sprintf("(%d) [check_view_struct] VIEW %s.%s column collation drift (warn-only): %s",
+						logThreadSeq, sourceSchema, sourceViewName, colDiffReason))
+					advisoryLines := buildViewColumnCollationDriftAdvisoryLines(destSchema, destViewName, colDiffReason)
+					if wErr := stcls.writeViewAdvisoryForDest(destViewName, advisoryLines, logThreadSeq); wErr != nil {
+						global.Wlog.Error(fmt.Sprintf("(%d) [check_view_struct] failed to write collation drift advisory for %s.%s: %v",
+							logThreadSeq, destSchema, destViewName, wErr))
+					}
+				} else {
+					// Hard difference (type/nullability/charset changed): Diffs=yes.
+					pod.DIFFS = global.SkipDiffsYes
+					global.Wlog.Debug(fmt.Sprintf("(%d) [check_view_struct] VIEW %s.%s column metadata hard-differs: %s",
+						logThreadSeq, sourceSchema, sourceViewName, colDiffReason))
+					// IS.COLUMNS for VIEW columns reflects the underlying BASE TABLE column
+					// definitions at runtime; rebuilding the VIEW cannot fix base-table
+					// schema drift.  Fall back to advisory-only with "suggested SQL: none".
+					advisoryLines := buildViewColumnMetadataAdvisoryLines(destSchema, destViewName, colDiffReason, "", "", "")
+					if wErr := stcls.writeViewAdvisoryForDest(destViewName, advisoryLines, logThreadSeq); wErr != nil {
+						global.Wlog.Error(fmt.Sprintf("(%d) [check_view_struct] failed to write column advisory for %s.%s: %v",
+							logThreadSeq, destSchema, destViewName, wErr))
+					}
 				}
 			default:
 				pod.DIFFS = global.SkipDiffsNo
