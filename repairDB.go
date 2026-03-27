@@ -913,42 +913,6 @@ func main() {
 		return
 	}
 
-	// Check if there is only one datafix.sql file
-	if len(sqlFiles) == 1 && strings.HasSuffix(sqlFiles[0], "datafix.sql") {
-		log.Printf("Found only one datafix.sql file, executing directly\n")
-
-		// Parse DSN
-		dsn := parseDSN(config.DstDSN)
-
-		// Create database connection
-		db, err := sql.Open("mysql", dsn)
-		if err != nil {
-			log.Printf("Failed to create database connection: %v\n", err)
-			fmt.Println("repairDB execution failed")
-			os.Exit(1)
-		}
-		defer db.Close()
-
-		// Test database connection
-		err = db.Ping()
-		if err != nil {
-			log.Printf("Database connection failed: %v\n", err)
-			fmt.Println("repairDB execution failed")
-			os.Exit(1)
-		}
-
-		// Execute SQL file
-		err = executeSQLFile(db, sqlFiles[0])
-		if err != nil {
-			log.Printf("Failed to execute datafix.sql file: %v\n", err)
-			fmt.Println("repairDB execution failed")
-			os.Exit(1)
-		}
-
-		log.Printf("Successfully executed datafix.sql file\n")
-		return
-	}
-
 	// Remove duplicated paths to guarantee each SQL file is scheduled once.
 	sqlFiles = uniqueFiles(sqlFiles)
 

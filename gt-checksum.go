@@ -232,14 +232,10 @@ func main() {
 	fmt.Printf("  Miscellaneous: %.2fs\n", miscellaneousTime.Seconds())
 	fmt.Printf("Total execution time: %.2fs\n", totalElapsedTime.Seconds())
 
-	// 检查是否有修复SQL被写入，如果没有则删除空的datafix.sql文件
+	// 清理空的修复SQL文件
 	if m.SecondaryL.RepairV.Datafix == "file" && m.SecondaryL.RepairV.FixFileDir != "" {
-		// 先关闭文件句柄，以便能够删除文件
-		if m.SecondaryL.RepairV.FixFileFINE != nil {
-			m.SecondaryL.RepairV.FixFileFINE.Close()
-		}
 		if err := mysql.CheckAndCleanupEmptyFixFile(m.SecondaryL.RepairV.FixFileDir); err != nil {
-			fmt.Printf("Warning: Failed to clean up empty fix SQL file: %v\n", err)
+			fmt.Printf("Warning: Failed to clean up empty fix SQL files: %v\n", err)
 		}
 	}
 }
