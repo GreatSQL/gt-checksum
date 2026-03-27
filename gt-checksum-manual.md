@@ -217,7 +217,6 @@ dstDSN = mysql|checksum:Checksum@3306@tcp(dst-host:3307)/information_schema?char
 tables = appdb.v_order_summary
 checkObject = struct
 datafix = file
-fixFilePerTable = ON
 fixFileDir = ./fixsql-view-check
 ```
 
@@ -286,7 +285,6 @@ SET character_set_client = DEFAULT;
 | 参数名 | 可选值 | 默认值 | 说明 |
 |---|---|---|---|
 | `mariaDBJSONTargetType` | `JSON` / `LONGTEXT` / `TEXT` | `JSON` | 控制 `MariaDB JSON` alias 在 `MariaDB -> MySQL 8.0/8.4` 结构迁移时的目标列类型。`JSON` 语义最接近；`LONGTEXT` 适合作为兼容性保底；`TEXT` 当前已实现但未纳入发布级实库基线。 |
-| `fixFilePerTable` | `ON` / `OFF` | `OFF` | 结构迁移场景建议设为 `ON`，便于逐表审查 fix SQL 与 advisory SQL。 |
 | `datafix` | `file` / `table` | `file` | `checkObject=struct` 场景建议固定为 `file`，先生成 fix SQL 供 DBA 审查，再使用 `repairDB` 回放。 |
 
 ### 推荐配置示例
@@ -309,7 +307,6 @@ dstDSN = mysql|checksum:Checksum@3306@tcp(dst-mysql80-host:3406)/information_sch
 tables = gt_phase1_mysql57.*
 checkObject = struct
 datafix = file
-fixFilePerTable = ON
 fixFileDir = ./fixsql-struct-mysql57-to80
 ```
 
@@ -322,7 +319,6 @@ dstDSN = mysql|checksum:Checksum@3306@tcp(dst-mysql80-host:3307)/information_sch
 tables = appdb.v_order_summary:appdb.v_order_summary,appdb.v_daily_sales:appdb.v_daily_sales
 checkObject = struct
 datafix = file
-fixFilePerTable = ON
 fixFileDir = ./fixsql-view-struct
 ```
 
@@ -334,7 +330,6 @@ dstDSN = mysql|checksum:Checksum@3306@tcp(dst-mysql80-host:3406)/information_sch
 tables = gt_phase1_mariadb105.*
 checkObject = struct
 datafix = file
-fixFilePerTable = ON
 fixFileDir = ./fixsql-struct-mariadb105-to80
 mariaDBJSONTargetType = LONGTEXT
 ```
@@ -661,7 +656,7 @@ $ ./repairDB
 
 3. **事务管理**：按SQL执行单元处理事务。`BEGIN ... COMMIT` 内的语句作为一个事务块执行，失败时回滚该事务块；普通语句按语句级执行。
 
-4. **执行顺序**：优先执行删除操作的SQL文件（x-DELETE.sql文件），然后执行其他操作的SQL文件，确保数据一致性。为了降低同一个表上的锁等待，在执行删除操作类和其他类的SQL文件时，采用随机并行执行的方式。
+4. **执行顺序**：优先执行名称包含 `-DELETE-` 的 SQL 文件，然后执行其他操作的 SQL 文件，确保数据一致性。为了降低同一个表上的锁等待，在执行删除操作类和其他类的 SQL 文件时，采用随机并行执行的方式。
 
 5. **错误处理**：遇到死锁错误（Error 1213）时会自动重试当前失败事务块，最多 3 次；若仍失败或遇到非死锁错误，则停止并输出错误信息。
 
@@ -684,18 +679,18 @@ repairDB executed successfully
 2026/01/29 10:00:00   LogFile: repairDB.log
 2026/01/29 10:00:00 Found 2 DELETE files, 3 other SQL files
 2026/01/29 10:00:00 Starting to execute DELETE files
-2026/01/29 10:00:00 Starting to execute SQL file: ./myfixsql/t1-DELETE.sql
-2026/01/29 10:00:00 Successfully executed SQL file ./myfixsql/t1-DELETE.sql, time taken: 10ms
-2026/01/29 10:00:00 Starting to execute SQL file: ./myfixsql/t2-DELETE.sql
-2026/01/29 10:00:00 Successfully executed SQL file ./myfixsql/t2-DELETE.sql, time taken: 8ms
+2026/01/29 10:00:00 Starting to execute SQL file: ./myfixsql/table.sbtest.t1-DELETE-1.sql
+2026/01/29 10:00:00 Successfully executed SQL file ./myfixsql/table.sbtest.t1-DELETE-1.sql, time taken: 10ms
+2026/01/29 10:00:00 Starting to execute SQL file: ./myfixsql/table.sbtest.t2-DELETE-1.sql
+2026/01/29 10:00:00 Successfully executed SQL file ./myfixsql/table.sbtest.t2-DELETE-1.sql, time taken: 8ms
 2026/01/29 10:00:00 DELETE files execution completed
 2026/01/29 10:00:00 Starting parallel execution of other SQL files, concurrency: 4
-2026/01/29 10:00:00 Starting to execute SQL file: ./myfixsql/t1-INSERT.sql
-2026/01/29 10:00:00 Starting to execute SQL file: ./myfixsql/t2-INSERT.sql
-2026/01/29 10:00:00 Starting to execute SQL file: ./myfixsql/t3-INSERT.sql
-2026/01/29 10:00:00 Successfully executed SQL file ./myfixsql/t1-INSERT.sql, time taken: 12ms
-2026/01/29 10:00:00 Successfully executed SQL file ./myfixsql/t2-INSERT.sql, time taken: 10ms
-2026/01/29 10:00:00 Successfully executed SQL file ./myfixsql/t3-INSERT.sql, time taken: 9ms
+2026/01/29 10:00:00 Starting to execute SQL file: ./myfixsql/table.sbtest.t1-1.sql
+2026/01/29 10:00:00 Starting to execute SQL file: ./myfixsql/table.sbtest.t2-1.sql
+2026/01/29 10:00:00 Starting to execute SQL file: ./myfixsql/table.sbtest.t3-1.sql
+2026/01/29 10:00:00 Successfully executed SQL file ./myfixsql/table.sbtest.t1-1.sql, time taken: 12ms
+2026/01/29 10:00:00 Successfully executed SQL file ./myfixsql/table.sbtest.t2-1.sql, time taken: 10ms
+2026/01/29 10:00:00 Successfully executed SQL file ./myfixsql/table.sbtest.t3-1.sql, time taken: 9ms
 2026/01/29 10:00:00 Other SQL files execution completed
 2026/01/29 10:00:00 All SQL files execution completed
 ```
