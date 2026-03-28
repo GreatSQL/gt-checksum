@@ -578,7 +578,24 @@ $ mv gt-checksum /usr/local/bin
 
 ### 工具简介
 
-**repairDB** 工具用于执行SQL修复文件，支持批量执行SQL文件并自动处理事务。针对并行修复过程中可能出现的死锁冲突（MySQL Error 1213），内置自动重试机制：按 `BEGIN ... COMMIT` 事务块进行重试，最多 3 次。
+**repairDB** 工具用于执行 SQL 修复文件，支持批量并行执行 SQL 文件并自动处理事务。内置六阶段对象类型调度模型，按对象依赖顺序分阶段执行，确保修复结果的正确性。针对并行修复过程中可能出现的死锁冲突（MySQL Error 1213），内置自动重试机制：按 `BEGIN ... COMMIT` 事务块进行重试，最多 3 次。
+
+#### 六阶段调度模型
+
+repairDB 根据 SQL 文件的命名前缀自动识别对象类型，并按以下固定顺序分阶段执行：
+
+| 阶段 | 文件识别规则 | 阶段内排序 | 说明 |
+|------|-------------|-----------|------|
+| DELETE | 文件名包含 `-DELETE-` 模式 | 稳定排序 | 优先执行删除操作，为后续修复清理旧数据 |
+| TABLE | 文件名以 `table.` 开头 | 随机 shuffle | 打散锁热点，降低并发写同一表的概率 |
+| VIEW | 文件名以 `view.` 开头 | 稳定排序 | 视图依赖 TABLE，须在 TABLE 之后执行 |
+| ROUTINE | 文件名以 `routine.` 开头 | 稳定排序 | 存储过程/函数，在 VIEW 之后执行 |
+| TRIGGER | 文件名以 `trigger.` 开头 | 稳定排序 | 触发器依赖基表与 ROUTINE，最后重建 |
+| UNKNOWN | 无法识别前缀的文件 | 稳定排序 | 兼容手工 SQL 文件；打印 Warn 日志，最后执行 |
+
+**阶段间保持硬屏障**：每个阶段全部文件执行完成后，下一阶段才会启动。前序阶段出现任何失败，后续阶段不再启动，整体以非零退出码退出。
+
+**每阶段独立连接池**：各阶段分别打开并关闭数据库连接池，防止 `FOREIGN_KEY_CHECKS`、`UNIQUE_CHECKS` 等 session 变量通过连接复用在阶段间泄漏。
 
 ### 编译方法
 
@@ -637,14 +654,15 @@ $ ./repairDB
 
 ### 执行流程
 
-1. 读取配置文件或命令行参数（命令行参数只能指定fixsql所在目录，不支持指定其他参数）；
-2. 连接目标数据库（dstDSN对应的数据库实例）；
-3. 扫描指定目录下的所有 `.sql` 文件；
-4. 优先执行包含 `-DELETE.sql` 的文件；
-5. 然后执行其他SQL文件；
-6. 将SQL文件拆分为执行单元：普通语句单独执行，`BEGIN ... COMMIT/ROLLBACK` 作为一个事务块执行；
-7. 若检测到死锁错误（Error 1213），仅对当前失败事务块自动重试，最多 3 次（指数退避），不重试整个SQL文件；
-8. 执行完成后输出执行结果。
+1. 读取配置文件或命令行参数（命令行参数只能指定 fixsql 所在目录，不支持指定其他参数）；
+2. 扫描指定目录下的所有 `.sql` 文件，并按对象类型分为六个阶段（DELETE / TABLE / VIEW / ROUTINE / TRIGGER / UNKNOWN）；
+3. 打印各阶段文件数量汇总；若存在 UNKNOWN 文件，额外打印 Warn 日志；
+4. 按 DELETE→TABLE→VIEW→ROUTINE→TRIGGER→UNKNOWN 顺序逐阶段执行；每个阶段单独建立连接池、执行完成后关闭；
+5. 每阶段内以 `parallelThds` 线程并发执行该阶段所有文件；
+6. 将 SQL 文件拆分为执行单元：普通语句单独执行，`BEGIN ... COMMIT/ROLLBACK` 作为一个事务块执行；
+7. 若检测到死锁错误（Error 1213），仅对当前失败事务块自动重试，最多 3 次（指数退避），不重试整个 SQL 文件；
+8. 某阶段任一文件失败则该阶段报错退出，后续阶段不再启动；
+9. 全部阶段完成后输出总耗时。
 
 ### 注意事项
 
@@ -656,7 +674,7 @@ $ ./repairDB
 
 3. **事务管理**：按SQL执行单元处理事务。`BEGIN ... COMMIT` 内的语句作为一个事务块执行，失败时回滚该事务块；普通语句按语句级执行。
 
-4. **执行顺序**：优先执行名称包含 `-DELETE-` 的 SQL 文件，然后执行其他操作的 SQL 文件，确保数据一致性。为了降低同一个表上的锁等待，在执行删除操作类和其他类的 SQL 文件时，采用随机并行执行的方式。
+4. **执行顺序**：按六阶段固定顺序执行：DELETE→TABLE→VIEW→ROUTINE→TRIGGER→UNKNOWN。DELETE 阶段优先清理旧数据；TABLE 阶段采用随机 shuffle 降低同表锁争用；VIEW/ROUTINE/TRIGGER/UNKNOWN 阶段使用稳定排序以保证审计可读性和确定性回放。无法识别前缀的文件进入 UNKNOWN 阶段最后执行，并打印 Warn 提示。
 
 5. **错误处理**：遇到死锁错误（Error 1213）时会自动重试当前失败事务块，最多 3 次；若仍失败或遇到非死锁错误，则停止并输出错误信息。
 
@@ -667,33 +685,44 @@ $ ./repairDB
 8. **DEFINER 前置检查（可选但强烈建议）**：当 fixSQL 中包含 `CREATE DEFINER=... PROCEDURE/FUNCTION/TRIGGER` 时，建议在执行前先扫描 fixSQL 并核对目标库账号体系。例如先确认脚本里引用了哪些 `DEFINER`，再确认目标库是否已存在对应账号及授权。若缺失账号或权限，应先由 DBA 补齐，再执行 `repairDB`。
 
 ### 示例输出
-程序执行过程中的输出会记录到repairDB.log文件中，示例如下：
+
+程序执行过程中的输出会同时打印到标准输出和 `repairDB.log` 文件中，示例如下：
+
 ```bash
-$ ./repairDB ./myfixsql && cat ./repairDB.log
-repairDB executed successfully
+$ ./repairDB ./myfixsql
 
 2026/01/29 10:00:00 Configuration information:
 2026/01/29 10:00:00   DstDSN: mysql|checksum:Checksum@3306@tcp(127.0.0.1:3306)/sbtest?charset=utf8mb4
 2026/01/29 10:00:00   ParallelThds: 4
 2026/01/29 10:00:00   FixFileDir: ./myfixsql
 2026/01/29 10:00:00   LogFile: repairDB.log
-2026/01/29 10:00:00 Found 2 DELETE files, 3 other SQL files
-2026/01/29 10:00:00 Starting to execute DELETE files
-2026/01/29 10:00:00 Starting to execute SQL file: ./myfixsql/table.sbtest.t1-DELETE-1.sql
+2026/01/29 10:00:00 Stage classification: DELETE=2 TABLE=3 VIEW=1 ROUTINE=0 TRIGGER=0 UNKNOWN=0
+2026/01/29 10:00:00 [DELETE] planned execution order (2 files):
+2026/01/29 10:00:00 [DELETE] #1 table.sbtest.t1-DELETE-1.sql
+2026/01/29 10:00:00 [DELETE] #2 table.sbtest.t2-DELETE-1.sql
+2026/01/29 10:00:00 [DELETE] starting execution (2 files), concurrency: 4
+2026/01/29 10:00:00 [DELETE] execution sequence #1: ./myfixsql/table.sbtest.t1-DELETE-1.sql
+2026/01/29 10:00:00 [DELETE] execution sequence #2: ./myfixsql/table.sbtest.t2-DELETE-1.sql
 2026/01/29 10:00:00 Successfully executed SQL file ./myfixsql/table.sbtest.t1-DELETE-1.sql, time taken: 10ms
-2026/01/29 10:00:00 Starting to execute SQL file: ./myfixsql/table.sbtest.t2-DELETE-1.sql
 2026/01/29 10:00:00 Successfully executed SQL file ./myfixsql/table.sbtest.t2-DELETE-1.sql, time taken: 8ms
-2026/01/29 10:00:00 DELETE files execution completed
-2026/01/29 10:00:00 Starting parallel execution of other SQL files, concurrency: 4
-2026/01/29 10:00:00 Starting to execute SQL file: ./myfixsql/table.sbtest.t1-1.sql
-2026/01/29 10:00:00 Starting to execute SQL file: ./myfixsql/table.sbtest.t2-1.sql
-2026/01/29 10:00:00 Starting to execute SQL file: ./myfixsql/table.sbtest.t3-1.sql
-2026/01/29 10:00:00 Successfully executed SQL file ./myfixsql/table.sbtest.t1-1.sql, time taken: 12ms
+2026/01/29 10:00:00 [DELETE] execution completed
+2026/01/29 10:00:00 [TABLE] planned execution order (3 files):
+2026/01/29 10:00:00 [TABLE] #1 table.sbtest.t2-1.sql
+2026/01/29 10:00:00 [TABLE] #2 table.sbtest.t1-1.sql
+2026/01/29 10:00:00 [TABLE] #3 table.sbtest.t3-1.sql
+2026/01/29 10:00:00 [TABLE] starting execution (3 files), concurrency: 4
 2026/01/29 10:00:00 Successfully executed SQL file ./myfixsql/table.sbtest.t2-1.sql, time taken: 10ms
+2026/01/29 10:00:00 Successfully executed SQL file ./myfixsql/table.sbtest.t1-1.sql, time taken: 12ms
 2026/01/29 10:00:00 Successfully executed SQL file ./myfixsql/table.sbtest.t3-1.sql, time taken: 9ms
-2026/01/29 10:00:00 Other SQL files execution completed
-2026/01/29 10:00:00 All SQL files execution completed
+2026/01/29 10:00:00 [TABLE] execution completed
+2026/01/29 10:00:00 [VIEW] starting execution (1 files), concurrency: 4
+2026/01/29 10:00:00 Successfully executed SQL file ./myfixsql/view.sbtest.v_order-1.sql, time taken: 5ms
+2026/01/29 10:00:00 [VIEW] execution completed
+2026/01/29 10:00:00 All SQL files execution completed, total time taken: 0m0.058s
+2026/01/29 10:00:00 repairDB executed successfully
 ```
+
+> **说明**：TABLE 阶段的执行顺序为随机 shuffle（如上例中 t2 先于 t1 执行），其余阶段按文件名稳定排序。若目录中存在无法识别前缀的文件，会在分类汇总后打印 `[WARN]` 提示。
 
 这就表示完成修复，可以再次执行数据校验，确认数据一致性。
 
