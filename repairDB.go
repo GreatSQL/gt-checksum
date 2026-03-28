@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"math/rand"
 	"os"
@@ -542,6 +543,11 @@ func normalizeMySQLDateFormatLiteralInSQLForExec(sql string) string {
 // Maximum number of retry attempts for deadlocked SQL files
 const maxDeadlockRetries = 3
 
+// dbConnMaxLifetime caps how long a pooled connection may be reused.
+// Set conservatively below common MySQL/RDS wait_timeout values (often 600s–28800s)
+// so the driver recycles stale connections before the server closes them.
+const dbConnMaxLifetime = 10 * time.Minute
+
 // isDeadlockError checks if an error is a MySQL deadlock error (Error 1213)
 func isDeadlockError(err error) bool {
 	if err == nil {
@@ -554,8 +560,112 @@ func isDeadlockError(err error) bool {
 var deleteFileNameRegex = regexp.MustCompile(`^.+-DELETE-.+\.sql$`)
 var numberedSQLFileRegex = regexp.MustCompile(`^(.+?-)(\d+)(\.sql)$`)
 
-func isDeleteStageFile(path string) bool {
-	return deleteFileNameRegex.MatchString(filepath.Base(path))
+// stageOrder defines the fixed execution order for object-type stages.
+// buildExecutionStages always follows this order; do not range over a map to determine phase order.
+var stageOrder = []string{"DELETE", "TABLE", "VIEW", "ROUTINE", "TRIGGER", "UNKNOWN"}
+
+// executionStage describes a single phase of the repairDB execution pipeline.
+type executionStage struct {
+	Name    string
+	Files   []string
+	Shuffle bool // true: shuffle before execution (DML hotspot reduction); false: sort for audit readability
+}
+
+// classifiedFiles holds SQL file paths grouped by their execution stage.
+type classifiedFiles struct {
+	Delete  []string
+	Table   []string
+	View    []string
+	Routine []string
+	Trigger []string
+	Unknown []string
+}
+
+// detectObjectStage returns the execution stage name for a single SQL file path.
+// Detection is performed on filepath.Base(path) to support both absolute and relative paths.
+// Priority: DELETE (-DELETE- pattern) > type prefix (table./view./routine./trigger.) > UNKNOWN.
+func detectObjectStage(path string) string {
+	base := filepath.Base(path)
+	if deleteFileNameRegex.MatchString(base) {
+		return "DELETE"
+	}
+	switch {
+	case strings.HasPrefix(base, "table."):
+		return "TABLE"
+	case strings.HasPrefix(base, "view."):
+		return "VIEW"
+	case strings.HasPrefix(base, "routine."):
+		return "ROUTINE"
+	case strings.HasPrefix(base, "trigger."):
+		return "TRIGGER"
+	default:
+		return "UNKNOWN"
+	}
+}
+
+// classifySQLFiles distributes SQL file paths into their respective execution stages.
+func classifySQLFiles(files []string) classifiedFiles {
+	var cf classifiedFiles
+	for _, f := range files {
+		switch detectObjectStage(f) {
+		case "DELETE":
+			cf.Delete = append(cf.Delete, f)
+		case "TABLE":
+			cf.Table = append(cf.Table, f)
+		case "VIEW":
+			cf.View = append(cf.View, f)
+		case "ROUTINE":
+			cf.Routine = append(cf.Routine, f)
+		case "TRIGGER":
+			cf.Trigger = append(cf.Trigger, f)
+		default:
+			cf.Unknown = append(cf.Unknown, f)
+		}
+	}
+	return cf
+}
+
+// buildExecutionStages constructs the ordered stage table from classified files.
+// Stages with no files are omitted. Order is authoritative from stageOrder.
+func buildExecutionStages(cf classifiedFiles) []executionStage {
+	filesByStage := map[string][]string{
+		"DELETE":  cf.Delete,
+		"TABLE":   cf.Table,
+		"VIEW":    cf.View,
+		"ROUTINE": cf.Routine,
+		"TRIGGER": cf.Trigger,
+		"UNKNOWN": cf.Unknown,
+	}
+	shuffleByStage := map[string]bool{
+		"TABLE": true,
+	}
+	var stages []executionStage
+	for _, name := range stageOrder {
+		files := filesByStage[name]
+		if len(files) > 0 {
+			stages = append(stages, executionStage{
+				Name:    name,
+				Files:   files,
+				Shuffle: shuffleByStage[name],
+			})
+		}
+	}
+	return stages
+}
+
+// prepareStageFiles returns a copy of the stage's files in their execution order.
+// TABLE stages are shuffled to reduce lock contention hotspots on high-concurrency DML.
+// All other stages are sorted for audit readability and deterministic replay.
+// The original stage.Files slice is never modified.
+func prepareStageFiles(stage executionStage) []string {
+	out := make([]string, len(stage.Files))
+	copy(out, stage.Files)
+	if stage.Shuffle {
+		shuffleSQLFiles(out)
+	} else {
+		sort.Strings(out)
+	}
+	return out
 }
 
 func uniqueFiles(files []string) []string {
@@ -746,21 +856,31 @@ func logExecutionPlan(stageName string, files []string, fixFileDir string) {
 	}
 }
 
-// Execute SQL files in random parallel mode with bounded concurrency.
-func parallelExecuteSQLFiles(files []string, dsn, stageName string) error {
-	// Create database connection pool
+// openExecutionDB opens and validates a MySQL connection pool for one execution stage.
+// Each stage opens its own pool and closes it upon completion, so session-level variables
+// set inside one stage's SQL files cannot leak into subsequent stages via pooled connections.
+// The pool parameters are tuned to match config.ParallelThds concurrency and to
+// recycle connections before server-side idle timeouts (dbConnMaxLifetime).
+func openExecutionDB(dsn string) (*sql.DB, error) {
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
-		return fmt.Errorf("Failed to create database connection: %v", err)
+		return nil, fmt.Errorf("failed to open database connection: %v", err)
 	}
-	defer db.Close()
-
-	// Test database connection
-	err = db.Ping()
-	if err != nil {
-		return fmt.Errorf("Database connection failed: %v", err)
+	db.SetMaxOpenConns(config.ParallelThds)
+	db.SetMaxIdleConns(config.ParallelThds)
+	db.SetConnMaxLifetime(dbConnMaxLifetime)
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("database ping failed: %v", err)
 	}
+	return db, nil
+}
 
+// parallelExecuteSQLFiles executes files concurrently using the provided connection pool.
+// Concurrency is bounded by config.ParallelThds. All goroutines run to completion before
+// returning (wait-all-then-report); a failure in one file does not cancel others in the
+// same stage, but the returned error prevents subsequent stages from starting.
+func parallelExecuteSQLFiles(db *sql.DB, files []string, stageName string) error {
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, config.ParallelThds)
 	errCh := make(chan error, len(files))
@@ -777,19 +897,16 @@ func parallelExecuteSQLFiles(files []string, dsn, stageName string) error {
 			startTime := time.Now()
 			seq := atomic.AddUint64(&executionSeq, 1)
 			log.Printf("[%s] execution sequence #%d: %s\n", stageName, seq, file)
-			fmt.Printf("Starting to execute SQL file: %s\n", file)
 
 			err := executeSQLFile(db, file)
 			if err != nil {
 				errCh <- fmt.Errorf("Failed to execute SQL file %s: %v", file, err)
 				log.Printf("Failed to execute SQL file %s: %v\n", file, err)
-				fmt.Printf("Failed to execute SQL file %s: %v\n", file, err)
 				return
 			}
 
 			elapsed := time.Since(startTime)
 			log.Printf("Successfully executed SQL file %s, time taken: %v\n", file, elapsed)
-			fmt.Printf("Successfully executed SQL file %s, time taken: %v\n", file, elapsed)
 		}()
 	}
 
@@ -813,8 +930,18 @@ func parallelExecuteSQLFiles(files []string, dsn, stageName string) error {
 	return nil
 }
 
-// Main function
 func main() {
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, "repairDB execution failed:", err)
+		os.Exit(1)
+	}
+}
+
+// run contains all repairDB logic and returns an error on failure.
+// Using a dedicated run() function ensures deferred cleanup (logFile.Close) executes
+// correctly on both success and error paths, since os.Exit bypasses deferred calls.
+// Stage-level db.Close() is called explicitly (not via defer) inside the stage loop.
+func run() error {
 	// Parse command line arguments
 	confFile := flag.String("conf", "gc.conf", "Config file path")
 	flag.Parse()
@@ -828,39 +955,30 @@ func main() {
 	// If command line argument is provided, use it directly
 	if specifiedFixFileDir != "" {
 		// Parse config file to get DstDSN and other parameters
-		err := parseConfig(*confFile)
-		if err != nil {
-			log.Printf("Failed to parse config file: %v\n", err)
-			fmt.Println("repairDB execution failed")
-			os.Exit(1)
+		if err := parseConfig(*confFile); err != nil {
+			return fmt.Errorf("failed to parse config file: %v", err)
 		}
 		// Override fixFileDir with command line argument
 		config.FixFileDir = specifiedFixFileDir
 	} else {
 		// Parse config file
-		err := parseConfig(*confFile)
-		if err != nil {
-			log.Printf("Failed to parse config file: %v\n", err)
-			fmt.Println("repairDB execution failed")
-			os.Exit(1)
+		if err := parseConfig(*confFile); err != nil {
+			return fmt.Errorf("failed to parse config file: %v", err)
 		}
 		// Check if fixFileDir is set in config file
 		if config.FixFileDir == "" {
-			log.Printf("No fixFileDir specified in command line or config file\n")
-			fmt.Println("repairDB execution failed")
-			os.Exit(1)
+			return fmt.Errorf("no fixFileDir specified in command line or config file")
 		}
 	}
 
-	// Configure log file
+	// Configure log file; use MultiWriter so all log.Printf calls reach both
+	// the log file and stdout without needing paired fmt.Printf duplicates.
 	logFile, err := os.OpenFile(config.LogFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
-		log.Printf("Failed to create log file: %v\n", err)
-		fmt.Println("repairDB execution failed")
-		os.Exit(1)
+		return fmt.Errorf("failed to create log file: %v", err)
 	}
 	defer logFile.Close()
-	log.SetOutput(logFile)
+	log.SetOutput(io.MultiWriter(os.Stdout, logFile))
 
 	// Print configuration information
 	log.Printf("Configuration information:")
@@ -871,22 +989,18 @@ func main() {
 
 	// Check if fixFileDir directory exists
 	if _, err := os.Stat(config.FixFileDir); os.IsNotExist(err) {
-		log.Printf("fixFileDir directory does not exist: %s\n", config.FixFileDir)
-		fmt.Println("repairDB execution failed")
-		os.Exit(1)
+		return fmt.Errorf("fixFileDir directory does not exist: %s", config.FixFileDir)
 	}
 
 	// Quick check if fixFileDir directory is empty
 	entries, err := os.ReadDir(config.FixFileDir)
 	if err != nil {
-		log.Printf("Failed to read directory: %v\n", err)
-		fmt.Println("repairDB execution failed")
-		os.Exit(1)
+		return fmt.Errorf("failed to read directory: %v", err)
 	}
 	if len(entries) == 0 {
 		log.Printf("fixFileDir directory is empty, exiting\n")
-		fmt.Println("repairDB executed successfully")
-		return
+		log.Printf("repairDB executed successfully\n")
+		return nil
 	}
 
 	// Traverse fixFileDir directory to find all .sql files
@@ -901,83 +1015,67 @@ func main() {
 		return nil
 	})
 	if err != nil {
-		log.Printf("Failed to traverse directory: %v\n", err)
-		fmt.Println("repairDB execution failed")
-		os.Exit(1)
+		return fmt.Errorf("failed to traverse directory: %v", err)
 	}
 
 	// Check if there are any SQL files
 	if len(sqlFiles) == 0 {
 		log.Printf("No .sql files found in fixFileDir directory\n")
-		fmt.Println("repairDB executed successfully")
-		return
+		log.Printf("repairDB executed successfully\n")
+		return nil
 	}
 
 	// Remove duplicated paths to guarantee each SQL file is scheduled once.
 	sqlFiles = uniqueFiles(sqlFiles)
 
-	// Separate DELETE files and other files
-	var deleteFiles []string
-	var otherFiles []string
+	// Classify SQL files into typed execution stages.
+	cf := classifySQLFiles(sqlFiles)
+	stages := buildExecutionStages(cf)
 
-	for _, file := range sqlFiles {
-		if isDeleteStageFile(file) {
-			deleteFiles = append(deleteFiles, file)
-		} else {
-			otherFiles = append(otherFiles, file)
+	// Print classification summary.
+	log.Printf("Stage classification: DELETE=%d TABLE=%d VIEW=%d ROUTINE=%d TRIGGER=%d UNKNOWN=%d\n",
+		len(cf.Delete), len(cf.Table), len(cf.View), len(cf.Routine), len(cf.Trigger), len(cf.Unknown))
+
+	// Warn about files that could not be classified by type prefix.
+	// They will execute last in the UNKNOWN stage; their relative ordering within
+	// that stage is not guaranteed to be dependency-safe.
+	if len(cf.Unknown) > 0 {
+		sample := cf.Unknown
+		if len(sample) > 3 {
+			sample = sample[:3]
 		}
+		log.Printf("[WARN] %d file(s) could not be classified by type prefix and will execute last in UNKNOWN stage.\n", len(cf.Unknown))
+		log.Printf("[WARN] UNKNOWN file examples: %s\n", strings.Join(sample, ", "))
 	}
 
-	// Phase-1 keeps deterministic order for audit readability.
-	sort.Strings(deleteFiles)
-	// Phase-2 uses randomized order to reduce lock contention hotspots.
-	shuffleSQLFiles(otherFiles)
-
-	// Print file information
-	log.Printf("Found %d DELETE files, %d other SQL files\n", len(deleteFiles), len(otherFiles))
-	fmt.Printf("Found %d DELETE files, %d other SQL files\n", len(deleteFiles), len(otherFiles))
-
-	// Log planned execution order for audit/review.
-	if len(deleteFiles) > 0 {
-		logExecutionPlan("PHASE-1-DELETE", deleteFiles, config.FixFileDir)
-	}
-	if len(otherFiles) > 0 {
-		logExecutionPlan("PHASE-2-OTHER", otherFiles, config.FixFileDir)
-	}
-
-	// Start timing
+	// Start timing.
 	startTime := time.Now()
 
-	// Execute DELETE files
-	if len(deleteFiles) > 0 {
-		log.Printf("Starting parallel execution of DELETE files, concurrency: %d\n", config.ParallelThds)
-		fmt.Printf("Starting parallel execution of DELETE files, concurrency: %d\n", config.ParallelThds)
-		dsn := parseDSN(config.DstDSN)
-		err = parallelExecuteSQLFiles(deleteFiles, dsn, "PHASE-1-DELETE")
-		if err != nil {
-			log.Printf("DELETE phase execution failed: %v\n", err)
-			fmt.Printf("DELETE phase execution failed: %v\n", err)
-			fmt.Println("repairDB execution failed")
-			os.Exit(1)
-		}
-		log.Printf("DELETE files execution completed\n")
-		fmt.Printf("DELETE files execution completed\n")
-	}
+	// Execute stages in fixed order: DELETE → TABLE → VIEW → ROUTINE → TRIGGER → UNKNOWN.
+	// Each stage runs to completion (wait-all-then-report) before the next stage starts.
+	// A failure in any stage stops all subsequent stages.
+	//
+	// Each stage opens its own connection pool and closes it upon completion.
+	// This guarantees that session-level variables set inside one stage's SQL files
+	// (e.g. FOREIGN_KEY_CHECKS=0, UNIQUE_CHECKS=0) cannot leak into subsequent stages
+	// via pooled connections, because database/sql does not reset session state on conn.Close().
+	dsn := parseDSN(config.DstDSN)
+	for _, stage := range stages {
+		files := prepareStageFiles(stage)
+		logExecutionPlan(stage.Name, files, config.FixFileDir)
+		log.Printf("[%s] starting execution (%d files), concurrency: %d\n", stage.Name, len(files), config.ParallelThds)
 
-	// Execute other SQL files
-	if len(otherFiles) > 0 {
-		log.Printf("Starting parallel execution of other SQL files, concurrency: %d\n", config.ParallelThds)
-		fmt.Printf("Starting parallel execution of other SQL files, concurrency: %d\n", config.ParallelThds)
-		dsn := parseDSN(config.DstDSN)
-		err = parallelExecuteSQLFiles(otherFiles, dsn, "PHASE-2-OTHER")
+		db, err := openExecutionDB(dsn)
 		if err != nil {
-			log.Printf("OTHER phase execution failed: %v\n", err)
-			fmt.Printf("OTHER phase execution failed: %v\n", err)
-			fmt.Println("repairDB execution failed")
-			os.Exit(1)
+			return fmt.Errorf("[%s] failed to connect to database: %v", stage.Name, err)
 		}
-		log.Printf("Other SQL files execution completed\n")
-		fmt.Printf("Other SQL files execution completed\n")
+		stageErr := parallelExecuteSQLFiles(db, files, stage.Name)
+		db.Close()
+		if stageErr != nil {
+			return fmt.Errorf("[%s] execution failed: %v", stage.Name, stageErr)
+		}
+
+		log.Printf("[%s] execution completed\n", stage.Name)
 	}
 
 	// Calculate total time
@@ -989,6 +1087,6 @@ func main() {
 	formattedTime := fmt.Sprintf("%dm%.3fs", minutes, seconds)
 
 	log.Printf("All SQL files execution completed, total time taken: %s\n", formattedTime)
-	fmt.Printf("All SQL files execution completed, total time taken: %s\n", formattedTime)
-	fmt.Println("repairDB executed successfully")
+	log.Printf("repairDB executed successfully\n")
+	return nil
 }
