@@ -282,6 +282,9 @@ build_binaries() {
     log_info "  编译 repairDB..."
     CGO_ENABLED=0 go build -o repairDB repairDB.go
 
+    log_info "  运行 repairDB 单元测试..."
+    CGO_ENABLED=0 go test -count=1 repairDB.go repairDB_test.go
+
     chmod +x gt-checksum repairDB
     log_info "  编译完成"
 }
