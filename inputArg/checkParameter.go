@@ -11,6 +11,20 @@ import (
 	"time"
 )
 
+// tablePatternHasUnsupportedStar reports whether the table-name segment of a
+// "schema.table" pattern contains a '*' that is not a supported wildcard.
+// The only supported '*' form is the full ".*" suffix (expand all tables in a
+// schema).  Partial wildcards such as "t*" must use '%' (e.g. "t%") instead.
+// An empty string or a string without a '.' returns false.
+func tablePatternHasUnsupportedStar(schemaTablePart string) bool {
+	dotIdx := strings.Index(schemaTablePart, ".")
+	if dotIdx < 0 {
+		return false
+	}
+	tableNamePart := schemaTablePart[dotIdx+1:]
+	return strings.Contains(tableNamePart, "*") && tableNamePart != "*"
+}
+
 // 判断库表配置参数是否存在非法参数
 func (rc *ConfigParameter) rexPat(rex *regexp.Regexp, rexStr string) {
 	illegalParameterStatus := false
@@ -187,6 +201,36 @@ func (rc *ConfigParameter) checkPar() {
 		global.Wlog.Error(vlog)
 		os.Exit(1)
 	}
+	// Reject '*' used as a partial wildcard in any table-name segment.
+	// Only the full '.*' suffix (meaning "all tables in a schema") is supported;
+	// '%' must be used for partial name matching (e.g. t% instead of t*).
+	// Both sides of a mapping pattern (src:dst) are validated independently.
+	checkUnsupportedStarInOption := func(optionName, rawValue string) {
+		for _, pattern := range strings.Split(rawValue, ",") {
+			pattern = strings.TrimSpace(pattern)
+			if !strings.Contains(pattern, ".") {
+				continue
+			}
+			srcPart := pattern
+			// dstPart is empty string when no ':' is present; tablePatternHasUnsupportedStar("")
+			// returns false safely because strings.Index("",".")  == -1.
+			dstPart := ""
+			if idx := strings.Index(pattern, ":"); idx >= 0 {
+				srcPart = pattern[:idx]
+				dstPart = pattern[idx+1:]
+			}
+			if tablePatternHasUnsupportedStar(srcPart) || tablePatternHasUnsupportedStar(dstPart) {
+				suggested := strings.ReplaceAll(pattern, "*", "%")
+				fmt.Printf("gt-checksum: %s option '%s' uses unsupported wildcard '*'; use '%%' instead, e.g. %s\n", optionName, pattern, suggested)
+				vlog = fmt.Sprintf("(%d) [%s] %s option '%s' contains unsupported wildcard '*' in table name; use '%%' instead, e.g. %s", rc.LogThreadSeq, Event, optionName, pattern, suggested)
+				global.Wlog.Error(vlog)
+				os.Exit(1)
+			}
+		}
+	}
+	checkUnsupportedStarInOption("tables", rc.SecondaryL.SchemaV.Tables)
+	checkUnsupportedStarInOption("ignoreTables", rc.SecondaryL.SchemaV.IgnoreTables)
+
 	//判断*.*之外是否还包含其他的值
 	if strings.Contains(rc.SecondaryL.SchemaV.Tables, "*.*") {
 		table := strings.Replace(rc.SecondaryL.SchemaV.Tables, "*.*", "", 1)
