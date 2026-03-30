@@ -5,6 +5,8 @@
 - [问题修复]: 修复多类结构比较误报（`CHECK` 括号噪音、主键 canonical key 残余、映射场景目标表名错误、collation advisory 重复输出等），以及 `MySQL 5.6/5.7` 查询 `INFORMATION_SCHEMA.STATISTICS.IS_VISIBLE` 的低版本兼容问题和 `checkObject=data` DDL-yes 链路结果丢失问题。
 - [问题修复]: 修复 DSN `charset` 参数提取不完整、`MariaDB` 源端全局权限预检查误判，以及 `struct` / `routine` / `trigger` 模式连接池过大导致的 `Too many connections` 问题（#IEYE7P）。
 - [测试完善]: MySQL 修复 SQL 生成路径新增 20 个单元测试，覆盖标识符引用（普通/含空格/含反引号/保留字）、ADD/DROP 索引、schema/table 名转义、外键名转义、routine/trigger DROP 转义、`normalizeAlterOperationContent` 正则提取等场景；Oracle 修复 SQL 生成路径新增 12 个单元测试，覆盖 `oracleIdentifier` 语义（简单大写裸名、小写→大写、含空格加双引号、已引用保留、内部双引号转义）、DROP/ADD 索引 Oracle 语法正确性、`FixAlterIndexSqlGenerate` 原样透传等场景。
+- [问题修复]: 修复 `checkObject=data` 模式下连接池大小不足导致数据校验 hang 住的问题：`data` 模式下 `queryTableDataSeparate` 与 `AbnormalDataDispos` 两条并发 pipeline 同时运行，单侧峰值连接需求约为 `parallelThds*2 + 2`；将单侧连接池下限从 `parallelThds + 2` 调整为 `parallelThds*2 + 4`（最低 8），覆盖两阶段并发场景。
+- [问题修复]: 修复连接池 `Get()` 持锁阻塞死锁及关闭竞态：`Get()` 原在持有 mutex 时阻塞等待 channel，导致 `Put()` 无法归还连接；同时 `Close()` 在 `Get()` 阻塞期间关闭 channel 后，`Get()` 会返回 nil 连接并错误递增计数。修复：将 channel 等待移至 mutex 释放后，改用两值接收检测 channel 关闭，并将 `Close()` 中 `p.close = true` 移至 `close(p.conns)` 之前。
 - [问题修复]: 修复 MySQL 修复 SQL 中索引名、schema/table 名、外键名、routine 名、trigger 名未使用反引号转义的问题；当对象名包含空格、连字符、反引号或 MySQL 保留字时，生成的 `ALTER TABLE` 语句会导致执行失败；新增 `mysqlQuoteIdent()` 函数统一处理所有标识符引用，并以正则 `alterTablePrefixRe` 替换脆弱的 `strings.SplitN` 提取方式，消除 schema/table 名含空格时的解析错误。
 - [问题修复]: 修复 Oracle 修复 SQL 使用错误 DDL 语法的问题；原实现对索引 DROP/ADD 均沿用 MySQL `ALTER TABLE` 语法，在 Oracle 上无法执行；改为：DROP 索引使用独立 `DROP INDEX schema.name;` 语句，ADD 索引使用 `CREATE [UNIQUE] INDEX schema.name ON schema.table (cols);` 语句；同时修复 `oracleIdentifier()` 语义：简单 ASCII 标识符返回大写裸名（无引号），避免加双引号后 Oracle 以大小写敏感方式查找对象导致 ORA-00942。
 
