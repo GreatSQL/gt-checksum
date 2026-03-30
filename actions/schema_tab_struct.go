@@ -2864,11 +2864,15 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 				pod := Pod{
 					Schema:      sourceSchema,
 					Table:       sourceTableName,
-					CheckObject: "struct",
+					CheckObject: stcls.checkRules.CheckObject,
 					DIFFS:       "yes",
 					Datafix:     stcls.datafix,
 				}
 				stcls.appendPod(pod)
+				// Keep abnormalTableList entry so data-mode EvaluateDataCheckPreflight
+				// correctly accounts this table as DDL-abnormal (SkipChecksum) rather
+				// than triggering the fatal "No valid tables" branch.
+				// Struct() uses a pod-snapshot guard to prevent a duplicate Pod entry.
 				abnormalTableList = append(abnormalTableList, mappedTableKey)
 				continue
 			}
@@ -2880,11 +2884,13 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 				pod := Pod{
 					Schema:      sourceSchema,
 					Table:       sourceTableName,
-					CheckObject: "struct",
+					CheckObject: stcls.checkRules.CheckObject,
 					DIFFS:       "yes",
 					Datafix:     stcls.datafix,
 				}
 				stcls.appendPod(pod)
+				// Keep abnormalTableList entry for data-mode preflight accounting.
+				// Struct() uses a pod-snapshot guard to prevent a duplicate Pod entry.
 				abnormalTableList = append(abnormalTableList, mappedTableKey)
 				continue
 			}
@@ -2947,7 +2953,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 					stcls.appendPod(Pod{
 						Schema:      sourceSchema,
 						Table:       sourceTableName,
-						CheckObject: "struct",
+						CheckObject: stcls.checkRules.CheckObject,
 						DIFFS:       global.SkipDiffsWarnOnly,
 						Datafix:     stcls.datafix,
 					})
@@ -2994,7 +3000,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 			pod := Pod{
 				Schema:      destSchema,
 				Table:       destTableName,
-				CheckObject: "struct",
+				CheckObject: stcls.checkRules.CheckObject,
 				DIFFS:       "yes",
 				Datafix:     stcls.datafix,
 			}
@@ -7526,12 +7532,28 @@ func (stcls *schemaTable) Struct(dtabS []string, logThreadSeq, logThreadSeq2 int
 	fmt.Println("gt-checksum: Checking table structure")
 	vlog = fmt.Sprintf("(%d) %s checking table structure of %v(num[%d]) from srcDSN and dstDSN", logThreadSeq, event, dtabS, len(dtabS))
 	global.Wlog.Info(vlog)
+	// Snapshot measuredDataPods length before TableColumnNameCheck so we can
+	// identify pods it appends directly (missing-table entries).  Those tables
+	// must not receive a second Pod from the loop below.
+	podCountBeforeCheck := len(measuredDataPods)
 	normal, abnormal, err := stcls.TableColumnNameCheck(dtabS, logThreadSeq, logThreadSeq2)
 	if err != nil {
 		return err
 	}
 	vlog = fmt.Sprintf("(%d) %s Table structure and column checksum of srcDB and dstDB completed. The consistent result is {%s}(num [%d]), and the inconsistent result is {%s}(num [%d])", logThreadSeq, event, normal, len(normal), abnormal, len(abnormal))
 	global.Wlog.Debug(vlog)
+	// Pre-populate existingTableKeys from pods that TableColumnNameCheck already
+	// appended (e.g. both-missing or source-missing tables).  This prevents the
+	// append(normal, abnormal...) loop below from creating duplicate Pod entries
+	// while still allowing abnormalTableList to carry its data-mode preflight count.
+	// NOTE: This guard is effective only when stcls.aggregate == false (the current
+	// production path for Struct()).  When aggregate is true, appendPod writes to
+	// stcls.podsBuffer instead of measuredDataPods, so the slice delta is empty and
+	// the guard has no effect.  That path does not currently call Struct(), so the
+	// limitation is latent rather than actively triggered.
+	for _, p := range measuredDataPods[podCountBeforeCheck:] {
+		existingTableKeys[fmt.Sprintf("%s.%s", p.Schema, p.Table)] = true
+	}
 
 	// 初始化表结构差异映射
 	for _, i := range dtabS {
