@@ -175,6 +175,7 @@ sbtest  F1              Function        no      no
 1. 源端与目标端 `srcDSN`、`dstDSN` 中的 `charset` 参数必须一致；如果两端字符集不一致，程序会在启动阶段直接退出，避免出现数据校验结果失真或修复后乱码的问题。
 2. 当源端为 `MariaDB` 时，仅支持 `MariaDB 10.x+ -> MySQL 8.0/8.4` 的数据校验/修复路径；其他 `MariaDB` 组合仍会在启动阶段直接拒绝执行。
 3. 当数据校验前发现表结构不一致时，程序不会继续做该表的数据比对，而是保留结果并将 `Diffs` 标记为 `DDL-yes`。如果需要进一步修复表结构，请改用 `checkObject=struct`。
+4. **连接池容量**：`data` 模式下，程序内部同时运行 `queryTableDataSeparate`（checksum 比较）与 `AbnormalDataDispos`（差异处理）两条并发 pipeline，各自最多占用 `parallelThds` 个连接，单侧峰值约为 `parallelThds*2 + 2`。程序自动按 `parallelThds*2 + 4`（最低 8）设置单侧连接池下限，请确保数据库 `max_connections` 足以承载 `(parallelThds*2 + 4) * 2`（源端+目标端）个连接。`struct`/`routine`/`trigger` 模式单侧固定为 3 个连接，与 `parallelThds` 无关。
 
 ### `checkObject=struct` 的支持边界
 
