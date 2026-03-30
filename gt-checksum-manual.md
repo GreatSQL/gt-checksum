@@ -170,6 +170,18 @@ sbtest  F1              Function        no      no
 | 源端版本主线大于目标端版本主线 | 不支持 | 不支持 | 不支持 | 不支持 | 程序会在启动阶段直接退出，并明确提示 downgrade 场景不受支持。 |
 | 任一端版本主线不在 `5.6`、`5.7`、`8.0`、`8.4` 范围内 | 不支持 | 不支持 | 不支持 | 不支持 | 程序会在启动阶段直接退出，并提示支持的版本范围。 |
 
+### `tables` / `ignoreTables` 参数使用注意事项
+
+**通配符限制**：表名段仅支持 `%` 作为部分通配符（如 `db1.t%`）；`*` 只在 `db.*` 形式（表示某库下所有表）时有效，**不支持**将 `*` 置于表名中间或末尾（如 `db.t*`、`db.prefix_*`）。若误用此类模式，程序会在参数校验阶段立即退出并打印错误提示，例如：
+
+```text
+gt-checksum: tables option 'sbtest.t*' uses unsupported wildcard '*'; use '%' instead, e.g. sbtest.t%
+```
+
+该检查同时覆盖映射规则的目标侧（如 `db1.t%:db2.t*` 中的 `db2.t*`）以及 `ignoreTables` 参数。
+
+**表不存在时的输出行为**：当 `tables` 指定的表在源端或两端均不存在时，程序会在结果表格中输出一行对应记录，`Diffs=yes`、`Datafix=file`，`CheckObject` 列显示用户实际配置的校验模式（`data` 或 `struct`），不再硬编码为 `struct`。
+
 ### `checkObject=data` 的前置条件
 
 1. 源端与目标端 `srcDSN`、`dstDSN` 中的 `charset` 参数必须一致；如果两端字符集不一致，程序会在启动阶段直接退出，避免出现数据校验结果失真或修复后乱码的问题。
