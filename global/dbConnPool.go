@@ -65,20 +65,29 @@ func (p *Pool) Get(logThreadSeq int64) *sql.DB {
 	}()
 	//vlog = fmt.Sprintf("(%d) Get a session connection from the %s DB session connection pool ...", logThreadSeq, p.drive)
 	//Wlog.Debug(vlog)
+
+	// p.close 的读取与写入（Close() 中）都在 mutex 保护下，避免数据竞态
+	p.mu.Lock()
 	if p.close {
-		close(p.conns)
+		p.mu.Unlock()
+		return nil
+	}
+	if p.numConn >= p.minConn {
+		vlog = fmt.Sprintf("(%d) The current %s DB session connection pool is full. use session [%d], total session [%d], no memory available, please wait...", logThreadSeq, p.drive, p.numConn, p.minConn)
+		Wlog.Warn(vlog)
+	}
+	p.mu.Unlock()
+
+	// 必须在释放 mutex 之后再阻塞等待 channel，否则 Put() 也需要 mutex 而造成死锁。
+	// 使用两值接收：若 Close() 在此期间关闭了 channel，ok==false，不返回无效连接，不更新 numConn
+	var ok bool
+	d, ok = <-p.conns // 若池中没有可取的连接，则等待其他请求返回连接至池中再取
+	if !ok {
 		return nil
 	}
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.numConn >= p.minConn || len(p.conns) > 0 { // 保证了池申请连接数量不超过最大连接数
-		if p.numConn >= p.minConn {
-			vlog = fmt.Sprintf("(%d) The current %s DB session connection pool is full. use session [%d], total session [%d], no memory available, please wait...", logThreadSeq, p.drive, p.numConn, p.minConn)
-			Wlog.Warn(vlog)
-		}
-		d = <-p.conns // 若池中没有可取的连接，则等待其他请求返回连接至池中再取
-	}
 	p.numConn++
+	p.mu.Unlock()
 	//vlog = fmt.Sprintf("(%d) Obtain a connection successfully, the current %s DB connection pool status, the number of applied connections is [%d], and the remaining number is [%d].", logThreadSeq, p.drive, p.minConn-len(p.conns), len(p.conns))
 	//Wlog.Debug(vlog)
 	return d
@@ -116,11 +125,13 @@ func (p *Pool) Close(logThreadSeq int) {
 	defer p.mu.Unlock()
 	vlog = fmt.Sprintf("(%d) Start closing the %s DB session connection pool ...", logThreadSeq, p.drive)
 	Wlog.Debug(vlog)
+	// 先设置关闭标志，再关闭 channel。
+	// Get() 在持锁时读取此标志，确保新的 Get() 调用在 channel 关闭前就能感知到关闭状态并提前返回 nil
+	p.close = true
 	close(p.conns)
 	for d := range p.conns {
 		d.Close()
 	}
 	vlog = fmt.Sprintf("(%d) %s DB Session connection pool closed successfully.", logThreadSeq, p.drive)
 	Wlog.Debug(vlog)
-	p.close = true
 }
