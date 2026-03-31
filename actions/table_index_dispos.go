@@ -594,6 +594,8 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 				if level == 0 {
 					close(sqlWhere)
 				}
+				vlog = fmt.Sprintf("(%d) Completed WHERE condition processing for index column %s in %s.%s", logThreadSeq, sp.columnName[level], sp.schema, sp.table)
+				global.Wlog.Debug(vlog)
 				return
 			}
 			shouldLogDetail := autoIncSeq <= 10 || key == dataDispos.StreamEndMarker || autoIncSeq%500 == 0
@@ -738,9 +740,6 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 			}
 		}
 	}
-
-	vlog = fmt.Sprintf("(%d) Completed WHERE condition processing for index column %s in %s.%s", logThreadSeq, sp.columnName[level], sp.schema, sp.table)
-	global.Wlog.Debug(vlog)
 }
 
 func (sp *SchedulePlan) indexColumnDispos(sqlWhere chanString, selectColumn map[string]map[string]string) {
@@ -1077,6 +1076,8 @@ func (sp *SchedulePlan) queryTableData(selectSql chanMap, diffQueryData chanDiff
 		case c, ok := <-selectSql:
 			if !ok {
 				if len(curry) == 0 {
+					sp.bar.Finish()
+					time.Sleep(time.Millisecond)
 					close(diffQueryData)
 					return
 				}
@@ -1159,8 +1160,6 @@ func (sp *SchedulePlan) queryTableData(selectSql chanMap, diffQueryData chanDiff
 			autoSeq2 = autoSeq1
 		}
 	}
-	sp.bar.Finish()
-	time.Sleep(time.Millisecond)
 }
 
 /*
@@ -1196,6 +1195,10 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 			if !ok {
 				if len(curry) == 0 {
 					logStageMemory("diff-compare-end", logThreadSeq, sp.schema, sp.table)
+					global.Wlog.Debugf("DEBUG_FINAL_COUNT_%d: Total INSERT statements generated for %s.%s: %d\n",
+						logThreadSeq, sp.schema, sp.table, totalInsertCount)
+					vlog = fmt.Sprintf("(%d) Completed difference processing and repair statements for %s.%s", logThreadSeq, sp.schema, sp.table)
+					global.Wlog.Info(vlog)
 					close(cc)
 					return
 				}
@@ -2051,10 +2054,6 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 			}
 		}
 	}
-	global.Wlog.Debugf("DEBUG_FINAL_COUNT_%d: Total INSERT statements generated for %s.%s: %d\n",
-		logThreadSeq, sp.schema, sp.table, totalInsertCount)
-	vlog = fmt.Sprintf("(%d) Completed difference processing and repair statements for %s.%s", logThreadSeq, sp.schema, sp.table)
-	global.Wlog.Info(vlog)
 }
 
 func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {

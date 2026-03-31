@@ -3013,8 +3013,6 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 				}
 				delete(destColumnMap, v1)
 			} else {
-				// 使用固定值：ScheckOrder=yes
-				lastcolumn = lastcolumn
 				var position int
 				// 使用固定值：ScheckOrder=yes，总是使用源列的实际位置
 				position = k1

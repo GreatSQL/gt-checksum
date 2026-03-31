@@ -25,7 +25,7 @@ func PareBinlog() {
 	//streamer, _ := syncer.StartSyncGTID()
 	// the mysql GTID set likes this "de278ad0-2106-11e4-9f8e-6edd0ca20947:1-2"
 	// the mariadb GTID set likes this "0-1-100"
-	streamer, _ := syncer.StartSync(mysql.Position{"mysql-bin.000007", 651861})
+	streamer, _ := syncer.StartSync(mysql.Position{Name: "mysql-bin.000007", Pos: 651861})
 	for {
 		ev, _ := streamer.GetEvent(context.Background())
 		var a string
