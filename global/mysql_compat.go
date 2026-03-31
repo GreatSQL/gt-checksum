@@ -16,6 +16,18 @@ var supportedMySQLSeries = map[string]struct{}{
 	"8.4": {},
 }
 
+// supportedMariaDBSeries lists the MariaDB minor-version series that are
+// eligible for MariaDB → MariaDB check/fix.  The list covers LTS-grade,
+// widely-used, and explicitly supported development series (e.g. 12.3).
+var supportedMariaDBSeries = map[string]struct{}{
+	"10.5":  {},
+	"10.6":  {},
+	"10.11": {},
+	"11.4":  {},
+	"11.5":  {},
+	"12.3":  {},
+}
+
 type DatabaseFlavor string
 
 const (
@@ -98,8 +110,17 @@ func SupportedMySQLSeriesList() string {
 	return "5.6, 5.7, 8.0, 8.4"
 }
 
+func SupportedMariaDBSeriesList() string {
+	return "10.5, 10.6, 10.11, 11.4, 11.5, 12.3"
+}
+
 func IsSupportedMySQLSeries(series string) bool {
 	_, ok := supportedMySQLSeries[series]
+	return ok
+}
+
+func IsSupportedMariaDBSeries(series string) bool {
+	_, ok := supportedMariaDBSeries[series]
 	return ok
 }
 
@@ -132,6 +153,19 @@ func ValidateMySQLVersionPair(src, dst MySQLVersionInfo) error {
 	return nil
 }
 
+func validateMariaDBToMariaDBPolicy(src, dst MySQLVersionInfo) error {
+	if !IsSupportedMariaDBSeries(src.Series) {
+		return fmt.Errorf("unsupported source MariaDB version %s (series %s); supported series are: %s", src.Raw, src.Series, SupportedMariaDBSeriesList())
+	}
+	if !IsSupportedMariaDBSeries(dst.Series) {
+		return fmt.Errorf("unsupported target MariaDB version %s (series %s); supported series are: %s", dst.Raw, dst.Series, SupportedMariaDBSeriesList())
+	}
+	if CompareMySQLVersionSeries(src, dst) > 0 {
+		return fmt.Errorf("source MariaDB version %s (series %s) is higher than target %s (series %s); downgrade check/repair is not supported", src.Raw, src.Series, dst.Raw, dst.Series)
+	}
+	return nil
+}
+
 func ValidateMySQLCompatibilityPolicy(src, dst MySQLVersionInfo, checkObject string) error {
 	normalizedCheckObject := strings.ToLower(strings.TrimSpace(checkObject))
 
@@ -149,7 +183,15 @@ func ValidateMySQLCompatibilityPolicy(src, dst MySQLVersionInfo, checkObject str
 	case src.Flavor == DatabaseFlavorMySQL && dst.Flavor == DatabaseFlavorMariaDB:
 		return fmt.Errorf("source database %s to destination %s is not supported", FormatDatabaseVersion(src), FormatDatabaseVersion(dst))
 	case src.Flavor == DatabaseFlavorMariaDB && dst.Flavor == DatabaseFlavorMariaDB:
-		return fmt.Errorf("source database %s to destination %s is not supported; only MariaDB -> MySQL 8.0/8.4 data/struct/routine/trigger check and fix are supported", FormatDatabaseVersion(src), FormatDatabaseVersion(dst))
+		if err := validateMariaDBToMariaDBPolicy(src, dst); err != nil {
+			return err
+		}
+		switch normalizedCheckObject {
+		case "data", "struct", "routine", "trigger":
+			return nil
+		default:
+			return fmt.Errorf("source database %s to destination %s only supports checkObject=data, struct, routine or trigger; checkObject=%s is not supported", FormatDatabaseVersion(src), FormatDatabaseVersion(dst), checkObject)
+		}
 	default:
 		return ValidateMySQLVersionPair(src, dst)
 	}
