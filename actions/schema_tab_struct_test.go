@@ -171,3 +171,93 @@ func searchSubstring(s, sub string) bool {
 	}
 	return false
 }
+
+// ---------- shouldCompareTriggerMetadata / shouldCompareRoutineMetadata ----------
+
+func makeSchemaTable(srcRaw, srcSeries string, srcFlavor global.DatabaseFlavor, dstRaw, dstSeries string, dstFlavor global.DatabaseFlavor) *schemaTable {
+	src := global.MySQLVersionInfo{Raw: srcRaw, Series: srcSeries, Flavor: srcFlavor}
+	dst := global.MySQLVersionInfo{Raw: dstRaw, Series: dstSeries, Flavor: dstFlavor}
+	return &schemaTable{
+		sourceDrive:   "mysql",
+		destDrive:     "mysql",
+		sourceVersion: src,
+		destVersion:   dst,
+	}
+}
+
+func TestShouldCompareTriggerMetadata(t *testing.T) {
+	tests := []struct {
+		name     string
+		st       *schemaTable
+		expected bool
+	}{
+		{
+			name:     "mariadb-to-mariadb-returns-true",
+			st:       makeSchemaTable("10.6.12-MariaDB", "10.6", global.DatabaseFlavorMariaDB, "10.11.5-MariaDB", "10.11", global.DatabaseFlavorMariaDB),
+			expected: true,
+		},
+		{
+			name:     "mysql-to-mariadb-returns-false",
+			st:       makeSchemaTable("8.0.33", "8.0", global.DatabaseFlavorMySQL, "10.11.5-MariaDB", "10.11", global.DatabaseFlavorMariaDB),
+			expected: false,
+		},
+		{
+			name:     "mysql-to-mysql-returns-true",
+			st:       makeSchemaTable("8.0.33", "8.0", global.DatabaseFlavorMySQL, "8.0.35", "8.0", global.DatabaseFlavorMySQL),
+			expected: true,
+		},
+		{
+			name:     "mariadb-to-mysql80-returns-true",
+			st:       makeSchemaTable("10.6.12-MariaDB", "10.6", global.DatabaseFlavorMariaDB, "8.0.33", "8.0", global.DatabaseFlavorMySQL),
+			expected: true,
+		},
+		{
+			name:     "mariadb-to-mysql57-returns-false",
+			st:       makeSchemaTable("10.6.12-MariaDB", "10.6", global.DatabaseFlavorMariaDB, "5.7.42", "5.7", global.DatabaseFlavorMySQL),
+			expected: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.st.shouldCompareTriggerMetadata(); got != tt.expected {
+				t.Fatalf("shouldCompareTriggerMetadata() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestShouldCompareRoutineMetadata(t *testing.T) {
+	tests := []struct {
+		name     string
+		st       *schemaTable
+		expected bool
+	}{
+		{
+			name:     "mariadb-to-mariadb-returns-true",
+			st:       makeSchemaTable("10.6.12-MariaDB", "10.6", global.DatabaseFlavorMariaDB, "10.11.5-MariaDB", "10.11", global.DatabaseFlavorMariaDB),
+			expected: true,
+		},
+		{
+			name:     "mysql-to-mariadb-returns-false",
+			st:       makeSchemaTable("8.0.33", "8.0", global.DatabaseFlavorMySQL, "10.11.5-MariaDB", "10.11", global.DatabaseFlavorMariaDB),
+			expected: false,
+		},
+		{
+			name:     "mysql-to-mysql-returns-true",
+			st:       makeSchemaTable("8.0.33", "8.0", global.DatabaseFlavorMySQL, "8.0.35", "8.0", global.DatabaseFlavorMySQL),
+			expected: true,
+		},
+		{
+			name:     "mariadb-to-mysql84-returns-true",
+			st:       makeSchemaTable("10.6.12-MariaDB", "10.6", global.DatabaseFlavorMariaDB, "8.4.0", "8.4", global.DatabaseFlavorMySQL),
+			expected: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.st.shouldCompareRoutineMetadata(); got != tt.expected {
+				t.Fatalf("shouldCompareRoutineMetadata() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
