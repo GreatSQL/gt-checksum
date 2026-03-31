@@ -1030,6 +1030,10 @@ func (stcls *schemaTable) shouldCompareTriggerMetadata() bool {
 		return stcls.isMySQLToMySQL()
 	}
 
+	if dst.Flavor == global.DatabaseFlavorMariaDB {
+		return src.Flavor == global.DatabaseFlavorMariaDB
+	}
+
 	if dst.Flavor != global.DatabaseFlavorMySQL {
 		return false
 	}
@@ -1054,6 +1058,10 @@ func (stcls *schemaTable) shouldCompareRoutineMetadata() bool {
 
 	if strings.TrimSpace(src.Raw) == "" || strings.TrimSpace(dst.Raw) == "" {
 		return stcls.isMySQLToMySQL()
+	}
+
+	if dst.Flavor == global.DatabaseFlavorMariaDB {
+		return src.Flavor == global.DatabaseFlavorMariaDB
 	}
 
 	if dst.Flavor != global.DatabaseFlavorMySQL {
@@ -6220,6 +6228,7 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 				SourceSchema:            stcls.schema,                  // 添加源端schema
 				CaseSensitiveObjectName: stcls.caseSensitiveObjectName, // 传递是否区分对象名大小写
 				IndexVisibilityMap:      sourceVisibilityMap,           // 传递索引可见性信息
+				DestFlavor:              stcls.destVersionInfo().Flavor, // 用于生成兼容目标端语法的 fix SQL
 			}
 
 			sourceCanonicalIndexes := schemacompat.CanonicalizeMySQLIndexes(smu, sourceVisibilityMap)
@@ -6400,10 +6409,15 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 							}
 
 							// 获取索引可见性信息
+							// MariaDB 使用 IGNORED 关键字，MySQL 使用 INVISIBLE。
+							indexHiddenKeyword := "INVISIBLE"
+							if stcls.destVersionInfo().Flavor == global.DatabaseFlavorMariaDB {
+								indexHiddenKeyword = "IGNORED"
+							}
 							visibility := ""
-							if indexType == "mul" && sourceVisibilityMap != nil {
+							if (indexType == "mul" || indexType == "uni") && sourceVisibilityMap != nil {
 								if vis, ok := sourceVisibilityMap[k]; ok && isInvisibleLikeIndexVisibility(vis) {
-									visibility = " INVISIBLE"
+									visibility = " " + indexHiddenKeyword
 								}
 							}
 
@@ -6413,8 +6427,8 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 									cc = append(cc, fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD PRIMARY KEY(%s);",
 										destSchema, stcls.table, strings.Join(quotedColumns, ", ")))
 								} else if indexType == "uni" {
-									cc = append(cc, fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD UNIQUE INDEX `%s`(%s);",
-										destSchema, stcls.table, k, strings.Join(quotedColumns, ", ")))
+									cc = append(cc, fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD UNIQUE INDEX `%s`(%s)%s;",
+										destSchema, stcls.table, k, strings.Join(quotedColumns, ", "), visibility))
 								} else {
 									cc = append(cc, fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD INDEX `%s`(%s)%s;",
 										destSchema, stcls.table, k, strings.Join(quotedColumns, ", "), visibility))
@@ -6560,6 +6574,7 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 					DatafixType:             stcls.datafix,
 					CaseSensitiveObjectName: stcls.caseSensitiveObjectName,
 					SourceSchema:            stcls.schema,
+					DestFlavor:              stcls.destVersionInfo().Flavor,
 				}
 
 				// 合并列修复和索引修复操作
@@ -6590,6 +6605,7 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 					DatafixType:             stcls.datafix,
 					SourceSchema:            stcls.schema,
 					CaseSensitiveObjectName: stcls.caseSensitiveObjectName,
+					DestFlavor:              stcls.destVersionInfo().Flavor,
 				}
 
 				combinedSql := dbf.DataAbnormalFix().FixAlterIndexSqlGenerate(sqlS, logThreadSeq)
