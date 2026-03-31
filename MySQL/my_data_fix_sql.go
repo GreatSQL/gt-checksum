@@ -1666,8 +1666,12 @@ func WriteFixIfNeededFile(datafix string, sfile *os.File, sqls []string, logThre
 			continue
 		}
 
-		// DELIMITER 指令是每个文件必须独立包含的控制语句，跳过去重检查
-		if strings.HasPrefix(strings.ToUpper(trimmedSql), "DELIMITER ") {
+		// DELIMITER 及 charset/collation 会话变量 SET 语句是每个文件必须独立包含的控制语句，跳过去重检查
+		upperTrimmed := strings.ToUpper(trimmedSql)
+		if strings.HasPrefix(upperTrimmed, "DELIMITER ") ||
+			strings.HasPrefix(upperTrimmed, "SET CHARACTER_SET_CLIENT") ||
+			strings.HasPrefix(upperTrimmed, "SET COLLATION_CONNECTION") ||
+			strings.HasPrefix(upperTrimmed, "SET COLLATION_DATABASE") {
 			uniqueSqls = append(uniqueSqls, sql)
 			continue
 		}
