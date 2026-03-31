@@ -56,6 +56,7 @@ type MysqlDataAbnormalFixStruct struct {
 	CaseSensitiveObjectName string            // 是否区分对象名大小写
 	IndexVisibilityMap      map[string]string // 索引可见性信息
 	ForeignKeyDefinitions   map[string]string // 外键DDL定义信息
+	DestFlavor              global.DatabaseFlavor // 目标端数据库类型，用于生成兼容目标端语法的 fix SQL
 }
 
 type foreignKeyColumn struct {
@@ -1048,10 +1049,15 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterIndexSqlExec(e, f []string, si map
 			global.Wlog.Debug(vlog)
 		} else {
 			// 生成普通索引的SQL
+			// MariaDB 使用 IGNORED 关键字隐藏索引，MySQL 使用 INVISIBLE。
+			indexHiddenKeyword := "INVISIBLE"
+			if my.DestFlavor == global.DatabaseFlavorMariaDB {
+				indexHiddenKeyword = "IGNORED"
+			}
 			var invisibleClause string
 			if my.IndexVisibilityMap != nil {
 				if visibility, exists := my.IndexVisibilityMap[v]; exists && (strings.EqualFold(visibility, "NO") || strings.EqualFold(visibility, "INVISIBLE") || strings.EqualFold(visibility, "IGNORED")) {
-					invisibleClause = " INVISIBLE"
+					invisibleClause = " " + indexHiddenKeyword
 				}
 			}
 			switch my.IndexType {

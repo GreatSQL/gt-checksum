@@ -187,7 +187,11 @@ func BuildTargetColumnRepairPlan(name string, attrs []string, sourceInfo, target
 	}
 
 	if sourceInfo.Flavor != global.DatabaseFlavorMariaDB || targetInfo.Flavor != global.DatabaseFlavorMySQL {
-		plan.Type = stripMariaDBOnlyColumnAttributes(plan.Type)
+		// MariaDB→MariaDB: COMPRESSED, PERSISTENT and similar attributes are
+		// natively supported on the target side — do not strip them.
+		if targetInfo.Flavor != global.DatabaseFlavorMariaDB {
+			plan.Type = stripMariaDBOnlyColumnAttributes(plan.Type)
+		}
 		return plan
 	}
 
