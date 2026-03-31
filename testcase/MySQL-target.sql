@@ -6,7 +6,7 @@ SET UNIQUE_CHECKS=0;
 /*!80030 SET SESSION sql_generate_invisible_primary_key=0 */;
 
 /*!40000 DROP DATABASE IF EXISTS `gt_checksum`*/;
-CREATE DATABASE /*!32312 IF NOT EXISTS*/ `gt_checksum` /*!40100 DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci */ /*!80016 DEFAULT ENCRYPTION='N' */;
+CREATE DATABASE /*!32312 IF NOT EXISTS*/ `gt_checksum` /*!40100 DEFAULT CHARACTER SET utf8mb4 */ /*!80000 COLLATE utf8mb4_0900_ai_ci */ /*!80016 DEFAULT ENCRYPTION='N' */;
 USE gt_checksum;
 
 -- 测试几个基本数据类型
