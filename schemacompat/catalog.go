@@ -58,19 +58,27 @@ func BuildSchemaFeatureCatalog(info global.MySQLVersionInfo) SchemaFeatureCatalo
 
 	switch info.Flavor {
 	case global.DatabaseFlavorMariaDB:
-		catalog.SupportsJSON = true
+		// JSON data type (longtext+JSON_VALID alias) introduced in MariaDB 10.2.
+		catalog.SupportsJSON = info.Major > 10 || (info.Major == 10 && info.Minor >= 2)
+		// Virtual/generated columns exist since MariaDB 5.2 — available in all
+		// series that gt-checksum supports (10.0+).
 		catalog.SupportsGeneratedColumns = true
-		catalog.SupportsInvisibleColumns = true
+		// Invisible columns introduced in MariaDB 10.3.
+		catalog.SupportsInvisibleColumns = info.Major > 10 || (info.Major == 10 && info.Minor >= 3)
 		// MariaDB surfaces optimizer-hidden index semantics via IGNORED indexes.
 		// Track that capability from 10.6 onward so future feature gating does
 		// not contradict the existing IGNORE -> INVISIBLE rewrite path.
 		catalog.SupportsInvisibleIndexes = info.Major > 10 || (info.Major == 10 && info.Minor >= 6)
-		catalog.SupportsFunctionIndexes = true
+		// Expression (function-based) indexes introduced in MariaDB 10.4.
+		catalog.SupportsFunctionIndexes = info.Major > 10 || (info.Major == 10 && info.Minor >= 4)
+		// CHECK constraint syntax exists in 10.0 but was silently ignored until
+		// enforcement was added in MariaDB 10.2.1.
 		catalog.SupportsCheckConstraints = true
-		catalog.EnforcesCheckConstraints = true
+		catalog.EnforcesCheckConstraints = info.Major > 10 || (info.Major == 10 && info.Minor >= 2)
 		catalog.SupportsNativeINET6Type = info.Major > 10 || (info.Major == 10 && info.Minor >= 5)
 		catalog.SupportsNativeUUIDType = info.Major > 10 || (info.Major == 10 && info.Minor >= 7)
-		catalog.SupportsColumnCompression = true
+		// Column-level COMPRESSED attribute introduced in MariaDB 10.3.
+		catalog.SupportsColumnCompression = info.Major > 10 || (info.Major == 10 && info.Minor >= 3)
 		// MariaDB 11.5+ uses utf8mb4_uca1400_ai_ci as the default collation for utf8mb4.
 		if info.Major > 11 || (info.Major == 11 && info.Minor >= 5) {
 			catalog.DefaultCollationByCharset["utf8mb4"] = "utf8mb4_uca1400_ai_ci"

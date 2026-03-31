@@ -73,6 +73,103 @@ func containsStr(s, sub string) bool {
 	}()
 }
 
+func TestBuildSchemaFeatureCatalogMariaDBFeatureBoundaries(t *testing.T) {
+	tests := []struct {
+		name                      string
+		major, minor              int
+		wantJSON                  bool
+		wantInvisibleColumns      bool
+		wantFunctionIndexes       bool
+		wantEnforcesCheck         bool
+		wantColumnCompression     bool
+		wantInvisibleIndexes      bool
+		wantGeneratedColumns      bool
+		wantCheckConstraintSyntax bool
+	}{
+		{
+			name: "mariadb-10.0",
+			major: 10, minor: 0,
+			wantJSON: false, wantInvisibleColumns: false, wantFunctionIndexes: false,
+			wantEnforcesCheck: false, wantColumnCompression: false, wantInvisibleIndexes: false,
+			wantGeneratedColumns: true, wantCheckConstraintSyntax: true,
+		},
+		{
+			name: "mariadb-10.1",
+			major: 10, minor: 1,
+			wantJSON: false, wantInvisibleColumns: false, wantFunctionIndexes: false,
+			wantEnforcesCheck: false, wantColumnCompression: false, wantInvisibleIndexes: false,
+			wantGeneratedColumns: true, wantCheckConstraintSyntax: true,
+		},
+		{
+			// JSON 数据类型从 10.2 引入（longtext+JSON_VALID alias）
+			// CHECK 约束从 10.2 开始强制执行
+			name: "mariadb-10.2",
+			major: 10, minor: 2,
+			wantJSON: true, wantInvisibleColumns: false, wantFunctionIndexes: false,
+			wantEnforcesCheck: true, wantColumnCompression: false, wantInvisibleIndexes: false,
+			wantGeneratedColumns: true, wantCheckConstraintSyntax: true,
+		},
+		{
+			// 不可见列、COMPRESSED 列属性、序列等从 10.3 引入
+			name: "mariadb-10.3",
+			major: 10, minor: 3,
+			wantJSON: true, wantInvisibleColumns: true, wantFunctionIndexes: false,
+			wantEnforcesCheck: true, wantColumnCompression: true, wantInvisibleIndexes: false,
+			wantGeneratedColumns: true, wantCheckConstraintSyntax: true,
+		},
+		{
+			// 函数式索引从 10.4 引入
+			name: "mariadb-10.4",
+			major: 10, minor: 4,
+			wantJSON: true, wantInvisibleColumns: true, wantFunctionIndexes: true,
+			wantEnforcesCheck: true, wantColumnCompression: true, wantInvisibleIndexes: false,
+			wantGeneratedColumns: true, wantCheckConstraintSyntax: true,
+		},
+		{
+			// 10.5 在 10.4 基础上无新增门控特性（IGNORED 索引是 10.6）
+			name: "mariadb-10.5",
+			major: 10, minor: 5,
+			wantJSON: true, wantInvisibleColumns: true, wantFunctionIndexes: true,
+			wantEnforcesCheck: true, wantColumnCompression: true, wantInvisibleIndexes: false,
+			wantGeneratedColumns: true, wantCheckConstraintSyntax: true,
+		},
+		{
+			// IGNORED（不可见）索引从 10.6 引入
+			name: "mariadb-10.6",
+			major: 10, minor: 6,
+			wantJSON: true, wantInvisibleColumns: true, wantFunctionIndexes: true,
+			wantEnforcesCheck: true, wantColumnCompression: true, wantInvisibleIndexes: true,
+			wantGeneratedColumns: true, wantCheckConstraintSyntax: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			info := global.MySQLVersionInfo{
+				Flavor: global.DatabaseFlavorMariaDB,
+				Major:  tt.major,
+				Minor:  tt.minor,
+			}
+			c := BuildSchemaFeatureCatalog(info)
+
+			check := func(feature string, got, want bool) {
+				t.Helper()
+				if got != want {
+					t.Errorf("%s: %s = %v, want %v", tt.name, feature, got, want)
+				}
+			}
+			check("SupportsJSON", c.SupportsJSON, tt.wantJSON)
+			check("SupportsInvisibleColumns", c.SupportsInvisibleColumns, tt.wantInvisibleColumns)
+			check("SupportsFunctionIndexes", c.SupportsFunctionIndexes, tt.wantFunctionIndexes)
+			check("EnforcesCheckConstraints", c.EnforcesCheckConstraints, tt.wantEnforcesCheck)
+			check("SupportsColumnCompression", c.SupportsColumnCompression, tt.wantColumnCompression)
+			check("SupportsInvisibleIndexes", c.SupportsInvisibleIndexes, tt.wantInvisibleIndexes)
+			check("SupportsGeneratedColumns", c.SupportsGeneratedColumns, tt.wantGeneratedColumns)
+			check("SupportsCheckConstraints", c.SupportsCheckConstraints, tt.wantCheckConstraintSyntax)
+		})
+	}
+}
+
 func TestBuildSchemaFeatureCatalogMariaDBInvisibleIndexes(t *testing.T) {
 	tests := []struct {
 		name     string
