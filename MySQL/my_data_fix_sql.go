@@ -1666,6 +1666,12 @@ func WriteFixIfNeededFile(datafix string, sfile *os.File, sqls []string, logThre
 			continue
 		}
 
+		// DELIMITER 指令是每个文件必须独立包含的控制语句，跳过去重检查
+		if strings.HasPrefix(strings.ToUpper(trimmedSql), "DELIMITER ") {
+			uniqueSqls = append(uniqueSqls, sql)
+			continue
+		}
+
 		// 使用sync.Map检查SQL是否已存在
 		if _, loaded := writtenSqlMap.LoadOrStore(trimmedSql, true); !loaded {
 			uniqueSqls = append(uniqueSqls, sql)
