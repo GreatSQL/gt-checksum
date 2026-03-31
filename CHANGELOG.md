@@ -1,13 +1,15 @@
 ## 1.2.5
+- [功能新增]: 新增 `MariaDB -> MariaDB` 双端全模式支持（`data`/`struct`/`routine`/`trigger`），覆盖 `10.0`、`10.1`、`10.2`、`10.3`、`10.4`、`10.5`、`10.6`、`10.11`、`11.4`、`11.5`、`12.3` 系列，仅支持升级方向（src ≤ dst）；`struct` fix 隐藏索引使用 `IGNORED` 语法，`COMPRESSED`/`PERSISTENT` 等 MariaDB 原生列属性在目标端保留；各系列特性能力（JSON、不可见列、函数式索引、CHECK 约束强制执行等）按实际引入版本自动门控。
 - [功能新增]: 新增 `MySQL 5.6/5.7/8.0/8.4` 同版本及升级链路支持，覆盖 `data`、`struct`、`routine`、`trigger` 四种校验模式；downgrade 或不支持的版本组合会在启动阶段直接拒绝执行。
 - [功能新增]: 扩展 `MariaDB 10.x+ / 12.3+ -> MySQL 8.0/8.4` 支持至全部四种 `checkObject` 模式；新增参数 `mariaDBJSONTargetType` 支持 `MariaDB JSON` alias 改写为 `JSON`、`LONGTEXT` 或 `TEXT`；支持 `uca1400 -> uca0900` collation 自动映射，减少跨版本误报。
 - [功能优化]: 统一结构语义比较与风险分级，将 `CHECK`、显示宽度、`utf8/utf8mb3`、`ZEROFILL`、`ROW_FORMAT`、默认 collation 漂移等差异收敛为 `warn-only` / `advisory-only` 分层输出；补齐 `routine` / `trigger` charset 元数据三维度比对；`checkObject=data` 新增 DSN charset 一致性预检，DDL 差异表稳定保留并显示 `DDL-yes`。
+- [测试完善]: 新增 `shouldCompareTriggerMetadata`/`shouldCompareRoutineMetadata` 单元测试 9 个，覆盖 MariaDB→MariaDB、MySQL→MariaDB、MySQL→MySQL、MariaDB→MySQL 8.0/8.4/5.7 各路径；新增 `BuildTargetColumnRepairPlan` 的 MariaDB→MariaDB 单元测试 4 个，覆盖 `COMPRESSED`/`PERSISTENT` 属性保留与剥除回归；补充 MariaDB→MariaDB 版本策略测试 15 个。
 - [测试完善]: 新增 `tablePatternHasUnsupportedStar` 单元测试 6 个（`inputArg/checkParameter_test.go`），覆盖部分 `*` 检测、合法模式放行、映射目标侧 `*` 检测、双侧均含 `*`、合法 `db.*` 全量通配符映射、空字符串安全性。
 - [测试完善]: MySQL 修复 SQL 生成路径新增 20 个单元测试，覆盖标识符引用（普通/含空格/含反引号/保留字）、ADD/DROP 索引、schema/table 名转义、外键名转义、routine/trigger DROP 转义、`normalizeAlterOperationContent` 正则提取等场景；Oracle 修复 SQL 生成路径新增 12 个单元测试，覆盖 `oracleIdentifier` 语义（简单大写裸名、小写→大写、含空格加双引号、已引用保留、内部双引号转义）、DROP/ADD 索引 Oracle 语法正确性、`FixAlterIndexSqlGenerate` 原样透传等场景。
+- [测试完善]: 新增 `EvaluateDataCheckPreflight` 回归测试 6 个（`actions/data_check_preflight_test.go`），覆盖源端表缺失、双端表缺失、空检查列表（Fatal）、有效表（Proceed）、混合有效/异常（Proceed）、invisible 列不匹配（SkipChecksum）等场景，防止 data 模式 preflight 回归。
 - [问题修复]: 修复 `tables` / `ignoreTables` 参数使用不支持的部分通配符 `*`（如 `sbtest.t*`）时静默产生错误结果的问题；现在在参数校验阶段快速失败，打印明确提示信息（如 `use '%' instead, e.g. sbtest.t%`）并退出；同时覆盖映射目标侧（如 `db1.t%:db2.t*` 中的 `db2.t*`）以及 `ignoreTables` 参数。
 - [问题修复]: 修复 `checkObject=data` 或 `checkObject=struct` 模式下，当指定的表在源端或两端均不存在时，输出结果的 `CheckObject` 列被硬编码为 `struct` 而非用户实际配置值的问题；现在所有不存在表分支均正确输出用户配置的 `checkObject` 值。
 - [问题修复]: 修复 `checkObject=struct` 模式下，当源端和目标端表均不存在时输出重复行的问题；根因为 `TableColumnNameCheck` 已将不存在的表追加到 pod 列表，而 `Struct()` 中的去重逻辑未感知这些 pod；修复方案为在调用 `TableColumnNameCheck` 前对 pod 快照，并将新增 pod 的表键预填充到去重集合中，防止重复创建。
-- [测试完善]: 新增 `EvaluateDataCheckPreflight` 回归测试 6 个（`actions/data_check_preflight_test.go`），覆盖源端表缺失、双端表缺失、空检查列表（Fatal）、有效表（Proceed）、混合有效/异常（Proceed）、invisible 列不匹配（SkipChecksum）等场景，防止 data 模式 preflight 回归。
 - [问题修复]: 修复多类结构比较误报（`CHECK` 括号噪音、主键 canonical key 残余、映射场景目标表名错误、collation advisory 重复输出等），以及 `MySQL 5.6/5.7` 查询 `INFORMATION_SCHEMA.STATISTICS.IS_VISIBLE` 的低版本兼容问题和 `checkObject=data` DDL-yes 链路结果丢失问题。
 - [问题修复]: 修复 DSN `charset` 参数提取不完整、`MariaDB` 源端全局权限预检查误判，以及 `struct` / `routine` / `trigger` 模式连接池过大导致的 `Too many connections` 问题（#IEYE7P）。
 - [问题修复]: 修复 `checkObject=data` 模式下连接池大小不足导致数据校验 hang 住的问题：`data` 模式下 `queryTableDataSeparate` 与 `AbnormalDataDispos` 两条并发 pipeline 同时运行，单侧峰值连接需求约为 `parallelThds*2 + 2`；将单侧连接池下限从 `parallelThds + 2` 调整为 `parallelThds*2 + 4`（最低 8），覆盖两阶段并发场景。
