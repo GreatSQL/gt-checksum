@@ -36,16 +36,28 @@ SOURCES=(
     "mysql56:3404:mysql"
     "mysql57:3405:mysql"
     "mysql80:3406:mysql"
+    "mysql84:3408:mysql"
     "mariadb100:3411:mariadb"
     "mariadb105:3407:mariadb"
+    "mariadb106:3410:mariadb"
     "mariadb1011:3409:mariadb"
     "mariadb123:3412:mariadb"
 )
 
-# 目标数据库实例：label:port
+# 目标数据库实例：label:port:family
+# Note: the manual also lists MariaDB 11.4 / 11.5 for MariaDB->MariaDB,
+# but the current regression environment only has confirmed ports for the
+# versions below, so the matrix is constrained to locally wired instances.
 TARGETS=(
-    "mysql80:3406"
-    "mysql84:3408"
+    "mysql56:3404:mysql"
+    "mysql57:3405:mysql"
+    "mysql80:3406:mysql"
+    "mysql84:3408:mysql"
+    "mariadb105:3407:mariadb"
+    "mariadb105:3407:mariadb"
+    "mariadb106:3410:mariadb"
+    "mariadb1011:3409:mariadb"
+    "mariadb123:3412:mariadb"
 )
 
 # 校验模式
@@ -130,6 +142,61 @@ get_port() {
 # 从 entry 字符串提取标签
 get_label() {
     echo "$1" | cut -d: -f1
+}
+
+# 从 entry 字符串提取数据库家族
+get_family() {
+    echo "$1" | cut -d: -f3
+}
+
+mysql_version_rank() {
+    case "$1" in
+        mysql56) echo 56 ;;
+        mysql57) echo 57 ;;
+        mysql80) echo 80 ;;
+        mysql84) echo 84 ;;
+        *) echo 0 ;;
+    esac
+}
+
+mariadb_version_rank() {
+    case "$1" in
+        mariadb100) echo 100 ;;
+        mariadb105) echo 105 ;;
+        mariadb106) echo 106 ;;
+        mariadb1011) echo 1011 ;;
+        mariadb123) echo 1203 ;;
+        *) echo 0 ;;
+    esac
+}
+
+is_supported_pair() {
+    local src_label="$1"
+    local src_family="$2"
+    local dst_label="$3"
+    local dst_family="$4"
+    local src_rank dst_rank
+
+    if [[ "$src_family" == "mysql" && "$dst_family" == "mysql" ]]; then
+        src_rank="$(mysql_version_rank "$src_label")"
+        dst_rank="$(mysql_version_rank "$dst_label")"
+        [[ "$src_rank" -gt 0 && "$dst_rank" -gt 0 && "$src_rank" -le "$dst_rank" ]]
+        return
+    fi
+
+    if [[ "$src_family" == "mariadb" && "$dst_family" == "mysql" ]]; then
+        [[ "$dst_label" == "mysql80" || "$dst_label" == "mysql84" ]]
+        return
+    fi
+
+    if [[ "$src_family" == "mariadb" && "$dst_family" == "mariadb" ]]; then
+        src_rank="$(mariadb_version_rank "$src_label")"
+        dst_rank="$(mariadb_version_rank "$dst_label")"
+        [[ "$src_rank" -gt 0 && "$dst_rank" -gt 0 && "$src_rank" -le "$dst_rank" ]]
+        return
+    fi
+
+    return 1
 }
 
 # 执行 MySQL 命令（force 模式，忽略版本兼容错误）
@@ -362,24 +429,31 @@ reinit_source() {
 # ============================================================
 generate_test_matrix() {
     for src_entry in "${SOURCES[@]}"; do
-        local src_label src_port
+        local src_label src_port src_family
         src_label="$(get_label "$src_entry")"
         src_port="$(get_port "$src_entry")"
+        src_family="$(get_family "$src_entry")"
 
         if ! label_in_filter "$src_label" "$FILTER_SRC"; then
             continue
         fi
 
         for dst_entry in "${TARGETS[@]}"; do
-            local dst_label dst_port
+            local dst_label dst_port dst_family
             dst_label="$(get_label "$dst_entry")"
             dst_port="$(get_port "$dst_entry")"
+            dst_family="$(get_family "$dst_entry")"
 
             if ! label_in_filter "$dst_label" "$FILTER_DST"; then
                 continue
             fi
 
-            # 排除同端口（src=MySQL8.0 → dst=MySQL8.0 时跳过）
+            if ! is_supported_pair "$src_label" "$src_family" "$dst_label" "$dst_family"; then
+                continue
+            fi
+
+            # Regression env exposes one instance per version, so same-port
+            # pairs would compare the same database against itself.
             if [[ "$src_port" == "$dst_port" ]]; then
                 continue
             fi
