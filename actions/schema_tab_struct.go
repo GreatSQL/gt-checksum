@@ -2310,6 +2310,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 			DatafixType:             stcls.datafix,
 			SourceSchema:            sourceSchema, // 添加源端schema
 			CaseSensitiveObjectName: stcls.caseSensitiveObjectName,
+			DestFlavor:              stcls.destVersionInfo().Flavor,
 		}
 		tc := dbExec.TableColumnNameStruct{Schema: sourceSchema, Table: sourceTableName, Drive: stcls.sourceDrive, CaseSensitiveObjectName: stcls.caseSensitiveObjectName}
 		sColumn, err = stcls.tableColumnName(stcls.sourceDB, tc, logThreadSeq, logThreadSeq2)
