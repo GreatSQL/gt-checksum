@@ -20,6 +20,11 @@ var supportedMySQLSeries = map[string]struct{}{
 // eligible for MariaDB → MariaDB check/fix.  The list covers LTS-grade,
 // widely-used, and explicitly supported development series (e.g. 12.3).
 var supportedMariaDBSeries = map[string]struct{}{
+	"10.0":  {},
+	"10.1":  {},
+	"10.2":  {},
+	"10.3":  {},
+	"10.4":  {},
 	"10.5":  {},
 	"10.6":  {},
 	"10.11": {},
@@ -111,7 +116,7 @@ func SupportedMySQLSeriesList() string {
 }
 
 func SupportedMariaDBSeriesList() string {
-	return "10.5, 10.6, 10.11, 11.4, 11.5, 12.3"
+	return "10.0, 10.1, 10.2, 10.3, 10.4, 10.5, 10.6, 10.11, 11.4, 11.5, 12.3"
 }
 
 func IsSupportedMySQLSeries(series string) bool {

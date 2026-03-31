@@ -7,7 +7,7 @@ import "testing"
 // ---------------------------------------------------------------------------
 
 func TestIsSupportedMariaDBSeries_SupportedVersions(t *testing.T) {
-	for _, series := range []string{"10.5", "10.6", "10.11", "11.4", "11.5", "12.3"} {
+	for _, series := range []string{"10.0", "10.1", "10.2", "10.3", "10.4", "10.5", "10.6", "10.11", "11.4", "11.5", "12.3"} {
 		if !IsSupportedMariaDBSeries(series) {
 			t.Errorf("expected %q to be supported", series)
 		}
@@ -15,7 +15,7 @@ func TestIsSupportedMariaDBSeries_SupportedVersions(t *testing.T) {
 }
 
 func TestIsSupportedMariaDBSeries_UnsupportedVersions(t *testing.T) {
-	for _, series := range []string{"10.4", "10.9", "11.0", "11.3", "13.0", "5.7", "8.0"} {
+	for _, series := range []string{"10.7", "10.8", "10.9", "10.10", "11.0", "11.1", "11.2", "11.3", "13.0", "5.7", "8.0"} {
 		if IsSupportedMariaDBSeries(series) {
 			t.Errorf("expected %q to be unsupported", series)
 		}
@@ -25,6 +25,14 @@ func TestIsSupportedMariaDBSeries_UnsupportedVersions(t *testing.T) {
 // ---------------------------------------------------------------------------
 // validateMariaDBToMariaDBPolicy
 // ---------------------------------------------------------------------------
+
+func TestValidateMariaDBToMariaDBPolicy_10_0_To_10_11_Upgrade(t *testing.T) {
+	src, _ := ParseMySQLVersion("10.0.38-MariaDB")
+	dst, _ := ParseMySQLVersion("10.11.6-MariaDB")
+	if err := validateMariaDBToMariaDBPolicy(src, dst); err != nil {
+		t.Errorf("unexpected error for 10.0->10.11 upgrade pair: %v", err)
+	}
+}
 
 func TestValidateMariaDBToMariaDBPolicy_SameVersion(t *testing.T) {
 	src, _ := ParseMySQLVersion("10.6.15-MariaDB")
@@ -51,8 +59,8 @@ func TestValidateMariaDBToMariaDBPolicy_Downgrade(t *testing.T) {
 }
 
 func TestValidateMariaDBToMariaDBPolicy_UnsupportedSourceSeries(t *testing.T) {
-	src, _ := ParseMySQLVersion("10.4.30-MariaDB")
-	dst, _ := ParseMySQLVersion("10.6.15-MariaDB")
+	src, _ := ParseMySQLVersion("10.9.4-MariaDB")
+	dst, _ := ParseMySQLVersion("10.11.6-MariaDB")
 	if err := validateMariaDBToMariaDBPolicy(src, dst); err == nil {
 		t.Error("expected error for unsupported source series, got nil")
 	}
@@ -97,8 +105,8 @@ func TestValidateMySQLCompatibilityPolicy_MariaDBToMariaDB_Downgrade(t *testing.
 }
 
 func TestValidateMySQLCompatibilityPolicy_MariaDBToMariaDB_UnsupportedSeries(t *testing.T) {
-	src, _ := ParseMySQLVersion("10.4.30-MariaDB")
-	dst, _ := ParseMySQLVersion("10.6.15-MariaDB")
+	src, _ := ParseMySQLVersion("10.9.4-MariaDB")
+	dst, _ := ParseMySQLVersion("10.11.6-MariaDB")
 	if err := ValidateMySQLCompatibilityPolicy(src, dst, "data"); err == nil {
 		t.Error("expected error for unsupported MariaDB source series, got nil")
 	}
