@@ -2,7 +2,7 @@
 
 ## 关于gt-checksum
 
-**gt-checksum** 是GreatSQL社区开源的数据库校验及修复工具，支持MySQL、Oracle等主流数据库。
+**gt-checksum** 是GreatSQL社区开源的数据库校验及修复工具，支持 MySQL-family（MySQL/Percona/GreatSQL/MariaDB等）、Oracle 等主流数据库。
 
 ## 用法
 
@@ -164,11 +164,24 @@ sbtest  F1              Function        no      no
 | 源端与目标端同版本主线（`5.6`、`5.7`、`8.0`、`8.4`） | 支持 | 支持 | 支持 | 支持 | 同时支持数据、表结构、存储程序和触发器的校验与修复。 |
 | 源端版本主线小于目标端版本主线，且两端均在 `5.6`、`5.7`、`8.0`、`8.4` 范围内 | 支持 | 支持 | 支持 | 支持 | 例如 `5.6 -> 5.7`、`5.6 -> 8.0`、`5.7 -> 8.0`、`8.0 -> 8.4`。 |
 | 源端为 `MariaDB 10.x+`，目标端为 `MySQL 8.0/8.4` | 支持 | 支持 | 支持 | 支持 | `struct` 仅覆盖安全子集；`routine`/`trigger` 已支持 charset 元数据三维度比对。 |
+| 源端与目标端均为 `MariaDB`（同序列或升级，支持系列见下方说明） | 支持 | 支持 | 支持 | 支持 | 仅支持升级方向（src ≤ dst），不支持 downgrade；struct fix 的隐藏索引使用 `IGNORED` 关键字；COMPRESSED/PERSISTENT 等原生列属性会在目标端保留；routine/trigger 元数据比对已开放。 |
 | 源端为 `MariaDB 10.x+`，目标端为 `MySQL 8.0` 以下版本 | 不支持 | 不支持 | 不支持 | 不支持 | 程序会在启动阶段直接退出，并提示当前组合不受支持。 |
 | 源端为 `MySQL`，目标端为 `MariaDB` | 不支持 | 不支持 | 不支持 | 不支持 | 程序会在启动阶段直接退出，并提示当前组合不受支持。 |
-| 源端与目标端均为 `MariaDB` | 不支持 | 不支持 | 不支持 | 不支持 | 当前版本未纳入正式支持范围。 |
 | 源端版本主线大于目标端版本主线 | 不支持 | 不支持 | 不支持 | 不支持 | 程序会在启动阶段直接退出，并明确提示 downgrade 场景不受支持。 |
-| 任一端版本主线不在 `5.6`、`5.7`、`8.0`、`8.4` 范围内 | 不支持 | 不支持 | 不支持 | 不支持 | 程序会在启动阶段直接退出，并提示支持的版本范围。 |
+| 任一端版本主线不在 `5.6`、`5.7`、`8.0`、`8.4` 范围内（MariaDB→MariaDB 另行说明） | 不支持 | 不支持 | 不支持 | 不支持 | 程序会在启动阶段直接退出，并提示支持的版本范围。 |
+
+**MariaDB→MariaDB 支持的系列**：`10.0`、`10.1`、`10.2`、`10.3`、`10.4`、`10.5`、`10.6`、`10.11`、`11.4`、`11.5`、`12.3`。两端均须在此列表内且源端系列 ≤ 目标端系列；不在列表内的系列会在启动阶段直接退出。各系列特性能力（JSON、不可见列、函数式索引、CHECK 约束强制执行、COMPRESSED 列属性等）按实际引入版本自动门控，详见下表：
+
+| 特性 | 引入版本 |
+|------|---------|
+| JSON 数据类型（longtext+JSON_VALID alias） | 10.2 |
+| CHECK 约束强制执行 | 10.2 |
+| 不可见列（INVISIBLE COLUMN） | 10.3 |
+| COMPRESSED 列属性 | 10.3 |
+| 函数式/表达式索引 | 10.4 |
+| IGNORED（不可见）索引 | 10.6 |
+| INET6 原生类型 | 10.5 |
+| UUID 原生类型 | 10.7 |
 
 ### `tables` / `ignoreTables` 参数使用注意事项
 
@@ -202,7 +215,12 @@ gt-checksum: tables option 'sbtest.t*' uses unsupported wildcard '*'; use '%' in
    - 已覆盖安全子集：`JSON`、generated columns、`INET6`、`UUID`、`COMPRESSED`、`IGNORED INDEX`；
    - `MariaDB JSON` 可通过 `mariaDBJSONTargetType` 配置为 `JSON`、`LONGTEXT` 或 `TEXT`；
    - `COMPRESSED`、`MariaDB JSON -> LONGTEXT/TEXT` 的语义降级会保留为 `warn-only`。
-3. 以下对象当前只做识别、告警和 advisory 输出，不自动修复：
+3. `MariaDB -> MariaDB`（同系列或升级方向）
+   - 支持所有 MySQL→MySQL 覆盖的常规列、索引、默认值、charset/collation 比对与 fix SQL 生成；
+   - `COMPRESSED`、`PERSISTENT` 等 MariaDB 原生列属性在目标端保留，不会被剥除；
+   - 当目标端为支持隐藏索引语法的 MariaDB 版本时，隐藏索引 fix SQL 使用 `IGNORED` 关键字，而非 MySQL 的 `INVISIBLE`；
+   - 建议在回放前先审查 fix SQL，尤其关注隐藏索引、`DEFINER` 与跨版本 collation 相关语句。
+4. 以下对象当前只做识别、告警和 advisory 输出，不自动修复：
    - `SYSTEM VERSIONING`
    - `WITHOUT OVERLAPS`
    - `SEQUENCE`
@@ -289,9 +307,11 @@ SET character_set_client = DEFAULT;
 
 2. **定义文本归一化**：程序在比对存储程序定义时，仅对 `CREATE PROCEDURE/FUNCTION` 头部标识符做大小写归一化，保留函数体内字符串字面量的原始大小写，避免因字面量大小写差异导致的误报。同时会剥离 MySQL 版本注释（`/*!...*/`）和整数显示宽度（如 `int(11)` → `int`）等平台差异。
 
-3. **collation 映射识别**：当源端为 `MariaDB 12.3+` 且使用 `uca1400` 系列排序规则时，程序会自动识别其与 `MySQL` 端 `uca0900` 排序规则的语义对应关系，结果显示为 `collation-mapped` 而非差异。
+3. **MariaDB→MariaDB 元数据比对**：当源端与目标端均为 MariaDB 时，`routine` 和 `trigger` 的三维度 charset 元数据比对（`CHARACTER_SET_CLIENT`、`COLLATION_CONNECTION`、`DATABASE_COLLATION`）自动启用；`COMMENT`/`DEFINER` 差异也会正常报告。对 `PROCEDURE`/`FUNCTION` 的 comment-only 差异，会生成 `ALTER PROCEDURE/FUNCTION ... COMMENT` 修复语句；对 `TRIGGER` 或包含定义文本差异的对象，则仍通过重建定义的 fix SQL 处理。
 
-4. **查询容错**：当 charset 元数据查询失败时（如因权限不足），程序会输出 `Warn` 级别日志并跳过该维度的比对，而非静默返回空值导致误判。
+4. **collation 映射识别**：当源端为 `MariaDB 12.3+` 且使用 `uca1400` 系列排序规则时，程序会自动识别其与 `MySQL` 端 `uca0900` 排序规则的语义对应关系，结果显示为 `collation-mapped` 而非差异。
+
+5. **查询容错**：当 charset 元数据查询失败时（如因权限不足），程序会输出 `Warn` 级别日志并跳过该维度的比对，而非静默返回空值导致误判。
 
 ### 结构迁移专项参数
 
@@ -323,17 +343,31 @@ datafix = file
 fixFileDir = ./fixsql-struct-mysql57-to80
 ```
 
-以下示例表示执行 `MySQL 8.0 -> MySQL 8.0` 的视图定义一致性校验（VIEW struct 专项）：
+以下示例表示执行 `MariaDB 10.6 -> MariaDB 10.11` 的数据校验：
 
 ```ini
-srcDSN = mysql|checksum:Checksum@3306@tcp(src-mysql80-host:3306)/information_schema?charset=utf8mb4
-dstDSN = mysql|checksum:Checksum@3306@tcp(dst-mysql80-host:3307)/information_schema?charset=utf8mb4
-# 明确列出要校验的视图（也可以与表混合）
-tables = appdb.v_order_summary:appdb.v_order_summary,appdb.v_daily_sales:appdb.v_daily_sales
+srcDSN = mysql|checksum:Checksum@3306@tcp(src-mariadb106-host:3408)/information_schema?charset=utf8mb4
+dstDSN = mysql|checksum:Checksum@3306@tcp(dst-mariadb1011-host:3409)/information_schema?charset=utf8mb4
+tables = mydb.*
+checkObject = data
+datafix = file
+```
+
+以下示例表示执行 `MariaDB 10.6 -> MariaDB 10.11` 的表结构校验与 fix SQL 生成（含隐藏索引 `IGNORED` 适配）：
+
+```ini
+srcDSN = mysql|checksum:Checksum@3306@tcp(src-mariadb106-host:3408)/information_schema?charset=utf8mb4
+dstDSN = mysql|checksum:Checksum@3306@tcp(dst-mariadb1011-host:3409)/information_schema?charset=utf8mb4
+tables = mydb.*
 checkObject = struct
 datafix = file
-fixFileDir = ./fixsql-view-struct
+fixFilePerTable = ON
+fixFileDir = ./fixsql-struct-mariadb106-to1011
 ```
+
+> **注意**：`MariaDB -> MariaDB` 场景下生成的隐藏索引修复语句使用 `IGNORED`（如 `ALTER TABLE ... ALTER INDEX idx IGNORED`），与 MySQL 的 `INVISIBLE` 语法不同，请勿将 fix SQL 跨平台回放。
+>
+> **补充说明**：如果目标端 MariaDB 版本本身不具备隐藏索引语法能力，则不会存在可直接回放的隐藏索引修复语句；此类差异建议先在测试环境完成验证，再决定是否人工调整。
 
 以下示例表示执行 `MariaDB 10.5 -> MySQL 8.0` 的安全子集表结构校验与 fix SQL 生成，并将 `JSON` alias 降级为 `LONGTEXT`：
 
@@ -412,10 +446,10 @@ gt_phase1_mariadb105 t_mariadb_feature_pack      struct       warn-only  file
 
 ### MariaDB 源端权限检查说明
 
-当场景为 `MariaDB 10.x+ -> MySQL 8.0/8.4` 且 `checkObject` 为 `data`、`struct`、`routine` 或 `trigger` 时，程序的权限检查行为如下：
+当源端为 `MariaDB` 时（适用于 `MariaDB -> MySQL 8.0/8.4` 和 `MariaDB -> MariaDB` 两类场景），程序的权限检查行为如下：
 
 1. 源端 `MariaDB`：跳过全局权限预检查，不再要求 `SESSION_VARIABLES_ADMIN`、`REPLICATION CLIENT` 这类 `MySQL` 命名的全局权限；
-2. 目标端 `MySQL 8.0/8.4`：继续按现有逻辑检查全局权限；
+2. 目标端为 `MySQL 8.0/8.4`：继续按现有逻辑检查全局权限；目标端为 `MariaDB`：同样跳过全局权限预检查；
 3. 源端与目标端表级权限：`checkObject=data` 仍按既有逻辑检查 `SELECT` 以及 `datafix=table` 时所需的对象权限；`checkObject=struct` 则需确保可读取相关元数据并具备目标端执行 fix SQL 所需的对象级 DDL 权限；
 4. 如果终端提示 `Missing required global privileges`，请优先打开 debug 日志，根据日志中源端/目标端各自的权限检查结果确认具体缺失项，而不要仅凭终端输出中的概括性提示判断。
 
