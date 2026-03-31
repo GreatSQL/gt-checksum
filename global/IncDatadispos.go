@@ -31,7 +31,7 @@ func (my MySQLIncDataDisposStruct) readIncData() {
 		Password: "gtchecksum",
 	}
 	syncer := replication.NewBinlogSyncer(cfg)
-	streamer, _ := syncer.StartSync(mysql.Position{"mysql-bin.000007", 653178})
+	streamer, _ := syncer.StartSync(mysql.Position{Name: "mysql-bin.000007", Pos: 653178})
 	for {
 		ev, _ := streamer.GetEvent(context.Background())
 		var a string

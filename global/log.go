@@ -63,7 +63,7 @@ func LoggerToFile() func(int, ...interface{}) {
 	/* 禁止日志打印到标准输出stdout */
 	devnull, err := os.OpenFile(os.DevNull, os.O_APPEND|os.O_WRONLY, os.ModeAppend)
 	if err != nil {
-		fmt.Printf("LoggerToFile open os.DevNull failed: ", err)
+		fmt.Printf("LoggerToFile open os.DevNull failed: %v\n", err)
 	}
 	writernull := bufio.NewWriter(devnull)
 	/*设置日志的输出方式，默认为两种，一种是os.stid，一种是io.write */
