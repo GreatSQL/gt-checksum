@@ -698,6 +698,7 @@ $ ./repairDB
 | dstDSN | string | 无 | 目标数据库连接字符串，格式为 `mysql|user:password@tcp(host:port)/db?params` |
 | parallelThds | int | 4 | 并行执行SQL文件的线程数 |
 | fixFileDir | string | fixsql | 存放修复SQL文件的目录 |
+| logbin | string | ON | 控制修复时是否写入 binlog；`OFF` 时每条连接执行 `SET sql_log_bin=0`，需要 SUPER 或 SESSION_VARIABLES_ADMIN 权限 |
 
 ### 执行流程
 

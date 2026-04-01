@@ -28,6 +28,7 @@ type Config struct {
 	ParallelThds int
 	FixFileDir   string
 	LogFile      string
+	LogBin       bool // true = keep sql_log_bin ON (default); false = SET sql_log_bin=0 per connection
 }
 
 // Global variables
@@ -46,6 +47,7 @@ func parseConfig(confFile string) error {
 	}
 
 	// Parse config parameters
+	logbinSet := false
 	lines := strings.Split(string(content), "\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
@@ -71,6 +73,16 @@ func parseConfig(confFile string) error {
 			fmt.Sscanf(value, "%d", &config.ParallelThds)
 		case "fixFileDir":
 			config.FixFileDir = value
+		case "logbin":
+			logbinSet = true
+			switch strings.ToUpper(value) {
+			case "OFF":
+				config.LogBin = false
+			case "ON":
+				config.LogBin = true
+			default:
+				return fmt.Errorf("invalid value for logbin: %q (must be ON or OFF)", value)
+			}
 		}
 	}
 
@@ -80,6 +92,9 @@ func parseConfig(confFile string) error {
 	}
 	if config.FixFileDir == "" {
 		config.FixFileDir = "./fixsql"
+	}
+	if !logbinSet {
+		config.LogBin = true // default: keep sql_log_bin ON
 	}
 	config.LogFile = "repairDB.log"
 
@@ -122,6 +137,16 @@ func executeSQLFile(db *sql.DB, sqlFile string) error {
 		return fmt.Errorf("Failed to get database connection: %v", err)
 	}
 	defer conn.Close()
+
+	// Always set sql_log_bin explicitly: 1 (default) or 0 (when logbin=OFF).
+	// Setting logbin=OFF requires SUPER or BINLOG ADMIN privilege on the target instance.
+	logBinVal := "1"
+	if !config.LogBin {
+		logBinVal = "0"
+	}
+	if _, err := conn.ExecContext(context.Background(), "SET sql_log_bin = "+logBinVal); err != nil {
+		return fmt.Errorf("Failed to SET sql_log_bin=%s: %v", logBinVal, err)
+	}
 
 	for _, unit := range units {
 		err = executeUnitWithDeadlockRetry(conn, sqlFile, unit)
@@ -981,10 +1006,15 @@ func run() error {
 	log.SetOutput(io.MultiWriter(os.Stdout, logFile))
 
 	// Print configuration information
+	logBinStr := "ON"
+	if !config.LogBin {
+		logBinStr = "OFF"
+	}
 	log.Printf("Configuration information:")
 	log.Printf("  DstDSN: %s\n", config.DstDSN)
 	log.Printf("  ParallelThds: %d\n", config.ParallelThds)
 	log.Printf("  FixFileDir: %s\n", config.FixFileDir)
+	log.Printf("  LogBin: %s\n", logBinStr)
 	log.Printf("  LogFile: %s\n", config.LogFile)
 
 	// Check if fixFileDir directory exists
