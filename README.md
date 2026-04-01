@@ -133,12 +133,12 @@ RunID,CheckTime,CheckObject,Schema,Table,ObjectName,ObjectType,IndexColumn,Rows,
 $ gt-checksum -c ./gc.conf --terminalResultMode abnormal
 ```
 
-查看运行目录下是否生成修复SQL文件目录，例如：fixsql-20260129154514
+查看运行目录下是否生成修复SQL文件目录，例如：fixsql
 
 执行 repairDB 工具进行数据修复并查看执行结果：
 
 ```bash
-$ ./repairDB ./fixsql-20260129154514 && cat ./repairDB.log
+$ ./repairDB ./fixsql && cat ./repairDB.log
 
 ...
 2026/01/29 15:45:22 Stage classification: DELETE=1 TABLE=3 VIEW=1 ROUTINE=0 TRIGGER=0 UNKNOWN=0
@@ -216,7 +216,7 @@ v1.3.0 新增参数如下：
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `resultExport` | `csv` | 结果导出格式，`OFF` 不生成文件，`csv` 自动生成 CSV |
-| `resultFile` | 空 | 自定义 CSV 输出路径，空时自动命名为 `gt-checksum-result-<RunID>.csv` |
+| `resultFile` | `result` | 自定义 CSV 输出路径，未设置时自动命名为 `result/gt-checksum-result-<RunID>.csv` |
 | `terminalResultMode` | `all` | 终端输出模式，`all` 显示全部，`abnormal` 仅显示差异行 |
 
 以上三个参数均支持 CLI 覆盖：`--resultExport`、`--resultFile`、`--terminalResultMode`。

@@ -5,7 +5,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
 
 	"gopkg.in/ini.v1"
 )
@@ -457,9 +456,8 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 		if fixFileDirValue != "" {
 			rc.SecondaryL.RepairV.FixFileDir = fixFileDirValue
 		} else {
-			// 使用默认值：fixsql-当前时间戳
-			timestamp := time.Now().Format("20060102150405")
-			rc.SecondaryL.RepairV.FixFileDir = fmt.Sprintf("fixsql-%s", timestamp)
+			// 使用默认值：fixsql
+			rc.SecondaryL.RepairV.FixFileDir = "fixsql"
 			fmt.Printf("Using default value '%s' for option fixFileDir\n", rc.SecondaryL.RepairV.FixFileDir)
 		}
 

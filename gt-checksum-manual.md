@@ -487,7 +487,7 @@ gt_phase1_mariadb105 t_mariadb_feature_pack      struct       warn-only  file
 | 参数 | 默认值 | 可选值 | 说明 |
 |------|--------|--------|------|
 | `resultExport` | `csv` | `OFF` / `csv` | 是否导出 CSV；`OFF` 时不生成文件 |
-| `resultFile` | 空 | 任意路径字符串 | 自定义导出路径；空时自动生成 `gt-checksum-result-<RunID>.csv` |
+| `resultFile` | `result` | 任意路径字符串 | 自定义导出路径；未设置时自动生成 `result/gt-checksum-result-<RunID>.csv` |
 | `terminalResultMode` | `all` | `all` / `abnormal` | 终端显示模式；`abnormal` 只显示差异行，不影响 CSV 内容 |
 
 以上参数均支持 CLI 覆盖，高于配置文件：
@@ -511,7 +511,7 @@ gt-checksum -c gc.conf --terminalResultMode abnormal
 $ gt-checksum -c gc.conf
 
 ...
-Result exported to: gt-checksum-result-20260323195530.csv
+Result exported to: result/gt-checksum-result-20260323195530.csv
 ```
 
 ```bash
@@ -519,7 +519,7 @@ Result exported to: gt-checksum-result-20260323195530.csv
 # 推荐用 python 或 Excel 查看，也可用 tail -n +1 跳过 BOM：
 $ python3 -c "
 import csv, sys
-with open('gt-checksum-result-20260323195530.csv', encoding='utf-8-sig') as f:
+with open('result/gt-checksum-result-20260323195530.csv', encoding='utf-8-sig') as f:
     for row in csv.reader(f): print(row)
 " | head -3
 ['RunID', 'CheckTime', 'CheckObject', 'Schema', 'Table', 'ObjectName', 'ObjectType', 'IndexColumn', 'Rows', 'Diffs', 'Datafix', 'Mapping', 'Definer']
@@ -536,12 +536,12 @@ $ gt-checksum -c gc.conf --terminalResultMode abnormal
 Schema  Table    IndexColumn  CheckObject  Rows  Diffs  Datafix
 sbtest  sbtest2  id           data         4999  yes    file
 
-Result exported to: gt-checksum-result-20260323195530.csv
+Result exported to: result/gt-checksum-result-20260323195530.csv
 ```
 
 > **注意**：
 > - `resultExport=OFF` 时不生成 CSV 文件，行为与 v1.2.x 一致。
-> - `resultFile` 指定自定义路径时，如果父目录不存在会自动创建（v1.3.0 起）。
+> - `resultFile` 未配置时默认输出到 `result/` 目录；指定自定义路径时，如果父目录不存在会自动创建（v1.3.0 起）。
 > - CSV 导出失败（如无写权限）时只输出 Warning，不影响校验主流程的退出码。
 
 ---
@@ -697,7 +697,7 @@ $ ./repairDB
 |-------|------|-------|------|
 | dstDSN | string | 无 | 目标数据库连接字符串，格式为 `mysql|user:password@tcp(host:port)/db?params` |
 | parallelThds | int | 4 | 并行执行SQL文件的线程数 |
-| fixFileDir | string | ./fixsql | 存放修复SQL文件的目录 |
+| fixFileDir | string | fixsql | 存放修复SQL文件的目录 |
 
 ### 执行流程
 

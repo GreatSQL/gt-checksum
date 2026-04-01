@@ -77,7 +77,7 @@ func TestResolveResultFilePath_defaultNaming(t *testing.T) {
 	m.RunID = "20260323120000"
 	m.SecondaryL.RulesV.ResultFile = ""
 	path := ResolveResultFilePath(m)
-	want := "gt-checksum-result-20260323120000.csv"
+	want := "result/gt-checksum-result-20260323120000.csv"
 	if path != want {
 		t.Errorf("got %q, want %q", path, want)
 	}
