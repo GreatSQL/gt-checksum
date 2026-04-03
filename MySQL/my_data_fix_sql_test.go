@@ -58,6 +58,59 @@ func TestMysqlQuoteIdent_WithDash(t *testing.T) {
 	}
 }
 
+func TestFixUpdateSqlExec_UsesMappedDestinationColumnsCaseInsensitively(t *testing.T) {
+	my := &MysqlDataAbnormalFixStruct{
+		Schema:      "src_db",
+		Table:       "orders",
+		IndexColumn: []string{"ID"},
+		ColData: []map[string]string{
+			{"columnName": "id", "dataType": "bigint"},
+			{"columnName": "amount", "dataType": "decimal(10,2)"},
+			{"columnName": "note", "dataType": "varchar(32)"},
+		},
+	}
+
+	got, err := my.FixUpdateSqlExec(nil,
+		"1/*go actions columnData*/10.50/*go actions columnData*/paid",
+		[]string{"AMOUNT", "NOTE"},
+		map[string]string{"amount": "TOTAL_AMOUNT", "note": "memo_text"},
+		1,
+	)
+	if err != nil {
+		t.Fatalf("FixUpdateSqlExec() error = %v", err)
+	}
+	want := "UPDATE `src_db`.`orders` SET `TOTAL_AMOUNT`=10.50,`memo_text`='paid' WHERE `ID`=1;"
+	if got != want {
+		t.Fatalf("FixUpdateSqlExec() = %q, want %q", got, want)
+	}
+}
+
+func TestFixUpdateSqlExec_QuotesSchemaTableAndColumns(t *testing.T) {
+	my := &MysqlDataAbnormalFixStruct{
+		Schema:      "db`1",
+		Table:       "tab`1",
+		IndexColumn: []string{"pk`col"},
+		ColData: []map[string]string{
+			{"columnName": "pk`col", "dataType": "bigint"},
+			{"columnName": "val`col", "dataType": "varchar(32)"},
+		},
+	}
+
+	got, err := my.FixUpdateSqlExec(nil,
+		"7/*go actions columnData*/hello",
+		[]string{"val`col"},
+		nil,
+		1,
+	)
+	if err != nil {
+		t.Fatalf("FixUpdateSqlExec() error = %v", err)
+	}
+	want := "UPDATE `db``1`.`tab``1` SET `val``col`='hello' WHERE `pk``col`=7;"
+	if got != want {
+		t.Fatalf("FixUpdateSqlExec() = %q, want %q", got, want)
+	}
+}
+
 // ---------- FixAlterIndexSqlExec（BUG-1/2/4） ----------
 
 func newFixStruct(indexType string) *MysqlDataAbnormalFixStruct {

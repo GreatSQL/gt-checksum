@@ -16,8 +16,15 @@ import (
 
 func TestCSVHeader_columnCount(t *testing.T) {
 	h := csvHeader()
-	if len(h) != 13 {
-		t.Errorf("expected 13 columns, got %d: %v", len(h), h)
+	if len(h) != 14 {
+		t.Errorf("expected 14 columns (fixed schema), got %d: %v", len(h), h)
+	}
+}
+
+func TestCSVHeader_columnsAlwaysPresent(t *testing.T) {
+	h := csvHeader()
+	if h[13] != "Columns" {
+		t.Errorf("column[13]: got %q, want Columns", h[13])
 	}
 }
 
@@ -27,7 +34,7 @@ func TestCSVHeader_columnOrder(t *testing.T) {
 		"RunID", "CheckTime", "CheckObject",
 		"Schema", "Table", "ObjectName", "ObjectType",
 		"IndexColumn", "Rows", "Diffs", "Datafix",
-		"Mapping", "Definer",
+		"Mapping", "Definer", "Columns",
 	}
 	for i, col := range want {
 		if h[i] != col {
@@ -57,8 +64,8 @@ func TestRecordToCSVRow_fieldOrder(t *testing.T) {
 		Definer:     "",
 	}
 	row := recordToCSVRow(rec)
-	if len(row) != 13 {
-		t.Errorf("expected 13 fields, got %d", len(row))
+	if len(row) != 14 {
+		t.Errorf("expected 14 fields (fixed schema), got %d", len(row))
 	}
 	if row[0] != "20260323120000" {
 		t.Errorf("row[0] (RunID) = %q", row[0])
