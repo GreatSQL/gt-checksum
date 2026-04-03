@@ -1,24 +1,21 @@
 ## 1.3.0
-- [重大变更]: 移除 `fixFilePerTable` 参数，**每对象独立文件为唯一输出模式**；同步引入统一文件命名规则 `type.schema.object.sql`（`type` 为 `table`/`view`/`trigger`/`routine`，schema/object 名经 Percent 编码以安全处理特殊字符），各模式输出示例：`table.appdb.orders.sql`、`view.appdb.v_order.sql`、`trigger.appdb.trg_bi.sql`、`routine.appdb.proc_calc.sql`；旧版单文件（`datafix.sql`）路径及 `repairDB` 对应的单文件特判逻辑已同步移除，使用旧配置文件时该参数将被忽略并打印警告。
-- [功能新增]: `checkObject=struct` 模式新增 VIEW（视图）支持（仅限 MySQL→MySQL）。自动识别 `tables` 参数中的视图对象并进行定义比对；差异时 `Diffs=yes`，`ObjectType=view`；修复 SQL 以 advisory 注释形式写入 fixsql 文件，不自动执行；`checkObject=data` 模式自动跳过视图对象，不再产生误报。VIEW 比对策略：① DEFINER 账号不计入差异；② `ALGORITHM=UNDEFINED`（默认值）与省略等价处理，不触发差异；③ SQL SECURITY 差异仅记录 Warn 日志，不计入 `Diffs=yes`（迁移时账号重构属常见合理变更）；④ 除定义文本外还对列元数据（类型、nullable、charset、collation）进行独立比对；定义文本一致但列元数据漂移时，advisory 中标注 `suggested SQL: none`；⑤ 跨 schema 映射（`db1.*:db2.*`）下，视图定义中的 schema 前缀参与归一化，不产生误报。终端 struct 模式结果表格新增 `ObjectType` 列，可直观区分 table / view 行。(issue #I899YZ)
-- [功能新增]: 新增结果自动导出为 CSV 文件能力；新增参数 `resultExport`（`OFF` / `csv`，默认 `csv`）和 `resultFile`（自定义导出路径，默认输出到 `result/` 目录，文件名为 `result/gt-checksum-result-<RunID>.csv`）。CSV 文件为 UTF-8 BOM 编码，列头固定，可被 Excel 直接打开，包含所有校验结果（不受终端过滤影响）；`resultFile` 指定路径时如父目录不存在会自动创建。（issue #I6KMQF）
-- [功能新增]: 新增参数 `terminalResultMode`（`all` / `abnormal`，默认 `all`）；设置为 `abnormal` 时终端仅显示存在差异的行（`yes` / `DDL-yes` / `warn-only`），CSV 始终输出完整结果；以上三个参数均支持 CLI 覆盖（`--resultExport` / `--resultFile` / `--terminalResultMode`）。
-- [功能新增]: repairDB 新增参数 `logbin`（`ON` / `OFF`，默认 `ON`），控制修复时是否写入 binlog。
-- [功能优化]: repairDB 执行调度从两阶段（DELETE→OTHER）升级为六阶段对象类型调度（DELETE→TABLE→VIEW→ROUTINE→TRIGGER→UNKNOWN）；基于文件名前缀（`table.`/`view.`/`routine.`/`trigger.`）及 `-DELETE-` 模式自动识别阶段；TABLE 阶段保留 shuffle 打散锁热点，其余阶段稳定排序；UNKNOWN 文件最后执行并打印 Warn；阶段间保持硬屏障，前序阶段失败则后续不再启动。
-- [功能优化]: repairDB `main()` 重构为 `run() error` 模式，确保 defer 资源（`logFile`）在所有退出路径均能正确释放；引入 `io.MultiWriter` 将日志同时写入文件和标准输出，消除原有 `log.Printf`+`fmt.Printf` 双写冗余。
-- [功能优化]: `ObjectTypeMap` 元数据查询性能优化；引入候选 schema 约束机制（`CandidateSchemas`），将 `INFORMATION_SCHEMA.TABLES` 扫描范围从实例全量收窄为本轮实际涉及的 schema 列表（`WHERE TABLE_SCHEMA IN (...)`），减少大实例上的不必要元数据开销；无候选集时保持原有全量扫描作为兜底，行为向后兼容。
-- [测试完善]: 新增 `tablePatternHasUnsupportedStar` 单元测试 6 个（`inputArg/checkParameter_test.go`），覆盖部分 `*` 检测、合法模式放行、映射目标侧 `*` 检测、双侧均含 `*`、合法 `db.*` 全量通配符映射、空字符串安全性。
-- [测试完善]: 新增 `repairDB_test.go` 单元测试（共 15 个），覆盖 `detectObjectStage`、`classifySQLFiles`、`buildExecutionStages`、`prepareStageFiles` 四个核心调度函数，包含文件分类、阶段顺序、shuffle 行为、空阶段省略等场景；`scripts/regression-test.sh` 同步纳入 `repairDB` 单测执行步骤，确保日常回归可自动运行。
-- [测试完善]: 补充 VIEW advisory SQL 修复相关单元测试，覆盖：DROP VIEW 不再出现的反向断言、`SET character_set_client = DEFAULT` 对称恢复断言、MariaDB uca1400 collation 自动映射路径验证。
-- [测试完善]: 新增 VIEW struct 专项单元测试，覆盖：归一化规则（DEFINER/ALGORITHM/SQL SECURITY 剥离、空白折叠、body 大小写保留）、跨 schema 映射归一化、advisory SQL 生成（ALGORITHM 保留/SQL SECURITY 保留/WITH CHECK OPTION 保留/DEFINER 剥除）、fail-closed 路径（不可解析 DDL 输出 `suggested SQL: none`）、VIEW 缺失/多余/差异/列元数据漂移分支、data 模式过滤、ignoreTables 过滤、ObjectKind 路由；新增 `extractCandidateSchemas` 函数专项测试（正常去重、空 map 返回空切片）。
-- [默认值调整]: `fixFileDir` 默认值由 `fixsql-YYYYMMDDHHMMSS`（带时间戳）改为固定目录名 `fixsql`。
-- [问题修复]: 修复 `tables` / `ignoreTables` 参数使用不支持的部分通配符 `*`（如 `sbtest.t*`）时静默产生错误结果的问题；现在在参数校验阶段快速失败，打印明确提示信息（如 `use '%' instead, e.g. sbtest.t%`）并退出；同时覆盖映射目标侧（如 `db1.t%:db2.t*` 中的 `db2.t*`）以及 `ignoreTables` 参数。
-- [问题修复]: 修复 `checkObject=data` 或 `checkObject=struct` 模式下，当指定的表在源端或两端均不存在时，输出结果的 `CheckObject` 列被硬编码为 `struct` 而非用户实际配置值的问题；现在所有不存在表分支均正确输出用户配置的 `checkObject` 值。
-- [问题修复]: 修复 `checkObject=struct` 模式下，当源端和目标端表均不存在时输出重复行的问题；根因为 `TableColumnNameCheck` 已将不存在的表追加到 pod 列表，而 `Struct()` 中的去重逻辑未感知这些 pod；修复方案为在调用 `TableColumnNameCheck` 前对 pod 快照，并将新增 pod 的表键预填充到去重集合中，防止重复创建。
-- [测试完善]: 新增 `EvaluateDataCheckPreflight` 回归测试 6 个（`actions/data_check_preflight_test.go`），覆盖源端表缺失、双端表缺失、空检查列表（Fatal）、有效表（Proceed）、混合有效/异常（Proceed）、invisible 列不匹配（SkipChecksum）等场景，防止 data 模式 preflight 回归。
-- [问题修复]: 修复 repairDB 跨阶段 session 变量泄漏问题：改为每阶段独立打开并关闭连接池，防止 `FOREIGN_KEY_CHECKS`、`UNIQUE_CHECKS` 等 session 级变量通过连接复用在阶段间扩散；此前共享连接池会导致 TABLE 阶段设置的会话变量在 VIEW/ROUTINE/TRIGGER/UNKNOWN 阶段中被意外继承。
-- [问题修复]: 修复 VIEW advisory SQL 四项问题：① `SET character_set_client` 设置后缺少 `DEFAULT` 恢复，导致 repairDB 单连接执行时后续对象字符集上下文被污染；② advisory 块误含 `DROP VIEW IF EXISTS`，`CREATE OR REPLACE VIEW` 已可原子替换视图，先 DROP 引入缺失窗口及失败后永久删除风险；③ MariaDB 11.5+ 源端 uca1400 排序规则未映射为 MySQL 等价值，`SET collation_connection` 在 MySQL 8.0/8.4 执行报错；④ VIEW 列元数据硬差异路径误生成可执行重建 SQL，此类漂移源于底层基表变更，统一回退为 `suggested SQL: none`。
-- [问题修复]: 此前已修复 连接oracle执行exec dbms_stats.gather_table_stats报错问题，本次补充测例（#I6NPC1）。
+- [功能新增]: 新增在 `checkObject=data` 模式下支持只校验部分字段功能，新增 `columns` 参数用于设置校验字段列表，该参数支持不同表名、字段名映射。支持同名列和源端→目标端列名映射；只比较选中的业务列，存在差异时生成 `UPDATE` 修复SQL；通过 `extraRowsSyncToSource` 参数控制是否生成 `DELETE`；当源端数据更多时生成 `columns-advisory.<schema>.<table>.sql` 文件提示人工介入处理。(issue #I6KGOJ #I6KGXF)
+- [功能新增]: `checkObject=struct` 模式新增 VIEW（视图）支持（仅限 MySQL→MySQL）；自动识别 `tables` 中的视图对象并比对定义与列元数据，差异时输出 `ObjectType=view`，修复建议以 advisory 形式写入 fixsql 文件，`checkObject=data` 模式会自动跳过视图对象。(issue #I899YZ)
+- [功能新增]: 新增结果自动导出为 CSV 文件能力；新增参数 `resultExport`（`OFF` / `csv`，默认 `csv`）和 `resultFile`（自定义导出路径，默认输出到 `result/` 目录），并新增 `terminalResultMode`（`all` / `abnormal`，默认 `all`）控制终端是否只显示异常结果；以上参数均支持 CLI 覆盖。（issue #I6KMQF）
+- [功能新增]: repairDB 新增 `logbin`（`ON` / `OFF`，默认 `ON`），可控制修复时是否写入 binlog。
+- [功能优化]: 表结构修复在识别到“兼容的列重命名”场景时，改用 `CHANGE COLUMN` 代替 `DROP COLUMN + ADD COLUMN`，尽量保留列数据并减少高风险 DDL。
+- [功能优化]: 表级 `charset/collation` 修复语句统一显式带上 `COLLATE`，降低跨版本迁移时被目标端默认排序规则偷偷改写的概率。
+- [功能优化]: 移除 `fixFilePerTable` 参数，统一为“每对象独立修复文件”输出模式；fixsql 文件命名规则统一为 `type.schema.object.sql`，`fixFileDir` 默认值同步调整为固定目录 `fixsql`。
+- [功能优化]: repairDB 执行调度升级为六阶段模型（DELETE→TABLE→VIEW→ROUTINE→TRIGGER→UNKNOWN），按对象类型分阶段执行；TABLE 阶段保留 shuffle 打散锁热点，其余阶段稳定排序，阶段间保持硬屏障并使用独立连接池。
+- [功能优化]: repairDB 主流程重构为 `run() error` 模式，统一 defer 资源释放，并通过 `io.MultiWriter` 同时输出到日志文件和标准输出。
+- [功能优化]: 元数据查询新增候选 schema 收窄策略，只扫描本轮实际涉及的 schema，减少大实例上的 `INFORMATION_SCHEMA.TABLES` 扫描开销。
+- [测试完善]: 补齐 columns 模式专项测试，覆盖参数解析、选列查询、advisory 文件输出与转义、真实链路下的 PK 精度保留、CSV/终端 Columns 列展示等关键路径。
+- [测试完善]: 新增 `repairDB_test.go` 单元测试，覆盖文件分类、阶段顺序、shuffle 行为、空阶段省略等核心调度逻辑；`scripts/regression-test.sh` 同步纳入 `repairDB` 单测执行步骤。
+- [测试完善]: 补充 VIEW advisory SQL 与 VIEW struct 专项单测，覆盖 `DROP VIEW` 移除、`SET ... = DEFAULT` 对称恢复、MariaDB `uca1400` collation 映射、跨 schema 归一化、列元数据漂移等场景。
+- [测试完善]: 新增 `EvaluateDataCheckPreflight` 回归测试，覆盖源端缺表、双端缺表、空检查列表、有效表、混合有效/异常、invisible 列不匹配等路径，防止 data 模式预检回归。
+- [测试完善]: 新增 `tablePatternHasUnsupportedStar` 单元测试，覆盖部分 `*` 检测、映射目标侧 `*` 检测、合法 `db.*` 通配符映射等场景；同时补充 Oracle `dbms_stats.gather_table_stats` 相关回归测例。（#I6NPC1）
+- [问题修复]: 修复 `tables` / `ignoreTables` 参数误用部分通配符 `*`（如 `sbtest.t*`）时静默产生错误结果的问题；现在会在参数校验阶段直接报错，并提示改用 `%`。
+- [问题修复]: 修复表不存在时结果中的 `CheckObject` 被错误写成 `struct` 的问题；同时修复 `checkObject=struct` 模式下源端和目标端表都不存在时输出重复记录的问题。
 
 ## 1.2.5
 - [功能新增]: 新增 `MariaDB -> MariaDB` 双端全模式支持（`data`/`struct`/`routine`/`trigger`），覆盖 `10.0`、`10.1`、`10.2`、`10.3`、`10.4`、`10.5`、`10.6`、`10.11`、`11.4`、`11.5`、`12.3` 系列，仅支持升级方向（src ≤ dst）；`struct` fix 隐藏索引使用 `IGNORED` 语法，`COMPRESSED`/`PERSISTENT` 等 MariaDB 原生列属性在目标端保留；各系列特性能力（JSON、不可见列、函数式索引、CHECK 约束强制执行等）按实际引入版本自动门控。

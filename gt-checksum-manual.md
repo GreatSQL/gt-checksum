@@ -122,14 +122,14 @@ Total execution time: 0.11s
 ...
 Checksum Results Overview
 Schema  Table                           IndexColumn     CheckObject     Rows            Diffs   Datafix Mapping
-db1     test2                           NULL            data            0,0             no      file    Schema: db1:db2
-db1     indext                          id              data            0,0             no      file    Schema: db1:db2
-db1     tb_emp6                         id              data            0,0             no      file    Schema: db1:db2
+db1     test2                           NULL            data            0,0             no      file    Schema: db1.test2:db2.test2
+db1     indext                          id              data            0,0             no      file    Schema: db1.indext:db2.indext
+db1     tb_emp6                         id              data            0,0             no      file    Schema: db1.tb_emp6:db2.tb_emp6
 sbtest  sbtest2                         id              data            4999,4999       yes     file    -
-db1     testbin                         NULL            data            1,1             no      file    Schema: db1:db2
+db1     testbin                         NULL            data            1,1             no      file    Schema: db1.testbin:db2.testbin
 ```
 
-输出结果中，除了 **sbtest.sbtest2** 这个表所在行中 **Mapping** 列的值为 **-** 外，其他表的 **Mapping** 列的值都为 **Schema: db1:db2**，表示该表在源端和目标端的映射关系为 **db1.test2** 和 **db2.test2**。
+输出结果中，除了 **sbtest.sbtest2** 这个表所在行中 **Mapping** 列的值为 **-** 外，其他表的 **Mapping** 列都会显示成 **Schema: 源端库.源端表:目标库.目标表** 的形式，例如 **Schema: db1.test2:db2.test2**，表示该表在源端和目标端的实际映射关系。
 
 如果参数 `checkObject` 设置为 **routine** 或 **trigger**，则会输出对应对象的差异结果；在 MySQL -> MySQL 场景下，当前版本也支持生成对应的 fixSQL，但这类 fixSQL 通常包含 `DROP + CREATE PROCEDURE/FUNCTION/TRIGGER` 语句，因此执行前需要额外关注目标库中的 `DEFINER` 账号与权限是否满足要求，例如：
 
@@ -201,6 +201,110 @@ gt-checksum: tables option 'sbtest.t*' uses unsupported wildcard '*'; use '%' in
 2. 当源端为 `MariaDB` 时，仅支持 `MariaDB 10.x+ -> MySQL 8.0/8.4` 的数据校验/修复路径；其他 `MariaDB` 组合仍会在启动阶段直接拒绝执行。
 3. 当数据校验前发现表结构不一致时，程序不会继续做该表的数据比对，而是保留结果并将 `Diffs` 标记为 `DDL-yes`。如果需要进一步修复表结构，请改用 `checkObject=struct`。
 4. **连接池容量**：`data` 模式下，程序内部同时运行 `queryTableDataSeparate`（checksum 比较）与 `AbnormalDataDispos`（差异处理）两条并发 pipeline，各自最多占用 `parallelThds` 个连接，单侧峰值约为 `parallelThds*2 + 2`。程序自动按 `parallelThds*2 + 4`（最低 8）设置单侧连接池下限，请确保数据库 `max_connections` 足以承载 `(parallelThds*2 + 4) * 2`（源端+目标端）个连接。`struct`/`routine`/`trigger` 模式单侧固定为 3 个连接，与 `parallelThds` 无关。
+
+### `columns` 只校验部分字段与修复
+
+`columns` 用于在 `checkObject=data` 模式下只比较一张逻辑表中的部分业务列，适合“目标端列名已改名，但只想核对若干关键列”的场景。
+
+#### 功能行为
+
+1. 程序内部会自动把主键或唯一键列追加到查询条件中，用来做行级配对；`columns` 中只需要写真正想比对的业务列。
+2. **two-sided** 行（源端和目标端都存在同一主键，但选中列值不同）会生成 `UPDATE` 修复语句，只更新选中的列。
+3. **source-only** 行（源端有、目标端无）不会自动生成 `INSERT`，而是写入 `columns-advisory.<schema>.<table>.sql` 提示人工处理。
+4. **target-only** 行（目标端有、源端无）默认只记录差异；当 `extraRowsSyncToSource=ON` 时才会生成 `DELETE` 修复语句。
+5. 终端结果和 CSV 结果都会追加 `Columns` 字段，显示本次实际参与比对的列计划。
+
+#### 使用限制
+
+1. 只支持 `checkObject=data`，其他模式下设置 `columns` 会在启动阶段直接报错。
+2. 只支持 `MySQL-family -> MySQL-family`，当前不支持任一端为 `Oracle` 的 columns 模式。
+3. 只支持“有主键或唯一键”的表；无索引表无法可靠做行级配对，会被直接跳过并标记为 `DDL-yes`。
+4. `columns` 一次只对应一张逻辑表。简单语法要求 `tables` 中恰好只有一对明确的表；完整语法允许 `tables` 里存在多条规则，但 `columns` 中所有列映射必须都属于同一对源表和目标表。
+5. `extraRowsSyncToSource=ON` 只能和 `columns` 一起使用，且要求 `datafix` 不是 `no`。
+
+#### 参数说明
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `columns` | 空 | 指定要比较的列；支持简单列名列表和完整列映射两种写法 |
+| `extraRowsSyncToSource` | `OFF` | 仅在 `columns` 模式下生效；控制 target-only 行是否自动生成 `DELETE` |
+
+#### `columns` 写法
+
+1. 简单列名列表：只适用于 `tables` 中恰好指定了一张表，且源端和目标端列名相同。
+
+```ini
+tables = "testdb.orders:testdb.orders_archive"
+columns = "amount,status,updated_at"
+```
+
+2. 完整列映射：适用于列名重命名、跨库映射或目标表名不同的场景。
+
+```ini
+tables = "testdb.orders:archive.orders_archive"
+columns = "testdb.orders.amount:archive.orders_archive.total_amount,testdb.orders.status:archive.orders_archive.order_status"
+```
+
+#### DDL 预检规则
+
+1. 选中列必须在两端真实存在，否则直接报错；单表任务会退出，多表任务会跳过当前表。
+2. 选中列会做严格的类型兼容性检查；如果基础类型不兼容，不继续做数据校验。
+3. 非选中列即使存在 DDL 差异，也只记录 `Warn` 日志，不阻断本次子集数据校验。
+4. 当选中列是“源端旧列名 -> 目标端新列名”时，结构预检会按列映射豁免这类 rename，不会因为列名不同直接把整张表打成 `DDL-yes`。
+
+#### 输出与修复文件
+
+columns 模式下，结果中的 `Columns` 列会按如下规则展示：
+
+1. 同名列模式：`srcSchema.srcTable.col1,srcSchema.srcTable.col2`
+2. 列映射模式：`srcSchema.srcTable.srcCol:dstSchema.dstTable.dstCol`
+
+如果存在 source-only 或未删除的 target-only 行，还会在 `fixFileDir` 目录下生成 advisory 文件，例如：
+
+```text
+fixsql/columns-advisory.testdb.orders.sql
+```
+
+文件内容全部是注释，不会被误执行。典型片段如下：
+
+```sql
+-- Source-only rows (exist in source, absent in target) : 2
+--     SELECT src.* FROM `testdb`.`orders` src
+--     LEFT JOIN `archive`.`orders_archive` dst USING (`id`)
+--     WHERE dst.`id` IS NULL;
+--
+-- Target-only rows (exist in target, absent in source) : 1
+--     SELECT dst.* FROM `archive`.`orders_archive` dst
+--     LEFT JOIN `testdb`.`orders` src USING (`id`)
+--     WHERE src.`id` IS NULL;
+```
+
+#### 使用示例
+
+```ini
+srcDSN = mysql|checksum:Checksum@3306@tcp(src-host:3306)/information_schema?charset=utf8mb4
+dstDSN = mysql|checksum:Checksum@3306@tcp(dst-host:3307)/information_schema?charset=utf8mb4
+tables = "testdb.orders:archive.orders_archive"
+checkObject = data
+datafix = file
+columns = "testdb.orders.amount:archive.orders_archive.total_amount,testdb.orders.status:archive.orders_archive.order_status"
+extraRowsSyncToSource = OFF
+```
+
+终端输出示例：
+
+```text
+Checksum Results Overview
+Schema  Table   IndexColumn  CheckObject  Rows         Diffs  Datafix  Mapping                                      Columns
+testdb  orders  id           data         1000,1000    yes    file     Schema: testdb.orders:archive.orders_archive testdb.orders.amount:archive.orders_archive.total_amount,testdb.orders.status:archive.orders_archive.order_status
+```
+
+对应的 CSV 行示例：
+
+```text
+RunID,CheckTime,CheckObject,Schema,Table,ObjectName,ObjectType,IndexColumn,Rows,Diffs,Datafix,Mapping,Definer,Columns
+20260403153000,2026-04-03 15:30:01,data,testdb,orders,orders,table,id,"1000,1000",yes,file,Schema: testdb.orders:archive.orders_archive,,"testdb.orders.amount:archive.orders_archive.total_amount,testdb.orders.status:archive.orders_archive.order_status"
+```
 
 ### `checkObject=struct` 的支持边界
 
@@ -361,7 +465,6 @@ dstDSN = mysql|checksum:Checksum@3306@tcp(dst-mariadb1011-host:3409)/information
 tables = mydb.*
 checkObject = struct
 datafix = file
-fixFilePerTable = ON
 fixFileDir = ./fixsql-struct-mariadb106-to1011
 ```
 
@@ -461,7 +564,7 @@ gt_phase1_mariadb105 t_mariadb_feature_pack      struct       warn-only  file
 
 - 每次运行结束后自动生成一个结果 CSV 文件，默认命名为 `gt-checksum-result-<RunID>.csv`（`RunID` 格式 `YYYYMMDDHHmmss`，精度为秒级；同一秒内多次启动会产生相同 RunID）。
 - CSV 文件使用 **UTF-8 BOM** 编码，可被 Excel 直接打开，无需额外配置。
-- CSV 列头固定，包含全部 13 列，适用于 `data`、`struct`、`routine`、`trigger` 四种模式，不使用的列留空而不是省略。
+- CSV 列头固定，包含全部 14 列，适用于 `data`、`struct`、`routine`、`trigger` 四种模式，不使用的列留空而不是省略。
 - CSV 始终包含**完整结果**，不受 `terminalResultMode` 过滤影响。
 
 ### CSV 列头说明
@@ -481,6 +584,7 @@ gt_phase1_mariadb105 t_mariadb_feature_pack      struct       warn-only  file
 | `Datafix` | 修复方式：`file` / `table` |
 | `Mapping` | schema/table 映射说明（无映射时为空） |
 | `Definer` | routine / trigger 场景下的 DEFINER |
+| `Columns` | 仅在 `columns` 子集校验模式下非空，显示本次实际参与比对的列计划；全列模式下为空 |
 
 ### 结果导出相关参数
 
@@ -522,9 +626,9 @@ import csv, sys
 with open('result/gt-checksum-result-20260323195530.csv', encoding='utf-8-sig') as f:
     for row in csv.reader(f): print(row)
 " | head -3
-['RunID', 'CheckTime', 'CheckObject', 'Schema', 'Table', 'ObjectName', 'ObjectType', 'IndexColumn', 'Rows', 'Diffs', 'Datafix', 'Mapping', 'Definer']
-['20260323195530', '2026-03-23 19:55:31', 'data', 'sbtest', 'sbtest1', 'sbtest1', 'table', 'id', '10000', 'no', 'file', '', '']
-['20260323195530', '2026-03-23 19:55:31', 'data', 'sbtest', 'sbtest2', 'sbtest2', 'table', 'id', '4999', 'yes', 'file', '', '']
+['RunID', 'CheckTime', 'CheckObject', 'Schema', 'Table', 'ObjectName', 'ObjectType', 'IndexColumn', 'Rows', 'Diffs', 'Datafix', 'Mapping', 'Definer', 'Columns']
+['20260323195530', '2026-03-23 19:55:31', 'data', 'sbtest', 'sbtest1', 'sbtest1', 'table', 'id', '10000', 'no', 'file', '', '', '']
+['20260323195530', '2026-03-23 19:55:31', 'data', 'sbtest', 'sbtest2', 'sbtest2', 'table', 'id', '4999', 'yes', 'file', '', '', '']
 ```
 
 终端只显示有差异的行：
