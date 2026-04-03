@@ -34,6 +34,10 @@ type SchemaS struct {
 	CheckNoIndexTable       string
 	CaseSensitiveObjectName string
 	SqlWhere                string
+	// Columns specifies the partial-column compare mode.
+	// Syntax 1 (simple list):       "c1,c2,c3"             — tables must have exactly one pair
+	// Syntax 2/3 (fully-qualified): "db1.t1.c1:db2.t2.c2"  — column name mapping
+	Columns string
 }
 
 // RulesS defines checksum task execution and runtime control options.
@@ -63,7 +67,13 @@ type RepairS struct {
 	FixTrxSize      int
 	InsertSqlSize   int
 	DeleteSqlSize   int
-	FixFileDir string
+	FixFileDir      string
+	// ExtraRowsSyncToSource controls whether target-only rows (rows present in the target
+	// but absent in the source) are deleted when columns mode is active.
+	// ON  = generate DELETE fix SQL for target-only rows
+	// OFF = advisory-only (default)
+	// Only valid when the columns parameter is set.
+	ExtraRowsSyncToSource string
 }
 type SecondaryLevel struct {
 	DsnsV   DSNsS
@@ -95,6 +105,9 @@ type ConfigParameter struct {
 	CliResultExport      string
 	CliResultFile        string
 	CliTerminalResultMode string
+	// ColumnPlan is populated during startup from SchemaV.Columns.
+	// nil means full-table compare mode (columns parameter not set).
+	ColumnPlan *TableColumnPlan
 }
 
 var rc ConfigParameter

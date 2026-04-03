@@ -1106,6 +1106,17 @@ func (my QueryTable) GeneratingQueryCriteria(db *sql.DB, logThreadSeq int64) (st
 		}
 	}
 
+	// columns 模式：按 CompareColumns 过滤并重排 TableColumn，保证 SELECT 列顺序与
+	// columnsModeFilteredCols 所产生的 filteredSrcCols/filteredDstCols 顺序一致，
+	// 避免在 FixUpdateSqlExec 中用 colPosMap 定位行数据时出现列值错位。
+	if len(my.CompareColumns) > 0 && len(my.TableColumn) > 0 {
+		my.TableColumn = orderColumnsForCompare(my.TableColumn, my.ColumnName, my.CompareColumns)
+		columnNameSeq = make([]string, 0, len(my.TableColumn))
+		for _, col := range my.TableColumn {
+			columnNameSeq = append(columnNameSeq, col["columnName"])
+		}
+	}
+
 	// 对列名应用格式化，特别是时间类型列
 	formattedColumnSeq := make([]string, 0, len(columnNameSeq))
 	for _, columnName := range columnNameSeq {
@@ -1274,6 +1285,49 @@ func formatComparableColumnExpr(columnExpr, dataType string) string {
 	return formatted
 }
 
+func normalizeColumnLookupKey(name string) string {
+	return strings.ToLower(strings.TrimSpace(name))
+}
+
+func buildColumnLookupByName(cols []map[string]string) map[string]map[string]string {
+	byName := make(map[string]map[string]string, len(cols))
+	for _, col := range cols {
+		if name, ok := col["columnName"]; ok {
+			byName[normalizeColumnLookupKey(name)] = col
+		}
+	}
+	return byName
+}
+
+func orderColumnsForCompare(tableColumns []map[string]string, pkCols []string, compareCols []string) []map[string]string {
+	if len(compareCols) == 0 {
+		return tableColumns
+	}
+
+	colByName := buildColumnLookupByName(tableColumns)
+	pkSet := make(map[string]bool, len(pkCols))
+	for _, c := range pkCols {
+		pkSet[normalizeColumnLookupKey(c)] = true
+	}
+
+	ordered := make([]map[string]string, 0, len(pkCols)+len(compareCols))
+	for _, pkCol := range pkCols {
+		if c, ok := colByName[normalizeColumnLookupKey(pkCol)]; ok {
+			ordered = append(ordered, c)
+		}
+	}
+	for _, cmpCol := range compareCols {
+		key := normalizeColumnLookupKey(cmpCol)
+		if pkSet[key] {
+			continue
+		}
+		if c, ok := colByName[key]; ok {
+			ordered = append(ordered, c)
+		}
+	}
+	return ordered
+}
+
 /*
 MySQL 生成查询数据的sql语句
 */
@@ -1343,6 +1397,31 @@ func (my *QueryTable) GeneratingQuerySql(db *sql.DB, logThreadSeq int64) (string
 			// Assign to current instance
 			my.TableColumn = cachedTableColumn
 		}
+	}
+
+	// columns 模式：按 CompareColumns 过滤 TableColumn，同时保留 ColumnName（PK/索引列）以支持行级 key 匹配。
+	// 列顺序：PK 列优先（按 ColumnName 顺序），其后按 CompareColumns 顺序追加非 PK 的比较列。
+	// 源端与目标端均采用同样的排列策略，保证行字符串位置 i 语义一一对应，避免多列映射场景下的错位比较。
+	// 空 CompareColumns 表示全列模式，不做过滤。
+	if len(my.CompareColumns) > 0 {
+		colByName := buildColumnLookupByName(my.TableColumn)
+		pkSet := make(map[string]bool, len(my.ColumnName))
+		for _, c := range my.ColumnName {
+			pkSet[normalizeColumnLookupKey(c)] = true
+		}
+		ordered := orderColumnsForCompare(my.TableColumn, my.ColumnName, my.CompareColumns)
+		for _, cmpCol := range my.CompareColumns {
+			key := normalizeColumnLookupKey(cmpCol)
+			if pkSet[key] {
+				continue
+			}
+			if _, ok := colByName[key]; !ok {
+				// 对 CompareColumns 中未找到的列记录警告（DDL 预检阶段应已拦截）
+				global.Wlog.Warn(fmt.Sprintf("(%d) [%s] columns parameter specifies column %q but it was not found in table %s.%s; skipping",
+					logThreadSeq, Event, cmpCol, my.Schema, my.Table))
+			}
+		}
+		my.TableColumn = ordered
 	}
 
 	//处理mysql查询时间列时数据带时区问题  2021-01-23 10:16:29 +0800 CST

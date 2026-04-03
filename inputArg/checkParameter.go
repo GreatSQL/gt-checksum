@@ -274,6 +274,54 @@ func (rc *ConfigParameter) checkPar() {
 	vlog = fmt.Sprintf("(%d) [%s] check table parameter message is {table: %s ignore table: %s}", rc.LogThreadSeq, Event, rc.SecondaryL.SchemaV.Tables, rc.SecondaryL.SchemaV.IgnoreTables)
 	global.Wlog.Debug(vlog)
 
+	// columns 参数解析与校验
+	if rc.SecondaryL.SchemaV.Columns != "" {
+		plan, parseErr := parseColumnsParam(rc.SecondaryL.SchemaV.Columns, rc.SecondaryL.SchemaV.Tables)
+		if parseErr != nil {
+			fmt.Println(fmt.Sprintf("gt-checksum: Invalid columns option: %v. Check %s for details", parseErr, rc.SecondaryL.LogV.LogFile))
+			vlog = fmt.Sprintf("(%d) [%s] invalid columns parameter: %v", rc.LogThreadSeq, Event, parseErr)
+			global.Wlog.Error(vlog)
+			os.Exit(1)
+		}
+		rc.ColumnPlan = plan
+		vlog = fmt.Sprintf("(%d) [%s] columns mode enabled: %s.%s→%s.%s, %d column pair(s), simpleMode=%v",
+			rc.LogThreadSeq, Event,
+			plan.SourceSchema, plan.SourceTable,
+			plan.TargetSchema, plan.TargetTable,
+			len(plan.Pairs), plan.SimpleMode)
+		global.Wlog.Info(vlog)
+		fmt.Printf("columns mode enabled: %s.%s→%s.%s (%d column pair(s), simpleMode=%v)\n",
+			plan.SourceSchema, plan.SourceTable,
+			plan.TargetSchema, plan.TargetTable,
+			len(plan.Pairs), plan.SimpleMode)
+	}
+
+	// extraRowsSyncToSource 校验
+	rc.SecondaryL.RepairV.ExtraRowsSyncToSource = strings.ToUpper(strings.TrimSpace(rc.SecondaryL.RepairV.ExtraRowsSyncToSource))
+	if rc.SecondaryL.RepairV.ExtraRowsSyncToSource == "" {
+		rc.SecondaryL.RepairV.ExtraRowsSyncToSource = "OFF"
+	}
+	if rc.SecondaryL.RepairV.ExtraRowsSyncToSource != "ON" && rc.SecondaryL.RepairV.ExtraRowsSyncToSource != "OFF" {
+		fmt.Println(fmt.Sprintf("gt-checksum: extraRowsSyncToSource must be ON or OFF. Check %s or set logLevel=debug for details", rc.SecondaryL.LogV.LogFile))
+		vlog = fmt.Sprintf("(%d) [%s] option \"extraRowsSyncToSource\" must be ON or OFF.", rc.LogThreadSeq, Event)
+		global.Wlog.Error(vlog)
+		os.Exit(1)
+	}
+	if rc.SecondaryL.RepairV.ExtraRowsSyncToSource == "ON" && rc.SecondaryL.SchemaV.Columns == "" {
+		fmt.Println(fmt.Sprintf("gt-checksum: extraRowsSyncToSource=ON requires the columns parameter to be set. Check %s or set logLevel=debug for details", rc.SecondaryL.LogV.LogFile))
+		vlog = fmt.Sprintf("(%d) [%s] option \"extraRowsSyncToSource\" requires the columns parameter to be set.", rc.LogThreadSeq, Event)
+		global.Wlog.Error(vlog)
+		os.Exit(1)
+	}
+	if rc.SecondaryL.RepairV.ExtraRowsSyncToSource == "ON" && rc.SecondaryL.RepairV.Datafix == "no" {
+		fmt.Println(fmt.Sprintf("gt-checksum: extraRowsSyncToSource=ON requires datafix to be yes/file/table. Check %s or set logLevel=debug for details", rc.SecondaryL.LogV.LogFile))
+		vlog = fmt.Sprintf("(%d) [%s] option \"extraRowsSyncToSource=ON\" is incompatible with datafix=no; set datafix to yes/file/table.", rc.LogThreadSeq, Event)
+		global.Wlog.Error(vlog)
+		os.Exit(1)
+	}
+	vlog = fmt.Sprintf("(%d) [%s] ExtraRowsSyncToSource=%s", rc.LogThreadSeq, Event, rc.SecondaryL.RepairV.ExtraRowsSyncToSource)
+	global.Wlog.Debug(vlog)
+
 	vlog = fmt.Sprintf("(%d) [%s] start init check object values.", rc.LogThreadSeq, Event)
 	global.Wlog.Debug(vlog)
 	rc.SecondaryL.RulesV.CheckObject = strings.ToLower(rc.SecondaryL.RulesV.CheckObject)
@@ -285,6 +333,31 @@ func (rc *ConfigParameter) checkPar() {
 		vlog = fmt.Sprintf("(%d) [%s] checkObject value '%s' is deprecated. Using default value 'data' instead. Consider using 'routine' for checking stored procedures and functions.", rc.LogThreadSeq, Event, originalValue)
 		global.Wlog.Info(vlog)
 		fmt.Printf("Warning: checkObject value '%s' is deprecated. Using default value 'data' instead. Consider using 'routine' for checking stored procedures and functions.\n", originalValue)
+	}
+
+	// columns 参数仅在 checkObject=data 模式下生效；其他模式下字段级过滤没有意义
+	if rc.ColumnPlan != nil && rc.SecondaryL.RulesV.CheckObject != "data" {
+		fmt.Println(fmt.Sprintf("gt-checksum: columns parameter is only supported with checkObject=data, but checkObject=%s was specified. Check %s for details", rc.SecondaryL.RulesV.CheckObject, rc.SecondaryL.LogV.LogFile))
+		vlog = fmt.Sprintf("(%d) [%s] columns parameter requires checkObject=data, got checkObject=%s", rc.LogThreadSeq, Event, rc.SecondaryL.RulesV.CheckObject)
+		global.Wlog.Error(vlog)
+		os.Exit(1)
+	}
+
+	// columns 模式下不支持 Oracle 端（源端或目标端）：Oracle 查询链路尚未实现 CompareColumns 列裁剪，
+	// 若允许则会导致 Oracle 侧按全列查询而 MySQL 侧按指定列查询，造成列数/列序失配和误报。
+	if rc.ColumnPlan != nil {
+		isOracle := func(d string) bool {
+			d = strings.ToLower(strings.TrimSpace(d))
+			return d == "oracle" || d == "godror"
+		}
+		srcDrive := rc.SecondaryL.DsnsV.SrcDrive
+		destDrive := rc.SecondaryL.DsnsV.DestDrive
+		if isOracle(srcDrive) || isOracle(destDrive) {
+			fmt.Println("gt-checksum: columns mode is not supported with Oracle endpoints (source or destination). Use MySQL/MariaDB endpoints instead.")
+			vlog = fmt.Sprintf("(%d) [%s] columns mode requires non-Oracle endpoints; srcDrive=%s destDrive=%s", rc.LogThreadSeq, Event, srcDrive, destDrive)
+			global.Wlog.Error(vlog)
+			os.Exit(1)
+		}
 	}
 
 	vlog = fmt.Sprintf("(%d) [%s] check object parameter message is {%s}.", rc.LogThreadSeq, Event, rc.SecondaryL.RulesV.CheckObject)

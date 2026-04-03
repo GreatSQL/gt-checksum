@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"os"
 	"strings"
+	"sync"
 )
 
 type SchedulePlan struct {
@@ -43,6 +44,75 @@ type SchedulePlan struct {
 	tableMappings             map[string]string // 表映射关系
 	bar                       *Bar              // 进度条
 	forceFullTableCheck       bool              // 是否强制进行全表检查
+
+	// columns 模式字段
+	// columnPlan 不为 nil 时表示当前为部分列校验模式。
+	// 由 inputArg.ConfigParameter.ColumnPlan 携带，类型用 interface{} 以避免与 actions 包的循环导入。
+	// 实际类型为 *inputArg.TableColumnPlan；调用方通过 getColumnPlan() 转换访问。
+	columnPlanSourceCols   []string // ColumnPlan.SourceColumns()，nil = 全列模式
+	columnPlanTargetCols   []string // ColumnPlan.TargetColumns()，nil = 全列模式
+	columnPlanSimpleMode   bool     // ColumnPlan.SimpleMode
+	columnPlanSourceSchema string   // 列计划绑定的源端 schema（用于多表场景的精确匹配）
+	columnPlanSourceTable  string   // 列计划绑定的源端表名
+	columnPlanTargetSchema string   // 列计划绑定的目标端 schema
+	columnPlanTargetTable  string   // 列计划绑定的目标端表名
+	extraRowsSyncToSource  string   // ON | OFF，仅 columns 模式下有意义
+
+	// sourceOnlyAdvisory 在 columns 模式下收集 source-only 行的 PK，用于生成 advisory 提示文件。
+	// 非 columns 模式时为 nil。
+	sourceOnlyAdvisory *columnsModeSourceOnlyAdvisory
+}
+
+// columnsModeSourceOnlyAdvisory 记录 columns 模式下差异行的统计信息，
+// 用于在校验结束后生成人工介入建议文件。
+type columnsModeSourceOnlyAdvisory struct {
+	mu              sync.Mutex
+	schema          string
+	table           string
+	destSchema      string
+	destTable       string   // 目标端表名（表映射场景下可能与源端不同）
+	indexCols       []string // 主键 / 唯一键列名
+	sourceOnlyCount int      // 源端有目标端无的行数（未生成 INSERT）
+	targetOnlyCount int      // 目标端有源端无的行数（extraRowsSyncToSource=OFF，未生成 DELETE）
+}
+
+// buildColumnsInfo returns a human-readable summary of the partial-columns plan for
+// display in the Columns output column.  Returns "" when not in columns mode.
+//
+// SimpleMode  → "srcSchema.srcTable.col1,srcSchema.srcTable.col2,…"
+// MappingMode → "srcSchema.srcTable.srcCol:dstSchema.dstTable.dstCol,…"
+func (sp *SchedulePlan) buildColumnsInfo() string {
+	if len(sp.columnPlanSourceCols) == 0 {
+		return ""
+	}
+	srcSchema := sp.sourceSchema
+	if srcSchema == "" {
+		srcSchema = sp.schema
+	}
+	dstSchema := sp.destSchema
+	if dstSchema == "" {
+		dstSchema = srcSchema
+	}
+	dstTable := sp.destTable
+	if dstTable == "" {
+		dstTable = sp.table
+	}
+	if sp.columnPlanSimpleMode && dstTable == sp.table && dstSchema == srcSchema {
+		parts := make([]string, len(sp.columnPlanSourceCols))
+		for i, col := range sp.columnPlanSourceCols {
+			parts[i] = fmt.Sprintf("%s.%s.%s", srcSchema, sp.table, col)
+		}
+		return strings.Join(parts, ",")
+	}
+	parts := make([]string, len(sp.columnPlanSourceCols))
+	for i, srcCol := range sp.columnPlanSourceCols {
+		dstCol := srcCol
+		if i < len(sp.columnPlanTargetCols) {
+			dstCol = sp.columnPlanTargetCols[i]
+		}
+		parts[i] = fmt.Sprintf("%s.%s.%s:%s.%s.%s", srcSchema, sp.table, srcCol, dstSchema, dstTable, dstCol)
+	}
+	return strings.Join(parts, ",")
 }
 
 // getDisplayTableName 返回表的显示名称，包含映射关系信息
@@ -88,6 +158,7 @@ func preserveDDLResultPods(pods []Pod) []Pod {
 */
 func (sp *SchedulePlan) Schedulingtasks() {
 	totalTables := len(sp.tableIndexColumnMap)
+	var logThreadSeq int64 // outer-loop log identifier; inner branches may override
 	for k, v := range sp.tableIndexColumnMap {
 		//是否校验无索引表
 		if sp.checkNoIndexTable == "no" && len(v) == 0 {
@@ -165,6 +236,19 @@ func (sp *SchedulePlan) Schedulingtasks() {
 		}
 		spCopy.destTable = destTable
 
+		// columns 模式精确表对匹配：列计划只对指定的源/目标表对生效，其余表回退全列模式，避免列计划错误套用到多表场景。
+		if sp.columnPlanSourceTable != "" {
+			if sourceSchema != sp.columnPlanSourceSchema || sourceTable != sp.columnPlanSourceTable ||
+				destSchema != sp.columnPlanTargetSchema || destTable != sp.columnPlanTargetTable {
+				spCopy.columnPlanSourceCols = nil
+				spCopy.columnPlanTargetCols = nil
+				global.Wlog.Debug(fmt.Sprintf("(%d) [columns-mode] table %s.%s→%s.%s does not match columns plan (%s.%s→%s.%s); switching to full-column mode",
+					logThreadSeq, sourceSchema, sourceTable, destSchema, destTable,
+					sp.columnPlanSourceSchema, sp.columnPlanSourceTable,
+					sp.columnPlanTargetSchema, sp.columnPlanTargetTable))
+			}
+		}
+
 		tmpFile, err := os.OpenFile(spCopy.TmpFileName, os.O_CREATE|os.O_RDWR, 0777)
 		if err != nil {
 			global.Wlog.Error(fmt.Sprintf("Failed to open temp file %s for table %s.%s: %v", spCopy.TmpFileName, spCopy.sourceSchema, spCopy.table, err))
@@ -181,35 +265,94 @@ func (sp *SchedulePlan) Schedulingtasks() {
 		destColKey := fmt.Sprintf("%s_gtchecksum_%s", destSchema, destTable)
 		if sourceColInfo, ok1 := sp.tableAllCol[sourceColKey]; ok1 {
 			if destColInfo, ok2 := sp.tableAllCol[destColKey]; ok2 {
-				if mismatch := checkDDLConsistency(
-					sourceColInfo.SColumnInfo,
-					destColInfo.DColumnInfo,
-					sourceSchema, sourceTable,
-					destSchema, destTable,
-					sp.sdrive, sp.ddrive,
-				); mismatch != "" {
-					// DDL不一致，记录详细报告
-					fmt.Printf("\n[WARNING] DDL mismatch detected for table %s.%s vs %s.%s, skipping checksum:\n%s\n",
-						sourceSchema, sourceTable, destSchema, destTable, mismatch)
-					global.Wlog.Error(fmt.Sprintf("DDL mismatch detected for table %s.%s vs %s.%s: %s",
-						sourceSchema, sourceTable, destSchema, destTable, mismatch))
-					global.AddSkippedTableWithDiffs(sourceSchema, sourceTable, "data", "DDL mismatch: "+mismatch, global.SkipDiffsDDLYes)
+				srcCols := sourceColInfo.SColumnInfo
+				dstCols := destColInfo.DColumnInfo
 
-					// 如果仅有一个表需要校验，则报错退出
-					if totalTables == 1 {
-						fmt.Printf("\n[ERROR] Only one table to check and data checksum precheck found a DDL mismatch. Exiting.\n")
-						fmt.Printf("Source: %s.%s, Target: %s.%s\n", sourceSchema, sourceTable, destSchema, destTable)
-						fmt.Printf("Detail: %s\n", mismatch)
-						fmt.Printf("Suggestion: run checkObject=struct or align the table DDL before retrying data checksum.\n")
-						global.Wlog.Error(fmt.Sprintf("Only one table to check (%s.%s) and data checksum precheck found a DDL mismatch, exiting", sourceSchema, sourceTable))
-						os.Exit(1)
+				if len(spCopy.columnPlanSourceCols) > 0 {
+					// columns 模式：只对选中列做 DDL 严格检查；非选中列差异降级为警告。
+					selectedSrc := filterColumnInfoByNames(srcCols, spCopy.columnPlanSourceCols)
+					selectedDst := filterColumnInfoByNames(dstCols, spCopy.columnPlanTargetCols)
+
+					// columns 存在性校验：指定列必须在两端表中实际存在，否则拒绝继续（避免静默缩小比较范围）。
+					if missingSrc := findMissingColumnNames(spCopy.columnPlanSourceCols, srcCols); len(missingSrc) > 0 {
+						errMsg := fmt.Sprintf("columns parameter specifies column(s) %v that do not exist in source table %s.%s",
+							missingSrc, sourceSchema, sourceTable)
+						fmt.Printf("\n[ERROR] %s\n", errMsg)
+						global.Wlog.Error(fmt.Sprintf("(%d) [columns-mode] %s", logThreadSeq, errMsg))
+						global.AddSkippedTableWithDiffs(sourceSchema, sourceTable, "data", "columns-missing-in-source: "+strings.Join(missingSrc, ","), global.SkipDiffsDDLYes)
+						if totalTables == 1 {
+							os.Exit(1)
+						}
+						continue
 					}
-					continue
+					if missingDst := findMissingColumnNames(spCopy.columnPlanTargetCols, dstCols); len(missingDst) > 0 {
+						errMsg := fmt.Sprintf("columns parameter specifies column(s) %v that do not exist in target table %s.%s",
+							missingDst, destSchema, destTable)
+						fmt.Printf("\n[ERROR] %s\n", errMsg)
+						global.Wlog.Error(fmt.Sprintf("(%d) [columns-mode] %s", logThreadSeq, errMsg))
+						global.AddSkippedTableWithDiffs(sourceSchema, sourceTable, "data", "columns-missing-in-target: "+strings.Join(missingDst, ","), global.SkipDiffsDDLYes)
+						if totalTables == 1 {
+							os.Exit(1)
+						}
+						continue
+					}
+
+					// 对选中列做类型兼容性检查（位置对齐，支持列名映射）
+					if typeMismatch := checkColumnsPairTypeMismatch(selectedSrc, selectedDst, spCopy.columnPlanSourceCols, spCopy.columnPlanTargetCols); typeMismatch != "" {
+						fmt.Printf("\n[ERROR] columns mode DDL type mismatch for %s.%s → %s.%s, cannot compare:\n%s\n",
+							sourceSchema, sourceTable, destSchema, destTable, typeMismatch)
+						global.Wlog.Error(fmt.Sprintf("columns mode DDL type mismatch for %s.%s→%s.%s: %s",
+							sourceSchema, sourceTable, destSchema, destTable, typeMismatch))
+						global.AddSkippedTableWithDiffs(sourceSchema, sourceTable, "data", "columns-DDL-mismatch: "+typeMismatch, global.SkipDiffsDDLYes)
+						if totalTables == 1 {
+							os.Exit(1)
+						}
+						continue
+					}
+
+					// 非选中列是否存在差异：运行全列检查，有差异时仅警告，不阻断
+					if fullMismatch := checkDDLConsistency(srcCols, dstCols, sourceSchema, sourceTable, destSchema, destTable, sp.sdrive, sp.ddrive); fullMismatch != "" {
+						vlog = fmt.Sprintf("(%d) [columns-mode] non-selected-columns-differ for %s.%s→%s.%s (compare not blocked): %s",
+							logThreadSeq, sourceSchema, sourceTable, destSchema, destTable, fullMismatch)
+						global.Wlog.Warn(vlog)
+					}
+				} else {
+					// 全列模式：原有逻辑
+					if mismatch := checkDDLConsistency(srcCols, dstCols, sourceSchema, sourceTable, destSchema, destTable, sp.sdrive, sp.ddrive); mismatch != "" {
+						fmt.Printf("\n[WARNING] DDL mismatch detected for table %s.%s vs %s.%s, skipping checksum:\n%s\n",
+							sourceSchema, sourceTable, destSchema, destTable, mismatch)
+						global.Wlog.Error(fmt.Sprintf("DDL mismatch detected for table %s.%s vs %s.%s: %s",
+							sourceSchema, sourceTable, destSchema, destTable, mismatch))
+						global.AddSkippedTableWithDiffs(sourceSchema, sourceTable, "data", "DDL mismatch: "+mismatch, global.SkipDiffsDDLYes)
+						if totalTables == 1 {
+							fmt.Printf("\n[ERROR] Only one table to check and data checksum precheck found a DDL mismatch. Exiting.\n")
+							fmt.Printf("Source: %s.%s, Target: %s.%s\n", sourceSchema, sourceTable, destSchema, destTable)
+							fmt.Printf("Detail: %s\n", mismatch)
+							fmt.Printf("Suggestion: run checkObject=struct or align the table DDL before retrying data checksum.\n")
+							global.Wlog.Error(fmt.Sprintf("Only one table to check (%s.%s) and data checksum precheck found a DDL mismatch, exiting", sourceSchema, sourceTable))
+							os.Exit(1)
+						}
+						continue
+					}
 				}
 			}
 		}
 
 		if len(v) == 0 { //校验无索引表
+			// columns 模式不支持无索引表：无法可靠定位行，禁止启用
+			if len(spCopy.columnPlanSourceCols) > 0 {
+				vlog = fmt.Sprintf("(%d) [columns-mode] table %s.%s has no primary/unique key; columns mode requires a reliable row identifier — skipping",
+					logThreadSeq, sourceSchema, sourceTable)
+				global.Wlog.Error(vlog)
+				fmt.Printf("\n[ERROR] columns mode cannot be used with no-index table %s.%s; specify a table with a primary or unique key.\n",
+					sourceSchema, sourceTable)
+				global.AddSkippedTableWithDiffs(sourceSchema, sourceTable, "data", "columns-mode-no-index-table", global.SkipDiffsDDLYes)
+				if totalTables == 1 {
+					os.Exit(1)
+				}
+				continue
+			}
+
 			spCopy.chanrowCount = spCopy.chunkSize
 			logThreadSeq := rand.Int63()
 
@@ -288,7 +431,7 @@ func CheckTableQuerySchedule(sdb, ddb *global.Pool, tableIndexColumnMap map[stri
 		}
 	}
 
-	return &SchedulePlan{
+	sp := &SchedulePlan{
 		concurrency:             m.SecondaryL.RulesV.ParallelThds,
 		sdbPool:                 sdb,
 		ddbPool:                 ddb,
@@ -310,7 +453,21 @@ func CheckTableQuerySchedule(sdb, ddb *global.Pool, tableIndexColumnMap map[stri
 		deleteSqlSize:           m.SecondaryL.RepairV.DeleteSqlSize * 1024,
 		djdbc:                   m.SecondaryL.DsnsV.DestJdbc,
 		tableMappings:           tableMappings,
+		extraRowsSyncToSource:   m.SecondaryL.RepairV.ExtraRowsSyncToSource,
 	}
+
+	// columns 模式：将列计划展开为源/目标两侧的列列表注入 SchedulePlan。
+	if plan := m.ColumnPlan; plan != nil {
+		sp.columnPlanSourceCols = plan.SourceColumns()
+		sp.columnPlanTargetCols = plan.TargetColumns()
+		sp.columnPlanSimpleMode = plan.SimpleMode
+		sp.columnPlanSourceSchema = plan.SourceSchema
+		sp.columnPlanSourceTable = plan.SourceTable
+		sp.columnPlanTargetSchema = plan.TargetSchema
+		sp.columnPlanTargetTable = plan.TargetTable
+	}
+
+	return sp
 }
 
 // checkDDLConsistency 检查源端与目标端表的DDL定义是否一致
@@ -454,6 +611,84 @@ func checkDDLConsistency(sourceColumns, destColumns []map[string]string, sourceS
 			sourceSchema, sourceTable, effectiveSourceCount, destSchema, destTable, effectiveDestCount))
 	}
 
+	if len(mismatches) > 0 {
+		return strings.Join(mismatches, "\n")
+	}
+	return ""
+}
+
+// filterColumnInfoByNames returns a new slice containing only the entries from colInfo
+// whose "columnName" key matches one of the names in the allowList (case-insensitive,
+// to match MySQL/MariaDB column name semantics).
+// The result is returned in the order defined by allowList.
+func filterColumnInfoByNames(colInfo []map[string]string, allowList []string) []map[string]string {
+	if len(allowList) == 0 {
+		return colInfo
+	}
+	byName := make(map[string]map[string]string, len(colInfo))
+	for _, col := range colInfo {
+		if name, ok := col["columnName"]; ok {
+			byName[strings.ToLower(name)] = col
+		}
+	}
+	result := make([]map[string]string, 0, len(allowList))
+	for _, name := range allowList {
+		if col, found := byName[strings.ToLower(name)]; found {
+			result = append(result, col)
+		}
+	}
+	return result
+}
+
+// findMissingColumnNames returns the subset of requested column names that are not present
+// in colInfo (case-insensitive match on "columnName" key, to match MySQL/MariaDB semantics).
+// Returns nil when all are found.
+func findMissingColumnNames(requested []string, colInfo []map[string]string) []string {
+	byName := make(map[string]bool, len(colInfo))
+	for _, col := range colInfo {
+		if name, ok := col["columnName"]; ok {
+			byName[strings.ToLower(name)] = true
+		}
+	}
+	var missing []string
+	for _, name := range requested {
+		if !byName[strings.ToLower(name)] {
+			missing = append(missing, name)
+		}
+	}
+	return missing
+}
+
+// checkColumnsPairTypeMismatch verifies that each source→target column pair in the
+// columns plan has compatible data types.  srcCols and dstCols are already filtered
+// to the selected columns and are ordered the same as srcNames/dstNames.
+// Returns a human-readable mismatch description, or "" when everything is compatible.
+func checkColumnsPairTypeMismatch(srcCols, dstCols []map[string]string, srcNames, dstNames []string) string {
+	if len(srcCols) != len(dstCols) {
+		return fmt.Sprintf("selected column count mismatch: source has %d, target has %d", len(srcCols), len(dstCols))
+	}
+	var mismatches []string
+	for i := range srcCols {
+		srcType := srcCols[i]["dataType"]
+		dstType := dstCols[i]["dataType"]
+		// Normalise: strip length/precision qualifiers for a coarse category check.
+		srcBase := strings.ToUpper(strings.Split(srcType, "(")[0])
+		dstBase := strings.ToUpper(strings.Split(dstType, "(")[0])
+		if srcBase != dstBase {
+			srcName := ""
+			if i < len(srcNames) {
+				srcName = srcNames[i]
+			}
+			dstName := ""
+			if i < len(dstNames) {
+				dstName = dstNames[i]
+			}
+			mismatches = append(mismatches, fmt.Sprintf(
+				"  column pair %s→%s: incompatible types %s vs %s",
+				srcName, dstName, srcType, dstType,
+			))
+		}
+	}
 	if len(mismatches) > 0 {
 		return strings.Join(mismatches, "\n")
 	}

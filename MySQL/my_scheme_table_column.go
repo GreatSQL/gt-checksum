@@ -33,6 +33,12 @@ type QueryTable struct {
 	columnExistsCache   map[string]bool   // Cache for column existence checks
 	allColumnsCache     []string          // Cache for all column names ordered by ORDINAL_POSITION
 	columnDataTypeCache map[string]string // Cache for column name to data type mapping
+
+	// CompareColumns, when non-empty, restricts the SELECT column list produced by
+	// GeneratingQuerySql to only the named columns (in the specified order).
+	// Set by the columns partial-compare mode; source and target QueryTable instances
+	// carry their own respective lists (SourceColumns / TargetColumns from TableColumnPlan).
+	CompareColumns []string
 }
 
 var (

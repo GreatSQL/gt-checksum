@@ -21,6 +21,10 @@ type IndexColumnStruct struct {
 	BeginSeq                string
 	RowDataCh               int64
 	SelectColumn            map[string]string
+	// CompareColumns, when non-empty, restricts the SELECT column list to only the
+	// named columns (in the order specified). Used by the columns partial-compare mode.
+	// Source and target sides carry their own respective column name lists.
+	CompareColumns []string
 }
 
 type TableIndexColumner interface {
@@ -58,6 +62,7 @@ func (qticis *IndexColumnStruct) TableIndexColumn() TableIndexColumner {
 			SelectColumn:            qticis.SelectColumn,
 			BeginSeq:                qticis.BeginSeq,
 			RowDataCh:               qticis.RowDataCh,
+			CompareColumns:          qticis.CompareColumns,
 		}
 	}
 	if qticis.Drivce == "godror" {

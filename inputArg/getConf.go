@@ -134,6 +134,13 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 		rc.SecondaryL.SchemaV.CheckNoIndexTable = "no"
 	}
 
+	// columns 参数：部分列校验（支持配置文件中用引号包裹，与 sqlWhere 保持一致）
+	columnsValue := strings.TrimSpace(getLastConfigValue("columns"))
+	if columnsValue != "" {
+		columnsValue = strings.Trim(columnsValue, "'\"")
+		rc.SecondaryL.SchemaV.Columns = columnsValue
+	}
+
 	//SqlWhere 获取WHERE条件
 	sqlWhereValue := getLastConfigValue("sqlWhere")
 	if sqlWhereValue != "" {
@@ -359,6 +366,18 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 		}
 	}
 
+	// extraRowsSyncToSource 参数：columns 模式下是否删除目标端多余行
+	extraRowsSyncValue := strings.ToUpper(strings.TrimSpace(getLastConfigValue("extraRowsSyncToSource")))
+	switch extraRowsSyncValue {
+	case "", "OFF":
+		rc.SecondaryL.RepairV.ExtraRowsSyncToSource = "OFF"
+	case "ON":
+		rc.SecondaryL.RepairV.ExtraRowsSyncToSource = "ON"
+	default:
+		// pass through as-is; checkPar will reject it with a clear error
+		rc.SecondaryL.RepairV.ExtraRowsSyncToSource = extraRowsSyncValue
+	}
+
 	//Repair 获取相关参数
 	fixTrxNumValue := getLastConfigValue("fixTrxNum")
 	if fixTrxNumValue != "" {
@@ -448,7 +467,7 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 
 	// fixFilePerTable 参数已废弃（v1.3.0 起移除），每对象独立文件为唯一输出模式
 	if getLastConfigValue("fixFilePerTable") != "" {
-		fmt.Println("gt-checksum: [WARN] fixFilePerTable 参数已废弃，每对象独立文件为唯一输出模式，该配置项将被忽略")
+		fmt.Println("gt-checksum: [WARN] The fixFilePerTable option is deprecated. Independent file per object is now the only output mode, and this option will be ignored.")
 	}
 
 	if rc.SecondaryL.RepairV.Datafix == "file" {
