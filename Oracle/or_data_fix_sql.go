@@ -129,6 +129,11 @@ func (or *OracleDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive 
 	return deleteSql, nil
 }
 
+// FixUpdateSqlExec is not supported for Oracle destinations.
+func (or *OracleDataAbnormalFixStruct) FixUpdateSqlExec(db *sql.DB, srcRowData string, compareColNames []string, srcToDstCol map[string]string, logThreadSeq int64) (string, error) {
+	return "", fmt.Errorf("(%d) FixUpdateSqlExec not supported for Oracle destination %s.%s", logThreadSeq, or.Schema, or.Table)
+}
+
 /*
 Oracle 生成索引修复语句
 */

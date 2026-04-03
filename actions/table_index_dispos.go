@@ -16,6 +16,7 @@ import (
 	"math"
 	"math/rand"
 	"os"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"sort"
@@ -428,11 +429,12 @@ func (sp *SchedulePlan) generateFirstLevelNumericChunks(sdb, ddb *sql.DB, level,
 		return nil, false
 	}
 
+	destTable := sp.getDestTableName()
 	sMin, sMax, sHasRows, sErr := queryTableMinMaxInt64ByDrive(sdb, sp.sdrive, sp.sourceSchema, sp.table, column, where)
 	if sErr != nil {
 		return nil, false
 	}
-	dMin, dMax, dHasRows, dErr := queryTableMinMaxInt64ByDrive(ddb, sp.ddrive, sp.destSchema, sp.table, column, where)
+	dMin, dMax, dHasRows, dErr := queryTableMinMaxInt64ByDrive(ddb, sp.ddrive, sp.destSchema, destTable, column, where)
 	if dErr != nil {
 		return nil, false
 	}
@@ -456,14 +458,14 @@ func (sp *SchedulePlan) generateFirstLevelNumericChunks(sdb, ddb *sql.DB, level,
 	}
 
 	sEstRows := queryTableRowsEstimateByDrive(sdb, sp.sdrive, sp.sourceSchema, sp.table)
-	dEstRows := queryTableRowsEstimateByDrive(ddb, sp.ddrive, sp.destSchema, sp.table)
+	dEstRows := queryTableRowsEstimateByDrive(ddb, sp.ddrive, sp.destSchema, destTable)
 	estRows := sEstRows
 	if dEstRows > estRows {
 		estRows = dEstRows
 	}
 
 	sHasNull, _ := queryColumnHasNullByDrive(sdb, sp.sdrive, sp.sourceSchema, sp.table, column, where)
-	dHasNull, _ := queryColumnHasNullByDrive(ddb, sp.ddrive, sp.destSchema, sp.table, column, where)
+	dHasNull, _ := queryColumnHasNullByDrive(ddb, sp.ddrive, sp.destSchema, destTable, column, where)
 
 	clauses := buildNumericChunkWhereClauses(column, where, sp.sdrive, minVal, maxVal, queryNum, estRows, sHasNull || dHasNull)
 	if len(clauses) == 0 {
@@ -538,9 +540,9 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 	if err != nil {
 		return
 	}
-	idxcDest := dbExec.IndexColumnStruct{Schema: sp.destSchema, Table: sp.table, ColumnName: sp.columnName,
+	idxcDest := dbExec.IndexColumnStruct{Schema: sp.destSchema, Table: sp.getDestTableName(), ColumnName: sp.columnName,
 		ChanrowCount: sp.chanrowCount, Drivce: sp.ddrive, CaseSensitiveObjectName: sp.caseSensitiveObjectName, SelectColumn: selectColumn[sp.ddrive], ColData: a}
-	vlog = fmt.Sprintf("(%d) Querying target table %s.%s index column %s with WHERE: %s", logThreadSeq, sp.destSchema, sp.table, sp.columnName[level], where)
+	vlog = fmt.Sprintf("(%d) Querying target table %s.%s index column %s with WHERE: %s", logThreadSeq, sp.destSchema, sp.getDestTableName(), sp.columnName[level], where)
 	global.Wlog.Debug(vlog)
 	// 对于复合主键，查询符合前一个索引列条件的索引值，而不是所有可能的值
 	// 这确保了递归查询的效率
@@ -958,6 +960,7 @@ func (sp *SchedulePlan) queryTableSql(sqlWhere chanString, selectSql chanMap, cc
 						Drivce:                  sp.sdrive,
 						CaseSensitiveObjectName: sp.caseSensitiveObjectName,
 						ColData:                 cc1.SColumnInfo,
+						CompareColumns:          sp.columnPlanSourceCols, // nil = 全列模式
 					}
 					lock.Lock()
 					selectSqlMap[sp.sdrive], err = idxc.TableIndexColumn().GeneratingQuerySql(sd, logThreadSeq)
@@ -981,25 +984,27 @@ func (sp *SchedulePlan) queryTableSql(sqlWhere chanString, selectSql chanMap, cc
 					sp.ddbPool.Put(ddb, logThreadSeq)
 
 					// 为目标端生成WHERE条件
-					destWhere := strings.Replace(c1, fmt.Sprintf("%s.%s", sp.sourceSchema, sp.table), fmt.Sprintf("%s.%s", sp.destSchema, sp.table), -1)
-					destWhere = strings.Replace(destWhere, fmt.Sprintf("`%s`.`%s`", sp.sourceSchema, sp.table), fmt.Sprintf("`%s`.`%s`", sp.destSchema, sp.table), -1)
+					_destTableName := sp.getDestTableName()
+					destWhere := strings.Replace(c1, fmt.Sprintf("%s.%s", sp.sourceSchema, sp.table), fmt.Sprintf("%s.%s", sp.destSchema, _destTableName), -1)
+					destWhere = strings.Replace(destWhere, fmt.Sprintf("`%s`.`%s`", sp.sourceSchema, sp.table), fmt.Sprintf("`%s`.`%s`", sp.destSchema, _destTableName), -1)
 					destWhere = adaptWhereForDrive(destWhere, sp.ddrive)
 
 					// 目标端使用destSchema和destTable
 					idxcDest := dbExec.IndexColumnStruct{
 						Schema:                  sp.destSchema,
-						Table:                   sp.table,
+						Table:                   _destTableName,
 						TableColumn:             cc1.DColumnInfo,
 						Sqlwhere:                destWhere,
 						Drivce:                  sp.ddrive,
 						CaseSensitiveObjectName: sp.caseSensitiveObjectName,
 						ColData:                 cc1.DColumnInfo,
+						CompareColumns:          sp.columnPlanTargetCols, // nil = 全列模式
 					}
 					// 添加对目标表存在的检查
 					ddb = sp.ddbPool.Get(logThreadSeq)
-					_, err = ddb.Exec(fmt.Sprintf("SELECT 1 FROM `%s`.`%s` LIMIT 1", sp.destSchema, sp.table))
+					_, err = ddb.Exec(fmt.Sprintf("SELECT 1 FROM `%s`.`%s` LIMIT 1", sp.destSchema, _destTableName))
 					if err != nil {
-						vlog = fmt.Sprintf("(%d) [doIndexDataCheck] Target table %s.%s does not exist", logThreadSeq, sp.destSchema, sp.table)
+						vlog = fmt.Sprintf("(%d) [doIndexDataCheck] Target table %s.%s does not exist", logThreadSeq, sp.destSchema, _destTableName)
 						global.Wlog.Error(vlog)
 						sp.ddbPool.Put(ddb, logThreadSeq)
 						return
@@ -1226,8 +1231,8 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 					// 基于现有的WHERE条件进行查询，这些条件已经由recursiveIndexColumn正确分片
 					var destSqlWhere string // 在更外层声明变量
 					// 使用原始的WHERE条件，这些条件已经按照chunkSize正确分片
-					sourceSqlWhere = c1.SqlWhere[sp.sdrive]
-					destSqlWhere = c1.SqlWhere[sp.ddrive]
+					sourceSqlWhere = c1.SqlWhere["src"]
+					destSqlWhere = c1.SqlWhere["dst"]
 
 					// 确保使用正确的schema
 					if strings.Contains(sourceSqlWhere, fmt.Sprintf("`%s`", destSchema)) {
@@ -1276,11 +1281,13 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 						Drivce:                  sp.sdrive,
 						CaseSensitiveObjectName: sp.caseSensitiveObjectName,
 						Sqlwhere:                sourceSqlWhere, // 使用处理后的源端SQL条件
+						ColumnName:              sp.columnName,
+						CompareColumns:          sp.columnPlanSourceCols,
 					}
 					stt, err = idxc.TableIndexColumn().GeneratingQueryCriteria(sdb, logThreadSeq)
 					if err != nil {
 						global.Wlog.Warn(fmt.Sprintf("(%d) failed to query source chunk by criteria for %s.%s, fallback to raw SQL query, err=%v", logThreadSeq, sourceSchema, table, err))
-						fallbackSourceSQL := strings.TrimSpace(c1.SqlWhere[sp.sdrive])
+						fallbackSourceSQL := strings.TrimSpace(c1.SqlWhere["src"])
 						if strings.HasPrefix(strings.ToUpper(fallbackSourceSQL), "SELECT") {
 							sourceRows, fallbackErr := queryRowsDataBySQL(sdb, fallbackSourceSQL, sp.sdrive, logThreadSeq)
 							if fallbackErr != nil {
@@ -1313,11 +1320,13 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 						Drivce:                  sp.ddrive,
 						CaseSensitiveObjectName: sp.caseSensitiveObjectName,
 						Sqlwhere:                destSqlWhere, // 使用处理后的目标端SQL条件
+						ColumnName:              sp.columnName,
+						CompareColumns:          sp.columnPlanTargetCols,
 					}
 					dtt, err = idxcDest.TableIndexColumn().GeneratingQueryCriteria(ddb, logThreadSeq)
 					if err != nil {
 						global.Wlog.Warn(fmt.Sprintf("(%d) failed to query dest chunk by criteria for %s.%s, fallback to raw SQL query, err=%v", logThreadSeq, destSchema, destTable, err))
-						fallbackDestSQL := strings.TrimSpace(c1.SqlWhere[sp.ddrive])
+						fallbackDestSQL := strings.TrimSpace(c1.SqlWhere["dst"])
 						if strings.HasPrefix(strings.ToUpper(fallbackDestSQL), "SELECT") {
 							destRows, fallbackErr := queryRowsDataBySQL(ddb, fallbackDestSQL, sp.ddrive, logThreadSeq)
 							if fallbackErr != nil {
@@ -1419,13 +1428,44 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 						}
 
 						// 4. 使用Arrcmp进行精确比较
-						floatCompareScales := buildFloatComparisonScales(colData.SColumnInfo, colData.DColumnInfo)
+						// columns 模式下，查询结果已按 PK+compareColumns 顺序裁剪，必须使用过滤后的列元信息，
+						// 否则 buildFloatComparisonScales / buildTemporalCompareKinds 产生的位置索引与实际列位置不符。
+						effectiveSrcCols := colData.SColumnInfo
+						effectiveDstCols := colData.DColumnInfo
+						if len(sp.columnPlanSourceCols) > 0 {
+							effectiveSrcCols = columnsModeFilteredCols(colData.SColumnInfo, sp.columnPlanSourceCols, sp.columnName)
+							effectiveDstCols = columnsModeFilteredCols(colData.DColumnInfo, sp.columnPlanTargetCols, sp.columnName)
+						}
+
+						// columns 模式下，PK 列不能参与归一化。
+						// columnsModeExtractPKKey() 从 Arrcmp 返回的行（即归一化后的行）中提取 PK key；
+						// 若 PK 列是 TIMESTAMP(6)/TIME(6)/FLOAT 等类型，归一化会截断精度，导致原本不同
+						// 的两行映射到同一 PK key，进而错误地触发 two-sided UPDATE 或吞掉真实差异。
+						// 修复方案：提前计算 PK 列在过滤后列列表中的位置，然后将这些位置从
+						// float/temporal 归一化向量中屏蔽（float: -1，temporal: ""），确保 PK 值
+						// 在 Arrcmp 前后保持原始精度，而仅对 compare 列做归一化。
+						var earlyPKPositions []int
+						if len(sp.columnPlanSourceCols) > 0 {
+							earlyPKPositions, _ = columnsModeSplitPKAndCompare(effectiveSrcCols, sp.columnName)
+						}
+
+						floatCompareScales := buildFloatComparisonScales(effectiveSrcCols, effectiveDstCols)
+						for _, pos := range earlyPKPositions {
+							if pos < len(floatCompareScales) {
+								floatCompareScales[pos] = -1 // 跳过 PK 列 float 归一化
+							}
+						}
 						if len(floatCompareScales) > 0 {
 							cleanSourceData = normalizeRowsForFloatComparison(cleanSourceData, floatCompareScales)
 							cleanDestData = normalizeRowsForFloatComparison(cleanDestData, floatCompareScales)
 							global.Wlog.Debugf("(%d) Applied float normalization for %s.%s before Arrcmp", logThreadSeq, c1.Schema, c1.Table)
 						}
-						temporalCompareKinds := buildTemporalCompareKinds(colData.SColumnInfo, colData.DColumnInfo)
+						temporalCompareKinds := buildTemporalCompareKinds(effectiveSrcCols, effectiveDstCols)
+						for _, pos := range earlyPKPositions {
+							if pos < len(temporalCompareKinds) {
+								temporalCompareKinds[pos] = "" // 跳过 PK 列时间归一化
+							}
+						}
 						if len(temporalCompareKinds) > 0 {
 							cleanSourceData = normalizeRowsForTemporalComparison(cleanSourceData, temporalCompareKinds)
 							cleanDestData = normalizeRowsForTemporalComparison(cleanDestData, temporalCompareKinds)
@@ -1442,7 +1482,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 						add, del := aa.Arrcmp(cleanSourceData, cleanDestData)
 						if len(add) > 0 && len(del) > 0 && len(temporalCompareKinds) > 0 {
 							var healed int
-							add, del, healed = reconcileTemporalNullArtifacts(add, del, temporalCompareKinds, colData.SColumnInfo, colData.DColumnInfo)
+							add, del, healed = reconcileTemporalNullArtifacts(add, del, temporalCompareKinds, effectiveSrcCols, effectiveDstCols)
 							if healed > 0 {
 								global.Wlog.Warnf("(%d) Reconciled %d temporal null artifacts for %s.%s (INTERVAL/TIME scan compatibility)",
 									logThreadSeq, healed, c1.Schema, c1.Table)
@@ -1505,8 +1545,8 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 
 							// 处理源端和目标端SQL条件
 							// 获取原始SQL条件
-							originalSourceSqlWhere := c1.SqlWhere[sp.sdrive]
-							originalDestSqlWhere := c1.SqlWhere[sp.ddrive]
+							originalSourceSqlWhere := c1.SqlWhere["src"]
+							originalDestSqlWhere := c1.SqlWhere["dst"]
 
 							// 处理源端SQL条件，确保使用源端schema
 							sourceSqlWhere := originalSourceSqlWhere
@@ -1546,7 +1586,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 							dbf := dbExec.DataAbnormalFixStruct{
 								Schema:                  destSchema,   // 目标schema
 								SourceSchema:            sourceSchema, // 源端schema，用于处理数据库映射关系
-								Table:                   table,        // 使用映射后的表名
+								Table:                   destTable,    // 使用目标端表名
 								ColData:                 colData.DColumnInfo,
 								Sqlwhere:                destSqlWhere, // 使用处理后的目标端SQL条件
 								DestDevice:              sp.ddrive,
@@ -1560,6 +1600,115 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 								dbf.IndexType = "uni"
 							} else {
 								dbf.IndexType = "mul"
+							}
+
+							// columns 模式：按行 key 状态路由（two-sided / source-only / target-only）
+							if len(sp.columnPlanSourceCols) > 0 {
+								// 构建过滤后列列表（PK ∪ compareColumns，保持原表列顺序）
+								filteredSrcCols := columnsModeFilteredCols(colData.SColumnInfo, sp.columnPlanSourceCols, indexColumns)
+								filteredDstCols := columnsModeFilteredCols(colData.DColumnInfo, sp.columnPlanTargetCols, indexColumns)
+
+								// 找出 PK 列在过滤后列列表中的位置，并拆出 compare 列。
+								// 这里必须大小写不敏感，否则会与 orderColumnsForCompare /
+								// FixUpdateSqlExec 的归一化语义不一致，导致 two-sided 配对错误。
+								pkPositions, compareColNames := columnsModeSplitPKAndCompare(filteredSrcCols, indexColumns)
+
+								// 构建源→目标列名映射，用于生成 UPDATE SET 子句时使用目标端列名。
+								// 键统一小写，与 FixUpdateSqlExec 中的查找逻辑保持大小写不敏感一致。
+								var srcToDstCol map[string]string
+								if !sp.columnPlanSimpleMode && len(sp.columnPlanSourceCols) > 0 {
+									srcToDstCol = make(map[string]string, len(sp.columnPlanSourceCols))
+									for i, src := range sp.columnPlanSourceCols {
+										if i < len(sp.columnPlanTargetCols) {
+											srcToDstCol[strings.ToLower(src)] = sp.columnPlanTargetCols[i]
+										}
+									}
+								}
+
+								// 按 PK key 索引 add / del 行
+								addByPK := make(map[string]string, len(add))
+								for _, row := range add {
+									addByPK[columnsModeExtractPKKey(row, pkPositions)] = row
+								}
+								delByPK := make(map[string]string, len(del))
+								for _, row := range del {
+									delByPK[columnsModeExtractPKKey(row, pkPositions)] = row
+								}
+
+								// Two-sided 行：生成 UPDATE；source-only 行：仅通知
+								var chunkSrcOnly, chunkDstOnly int
+								for pkKey, srcRow := range addByPK {
+									if _, exists := delByPK[pkKey]; exists {
+										// two-sided：source 与 target 的 compare 列有差异 → UPDATE
+										if sp.datafixType == "no" {
+											// compare-only 模式：只记录差异，不生成修复 SQL（Oracle 等不支持 UPDATE 的目标端在此路径安全退出）
+											lock.Lock()
+											if sp.pods != nil {
+												sp.pods.DIFFS = "yes"
+											}
+											lock.Unlock()
+										} else {
+											dbf.RowData = srcRow
+											dbf.ColData = filteredSrcCols
+											sqlstr, err := dbf.DataAbnormalFix().FixUpdateSqlExec(ddb, srcRow, compareColNames, srcToDstCol, logThreadSeq)
+											if err != nil {
+												sp.getErr(fmt.Sprintf("dest: checksum table %s.%s generate UPDATE sql error (columns-mode).", c1.Schema, c1.Table), err)
+											} else if sqlstr != "" {
+												cc <- sqlstr
+											}
+										}
+									} else {
+										// source-only：target 中不存在此 key，在 columns 模式下不生成 INSERT，仅计数
+										lock.Lock()
+										if sp.pods != nil {
+											sp.pods.DIFFS = "yes"
+										}
+										lock.Unlock()
+										chunkSrcOnly++
+										// 计数，用于后续生成 advisory 提示文件
+										if sp.sourceOnlyAdvisory != nil {
+											sp.sourceOnlyAdvisory.mu.Lock()
+											sp.sourceOnlyAdvisory.sourceOnlyCount++
+											sp.sourceOnlyAdvisory.mu.Unlock()
+										}
+									}
+								}
+
+								// Target-only 行：由 extraRowsSyncToSource 控制
+								for pkKey, dstRow := range delByPK {
+									if _, exists := addByPK[pkKey]; !exists {
+										if sp.extraRowsSyncToSource == "ON" {
+											dbf.RowData = dstRow
+											dbf.ColData = filteredDstCols
+											sqlstr, err := dbf.DataAbnormalFix().FixDeleteSqlExec(ddb, sp.ddrive, logThreadSeq)
+											if err != nil {
+												sp.getErr(fmt.Sprintf("dest: checksum table %s.%s generate DELETE sql error (columns-mode target-only).", c1.Schema, c1.Table), err)
+											} else if sqlstr != "" {
+												cc <- sqlstr
+											}
+										} else {
+											// 不生成 DELETE，但仍标记为差异，确保 Diffs=yes
+											lock.Lock()
+											if sp.pods != nil {
+												sp.pods.DIFFS = "yes"
+											}
+											lock.Unlock()
+											chunkDstOnly++
+											// 计数，用于后续生成 advisory 提示文件
+											if sp.sourceOnlyAdvisory != nil {
+												sp.sourceOnlyAdvisory.mu.Lock()
+												sp.sourceOnlyAdvisory.targetOnlyCount++
+												sp.sourceOnlyAdvisory.mu.Unlock()
+											}
+										}
+									}
+								}
+								// 每个 chunk 汇总一次，避免大差异时产生大量逐行日志
+								if chunkSrcOnly > 0 || chunkDstOnly > 0 {
+									global.Wlog.Warn(fmt.Sprintf("(%d) [columns-mode] %s.%s chunk diff: %d source-only row(s) skipped (no INSERT generated), %d target-only row(s) skipped (set extraRowsSyncToSource=ON to generate DELETE)",
+										logThreadSeq, c1.Schema, c1.Table, chunkSrcOnly, chunkDstOnly))
+								}
+								return // columns 模式路由完成，跳过常规 INSERT/DELETE 生成
 							}
 
 							// 关键修复：确保DELETE语句一定在INSERT语句之前生成
@@ -1693,15 +1842,15 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 												if isSinglePrimary {
 													// 单字段主键：WHERE `col` IN (
 													// 使用目标schema而非源schema
-													baseSql = fmt.Sprintf("DELETE FROM `%s`.`%s` WHERE `%s` IN (", sp.destSchema, c1.Table, primaryCol)
+													baseSql = fmt.Sprintf("DELETE FROM `%s`.`%s` WHERE `%s` IN (", sp.destSchema, destTable, primaryCol)
 												} else {
 													// 多字段联合主键：WHERE (`col1`, `col2`, `col3`) IN (
 													colNames := make([]string, len(primaryCols))
 													for i, col := range primaryCols {
 														colNames[i] = fmt.Sprintf("`%s`", col)
 													}
-													// 使用目标schema而非源schema
-													baseSql = fmt.Sprintf("DELETE FROM `%s`.`%s` WHERE (%s) IN (", sp.destSchema, c1.Table, strings.Join(colNames, ", "))
+													// 使用目标schema和目标表名
+													baseSql = fmt.Sprintf("DELETE FROM `%s`.`%s` WHERE (%s) IN (", sp.destSchema, destTable, strings.Join(colNames, ", "))
 												}
 												baseSqlLen := len(baseSql)
 												closeBracketLen := len(");")
@@ -2088,16 +2237,21 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 	var (
 		deleteWriter *sqlRollingWriter
 		insertWriter *sqlRollingWriter
+		updateWriter *sqlRollingWriter
 	)
 	if sp.datafixType != "table" {
 		deleteWriter = sp.newSQLRollingWriter("DELETE", maxStmtPerFile, maxFileSizeBytes, logThreadSeq)
 		insertWriter = sp.newSQLRollingWriter("INSERT", maxStmtPerFile, maxFileSizeBytes, logThreadSeq)
+		updateWriter = sp.newSQLRollingWriter("UPDATE", maxStmtPerFile, maxFileSizeBytes, logThreadSeq)
 	}
 	if deleteWriter != nil {
 		defer deleteWriter.close()
 	}
 	if insertWriter != nil {
 		defer insertWriter.close()
+	}
+	if updateWriter != nil {
+		defer updateWriter.close()
 	}
 
 	processDeleteBatch := func(batch []string) error {
@@ -2122,13 +2276,26 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 		}
 		return insertWriter.write(optimized)
 	}
+	processUpdateBatch := func(batch []string) error {
+		if len(batch) == 0 {
+			return nil
+		}
+		if sp.datafixType == "table" {
+			writeOptimizedSqlChunk(batch, sp.datafixType, nil, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
+			return nil
+		}
+		return updateWriter.write(batch)
+	}
 
 	global.Wlog.Info(fmt.Sprintf("(%d) Writing per-object fixsql for %s.%s",
 		logThreadSeq, sp.schema, sp.table))
 	deleteBatch := make([]string, 0, stageBatchStmt)
 	insertBatch := make([]string, 0, stageBatchStmt)
+	updateBatch := make([]string, 0, stageBatchStmt)
 	var deleteBatchBytes int64
 	var insertBatchBytes int64
+	var updateBatchBytes int64
+	var updateCount int
 
 	flushDelete := func() {
 		if len(deleteBatch) == 0 {
@@ -2149,6 +2316,16 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 		}
 		insertBatch = insertBatch[:0]
 		insertBatchBytes = 0
+	}
+	flushUpdate := func() {
+		if len(updateBatch) == 0 {
+			return
+		}
+		if err := processUpdateBatch(updateBatch); err != nil {
+			sp.getErr(fmt.Sprintf("Failed streaming UPDATE fixsql for %s.%s", sp.schema, sp.table), err)
+		}
+		updateBatch = updateBatch[:0]
+		updateBatchBytes = 0
 	}
 
 	for v := range fixSQL {
@@ -2173,16 +2350,37 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 			insertBatch = append(insertBatch, v)
 			insertBatchBytes += sqlBytes
 			insertCount++
+		case "UPDATE":
+			if len(updateBatch) > 0 && (len(updateBatch) >= stageBatchStmt || updateBatchBytes+sqlBytes > stageBatchBytes) {
+				flushUpdate()
+			}
+			updateBatch = append(updateBatch, v)
+			updateBatchBytes += sqlBytes
+			updateCount++
 		}
 	}
 	flushDelete()
 	flushInsert()
+	flushUpdate()
 
-	if deleteCount > 0 || insertCount > 0 {
-		vlog = fmt.Sprintf("(%d) Repair statements generated for %s.%s: DELETE=%d, INSERT=%d",
-			logThreadSeq, sp.schema, sp.table, deleteCount, insertCount)
+	if deleteCount > 0 || insertCount > 0 || updateCount > 0 {
+		vlog = fmt.Sprintf("(%d) Repair statements generated for %s.%s: DELETE=%d, INSERT=%d, UPDATE=%d",
+			logThreadSeq, sp.schema, sp.table, deleteCount, insertCount, updateCount)
 		global.Wlog.Debug(vlog)
 		sp.pods.DIFFS = "yes"
+	}
+
+	// columns 模式：如有未自动修复的差异行，生成 advisory 提示文件
+	// 注意：source-only 行在 columns 模式下始终不生成 INSERT（全列未知），
+	// 因此无论 datafixType 是否为 "table"，只要存在未自动修复的差异就需要 advisory。
+	if sp.sourceOnlyAdvisory != nil {
+		sp.sourceOnlyAdvisory.mu.Lock()
+		srcOnly := sp.sourceOnlyAdvisory.sourceOnlyCount
+		dstOnly := sp.sourceOnlyAdvisory.targetOnlyCount
+		sp.sourceOnlyAdvisory.mu.Unlock()
+		if srcOnly > 0 || dstOnly > 0 {
+			sp.writeColumnsModeAdvisory(srcOnly, dstOnly, logThreadSeq)
+		}
 	}
 
 	// 无论是否有差异，都添加到结果中
@@ -2198,7 +2396,122 @@ func detectFixSQLType(sql string) string {
 	if strings.HasPrefix(sqlTrim, "INSERT") {
 		return "INSERT"
 	}
+	if strings.HasPrefix(sqlTrim, "UPDATE") {
+		return "UPDATE"
+	}
 	return ""
+}
+
+// writeColumnsModeAdvisory 在 columns 模式下，当存在未自动生成修复 SQL 的差异行时，
+// 写入一个纯注释的 advisory 文件，提示人工介入。涵盖两种情形：
+//   - source-only：源端有目标端无，columns 模式不生成 INSERT（全列未知）
+//   - target-only：目标端有源端无，extraRowsSyncToSource=OFF，不生成 DELETE
+//
+// 文件命名：<fixFileDir>/columns-advisory.<schema>.<table>.sql
+// 文件内容全部为 SQL 注释（-- 开头），不含任何可执行语句，不会被误执行。
+func (sp *SchedulePlan) writeColumnsModeAdvisory(sourceOnlyCount, targetOnlyCount int, logThreadSeq int64) {
+	adv := sp.sourceOnlyAdvisory
+	if adv == nil || (sourceOnlyCount == 0 && targetOnlyCount == 0) {
+		return
+	}
+	const advisoryDrive = "mysql"
+
+	// sp.datafixSql 仅在 datafix=file 时才会被初始化；datafix=table/yes 时为空字符串。
+	// advisory 文件使用独立的目录：优先复用 datafixSql，否则回退到默认目录 "fixsql"。
+	advisoryDir := sp.datafixSql
+	if advisoryDir == "" {
+		advisoryDir = "fixsql"
+		// 记录回退时的实际绝对路径，避免因进程工作目录不同导致文件落盘位置不明确。
+		if absDir, err := filepath.Abs(advisoryDir); err == nil {
+			global.Wlog.Info(fmt.Sprintf("(%d) [columns-advisory] datafix dir not set, using default advisory dir: %s", logThreadSeq, absDir))
+		}
+	}
+	if err := os.MkdirAll(advisoryDir, 0755); err != nil {
+		global.Wlog.Error(fmt.Sprintf("(%d) [columns-advisory] Failed to create advisory directory %q: %v", logThreadSeq, advisoryDir, err))
+		return
+	}
+
+	filePath := fmt.Sprintf("%s/columns-advisory.%s.%s.sql",
+		advisoryDir, fixFileNameEncode(adv.schema), fixFileNameEncode(adv.table))
+	f, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		global.Wlog.Error(fmt.Sprintf("(%d) [columns-advisory] Failed to create advisory file %q: %v", logThreadSeq, filePath, err))
+		return
+	}
+	defer f.Close()
+
+	quotedSourceCols := make([]string, len(sp.columnPlanSourceCols))
+	for i, c := range sp.columnPlanSourceCols {
+		quotedSourceCols[i] = quoteIdentifierByDrive(c, advisoryDrive)
+	}
+	cols := strings.Join(quotedSourceCols, ", ")
+
+	quotedIndexCols := make([]string, len(adv.indexCols))
+	for i, c := range adv.indexCols {
+		quotedIndexCols[i] = quoteIdentifierByDrive(c, advisoryDrive)
+	}
+	pkCols := strings.Join(quotedIndexCols, ", ")
+	firstPKCol := adv.indexCols[0]
+	firstPKRef := quoteIdentifierByDrive(firstPKCol, advisoryDrive)
+
+	// 表映射场景下目标表名可能与源表名不同
+	destTableName := adv.destTable
+	if destTableName == "" {
+		destTableName = adv.table
+	}
+	destSchemaName := adv.destSchema
+	if destSchemaName == "" {
+		destSchemaName = adv.schema
+	}
+	sourceRef := qualifiedTableByDrive(adv.schema, adv.table, advisoryDrive)
+	targetRef := qualifiedTableByDrive(destSchemaName, destTableName, advisoryDrive)
+
+	var sb strings.Builder
+	sb.WriteString("-- ===========================================================================\n")
+	sb.WriteString("-- [MANUAL ACTION REQUIRED] gt-checksum columns-mode advisory\n")
+	sb.WriteString("-- ===========================================================================\n")
+	sb.WriteString("--\n")
+	sb.WriteString(fmt.Sprintf("-- Source table       : %s\n", sourceRef))
+	sb.WriteString(fmt.Sprintf("-- Target table       : %s\n", targetRef))
+	sb.WriteString(fmt.Sprintf("-- Columns checked    : %s\n", cols))
+	sb.WriteString(fmt.Sprintf("-- Primary/unique key : %s\n", pkCols))
+	sb.WriteString("--\n")
+
+	if sourceOnlyCount > 0 {
+		sb.WriteString(fmt.Sprintf("-- Source-only rows (exist in source, absent in target) : %d\n", sourceOnlyCount))
+		sb.WriteString("--   In columns mode, INSERT statements are NOT auto-generated because\n")
+		sb.WriteString("--   only partial columns were compared and the full row content is unknown.\n")
+		sb.WriteString("--   Query to locate these rows:\n")
+		sb.WriteString(fmt.Sprintf("--     SELECT src.* FROM %s src\n", sourceRef))
+		sb.WriteString(fmt.Sprintf("--     LEFT JOIN %s dst USING (%s)\n", targetRef, pkCols))
+		sb.WriteString(fmt.Sprintf("--     WHERE dst.%s IS NULL;\n", firstPKRef))
+		sb.WriteString("--\n")
+	}
+
+	if targetOnlyCount > 0 {
+		sb.WriteString(fmt.Sprintf("-- Target-only rows (exist in target, absent in source) : %d\n", targetOnlyCount))
+		sb.WriteString("--   extraRowsSyncToSource=OFF, DELETE statements are NOT auto-generated.\n")
+		sb.WriteString("--   Set extraRowsSyncToSource=ON to auto-generate DELETE fix SQL, or\n")
+		sb.WriteString("--   manually review and delete these rows if appropriate.\n")
+		sb.WriteString("--   Query to locate these rows:\n")
+		sb.WriteString(fmt.Sprintf("--     SELECT dst.* FROM %s dst\n", targetRef))
+		sb.WriteString(fmt.Sprintf("--     LEFT JOIN %s src USING (%s)\n", sourceRef, pkCols))
+		sb.WriteString(fmt.Sprintf("--     WHERE src.%s IS NULL;\n", firstPKRef))
+		sb.WriteString("--\n")
+	}
+
+	sb.WriteString("-- RECOMMENDATION:\n")
+	sb.WriteString("--   Review the rows above, then manually INSERT / DELETE as needed.\n")
+	sb.WriteString("--   After remediation, re-run gt-checksum to verify consistency.\n")
+	sb.WriteString("--\n")
+	sb.WriteString("-- ===========================================================================\n")
+
+	if _, err := f.WriteString(sb.String()); err != nil {
+		global.Wlog.Error(fmt.Sprintf("(%d) [columns-advisory] Failed to write advisory file %q: %v", logThreadSeq, filePath, err))
+		return
+	}
+	global.Wlog.Info(fmt.Sprintf("(%d) [columns-advisory] Written advisory file: %s (source-only=%d, target-only=%d)",
+		logThreadSeq, filePath, sourceOnlyCount, targetOnlyCount))
 }
 
 type sqlRollingWriter struct {
@@ -2320,12 +2633,17 @@ func (w *sqlRollingWriter) write(sqls []string) error {
 
 func (sp *SchedulePlan) newSQLRollingWriter(sqlType string, maxStmtPerFile int, maxFileSizeBytes int64, logThreadSeq int64) *sqlRollingWriter {
 	pathFunc := func(fileSeq int) (string, bool) {
+		fixSchema := sp.destSchema
+		if fixSchema == "" {
+			fixSchema = sp.schema
+		}
+		fixTable := sp.getDestTableName()
 		if sqlType == "DELETE" {
 			return fmt.Sprintf("%s/table.%s.%s-DELETE-%d.sql",
-				sp.datafixSql, fixFileNameEncode(sp.schema), fixFileNameEncode(sp.table), fileSeq), false
+				sp.datafixSql, fixFileNameEncode(fixSchema), fixFileNameEncode(fixTable), fileSeq), false
 		}
 		return fmt.Sprintf("%s/table.%s.%s-%d.sql",
-			sp.datafixSql, fixFileNameEncode(sp.schema), fixFileNameEncode(sp.table), fileSeq), false
+			sp.datafixSql, fixFileNameEncode(fixSchema), fixFileNameEncode(fixTable), fileSeq), false
 	}
 	return &sqlRollingWriter{
 		datafixType: sp.datafixType,
@@ -2558,12 +2876,8 @@ func (sp SchedulePlan) doIndexDataCheck() {
 
 	// 设置Pod结构体，包括映射关系信息
 	mappingInfo := ""
-	if sp.sourceSchema != sp.destSchema && sp.table != destTable {
-		mappingInfo = fmt.Sprintf("Schema: %s:%s, Table: %s:%s", sp.sourceSchema, sp.destSchema, sp.table, destTable)
-	} else if sp.sourceSchema != sp.destSchema {
-		mappingInfo = fmt.Sprintf("Schema: %s:%s", sp.sourceSchema, sp.destSchema)
-	} else if sp.table != destTable {
-		mappingInfo = fmt.Sprintf("Table: %s:%s", sp.table, destTable)
+	if sp.sourceSchema != sp.destSchema || sp.table != destTable {
+		mappingInfo = fmt.Sprintf("Schema: %s.%s:%s.%s", sp.sourceSchema, sp.table, sp.destSchema, destTable)
 	}
 
 	sp.pods = &Pod{
@@ -2574,6 +2888,7 @@ func (sp SchedulePlan) doIndexDataCheck() {
 		DIFFS:       "no",
 		Datafix:     sp.datafixType,
 		MappingInfo: mappingInfo,
+		ColumnsInfo: sp.buildColumnsInfo(),
 	}
 
 	// 关键检查：验证索引列在目标端是否存在
@@ -2664,6 +2979,17 @@ func (sp SchedulePlan) doIndexDataCheck() {
 		}
 	}
 
+	// columns 模式：初始化 source-only advisory 收集器
+	if len(sp.columnPlanSourceCols) > 0 {
+		sp.sourceOnlyAdvisory = &columnsModeSourceOnlyAdvisory{
+			schema:     sp.sourceSchema,
+			table:      sp.table,
+			destSchema: sp.destSchema,
+			destTable:  sp.getDestTableName(),
+			indexCols:  append([]string(nil), sp.columnName...),
+		}
+	}
+
 	// 创建独立的channel用于源端和目标端查询SQL
 	sourceSelectSql := make(chanMap, queueDepth)
 	destSelectSql := make(chanMap, queueDepth)
@@ -2696,6 +3022,7 @@ func (sp *SchedulePlan) queryTableSqlSeparate(sqlWhere chanString, sourceSelectS
 			TableColumn:             cc1.SColumnInfo,
 			Sqlwhere:                sourceWhere,
 			ColData:                 cc1.SColumnInfo,
+			CompareColumns:          sp.columnPlanSourceCols, // nil = 全列模式
 		}
 		sdb := sp.sdbPool.Get(logThreadSeq)
 		sourceSql, err := idxc.TableIndexColumn().GeneratingQuerySql(sdb, logThreadSeq)
@@ -2717,6 +3044,7 @@ func (sp *SchedulePlan) queryTableSqlSeparate(sqlWhere chanString, sourceSelectS
 			TableColumn:             cc1.DColumnInfo,
 			Sqlwhere:                destWhere,
 			ColData:                 cc1.DColumnInfo,
+			CompareColumns:          sp.columnPlanTargetCols, // nil = 全列模式
 		}
 		ddb := sp.ddbPool.Get(logThreadSeq)
 		destSqlStr, err := idxcDest.TableIndexColumn().GeneratingQuerySql(ddb, logThreadSeq)
@@ -2855,7 +3183,7 @@ func (sp *SchedulePlan) queryTableDataSeparate(sourceSelectSql chanMap, destSele
 					diffQueryData <- DifferencesDataStruct{
 						Schema:          sp.schema,
 						Table:           sp.table,
-						SqlWhere:        map[string]string{sp.sdrive: sourceSql[sp.sdrive], sp.ddrive: destSql[sp.ddrive]},
+						SqlWhere:        map[string]string{"src": sourceSql[sp.sdrive], "dst": destSql[sp.ddrive]},
 						TableColumnInfo: cc1,
 					}
 					return
@@ -2870,7 +3198,7 @@ func (sp *SchedulePlan) queryTableDataSeparate(sourceSelectSql chanMap, destSele
 					diffQueryData <- DifferencesDataStruct{
 						Schema:          sp.schema,
 						Table:           sp.table,
-						SqlWhere:        map[string]string{sp.sdrive: sourceSql[sp.sdrive], sp.ddrive: destSql[sp.ddrive]},
+						SqlWhere:        map[string]string{"src": sourceSql[sp.sdrive], "dst": destSql[sp.ddrive]},
 						TableColumnInfo: cc1,
 					}
 					return
@@ -2881,7 +3209,7 @@ func (sp *SchedulePlan) queryTableDataSeparate(sourceSelectSql chanMap, destSele
 					differencesData := DifferencesDataStruct{
 						Schema:          sp.schema,
 						Table:           sp.table,
-						SqlWhere:        map[string]string{sp.sdrive: sourceSql[sp.sdrive], sp.ddrive: destSql[sp.ddrive]},
+						SqlWhere:        map[string]string{"src": sourceSql[sp.sdrive], "dst": destSql[sp.ddrive]},
 						TableColumnInfo: cc1,
 					}
 					diffQueryData <- differencesData
@@ -3602,4 +3930,98 @@ func (sp *SchedulePlan) isFloatingIndexColumn(columnName string) bool {
 		}
 	}
 	return false
+}
+
+// columnsModeFilteredCols returns a column info slice for columns-mode SELECT queries,
+// keeping only PK columns (pkCols) and user-selected compare columns (compareCols),
+// in the original table column order from allCols.
+// columnsModeFilteredCols builds a column-info slice for columns mode.
+// Output order: PK columns first (in pkCols order), then compare columns in compareCols order.
+// This mirrors the SELECT column order produced by GeneratingQuerySql so that row-string
+// positions are aligned between source and target (Pairs semantics).
+func columnsModeFilteredCols(allCols []map[string]string, compareCols []string, pkCols []string) []map[string]string {
+	// Case-insensitive lookup to match MySQL/MariaDB column name semantics.
+	// TrimSpace is applied in addition to ToLower so that metadata with incidental
+	// surrounding whitespace (rare but possible) is handled consistently with
+	// normalizeColumnLookupKey in my_query_table_data.go.
+	colByName := make(map[string]map[string]string, len(allCols))
+	for _, col := range allCols {
+		if name, ok := col["columnName"]; ok {
+			colByName[strings.ToLower(strings.TrimSpace(name))] = col
+		}
+	}
+	pkSet := make(map[string]bool, len(pkCols))
+	for _, c := range pkCols {
+		pkSet[strings.ToLower(strings.TrimSpace(c))] = true
+	}
+	// PK columns first, in pkCols order
+	var result []map[string]string
+	for _, pkCol := range pkCols {
+		if c, ok := colByName[strings.ToLower(strings.TrimSpace(pkCol))]; ok {
+			result = append(result, c)
+		}
+	}
+	// Compare columns in compareCols order (skip any that are also PK)
+	for _, cmpCol := range compareCols {
+		if pkSet[strings.ToLower(strings.TrimSpace(cmpCol))] {
+			continue
+		}
+		if c, ok := colByName[strings.ToLower(strings.TrimSpace(cmpCol))]; ok {
+			result = append(result, c)
+		}
+	}
+	return result
+}
+
+// columnsModeSplitPKAndCompare aligns PK detection with the rest of the columns-mode
+// pipeline by treating column names case-insensitively (ToLower + TrimSpace, consistent
+// with normalizeColumnLookupKey in my_query_table_data.go).
+//
+// compareColNames preserves the original case of col["columnName"] from filteredCols;
+// callers (FixUpdateSqlExec, orderColumnsForCompare) perform their own ToLower lookup,
+// so the original case is safe to retain here.
+func columnsModeSplitPKAndCompare(filteredCols []map[string]string, pkCols []string) ([]int, []string) {
+	pkSet := make(map[string]struct{}, len(pkCols))
+	for _, c := range pkCols {
+		pkSet[strings.ToLower(strings.TrimSpace(c))] = struct{}{}
+	}
+
+	pkPositions := make([]int, 0, len(pkCols))
+	compareColNames := make([]string, 0, len(filteredCols))
+	for i, col := range filteredCols {
+		name := strings.ToLower(strings.TrimSpace(col["columnName"]))
+		if _, ok := pkSet[name]; ok {
+			pkPositions = append(pkPositions, i)
+			continue
+		}
+		compareColNames = append(compareColNames, col["columnName"])
+	}
+	return pkPositions, compareColNames
+}
+
+// pkKeyMissingMarker 是 columnsModeExtractPKKey 在 pos 越界时使用的哨兵值。
+// \x01 (SOH) 不会出现在正常 MySQL 文本数据中，可与合法空字符串 PK 值严格区分。
+const pkKeyMissingMarker = "\x01<MISSING>\x01"
+
+// columnsModeExtractPKKey extracts a composite PK key string from a row data string.
+// pkPositions are the 0-based column positions of PK columns within the filtered column list.
+// Values are joined with a NUL byte to avoid collisions with normal data.
+//
+// Out-of-bounds positions are represented with pkKeyMissingMarker (not empty string) so
+// a legitimately-empty-string PK value and a missing PK component produce different keys.
+// A WARN log is emitted when out-of-bounds occurs, because it means the row data is corrupted.
+func columnsModeExtractPKKey(rowData string, pkPositions []int) string {
+	parts := strings.Split(rowData, "/*go actions columnData*/")
+	vals := make([]string, len(pkPositions))
+	for i, pos := range pkPositions {
+		if pos < len(parts) {
+			vals[i] = parts[pos]
+		} else {
+			vals[i] = pkKeyMissingMarker
+			if global.Wlog != nil {
+				global.Wlog.Warnf("columnsModeExtractPKKey: pos %d out of bounds (parts=%d), row data may be corrupted", pos, len(parts))
+			}
+		}
+	}
+	return strings.Join(vals, "\x00")
 }

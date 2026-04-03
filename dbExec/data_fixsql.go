@@ -27,6 +27,10 @@ type DataAbnormalFixStruct struct {
 type DataAbnormalFixInterface interface {
 	FixInsertSqlExec(db *sql.DB, sourceDrive string, logThreadSeq int64) (string, error)
 	FixDeleteSqlExec(db *sql.DB, sourceDrive string, logThreadSeq int64) (string, error)
+	// FixUpdateSqlExec generates UPDATE SET <compareColNames> WHERE <pk> for columns-mode two-sided rows.
+	// srcRowData is the source-side row data string; ColData on the receiver must match the filtered column list.
+	// srcToDstCol maps source column names to destination column names for the SET clause; nil or empty means names are identical.
+	FixUpdateSqlExec(db *sql.DB, srcRowData string, compareColNames []string, srcToDstCol map[string]string, logThreadSeq int64) (string, error)
 	FixAlterIndexSqlExec(e, f []string, si map[string][]string, sourceDrive string, logThreadSeq int64) []string
 	FixAlterColumnSqlDispos(alterType string, columnDataType []string, columnSeq int, lastColumn, curryColumn string, logThreadSeq int64) string
 	FixAlterColumnSqlGenerate(modifyColumn []string, logThreadSeq int64) []string
@@ -54,6 +58,10 @@ func (u *unsupportedDataAbnormalFix) FixInsertSqlExec(db *sql.DB, sourceDrive st
 
 func (u *unsupportedDataAbnormalFix) FixDeleteSqlExec(db *sql.DB, sourceDrive string, logThreadSeq int64) (string, error) {
 	return "", u.unsupportedErr("FixDeleteSqlExec")
+}
+
+func (u *unsupportedDataAbnormalFix) FixUpdateSqlExec(db *sql.DB, srcRowData string, compareColNames []string, srcToDstCol map[string]string, logThreadSeq int64) (string, error) {
+	return "", u.unsupportedErr("FixUpdateSqlExec")
 }
 
 func (u *unsupportedDataAbnormalFix) FixAlterIndexSqlExec(e, f []string, si map[string][]string, sourceDrive string, logThreadSeq int64) []string {

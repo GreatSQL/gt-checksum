@@ -136,7 +136,7 @@ func (sp *SchedulePlan) NoIndexTableCount(logThreadSeq int64) int64 {
 	sp.sdbPool.Put(sdb, int64(logThreadSeq))
 
 	ddb := sp.ddbPool.Get(int64(logThreadSeq))
-	idxcDest := dbExec.IndexColumnStruct{Drivce: sp.ddrive, Schema: sp.destSchema, Table: sp.table, ColumnName: columnNames, ChanrowCount: sp.chanrowCount, CaseSensitiveObjectName: sp.caseSensitiveObjectName}
+	idxcDest := dbExec.IndexColumnStruct{Drivce: sp.ddrive, Schema: sp.destSchema, Table: sp.getDestTableName(), ColumnName: columnNames, ChanrowCount: sp.chanrowCount, CaseSensitiveObjectName: sp.caseSensitiveObjectName}
 
 	B, err = idxcDest.TableIndexColumn().TableRows(ddb, int64(logThreadSeq))
 	if err != nil {
@@ -166,11 +166,12 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 		displayTableName := sp.getDisplayTableName()
 		vlog = fmt.Sprintf("(%d) Generating DELETE/INSERT statements for table %s", logThreadSeq, displayTableName)
 		global.Wlog.Debug(vlog)
-		// 使用目标端schema获取表列信息，支持表映射
-		colDataKey := fmt.Sprintf("%s_gtchecksum_%s", sp.destSchema, sp.table)
+		// 使用目标端schema获取表列信息，支持表映射（使用目标端表名，兼容表名映射场景）
+		destTableName := sp.getDestTableName()
+		colDataKey := fmt.Sprintf("%s_gtchecksum_%s", sp.destSchema, destTableName)
 		colData, exists := sp.tableAllCol[colDataKey]
 		if !exists {
-			vlog = fmt.Sprintf("(%d) Error: No column data found for table %s.%s with key %s", logThreadSeq, sp.destSchema, sp.table, colDataKey)
+			vlog = fmt.Sprintf("(%d) Error: No column data found for table %s.%s with key %s", logThreadSeq, sp.destSchema, destTableName, colDataKey)
 			global.Wlog.Error(vlog)
 			close(sqlStrExec)
 			return
@@ -219,9 +220,9 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 		}
 
 		dbf := dbExec.DataAbnormalFixStruct{
-			Schema:                  sp.destSchema,   // 使用目标schema而不是原始schema
-			SourceSchema:            sp.sourceSchema, // 添加源schema用于处理映射关系
-			Table:                   sp.table,
+			Schema:                  sp.destSchema,        // 使用目标schema而不是原始schema
+			SourceSchema:            sp.sourceSchema,     // 添加源schema用于处理映射关系
+			Table:                   sp.getDestTableName(), // 使用目标端表名
 			ColData:                 colData.DColumnInfo,
 			DestDevice:              sp.ddrive,
 			CaseSensitiveObjectName: sp.caseSensitiveObjectName,
@@ -383,8 +384,12 @@ func (sp *SchedulePlan) FixSqlExec(sqlStrExec <-chan string, logThreadSeq int64)
 		// concurrent goroutines cannot interleave preamble/BEGIN/COMMIT blocks.
 		fileMu sync.Mutex
 	)
+	noIdxFixSchema := sp.destSchema
+	if noIdxFixSchema == "" {
+		noIdxFixSchema = sp.schema
+	}
 	tableFileName := fmt.Sprintf("%s/table.%s.%s.sql",
-		sp.datafixSql, fixFileNameEncode(sp.schema), fixFileNameEncode(sp.table))
+		sp.datafixSql, fixFileNameEncode(noIdxFixSchema), fixFileNameEncode(sp.getDestTableName()))
 	writeToFile := func(sqls []string) error {
 		fileMu.Lock()
 		defer fileMu.Unlock()
@@ -404,9 +409,10 @@ func (sp *SchedulePlan) FixSqlExec(sqlStrExec <-chan string, logThreadSeq int64)
 	displayTableName := sp.getDisplayTableName()
 	vlog = fmt.Sprintf("(%d) Start to generate delete and insert sql statements for table %s.", logThreadSeq, displayTableName)
 	global.Wlog.Debug(vlog)
-	// 使用目标端schema获取表列信息，支持表映射
-	colData := sp.tableAllCol[fmt.Sprintf("%s_gtchecksum_%s", sp.destSchema, sp.table)]
-	dbf := dbExec.DataAbnormalFixStruct{Schema: sp.destSchema, Table: sp.table, ColData: colData.DColumnInfo, SourceDevice: sp.ddrive, CaseSensitiveObjectName: sp.caseSensitiveObjectName}
+	// 使用目标端schema获取表列信息，支持表映射（使用目标端表名，兼容表名映射场景）
+	destTableName := sp.getDestTableName()
+	colData := sp.tableAllCol[fmt.Sprintf("%s_gtchecksum_%s", sp.destSchema, destTableName)]
+	dbf := dbExec.DataAbnormalFixStruct{Schema: sp.destSchema, Table: destTableName, ColData: colData.DColumnInfo, SourceDevice: sp.ddrive, CaseSensitiveObjectName: sp.caseSensitiveObjectName}
 	dbf.IndexColumnType = "mul"
 	for {
 		select {
@@ -476,8 +482,9 @@ func (sp *SchedulePlan) QueryTableData(beginSeq uint64, chunkSeq uint64, chanrow
 	global.Wlog.Debug(vlog)
 	// 获取源端表列信息
 	sourceTableCol := sp.tableAllCol[fmt.Sprintf("%s_gtchecksum_%s", sp.sourceSchema, sp.table)]
-	// 获取目标端表列信息
-	destTableCol := sp.tableAllCol[fmt.Sprintf("%s_gtchecksum_%s", sp.destSchema, sp.table)]
+	// 获取目标端表列信息（使用目标端表名，兼容表名映射场景）
+	noIdxDestTable := sp.getDestTableName()
+	destTableCol := sp.tableAllCol[fmt.Sprintf("%s_gtchecksum_%s", sp.destSchema, noIdxDestTable)]
 	idxc := dbExec.IndexColumnStruct{Drivce: sp.sdrive, Schema: sp.sourceSchema, Table: sp.table, TableColumn: sourceTableCol.SColumnInfo, ChanrowCount: chanrowCount, CaseSensitiveObjectName: sp.caseSensitiveObjectName}
 	//allColumns := idxc.TableIndexColumn().NoIndexOrderBySingerColumn(noIndexOrderCol.SColumnInfo)
 	sdb := sp.sdbPool.Get(logThreadSeq)
@@ -486,7 +493,7 @@ func (sp *SchedulePlan) QueryTableData(beginSeq uint64, chunkSeq uint64, chanrow
 	if err != nil {
 		return "", "", err
 	}
-	idxcDest := dbExec.IndexColumnStruct{Drivce: sp.ddrive, Schema: sp.destSchema, Table: sp.table, TableColumn: destTableCol.DColumnInfo, ChanrowCount: chanrowCount, CaseSensitiveObjectName: sp.caseSensitiveObjectName}
+	idxcDest := dbExec.IndexColumnStruct{Drivce: sp.ddrive, Schema: sp.destSchema, Table: noIdxDestTable, TableColumn: destTableCol.DColumnInfo, ChanrowCount: chanrowCount, CaseSensitiveObjectName: sp.caseSensitiveObjectName}
 	ddb := sp.ddbPool.Get(logThreadSeq)
 	dtt, err = idxcDest.TableIndexColumn().NoIndexGeneratingQueryCriteria(ddb, beginSeq, chanrowCount, logThreadSeq)
 	if err != nil {
@@ -594,11 +601,22 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 	vlog = fmt.Sprintf("(%d) Verifying data for table without index %s", logThreadSeq, displayTableName)
 	global.Wlog.Info(vlog)
 	barTableRow := sp.NoIndexTableCount(logThreadSeq)
+	noIdxDestTable := sp.getDestTableName()
+	noIdxMappingInfo := ""
+	if sp.sourceSchema != sp.destSchema || sp.table != noIdxDestTable {
+		noIdxDestSchema := sp.destSchema
+		if noIdxDestSchema == "" {
+			noIdxDestSchema = sp.schema
+		}
+		noIdxMappingInfo = fmt.Sprintf("Schema: %s.%s:%s.%s", sp.schema, sp.table, noIdxDestSchema, noIdxDestTable)
+	}
 	pods := Pod{Schema: sp.schema, Table: sp.table,
 		IndexColumn: "NULL",
 		CheckObject: sp.checkObject,
 		DIFFS:       "no",
 		Datafix:     sp.datafixType,
+		MappingInfo: noIdxMappingInfo,
+		ColumnsInfo: sp.buildColumnsInfo(),
 	}
 	sp.bar.NewOption(0, barTableRow, "rows")
 	//Count the total number of rows in the table
