@@ -30,6 +30,7 @@ type ResultRecord struct {
 
 	Mapping string
 	Definer string
+	Columns string
 }
 
 // BuildResultRecords converts the global measuredDataPods slice into a normalized
@@ -100,6 +101,7 @@ func normalizePodToRecord(m *inputArg.ConfigParameter, pod Pod, checkTime string
 		Datafix:     pod.Datafix,
 		Mapping:     resolveMappingForRecord(schema, objectName, pod),
 		Definer:     pod.Definer,
+		Columns:     pod.ColumnsInfo,
 	}
 }
 

@@ -32,6 +32,10 @@ type Pod struct {
 	// When empty, resolveObjectIdentity() falls back to the existing
 	// CheckObject-based derivation — preserving all pre-Phase-1 behaviour.
 	ObjectKind string
+	// ColumnsInfo is non-empty when the run is in partial-columns mode.
+	// SimpleMode:  "srcSchema.srcTable.col1,srcSchema.srcTable.col2,…"
+	// MappingMode: "srcSchema.srcTable.srcCol:dstSchema.dstTable.dstCol,…"
+	ColumnsInfo string
 }
 
 func isStructOutputPod(pod Pod) bool {
@@ -772,23 +776,61 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 		}
 		fmt.Println(table)
 	case "data":
-		// 直接使用rows模式的代码，不再使用switch
-		if hasMappings {
+		// 检查是否有任意一行包含 ColumnsInfo（部分列校验模式）
+		hasColumnsInfo := false
+		for _, pod := range terminalPods {
+			if pod.ColumnsInfo != "" {
+				hasColumnsInfo = true
+				break
+			}
+		}
+
+		switch {
+		case hasMappings && hasColumnsInfo:
+			table.AddRow("Schema", "Table", "IndexColumn", "CheckObject", "Rows", "Diffs", "Datafix", "Mapping", "Columns")
+			for _, pod := range terminalPods {
+				differences := resolveEffectiveDiffs(pod)
+				mappingInfo := "-"
+				if pod.MappingInfo != "" {
+					mappingInfo = pod.MappingInfo
+				} else {
+					schemaMap := getSchemaMappings()
+					if destSchema, exists := schemaMap[pod.Schema]; exists {
+						mappingInfo = fmt.Sprintf("Schema: %s:%s", pod.Schema, destSchema)
+					}
+				}
+				columnsInfo := pod.ColumnsInfo
+				if columnsInfo == "" {
+					columnsInfo = "-"
+				}
+				table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.IndexColumn), color.YellowString(pod.CheckObject), color.BlueString(dataResultRows(pod)), color.GreenString(differences), color.YellowString(pod.Datafix), color.CyanString(mappingInfo), color.MagentaString(columnsInfo))
+			}
+		case hasMappings:
 			table.AddRow("Schema", "Table", "IndexColumn", "CheckObject", "Rows", "Diffs", "Datafix", "Mapping")
 			for _, pod := range terminalPods {
 				differences := resolveEffectiveDiffs(pod)
-
-				// 获取映射信息
 				mappingInfo := "-"
-				// 获取schema级别的映射
-				schemaMap := getSchemaMappings()
-				if destSchema, exists := schemaMap[pod.Schema]; exists {
-					mappingInfo = fmt.Sprintf("Schema: %s:%s", pod.Schema, destSchema)
+				if pod.MappingInfo != "" {
+					mappingInfo = pod.MappingInfo
+				} else {
+					schemaMap := getSchemaMappings()
+					if destSchema, exists := schemaMap[pod.Schema]; exists {
+						mappingInfo = fmt.Sprintf("Schema: %s:%s", pod.Schema, destSchema)
+					}
 				}
-
 				table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.IndexColumn), color.YellowString(pod.CheckObject), color.BlueString(dataResultRows(pod)), color.GreenString(differences), color.YellowString(pod.Datafix), color.CyanString(mappingInfo))
 			}
-		} else {
+		case hasColumnsInfo:
+			table.AddRow("Schema", "Table", "IndexColumn", "CheckObject", "Rows", "Diffs", "Datafix", "Columns")
+			for _, pod := range terminalPods {
+				differences := resolveEffectiveDiffs(pod)
+				columnsInfo := pod.ColumnsInfo
+				if columnsInfo == "" {
+					columnsInfo = "-"
+				}
+				table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.IndexColumn), color.YellowString(pod.CheckObject), color.BlueString(dataResultRows(pod)), color.GreenString(differences), color.YellowString(pod.Datafix), color.MagentaString(columnsInfo))
+			}
+		default:
 			table.AddRow("Schema", "Table", "IndexColumn", "CheckObject", "Rows", "Diffs", "Datafix")
 			for _, pod := range terminalPods {
 				differences := resolveEffectiveDiffs(pod)

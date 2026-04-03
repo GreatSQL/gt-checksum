@@ -12,8 +12,9 @@ import (
 // utf8BOM is the byte-order mark that makes Excel open UTF-8 CSV files correctly.
 var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
 
-// csvHeader returns the fixed, ordered column headers for the result CSV.
-// The order must stay stable across releases to avoid breaking downstream consumers.
+// csvHeader returns the 14-column ordered headers for the result CSV.
+// The schema is always fixed at 14 columns; "Columns" is always present (empty when not
+// in partial-columns mode) so that downstream consumers see a stable schema across runs.
 func csvHeader() []string {
 	return []string{
 		"RunID",
@@ -29,10 +30,12 @@ func csvHeader() []string {
 		"Datafix",
 		"Mapping",
 		"Definer",
+		"Columns",
 	}
 }
 
-// recordToCSVRow converts a ResultRecord into an ordered string slice matching csvHeader().
+// recordToCSVRow converts a ResultRecord into an ordered 14-element string slice
+// matching csvHeader(). The "Columns" field is always included (empty string when unused).
 func recordToCSVRow(r ResultRecord) []string {
 	return []string{
 		r.RunID,
@@ -48,6 +51,7 @@ func recordToCSVRow(r ResultRecord) []string {
 		r.Datafix,
 		r.Mapping,
 		r.Definer,
+		r.Columns,
 	}
 }
 
