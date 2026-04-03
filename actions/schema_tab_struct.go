@@ -564,6 +564,10 @@ type schemaTable struct {
 	// DatabaseNameList) to the TABLE_TYPE value ("BASE TABLE" or "VIEW").
 	// Populated once in SchemaTableFilter; absent key means "BASE TABLE".
 	objectKinds map[string]string
+
+	// columnPlan 非 nil 时表示当前运行处于部分列校验模式（columns 参数已配置）。
+	// 在 TableColumnNameCheck 中用于豁免已明确映射的列对，避免误报 DDL mismatch。
+	columnPlan *inputArg.TableColumnPlan
 }
 
 func cloneSQLStatements(sqls []string) []string {
@@ -609,6 +613,7 @@ func hasAutoIncrementColumnAttribute(columnDefinition []string) bool {
 	}
 	return false
 }
+
 
 func (stcls *schemaTable) sourceVersionInfo() global.MySQLVersionInfo {
 	if stcls != nil && strings.TrimSpace(stcls.sourceVersion.Raw) != "" {
@@ -1331,10 +1336,10 @@ func (stcls *schemaTable) buildColumnCollationRepairSQL(
 	}
 
 	if canUseTableCharsetConvertForColumnCollationDrift(sourceMeta, destMeta, sourceColumnDefinitions, candidates) {
-		collation := sourceMeta.TableCollation
-		if strings.EqualFold(strings.TrimSpace(sourceMeta.TableCollation), strings.TrimSpace(destMeta.TableCollation)) {
-			collation = ""
-		}
+		// 使用 CONVERT TO CHARACTER SET 修复列级 collation 漂移时，必须始终显式指定
+		// source collation，否则在跨版本场景（如 MySQL 5.6 → 8.0）下，目标端会使用
+		// 其自身默认 collation（utf8mb4_0900_ai_ci），而非源端期望的 collation。
+		collation := strings.TrimSpace(sourceMeta.TableCollation)
 		// MariaDB UCA 14.0.0 collation 在 MySQL 上不存在，映射为 UCA 9.0.0 等价物
 		if collation != "" {
 			if mapped, ok := schemacompat.MapMariaDBCollationToMySQL(collation); ok {
@@ -3280,6 +3285,52 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 			}
 		}
 
+		// columns 模式：在 data 预检中，把用户已明确映射的列对从 add/delColumn 中豁免，
+		// 避免因列重命名映射被误判为 DDL mismatch 而跳过数据校验。
+		// struct 检查仍保留完整差异（用户可能确实想看重命名差异）。
+		// 精确匹配当前表对，避免多表批次中误伤无关表（与 table_query_concurrency.go:239 保持一致）。
+		if stcls.columnPlan != nil && stcls.checkRules.CheckObject != "struct" &&
+			(stcls.columnPlan.SourceSchema == "" ||
+				(strings.EqualFold(stcls.columnPlan.SourceSchema, sourceSchema) &&
+					strings.EqualFold(stcls.columnPlan.SourceTable, sourceTableName) &&
+					strings.EqualFold(stcls.columnPlan.TargetSchema, destSchema) &&
+					strings.EqualFold(stcls.columnPlan.TargetTable, destTableName))) {
+			addRemoveSet := make(map[string]bool)
+			delRemoveSet := make(map[string]bool)
+			for _, pair := range stcls.columnPlan.Pairs {
+				srcUpper := strings.ToUpper(pair.SourceColumn)
+				dstUpper := strings.ToUpper(pair.TargetColumn)
+				for _, ac := range addColumn {
+					if strings.ToUpper(ac) == srcUpper {
+						addRemoveSet[ac] = true
+						break
+					}
+				}
+				for _, dc := range delColumn {
+					if strings.ToUpper(dc) == dstUpper {
+						delRemoveSet[dc] = true
+						break
+					}
+				}
+			}
+			if len(addRemoveSet) > 0 || len(delRemoveSet) > 0 {
+				filtered := addColumn[:0]
+				for _, c := range addColumn {
+					if !addRemoveSet[c] {
+						filtered = append(filtered, c)
+					}
+				}
+				addColumn = filtered
+				filtered = delColumn[:0]
+				for _, c := range delColumn {
+					if !delRemoveSet[c] {
+						filtered = append(filtered, c)
+					}
+				}
+				delColumn = filtered
+			}
+		}
+
 		// 移除对data类型的特殊处理，只处理struct类型的检查对象
 		if stcls.checkRules.CheckObject != "struct" {
 			addColumn, ignoredSourceHiddenColumns := filterIgnorableGeneratedInvisibleColumns(addColumn, sourceColumnMap)
@@ -3351,29 +3402,6 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 			continue
 		}
 
-		vlog = fmt.Sprintf("(%d) %s Columns to remove from target %s.%s: %v", logThreadSeq, event, destSchema, stcls.table, delColumn)
-		global.Wlog.Debug(vlog)
-		// 先删除缺失的
-		if len(delColumn) > 0 {
-			// 收集所有需要删除的列名
-			var colsToDelete []string
-			for _, v1 := range delColumn {
-				if hasAutoIncrementColumnAttribute(destColumnMap[v1]) {
-					droppedAutoIncrementColumn = true
-				}
-				// 使用原始大小写的列名生成SQL
-				originalColName := getDestOriginalColumnName(v1)
-				dropSql := dbf.DataAbnormalFix().FixAlterColumnSqlDispos("drop", destColumnMap[v1], 1, "", originalColName, logThreadSeq)
-				alterSlice = append(alterSlice, dropSql)
-				colsToDelete = append(colsToDelete, v1)
-			}
-			// 在循环外删除所有标记的列
-			for _, col := range colsToDelete {
-				delete(destColumnMap, col)
-			}
-		}
-		vlog = fmt.Sprintf("(%d) %s DROP SQL for %s.%s: %v", logThreadSeq, event, destSchema, stcls.table, alterSlice)
-		global.Wlog.Debug(vlog)
 		columnAdvisorySuggestions := make([]schemacompat.ConstraintRepairSuggestion, 0)
 		columnCollationRepairCandidates := make([]columnCollationRepairCandidate, 0)
 		columnRiskDifferent := false
@@ -3398,6 +3426,30 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 				destColumnDefinitions = schemacompat.ExtractColumnDefinitionsFromCreateSQL(destCreateSQL)
 			}
 		}
+
+		vlog = fmt.Sprintf("(%d) %s Columns to remove from target %s.%s: %v", logThreadSeq, event, destSchema, stcls.table, delColumn)
+		global.Wlog.Debug(vlog)
+		// 先删除缺失的
+		if len(delColumn) > 0 {
+			// 收集所有需要删除的列名
+			var colsToDelete []string
+			for _, v1 := range delColumn {
+				if hasAutoIncrementColumnAttribute(destColumnMap[v1]) {
+					droppedAutoIncrementColumn = true
+				}
+				// 使用原始大小写的列名生成SQL
+				originalColName := getDestOriginalColumnName(v1)
+				dropSql := dbf.DataAbnormalFix().FixAlterColumnSqlDispos("drop", destColumnMap[v1], 1, "", originalColName, logThreadSeq)
+				alterSlice = append(alterSlice, dropSql)
+				colsToDelete = append(colsToDelete, v1)
+			}
+			// 在循环外删除所有标记的列
+			for _, col := range colsToDelete {
+				delete(destColumnMap, col)
+			}
+		}
+		vlog = fmt.Sprintf("(%d) %s DROP SQL for %s.%s: %v", logThreadSeq, event, destSchema, stcls.table, alterSlice)
+		global.Wlog.Debug(vlog)
 		for k1, v1 := range sourceColumnSlice {
 			lastcolumn := ""
 			var alterColumnData []string
@@ -4963,7 +5015,7 @@ func (stcls *schemaTable) SchemaTableAllCol(tableList []string, logThreadSeq, lo
 		vlog = fmt.Sprintf("(%d) Processing table entry: %s", logThreadSeq, i)
 		global.Wlog.Debug(vlog)
 
-		var sourceSchema, tableName, destSchema string
+		var sourceSchema, tableName, destSchema, destTableName string
 
 		// 检查是否包含映射关系（格式为 sourceSchema.sourceTable:destSchema.destTable）
 		if strings.Contains(i, ":") {
@@ -4976,8 +5028,9 @@ func (stcls *schemaTable) SchemaTableAllCol(tableList []string, logThreadSeq, lo
 					sourceSchema = sourceParts[0]
 					tableName = sourceParts[1]
 					destSchema = destParts[0]
+					destTableName = destParts[1]
 
-					vlog = fmt.Sprintf("(%d) Parsed mapping: sourceSchema=%s, tableName=%s, destSchema=%s", logThreadSeq, sourceSchema, tableName, destSchema)
+					vlog = fmt.Sprintf("(%d) Parsed mapping: sourceSchema=%s, tableName=%s, destSchema=%s, destTableName=%s", logThreadSeq, sourceSchema, tableName, destSchema, destTableName)
 					global.Wlog.Debug(vlog)
 				} else {
 					vlog = fmt.Sprintf("(%d) Invalid table mapping format: %s", logThreadSeq, i)
@@ -4995,6 +5048,7 @@ func (stcls *schemaTable) SchemaTableAllCol(tableList []string, logThreadSeq, lo
 			if len(parts) == 2 {
 				sourceSchema = parts[0]
 				tableName = parts[1]
+				destTableName = tableName
 
 				// 根据映射规则确定目标端schema
 				destSchema = sourceSchema
@@ -5020,15 +5074,16 @@ func (stcls *schemaTable) SchemaTableAllCol(tableList []string, logThreadSeq, lo
 		}
 		vlog = fmt.Sprintf("(%d) All column information query of srcDSN {%s} table %s.%s is completed", logThreadSeq, stcls.sourceDrive, sourceSchema, tableName)
 		global.Wlog.Debug(vlog)
-		vlog = fmt.Sprintf("(%d) Start to query all column information of dstDSN {%s} table %s.%s", logThreadSeq, stcls.destDrive, destSchema, tableName)
+		vlog = fmt.Sprintf("(%d) Start to query all column information of dstDSN {%s} table %s.%s", logThreadSeq, stcls.destDrive, destSchema, destTableName)
 		global.Wlog.Debug(vlog)
 		tc.Schema = destSchema
+		tc.Table = destTableName
 		tc.Drive = stcls.destDrive
 		b, err = tc.Query().TableAllColumn(stcls.destDB, logThreadSeq2)
 		if err != nil {
 			return nil
 		}
-		vlog = fmt.Sprintf("(%d) All column information query of dstDSN {%s} table %s.%s is completed", logThreadSeq, stcls.destDrive, destSchema, tableName)
+		vlog = fmt.Sprintf("(%d) All column information query of dstDSN {%s} table %s.%s is completed", logThreadSeq, stcls.destDrive, destSchema, destTableName)
 		global.Wlog.Debug(vlog)
 		sourceColInfo := interfToString(a)
 		destColInfo := interfToString(b)
@@ -5036,15 +5091,21 @@ func (stcls *schemaTable) SchemaTableAllCol(tableList []string, logThreadSeq, lo
 			var strippedGeneratedColumns []string
 			sourceColInfo, destColInfo, strippedGeneratedColumns = normalizeDataCheckColumnInfo(sourceColInfo, destColInfo)
 			if len(strippedGeneratedColumns) > 0 {
-				vlog = fmt.Sprintf("(%d) Stripped generated invisible columns from data-check target metadata for %s.%s -> %s.%s: %v", logThreadSeq, sourceSchema, tableName, destSchema, tableName, strippedGeneratedColumns)
+				vlog = fmt.Sprintf("(%d) Stripped generated invisible columns from data-check target metadata for %s.%s -> %s.%s: %v", logThreadSeq, sourceSchema, tableName, destSchema, destTableName, strippedGeneratedColumns)
 				global.Wlog.Info(vlog)
 			}
 		}
-		tableCol[fmt.Sprintf("%s_gtchecksum_%s", destSchema, tableName)] = global.TableAllColumnInfoS{
+		entry := global.TableAllColumnInfoS{
 			SColumnInfo: sourceColInfo,
 			DColumnInfo: destColInfo,
 		}
-		vlog = fmt.Sprintf("(%d) all column information query of source table %s.%s and target table %s.%s is completed. table column message is {source: %s, dest: %s}", logThreadSeq, sourceSchema, tableName, destSchema, tableName, sourceColInfo, destColInfo)
+		srcKey := fmt.Sprintf("%s_gtchecksum_%s", sourceSchema, tableName)
+		dstKey := fmt.Sprintf("%s_gtchecksum_%s", destSchema, destTableName)
+		tableCol[srcKey] = entry
+		if dstKey != srcKey {
+			tableCol[dstKey] = entry
+		}
+		vlog = fmt.Sprintf("(%d) all column information query of source table %s.%s and target table %s.%s is completed. table column message is {source: %s, dest: %s}", logThreadSeq, sourceSchema, tableName, destSchema, destTableName, sourceColInfo, destColInfo)
 		global.Wlog.Debug(vlog)
 	}
 	vlog = fmt.Sprintf("(%d) The metadata information of the source target verification table has been obtained", logThreadSeq)
@@ -7947,6 +8008,7 @@ func SchemaTableInit(m *inputArg.ConfigParameter) *schemaTable {
 		foreignKeyDiffsMap:       make(map[string]bool),
 		structWarnOnlyDiffsMap:   make(map[string]bool),
 		structCollationMappedMap: make(map[string]bool),
+		columnPlan:               m.ColumnPlan,
 	}
 }
 
