@@ -10,6 +10,7 @@
 - [功能优化]: repairDB 主流程重构为 `run() error` 模式，统一 defer 资源释放，并通过 `io.MultiWriter` 同时输出到日志文件和标准输出。
 - [功能优化]: 元数据查询新增候选 schema 收窄策略，只扫描本轮实际涉及的 schema，减少大实例上的 `INFORMATION_SCHEMA.TABLES` 扫描开销。
 - [测试完善]: 补齐 columns 模式专项测试，覆盖参数解析、选列查询、advisory 文件输出与转义、真实链路下的 PK 精度保留、CSV/终端 Columns 列展示等关键路径。
+- [测试完善]: 新增 `scripts/regression-test-columns.sh` 端到端集成回归脚本（配套 `testcase/MySQL-columns-source.sql` / `testcase/MySQL-columns-target.sql` fixture），覆盖 TC-01～TC-08 共 8 个核心场景：非选中列差异忽略（TC-01）、选中列差异修复收敛（TC-02）、source-only advisory 输出（TC-03）、简单列名语法（TC-04）、跨表列名映射修复（TC-05）、无主键 DDL-yes 预期行为（TC-06）、target-only 行 + `extraRowsSyncToSource` DELETE 修复（TC-07）、简单语法多字段（TC-08）；附 `TC-ORA-01` Oracle stub 错误处理测例（`--enable-oracle` 启用）；支持多轮修复收敛验证、`--dry-run` 预览模式、可配置超时（`--timeout`）与产物目录（`--artifacts-dir`）。
 - [测试完善]: 新增 `repairDB_test.go` 单元测试，覆盖文件分类、阶段顺序、shuffle 行为、空阶段省略等核心调度逻辑；`scripts/regression-test.sh` 同步纳入 `repairDB` 单测执行步骤。
 - [测试完善]: 补充 VIEW advisory SQL 与 VIEW struct 专项单测，覆盖 `DROP VIEW` 移除、`SET ... = DEFAULT` 对称恢复、MariaDB `uca1400` collation 映射、跨 schema 归一化、列元数据漂移等场景。
 - [测试完善]: 新增 `EvaluateDataCheckPreflight` 回归测试，覆盖源端缺表、双端缺表、空检查列表、有效表、混合有效/异常、invisible 列不匹配等路径，防止 data 模式预检回归。

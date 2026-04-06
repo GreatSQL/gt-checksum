@@ -306,6 +306,72 @@ RunID,CheckTime,CheckObject,Schema,Table,ObjectName,ObjectType,IndexColumn,Rows,
 20260403153000,2026-04-03 15:30:01,data,testdb,orders,orders,table,id,"1000,1000",yes,file,Schema: testdb.orders:archive.orders_archive,,"testdb.orders.amount:archive.orders_archive.total_amount,testdb.orders.status:archive.orders_archive.order_status"
 ```
 
+#### columns 功能回归测试
+
+`scripts/regression-test-columns.sh` 是针对 `columns` 端到端集成回归测试脚本，配套数据 fixture 文件位于 `testcase/MySQL-columns-source.sql`（源端）和 `testcase/MySQL-columns-target.sql`（目标端）。
+
+**前置条件**
+
+- 两个可访问的 MySQL 实例（源端和目标端），建议使用独立端口隔离（如 3406 和 3408）
+- `mysql` 客户端命令行工具已在 `PATH` 中
+- 脚本默认会自动编译 `gt-checksum` 和 `repairDB` 二进制（需要 Go 环境）；若已编译可通过 `--skip-build` 跳过
+
+**基本用法**
+
+```bash
+# 最简运行（自动编译 + 初始化 + 全测例）
+bash scripts/regression-test-columns.sh \
+    --src-port=3406 --dst-port=3408
+
+# 跳过编译，直接使用已有二进制
+bash scripts/regression-test-columns.sh \
+    --src-port=3406 --dst-port=3408 --skip-build
+
+# 仅预览测例列表，不实际执行
+bash scripts/regression-test-columns.sh --dry-run
+
+# 同时启用 Oracle stub 错误处理测例（TC-ORA-01）
+bash scripts/regression-test-columns.sh \
+    --src-port=3406 --dst-port=3408 --enable-oracle
+```
+
+**常用选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--src-port=PORT` | 必填 | 源端 MySQL 实例端口 |
+| `--dst-port=PORT` | 必填 | 目标端 MySQL 实例端口 |
+| `--host=IP` | `127.0.0.1` | 数据库主机地址 |
+| `--user=USER` | `checksum` | 数据库用户名 |
+| `--pass=PASS` | `checksum` | 数据库密码 |
+| `--skip-init` | — | 跳过数据库初始化（fixture 已导入时可用） |
+| `--skip-build` | — | 跳过二进制编译 |
+| `--timeout=SEC` | `120` | 单用例超时秒数 |
+| `--artifacts-dir=PATH` | 自动生成 | 自定义产物输出目录 |
+| `--dry-run` | — | 仅打印测例列表，不执行 |
+| `--enable-oracle` | — | 启用 Oracle stub 错误处理测例（TC-ORA-01） |
+
+**测例说明**
+
+| 用例 ID | 预期结果 | 场景 |
+|---------|----------|------|
+| TC-01-cols-basic-ignore | PASS | 非选中列（`ignored_col`）差异被正确忽略 |
+| TC-02-cols-selected-diff-fix | PASS | 选中列（`amount`）差异经 repairDB 修复后收敛 |
+| TC-03-cols-source-only-advisory | PASS-ADVISORY | source-only 行生成 `columns-advisory.*.sql`（全注释，无可执行 SQL） |
+| TC-04-cols-simple-syntax | PASS | 简单列名语法（`columns=score`，无 schema.table 前缀） |
+| TC-05-cols-cross-table-mapping | PASS | 跨表列名映射（`old_orders.src_total → new_orders.dst_total`）修复后收敛 |
+| TC-06-cols-no-pk-ddl-yes | FAIL-EXPECTED | 无主键/唯一键表被标记为 `DDL-yes`（预期行为，不计失败） |
+| TC-07-cols-target-only-extra | PASS | 目标端多余行 + `extraRowsSyncToSource=ON` 生成 DELETE 修复后收敛 |
+| TC-08-cols-simple-multi-col | PASS | 简单语法多字段（`columns=score,note`）修复后收敛 |
+| TC-ORA-01-cols-oracle-stub-error | ERROR-EXPECTED | Oracle 源端 stub 错误处理（需 `--enable-oracle`） |
+
+**测试产物**
+
+脚本运行结束后，产物保存在 `test-artifacts/columns-<日期时间>/` 目录下，包含：
+- `results.csv`：所有测例的 ID、verdict、轮次、Diffs 摘要
+- `report.txt`：格式化汇总报告
+- `cases/<case_id>/`：各用例的配置文件、每轮输出、日志快照及 fixsql 文件
+
 ### `checkObject=struct` 的支持边界
 
 当前 `checkObject=struct` 的能力边界如下：
