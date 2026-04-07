@@ -14,7 +14,7 @@
 - [测试完善]: 新增 `repairDB_test.go` 单元测试，覆盖文件分类、阶段顺序、shuffle 行为、空阶段省略等核心调度逻辑；`scripts/regression-test.sh` 同步纳入 `repairDB` 单测执行步骤。
 - [测试完善]: 补充 VIEW advisory SQL 与 VIEW struct 专项单测，覆盖 `DROP VIEW` 移除、`SET ... = DEFAULT` 对称恢复、MariaDB `uca1400` collation 映射、跨 schema 归一化、列元数据漂移等场景。
 - [测试完善]: 新增 `EvaluateDataCheckPreflight` 回归测试，覆盖源端缺表、双端缺表、空检查列表、有效表、混合有效/异常、invisible 列不匹配等路径，防止 data 模式预检回归。
-- [测试完善]: 新增 `tablePatternHasUnsupportedStar` 单元测试，覆盖部分 `*` 检测、映射目标侧 `*` 检测、合法 `db.*` 通配符映射等场景；同时补充 Oracle `dbms_stats.gather_table_stats` 相关回归测例。（#I6NPC1）
+- [测试完善]: 新增 `tablePatternHasUnsupportedStar` 单元测试，覆盖部分 `*` 检测、映射目标侧 `*` 检测、合法 `db.*` 通配符映射等场景；同时补充 Oracle `dbms_stats.gather_table_stats` 相关回归测例。（issue #I6NPC1）
 - [问题修复]: 修复 `tables` / `ignoreTables` 参数误用部分通配符 `*`（如 `sbtest.t*`）时静默产生错误结果的问题；现在会在参数校验阶段直接报错，并提示改用 `%`。
 - [问题修复]: 修复表不存在时结果中的 `CheckObject` 被错误写成 `struct` 的问题；同时修复 `checkObject=struct` 模式下源端和目标端表都不存在时输出重复记录的问题。
 
@@ -34,7 +34,7 @@
 - [问题修复]: 修复 `checkObject=data` 或 `checkObject=struct` 模式下，当指定的表在源端或两端均不存在时，输出结果的 `CheckObject` 列被硬编码为 `struct` 而非用户实际配置值的问题；现在所有不存在表分支均正确输出用户配置的 `checkObject` 值。
 - [问题修复]: 修复 `checkObject=struct` 模式下，当源端和目标端表均不存在时输出重复行的问题；根因为 `TableColumnNameCheck` 已将不存在的表追加到 pod 列表，而 `Struct()` 中的去重逻辑未感知这些 pod；修复方案为在调用 `TableColumnNameCheck` 前对 pod 快照，并将新增 pod 的表键预填充到去重集合中，防止重复创建。
 - [问题修复]: 修复多类结构比较误报（`CHECK` 括号噪音、主键 canonical key 残余、映射场景目标表名错误、collation advisory 重复输出等），以及 `MySQL 5.6/5.7` 查询 `INFORMATION_SCHEMA.STATISTICS.IS_VISIBLE` 的低版本兼容问题和 `checkObject=data` DDL-yes 链路结果丢失问题。
-- [问题修复]: 修复 DSN `charset` 参数提取不完整、`MariaDB` 源端全局权限预检查误判，以及 `struct` / `routine` / `trigger` 模式连接池过大导致的 `Too many connections` 问题（#IEYE7P）。
+- [问题修复]: 修复 DSN `charset` 参数提取不完整、`MariaDB` 源端全局权限预检查误判，以及 `struct` / `routine` / `trigger` 模式连接池过大导致的 `Too many connections` 问题（issue #IEYE7P）。
 - [问题修复]: 修复 `checkObject=data` 模式下连接池大小不足导致数据校验 hang 住的问题：`data` 模式下 `queryTableDataSeparate` 与 `AbnormalDataDispos` 两条并发 pipeline 同时运行，单侧峰值连接需求约为 `parallelThds*2 + 2`；将单
 侧连接池下限从 `parallelThds + 2` 调整为 `parallelThds*2 + 4`（最低 8），覆盖两阶段并发场景。
 - [问题修复]: 修复连接池 `Get()` 持锁阻塞死锁及关闭竞态：`Get()` 原在持有 mutex 时阻塞等待 channel，导致 `Put()` 无法归还连接；同时 `Close()` 在 `Get()` 阻塞期间关闭 channel 后，`Get()` 会返回 nil 连接并错误递增计数。修复：将

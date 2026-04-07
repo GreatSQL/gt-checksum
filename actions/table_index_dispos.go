@@ -1490,10 +1490,10 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 						}
 						stt, dtt = "", ""
 
-						// 5. 记录发现的差异数量 — 使用Info级别确保输出
+						// 5. 记录发现的差异数量
 						vlog = fmt.Sprintf("CHUNK_AUDIT: source=%d dest=%d add=%d del=%d table=%s.%s where=%s",
 							len(cleanSourceData), len(cleanDestData), len(add), len(del), c1.Schema, c1.Table, sourceSqlWhere)
-						global.Wlog.Info(vlog)
+						global.Wlog.Debug(vlog)
 
 						// 添加调试信息：检查差异数量的合理性
 						expectedAddCount := len(cleanSourceData) - len(cleanDestData)
