@@ -1138,7 +1138,7 @@ result=PARTIAL_SUCCESS continue_on_error=true
 
 - `MariaDB JSON -> TEXT` 虽已具备规则改写和单测覆盖，但当前尚未纳入发布级实库基线；如需使用，建议先在测试环境中自行完成 fix SQL 回放与二次 compare 验证。
 
-- 不支持对非InnoDB引擎表的数据校验。
+- 对 MyISAM、MEMORY 等不支持 MVCC 的引擎，在源端或目标端存在并发写入时，数据校验结果的一致性无法保证（这些引擎无法提供一致性快照）；若相关表处于只读或静态状态，校验可正常执行。
 
 ## 问题反馈
 
