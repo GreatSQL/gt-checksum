@@ -287,6 +287,8 @@ CREATE TABLE indext(
     `modify_time` DATETIME DEFAULT NULL,
     `deleted` TINYINT(1) NOT NULL DEFAULT '0',
     `商品描述` VARCHAR(200) DEFAULT NULL COMMENT '商品描述',  -- 测试中文字段名
+    `price_off_08` DECIMAL(10,2) GENERATED ALWAYS AS (price * 0.8) STORED,
+    `price_off_05` DECIMAL(10,2) GENERATED ALWAYS AS (price * 0.5) VIRTUAL,
     PRIMARY KEY (`id`),
     KEY `idx 2` (`tenantry_id`,`code`),
     KEY `idx_3` (`code`,`tenantry_id`),
@@ -294,8 +296,8 @@ CREATE TABLE indext(
     KEY `idx_5` ((ABS(`price`))),  -- 测试函数索引
     KEY `中文索引` (`商品描述`)  -- 测试中文索引名
 ) ENGINE=InnoDB AUTO_INCREMENT=10 COMMENT 'table indext';
-INSERT INTO indext VALUES ('583532949','8674665223082153551','aut','animi','eum','1.99','fugit','2026-02-17 16:04:25','2025-06-20 22:10:41','1','高品质商品');
-INSERT INTO indext VALUES ('914246705','2020683354385918016','quam','aut','cumque','0.00','nihil','2025-03-20 01:01:33','2025-07-27 22:10:28','2','普通商品');
+INSERT INTO indext(`id`,`tenantry_id`,`code`,`goods_name`,`props_name`,`price`,`price_url`,`create_time`,`modify_time`,`deleted`,`商品描述`) VALUES ('583532949','8674665223082153551','aut','animi','eum','1.99','fugit','2026-02-17 16:04:25','2025-06-20 22:10:41','1','高品质商品');
+INSERT INTO indext(`id`,`tenantry_id`,`code`,`goods_name`,`props_name`,`price`,`price_url`,`create_time`,`modify_time`,`deleted`,`商品描述`) VALUES ('914246705','2020683354385918016','quam','aut','cumque','0.00','nihil','2025-03-20 01:01:33','2025-07-27 22:10:28','2','普通商品');
 
 -- 测试从Oracle=>MySQL数据同步
 CREATE TABLE t1 (

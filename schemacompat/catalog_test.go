@@ -62,6 +62,123 @@ func TestBuildTargetColumnRepairPlanMariaDBToMariaDB(t *testing.T) {
 	}
 }
 
+func TestBuildTargetColumnRepairPlanGeneratedColumn(t *testing.T) {
+	mysql80 := global.MySQLVersionInfo{Flavor: global.DatabaseFlavorMySQL, Major: 8, Minor: 0, Series: "8.0"}
+	mariaDB106 := global.MySQLVersionInfo{Flavor: global.DatabaseFlavorMariaDB, Major: 10, Minor: 6, Series: "10.6"}
+
+	tests := []struct {
+		name             string
+		colName          string
+		columnType       string // attrs[0]，来自 INFORMATION_SCHEMA（含 STORED GENERATED 后缀，无表达式）
+		createDefinition string // 来自 SHOW CREATE TABLE
+		srcInfo          global.MySQLVersionInfo
+		dstInfo          global.MySQLVersionInfo
+		wantDirect       bool   // 期望 UseDirectDefinition = true
+		wantContain      string // DirectDefinition 中必须包含
+		wantNotContain   string // DirectDefinition 中不得包含
+	}{
+		{
+			name:             "mysql-to-mysql-stored-generated-uses-direct-definition",
+			colName:          "price_off_08",
+			columnType:       "decimal(10,2) STORED GENERATED",
+			createDefinition: "decimal(10,2) GENERATED ALWAYS AS (price * 0.8) STORED COMMENT ''",
+			srcInfo:          mysql80,
+			dstInfo:          mysql80,
+			wantDirect:       true,
+			wantContain:      "GENERATED ALWAYS AS",
+			wantNotContain:   "DEFAULT NULL",
+		},
+		{
+			name:             "mysql-to-mysql-virtual-generated-uses-direct-definition",
+			colName:          "price_off_05",
+			columnType:       "decimal(10,2) VIRTUAL GENERATED",
+			createDefinition: "decimal(10,2) GENERATED ALWAYS AS (price * 0.5) VIRTUAL COMMENT ''",
+			srcInfo:          mysql80,
+			dstInfo:          mysql80,
+			wantDirect:       true,
+			wantContain:      "GENERATED ALWAYS AS",
+			wantNotContain:   "DEFAULT NULL",
+		},
+		{
+			name:             "mysql-to-mysql-stored-generated-preserves-expression",
+			colName:          "total",
+			columnType:       "int STORED GENERATED",
+			createDefinition: "int GENERATED ALWAYS AS (a + b) STORED COMMENT ''",
+			srcInfo:          mysql80,
+			dstInfo:          mysql80,
+			wantDirect:       true,
+			wantContain:      "a + b",
+		},
+		{
+			name:             "mysql-to-mysql-stored-generated-preserves-stored-keyword",
+			colName:          "price_off_08",
+			columnType:       "decimal(10,2) STORED GENERATED",
+			createDefinition: "decimal(10,2) GENERATED ALWAYS AS (price * 0.8) STORED COMMENT ''",
+			srcInfo:          mysql80,
+			dstInfo:          mysql80,
+			wantDirect:       true,
+			wantContain:      "STORED",
+		},
+		{
+			name:             "mysql-to-mysql-virtual-generated-preserves-virtual-keyword",
+			colName:          "price_off_05",
+			columnType:       "decimal(10,2) VIRTUAL GENERATED",
+			createDefinition: "decimal(10,2) GENERATED ALWAYS AS (price * 0.5) VIRTUAL COMMENT ''",
+			srcInfo:          mysql80,
+			dstInfo:          mysql80,
+			wantDirect:       true,
+			wantContain:      "VIRTUAL",
+		},
+		{
+			name:             "mariadb-to-mysql-generated-regression",
+			colName:          "calc",
+			columnType:       "int PERSISTENT GENERATED",
+			createDefinition: "int GENERATED ALWAYS AS (a + b) PERSISTENT",
+			srcInfo:          mariaDB106,
+			dstInfo:          mysql80,
+			wantDirect:       true,
+			wantContain:      "STORED",
+			wantNotContain:   "PERSISTENT",
+		},
+		{
+			name:             "mysql-to-mysql-no-generated-column-not-direct",
+			colName:          "name",
+			columnType:       "varchar(100)",
+			createDefinition: "varchar(100) NOT NULL COMMENT ''",
+			srcInfo:          mysql80,
+			dstInfo:          mysql80,
+			wantDirect:       false,
+		},
+		{
+			name:             "empty-create-definition-no-direct",
+			colName:          "price_off_08",
+			columnType:       "decimal(10,2) STORED GENERATED",
+			createDefinition: "",
+			srcInfo:          mysql80,
+			dstInfo:          mysql80,
+			wantDirect:       false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			attrs := []string{tt.columnType, "null", "null", "YES", "empty", ""}
+			plan := BuildTargetColumnRepairPlan(tt.colName, attrs, tt.srcInfo, tt.dstInfo, tt.createDefinition, "")
+			if plan.UseDirectDefinition != tt.wantDirect {
+				t.Fatalf("UseDirectDefinition = %v, want %v (DirectDefinition=%q)", plan.UseDirectDefinition, tt.wantDirect, plan.DirectDefinition)
+			}
+			if tt.wantDirect {
+				if tt.wantContain != "" && !containsStr(plan.DirectDefinition, tt.wantContain) {
+					t.Fatalf("DirectDefinition %q does not contain %q", plan.DirectDefinition, tt.wantContain)
+				}
+				if tt.wantNotContain != "" && containsStr(plan.DirectDefinition, tt.wantNotContain) {
+					t.Fatalf("DirectDefinition %q must NOT contain %q", plan.DirectDefinition, tt.wantNotContain)
+				}
+			}
+		})
+	}
+}
+
 func containsStr(s, sub string) bool {
 	return len(sub) > 0 && len(s) >= len(sub) && func() bool {
 		for i := 0; i <= len(s)-len(sub); i++ {
