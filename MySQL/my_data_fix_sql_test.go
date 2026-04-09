@@ -395,3 +395,155 @@ func TestCheckAndCleanupEmptyFixFile_KeepsActualFixSQL(t *testing.T) {
 		t.Fatalf("expected file with actual fix SQL to remain, stat err=%v", err)
 	}
 }
+
+// ---------- FixAlterIndexSqlExec（prefix index 端到端） ----------
+
+func TestFixAlterIndexSqlExec_PrefixIndex_MulIndex(t *testing.T) {
+	my := newFixStruct("mul")
+	// token 格式：colName/*seq*/N/*type*/T/*prefix*/P
+	sqls := my.FixAlterIndexSqlExec(
+		[]string{"idx_goods"},
+		nil,
+		map[string][]string{"idx_goods": {"goods_name/*seq*/1/*type*/varchar(50)/*prefix*/20"}},
+		"mysql", 1,
+	)
+	if len(sqls) != 1 {
+		t.Fatalf("expected 1 sql, got %d", len(sqls))
+	}
+	got := sqls[0]
+	// 必须含反引号列名和前缀长度
+	if !strings.Contains(got, "`goods_name`(20)") {
+		t.Errorf("prefix index DDL missing `goods_name`(20): %s", got)
+	}
+	if !strings.Contains(got, "ADD INDEX") {
+		t.Errorf("expected ADD INDEX in DDL: %s", got)
+	}
+}
+
+func TestFixAlterIndexSqlExec_PrefixIndex_MultiCol(t *testing.T) {
+	my := newFixStruct("mul")
+	sqls := my.FixAlterIndexSqlExec(
+		[]string{"idx_multi"},
+		nil,
+		map[string][]string{"idx_multi": {
+			"col_a/*seq*/1/*type*/varchar(20)/*prefix*/10",
+			"col_b/*seq*/2/*type*/int/*prefix*/0",
+		}},
+		"mysql", 1,
+	)
+	if len(sqls) != 1 {
+		t.Fatalf("expected 1 sql, got %d", len(sqls))
+	}
+	got := sqls[0]
+	if !strings.Contains(got, "`col_a`(10)") {
+		t.Errorf("multi-col: missing `col_a`(10): %s", got)
+	}
+	if !strings.Contains(got, "`col_b`") {
+		t.Errorf("multi-col: missing `col_b`: %s", got)
+	}
+	// col_b prefix=0，不应有括号
+	if strings.Contains(got, "`col_b`(") {
+		t.Errorf("multi-col: `col_b` should not have prefix length: %s", got)
+	}
+}
+
+func TestFixAlterIndexSqlExec_PrefixIndex_OldToken(t *testing.T) {
+	// 旧格式 token（无 /*prefix*/）向后兼容：prefix 视为 0，不生成括号
+	my := newFixStruct("mul")
+	sqls := my.FixAlterIndexSqlExec(
+		[]string{"idx_old"},
+		nil,
+		map[string][]string{"idx_old": {"name/*seq*/1/*type*/varchar(100)"}},
+		"mysql", 1,
+	)
+	if len(sqls) != 1 {
+		t.Fatalf("expected 1 sql, got %d", len(sqls))
+	}
+	got := sqls[0]
+	if !strings.Contains(got, "`name`") {
+		t.Errorf("old token: missing `name`: %s", got)
+	}
+	if strings.Contains(got, "`name`(") {
+		t.Errorf("old token: `name` should not have prefix length: %s", got)
+	}
+}
+
+// ---------- mysqlIndexColDDLExpr ----------
+
+func TestMysqlIndexColDDLExpr_WithPrefix(t *testing.T) {
+	token := "goods_name/*seq*/1/*type*/varchar(50)/*prefix*/20"
+	got := mysqlIndexColDDLExpr(token)
+	want := "`goods_name`(20)"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestMysqlIndexColDDLExpr_NoPrefix(t *testing.T) {
+	token := "id/*seq*/1/*type*/bigint/*prefix*/0"
+	got := mysqlIndexColDDLExpr(token)
+	want := "`id`"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestMysqlIndexColDDLExpr_OldTokenNoPrefix(t *testing.T) {
+	// 旧格式 token（无 /*prefix*/ 段），向后兼容
+	token := "name/*seq*/1/*type*/varchar(100)"
+	got := mysqlIndexColDDLExpr(token)
+	want := "`name`"
+	if got != want {
+		t.Errorf("old token: got %q, want %q", got, want)
+	}
+}
+
+func TestMysqlIndexColDDLExpr_SpecialCharsInColName(t *testing.T) {
+	token := "col`name/*seq*/1/*type*/varchar(50)/*prefix*/10"
+	got := mysqlIndexColDDLExpr(token)
+	want := "`col``name`(10)"
+	if got != want {
+		t.Errorf("special chars: got %q, want %q", got, want)
+	}
+}
+
+// ---------- FixAlterIndexSqlExec DROP 顺序在 ADD 之前 ----------
+
+// TestFixAlterIndexSqlExec_DropBeforeAdd 验证同时有 ADD 和 DROP 时，DROP 操作在 ADD 之前生成，
+// 确保合并后的 ALTER TABLE 语句中先删后建，避免同名索引冲突。
+func TestFixAlterIndexSqlExec_DropBeforeAdd(t *testing.T) {
+	my := &MysqlDataAbnormalFixStruct{Schema: "gt_checksum", Table: "indext", IndexType: "mul"}
+	// e: 需要 ADD 的索引（源端有，目标端没有）
+	// f: 需要 DROP 的索引（目标端有，源端没有）
+	e := []string{"idx 2", "idx_3"}
+	f := []string{"idx_2", "idx 3"}
+	si := map[string][]string{
+		"idx 2": {"tenantry_id/*seq*/1/*type*/bigint/*prefix*/0", "code/*seq*/2/*type*/varchar(64)/*prefix*/0"},
+		"idx_3": {"code/*seq*/1/*type*/varchar(64)/*prefix*/0", "tenantry_id/*seq*/2/*type*/bigint/*prefix*/0"},
+	}
+	sqls := my.FixAlterIndexSqlExec(e, f, si, "mysql", 1)
+	// 期望：先 DROP，再 ADD
+	if len(sqls) < 4 {
+		t.Fatalf("expected at least 4 statements, got %d: %v", len(sqls), sqls)
+	}
+	firstDrop := -1
+	firstAdd := -1
+	for i, s := range sqls {
+		upper := strings.ToUpper(s)
+		if firstDrop == -1 && strings.Contains(upper, "DROP INDEX") {
+			firstDrop = i
+		}
+		if firstAdd == -1 && strings.Contains(upper, "ADD INDEX") {
+			firstAdd = i
+		}
+	}
+	if firstDrop == -1 {
+		t.Fatal("no DROP INDEX found")
+	}
+	if firstAdd == -1 {
+		t.Fatal("no ADD INDEX found")
+	}
+	if firstDrop > firstAdd {
+		t.Errorf("DROP INDEX should come before ADD INDEX, but DROP at pos %d, ADD at pos %d\nsqls: %v", firstDrop, firstAdd, sqls)
+	}
+}

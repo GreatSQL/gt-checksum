@@ -290,7 +290,7 @@ CREATE TABLE indext(
     PRIMARY KEY (`id`),
     KEY `idx 2` (`tenantry_id`,`code`),
     KEY `idx_3` (`code`,`tenantry_id`),
-    KEY `idx_4` (goods_name),
+    KEY `idx_4` (goods_name(20)),  -- 测试前缀索引/部分索引
     KEY `中文索引` (`商品描述`)  -- 测试中文索引名
 ) ENGINE=InnoDB AUTO_INCREMENT=10 COMMENT 'table indext';
 INSERT INTO indext VALUES ('583532949','8674665223082153551','aut','animi','eum','1.99','fugit','2026-02-17 16:04:25','2025-06-20 22:10:41','1','高品质商品');
