@@ -1,5 +1,7 @@
 ## 1.4.0
 - [功能新增]: 支持前缀索引、函数索引的检测与修复。
+- [功能新增] 支持MySQL→MySQL 场景下的生成列（STORED/VIRTUAL GENERATED）的检测与修复。
+- [测试完善]: 新增 `TestBuildTargetColumnRepairPlanGeneratedColumn` 单元测试 8 个，覆盖 MySQL→MySQL STORED/VIRTUAL 列表达式完整性、关键字保留、MariaDB→MySQL PERSISTENT→STORED 转换、空 createDefinition 及非生成列安全性等场景；同步在 `testcase/MySQL-source.sql` 的 `indext` 表新增 `price_off_08`/`price_off_05` 生成列字段，补全回归测例。
 - [测试完善]: 新增前缀索引专项单元测试 11 个，覆盖全列/前缀差异、长度不同、多列复合等场景。
 - [问题修复]: 修复同名索引内容不同时漏检的问题；原来只在索引名称集合有差异时才对比同名索引的具体内容，现在无论名称集合是否一致都会进行内容比对，确保不遗漏。
 
