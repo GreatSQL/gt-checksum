@@ -19,6 +19,7 @@ var tableColumnSetGlobalCache = make(map[string]map[string]struct{})
 var dbScopeKeyGlobalCache = make(map[*sql.DB]string)
 var dbScopeKeySeq uint64
 var statisticsIndexVisibilityCache = make(map[string]bool)
+var statisticsExpressionCache = make(map[string]bool)
 
 // 在首层分组场景下，使用 `GROUP BY col, count=1` 的轻量模式阈值。
 // 当表行数/首列基数较低（重复度低）时，该模式通常明显快于 COUNT(*) 聚合。
@@ -48,17 +49,58 @@ func scopedColumnCacheKey(db *sql.DB, schema, table, column string) string {
 	return fmt.Sprintf("%s.%s.%s.%s", getDBScopeKey(db), schema, table, column)
 }
 
-func buildMySQLIndexStatisticsQuery(schema, table string, includeVisibility bool) string {
+// buildMySQLIndexStatisticsQuery 构建索引统计查询语句。
+// 以 STATISTICS 为驱动表，LEFT JOIN COLUMNS，确保函数索引（COLUMN_NAME=NULL）不被 INNER JOIN 丢弃。
+// includeVisibility：是否查询 IS_VISIBLE 列（MySQL 8.0+）。
+// includeExpression：是否查询 EXPRESSION 列（MySQL 8.0.13+ 函数索引）。
+func buildMySQLIndexStatisticsQuery(schema, table string, includeVisibility, includeExpression bool) string {
+	var visibilitySel, expressionSel string
 	if includeVisibility {
-		return fmt.Sprintf(
-			"SELECT isc.COLUMN_NAME AS columnName, isc.COLUMN_TYPE AS columnType, isc.COLUMN_KEY AS columnKey, isc.EXTRA AS autoIncrement, iss.NON_UNIQUE AS nonUnique, iss.INDEX_NAME AS indexName, iss.SEQ_IN_INDEX AS IndexSeq, isc.ORDINAL_POSITION AS columnSeq, iss.IS_VISIBLE AS indexVisibility, iss.SUB_PART AS subPart FROM INFORMATION_SCHEMA.COLUMNS isc INNER JOIN (SELECT NON_UNIQUE, INDEX_NAME, SEQ_IN_INDEX, COLUMN_NAME, SUB_PART, IS_VISIBLE FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s') AS iss ON isc.COLUMN_NAME=iss.COLUMN_NAME WHERE isc.TABLE_SCHEMA='%s' AND isc.TABLE_NAME='%s';",
-			schema, table, schema, table,
-		)
+		visibilitySel = "iss.IS_VISIBLE"
+	} else {
+		visibilitySel = "'VISIBLE'"
+	}
+	if includeExpression {
+		expressionSel = ", iss.EXPRESSION AS expression"
 	}
 	return fmt.Sprintf(
-		"SELECT isc.COLUMN_NAME AS columnName, isc.COLUMN_TYPE AS columnType, isc.COLUMN_KEY AS columnKey, isc.EXTRA AS autoIncrement, iss.NON_UNIQUE AS nonUnique, iss.INDEX_NAME AS indexName, iss.SEQ_IN_INDEX AS IndexSeq, isc.ORDINAL_POSITION AS columnSeq, 'VISIBLE' AS indexVisibility, iss.SUB_PART AS subPart FROM INFORMATION_SCHEMA.COLUMNS isc INNER JOIN (SELECT NON_UNIQUE, INDEX_NAME, SEQ_IN_INDEX, COLUMN_NAME, SUB_PART FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s') AS iss ON isc.COLUMN_NAME=iss.COLUMN_NAME WHERE isc.TABLE_SCHEMA='%s' AND isc.TABLE_NAME='%s';",
-		schema, table, schema, table,
+		"SELECT iss.COLUMN_NAME AS columnName, isc.COLUMN_TYPE AS columnType, isc.COLUMN_KEY AS columnKey, isc.EXTRA AS autoIncrement, iss.NON_UNIQUE AS nonUnique, iss.INDEX_NAME AS indexName, iss.SEQ_IN_INDEX AS IndexSeq, isc.ORDINAL_POSITION AS columnSeq, %s AS indexVisibility, iss.SUB_PART AS subPart%s FROM INFORMATION_SCHEMA.STATISTICS iss LEFT JOIN INFORMATION_SCHEMA.COLUMNS isc ON isc.COLUMN_NAME = iss.COLUMN_NAME AND isc.TABLE_SCHEMA = iss.TABLE_SCHEMA AND isc.TABLE_NAME = iss.TABLE_NAME WHERE iss.TABLE_SCHEMA='%s' AND iss.TABLE_NAME='%s';",
+		visibilitySel, expressionSel, schema, table,
 	)
+}
+
+// supportsStatisticsExpression 探测当前 MySQL 版本是否在 INFORMATION_SCHEMA.STATISTICS 中提供
+// EXPRESSION 列（MySQL 8.0.13+ 函数索引支持），结果按连接实例缓存。
+func supportsStatisticsExpression(db *sql.DB, logThreadSeq int64) (bool, error) {
+	cacheKey := fmt.Sprintf("%s.statistics.expression", getDBScopeKey(db))
+
+	cacheMutex.RLock()
+	if supported, ok := statisticsExpressionCache[cacheKey]; ok {
+		cacheMutex.RUnlock()
+		return supported, nil
+	}
+	cacheMutex.RUnlock()
+
+	const query = "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='information_schema' AND TABLE_NAME='STATISTICS' AND COLUMN_NAME='EXPRESSION' LIMIT 1"
+
+	var marker int
+	err := db.QueryRow(query).Scan(&marker)
+	switch err {
+	case nil:
+		cacheMutex.Lock()
+		statisticsExpressionCache[cacheKey] = true
+		cacheMutex.Unlock()
+		return true, nil
+	case sql.ErrNoRows:
+		cacheMutex.Lock()
+		statisticsExpressionCache[cacheKey] = false
+		cacheMutex.Unlock()
+		return false, nil
+	default:
+		logMsg := fmt.Sprintf("(%d) [Q_Index_Statistics] Failed to probe INFORMATION_SCHEMA.STATISTICS.EXPRESSION support: %v", logThreadSeq, err)
+		global.Wlog.Error(logMsg)
+		return false, err
+	}
 }
 
 func supportsStatisticsIndexVisibility(db *sql.DB, logThreadSeq int64) (bool, error) {
@@ -112,7 +154,15 @@ func (my *QueryTable) QueryTableIndexColumnInfo(db *sql.DB, logThreadSeq int64) 
 		logMsg = fmt.Sprintf("(%d) [%s] INFORMATION_SCHEMA.STATISTICS.IS_VISIBLE is not available on %s.%s; using compatibility query", logThreadSeq, Event, my.Schema, my.Table)
 		global.Wlog.Debug(logMsg)
 	}
-	query = buildMySQLIndexStatisticsQuery(my.Schema, my.Table, includeVisibility)
+	includeExpression, err := supportsStatisticsExpression(db, logThreadSeq)
+	if err != nil {
+		return nil, err
+	}
+	if includeExpression {
+		logMsg = fmt.Sprintf("(%d) [%s] INFORMATION_SCHEMA.STATISTICS.EXPRESSION is available on %s.%s; functional index detection enabled", logThreadSeq, Event, my.Schema, my.Table)
+		global.Wlog.Debug(logMsg)
+	}
+	query = buildMySQLIndexStatisticsQuery(my.Schema, my.Table, includeVisibility, includeExpression)
 	logMsg = fmt.Sprintf("(%d) [%s] Generate a sql statement to query the index statistics of table %s.%s under the %s database.sql messige is {%s}", logThreadSeq, Event, my.Schema, my.Table, DBType, query)
 	global.Wlog.Debug(logMsg)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db, Schema: my.Schema, Table: my.Table}
@@ -156,11 +206,19 @@ func (my *QueryTable) IndexDisposF(queryData []map[string]interface{}, logThread
 			currIndexName = strings.ToUpper(fmt.Sprintf("%s", v["indexName"]))
 		}
 
-		columnName := fmt.Sprintf("%s", v["columnName"])
+		rawColumnName := v["columnName"]
+		columnName := fmt.Sprintf("%s", rawColumnName)
 		indexSeq := fmt.Sprintf("%s", v["IndexSeq"])
 		columnType := fmt.Sprintf("%s", v["columnType"])
 		// 获取索引可见性信息
 		indexVisibility := fmt.Sprintf("%s", v["indexVisibility"])
+
+		// 检测函数索引：COLUMN_NAME 为 NULL，EXPRESSION 含表达式
+		funcExpr := ""
+		if e, ok := v["expression"]; ok && e != nil {
+			funcExpr = fmt.Sprintf("%s", e)
+		}
+		isFuncIndex := rawColumnName == nil || columnName == "<nil>"
 
 		// 提取前缀索引长度（SUB_PART），NULL 表示全列索引，记为 0
 		subPartVal := 0
@@ -197,8 +255,18 @@ func (my *QueryTable) IndexDisposF(queryData []map[string]interface{}, logThread
 			indexVisibilityMap[currIndexName] = indexVisibility
 		}
 
-		// 存储列的顺序信息，格式：columnName/*seq*/N/*type*/columnType/*prefix*/P
-		indexColumns[currIndexName][indexSeq] = columnName + "/*seq*/" + indexSeq + "/*type*/" + columnType + "/*prefix*/" + subPartStr
+		// 存储列的顺序信息
+		// 普通列格式：columnName/*seq*/N/*type*/columnType/*prefix*/P
+		// 函数索引格式：/*expr*/EXPRESSION/*seq*/N/*type*//*prefix*/0
+		var token string
+		if isFuncIndex && funcExpr != "" {
+			token = "/*expr*/" + funcExpr + "/*seq*/" + indexSeq + "/*type*//*prefix*/0"
+			logMsg = fmt.Sprintf("(%d) [%s] Detected functional index %s on %s.%s, expr=%s", logThreadSeq, Event, currIndexName, my.Schema, my.Table, funcExpr)
+			global.Wlog.Debug(logMsg)
+		} else {
+			token = columnName + "/*seq*/" + indexSeq + "/*type*/" + columnType + "/*prefix*/" + subPartStr
+		}
+		indexColumns[currIndexName][indexSeq] = token
 
 		// 更新当前索引名
 		if currIndexName != indexName {
