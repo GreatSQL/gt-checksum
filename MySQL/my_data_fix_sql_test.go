@@ -511,6 +511,8 @@ func TestMysqlIndexColDDLExpr_SpecialCharsInColName(t *testing.T) {
 
 // TestFixAlterIndexSqlExec_DropBeforeAdd 验证同时有 ADD 和 DROP 时，DROP 操作在 ADD 之前生成，
 // 确保合并后的 ALTER TABLE 语句中先删后建，避免同名索引冲突。
+// 断言策略：记录最后一个 DROP INDEX 位置与第一个 ADD INDEX 位置，断言 lastDrop < firstAdd，
+// 防止"DROP/ADD 交错但首个 DROP 仍在首个 ADD 之前"的假通过情形。
 func TestFixAlterIndexSqlExec_DropBeforeAdd(t *testing.T) {
 	my := &MysqlDataAbnormalFixStruct{Schema: "gt_checksum", Table: "indext", IndexType: "mul"}
 	// e: 需要 ADD 的索引（源端有，目标端没有）
@@ -526,24 +528,226 @@ func TestFixAlterIndexSqlExec_DropBeforeAdd(t *testing.T) {
 	if len(sqls) < 4 {
 		t.Fatalf("expected at least 4 statements, got %d: %v", len(sqls), sqls)
 	}
-	firstDrop := -1
 	firstAdd := -1
+	lastDrop := -1
 	for i, s := range sqls {
 		upper := strings.ToUpper(s)
-		if firstDrop == -1 && strings.Contains(upper, "DROP INDEX") {
-			firstDrop = i
+		if strings.Contains(upper, "DROP INDEX") {
+			lastDrop = i
 		}
 		if firstAdd == -1 && strings.Contains(upper, "ADD INDEX") {
 			firstAdd = i
 		}
 	}
-	if firstDrop == -1 {
+	if lastDrop == -1 {
 		t.Fatal("no DROP INDEX found")
 	}
 	if firstAdd == -1 {
 		t.Fatal("no ADD INDEX found")
 	}
-	if firstDrop > firstAdd {
-		t.Errorf("DROP INDEX should come before ADD INDEX, but DROP at pos %d, ADD at pos %d\nsqls: %v", firstDrop, firstAdd, sqls)
+	// 严格断言：所有 DROP 必须在任意 ADD 之前，防止交错排列
+	if lastDrop > firstAdd {
+		t.Errorf("all DROP INDEX must come before any ADD INDEX, but last DROP at pos %d, first ADD at pos %d\nsqls: %v", lastDrop, firstAdd, sqls)
+	}
+}
+
+// ---------- 前缀索引 × uni / 可见性分支 ----------
+
+// TestFixAlterIndexSqlExec_PrefixIndex_UniIndex 验证 uni 分支下前缀索引生成 UNIQUE INDEX DDL。
+func TestFixAlterIndexSqlExec_PrefixIndex_UniIndex(t *testing.T) {
+	my := newFixStruct("uni")
+	sqls := my.FixAlterIndexSqlExec(
+		[]string{"uk_email"},
+		nil,
+		map[string][]string{"uk_email": {"email/*seq*/1/*type*/varchar(255)/*prefix*/100"}},
+		"mysql", 1,
+	)
+	if len(sqls) != 1 {
+		t.Fatalf("expected 1 sql, got %d", len(sqls))
+	}
+	got := sqls[0]
+	if !strings.Contains(got, "ADD UNIQUE INDEX") {
+		t.Errorf("uni prefix: expected ADD UNIQUE INDEX, got: %s", got)
+	}
+	if !strings.Contains(got, "`email`(100)") {
+		t.Errorf("uni prefix: expected `email`(100), got: %s", got)
+	}
+}
+
+// TestFixAlterIndexSqlExec_PrefixIndex_UniInvisible 验证 uni + prefix + INVISIBLE 组合生成正确 DDL（MySQL）。
+func TestFixAlterIndexSqlExec_PrefixIndex_UniInvisible(t *testing.T) {
+	my := &MysqlDataAbnormalFixStruct{
+		Schema:    "sbtest",
+		Table:     "t9",
+		IndexType: "uni",
+		IndexVisibilityMap: map[string]string{
+			"uk_name": "NO",
+		},
+	}
+	sqls := my.FixAlterIndexSqlExec(
+		[]string{"uk_name"},
+		nil,
+		map[string][]string{"uk_name": {"name/*seq*/1/*type*/varchar(200)/*prefix*/50"}},
+		"mysql", 1,
+	)
+	if len(sqls) != 1 {
+		t.Fatalf("expected 1 sql, got %d", len(sqls))
+	}
+	got := sqls[0]
+	if !strings.Contains(got, "ADD UNIQUE INDEX") {
+		t.Errorf("uni+invisible: expected ADD UNIQUE INDEX, got: %s", got)
+	}
+	if !strings.Contains(got, "`name`(50)") {
+		t.Errorf("uni+invisible: expected `name`(50), got: %s", got)
+	}
+	if !strings.Contains(strings.ToUpper(got), "INVISIBLE") {
+		t.Errorf("uni+invisible: expected INVISIBLE clause, got: %s", got)
+	}
+}
+
+// TestFixAlterIndexSqlExec_PrefixIndex_MariaDBIgnored 验证 MariaDB 下 mul + prefix + IGNORED 生成正确 DDL。
+func TestFixAlterIndexSqlExec_PrefixIndex_MariaDBIgnored(t *testing.T) {
+	my := &MysqlDataAbnormalFixStruct{
+		Schema:     "sbtest",
+		Table:      "t9",
+		IndexType:  "mul",
+		DestFlavor: global.DatabaseFlavorMariaDB,
+		IndexVisibilityMap: map[string]string{
+			"idx_title": "IGNORED",
+		},
+	}
+	sqls := my.FixAlterIndexSqlExec(
+		[]string{"idx_title"},
+		nil,
+		map[string][]string{"idx_title": {"title/*seq*/1/*type*/varchar(500)/*prefix*/30"}},
+		"mysql", 1,
+	)
+	if len(sqls) != 1 {
+		t.Fatalf("expected 1 sql, got %d", len(sqls))
+	}
+	got := sqls[0]
+	if !strings.Contains(got, "ADD INDEX") {
+		t.Errorf("mariadb+ignored: expected ADD INDEX, got: %s", got)
+	}
+	if !strings.Contains(got, "`title`(30)") {
+		t.Errorf("mariadb+ignored: expected `title`(30), got: %s", got)
+	}
+	if !strings.Contains(strings.ToUpper(got), "IGNORED") {
+		t.Errorf("mariadb+ignored: expected IGNORED clause, got: %s", got)
+	}
+}
+
+// ---------- 函数索引（Functional Index）----------
+
+// makeFuncToken 构造函数索引 token，格式：/*expr*/EXPRESSION/*seq*/N/*type*//*prefix*/0
+func makeFuncToken(expr, seq string) string {
+	return "/*expr*/" + expr + "/*seq*/" + seq + "/*type*//*prefix*/0"
+}
+
+func TestMysqlIndexColDDLExpr_FuncIndex(t *testing.T) {
+	token := makeFuncToken("(ABS(`price`))", "1")
+	got := mysqlIndexColDDLExpr(token)
+	want := "(ABS(`price`))"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestMysqlIndexColDDLExpr_FuncIndex_Multiword(t *testing.T) {
+	token := makeFuncToken("(LOWER(`email`))", "1")
+	got := mysqlIndexColDDLExpr(token)
+	want := "(LOWER(`email`))"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestFixAlterIndexSqlExec_FuncIndex_AddIndex(t *testing.T) {
+	my := newFixStruct("mul")
+	token := makeFuncToken("(ABS(`price`))", "1")
+	sqls := my.FixAlterIndexSqlExec(
+		[]string{"idx_5"},
+		nil,
+		map[string][]string{"idx_5": {token}},
+		"mysql", 1,
+	)
+	if len(sqls) != 1 {
+		t.Fatalf("expected 1 sql, got %d: %v", len(sqls), sqls)
+	}
+	got := sqls[0]
+	// 修复 SQL 必须含函数表达式
+	if !strings.Contains(got, "(ABS(`price`))") {
+		t.Errorf("functional index DDL missing expression: %s", got)
+	}
+	if !strings.Contains(got, "ADD INDEX") {
+		t.Errorf("expected ADD INDEX in DDL: %s", got)
+	}
+	if !strings.Contains(got, "`idx_5`") {
+		t.Errorf("expected index name `idx_5` in DDL: %s", got)
+	}
+}
+
+func TestFixAlterIndexSqlExec_FuncIndex_DropAndAdd(t *testing.T) {
+	// 模拟目标端有旧索引需 DROP，源端有函数索引需 ADD
+	my := newFixStruct("mul")
+	token := makeFuncToken("(ABS(`price`))", "1")
+	sqls := my.FixAlterIndexSqlExec(
+		[]string{"idx_5"},  // ADD
+		[]string{"idx_5"},  // DROP
+		map[string][]string{"idx_5": {token}},
+		"mysql", 1,
+	)
+	if len(sqls) != 2 {
+		t.Fatalf("expected 2 sqls (DROP+ADD), got %d: %v", len(sqls), sqls)
+	}
+	// DROP 在前
+	if !strings.Contains(strings.ToUpper(sqls[0]), "DROP INDEX") {
+		t.Errorf("first sql should be DROP INDEX, got: %s", sqls[0])
+	}
+	// ADD 在后，含函数表达式
+	if !strings.Contains(sqls[1], "(ABS(`price`))") {
+		t.Errorf("second sql missing expression: %s", sqls[1])
+	}
+}
+
+// TestMysqlIndexColDDLExpr_FuncIndex_NoOuterParens 验证 MySQL 实际存储格式：
+// information_schema.statistics.EXPRESSION 不含外层括号，DDL 生成时必须补全。
+func TestMysqlIndexColDDLExpr_FuncIndex_NoOuterParens(t *testing.T) {
+	// MySQL 实际格式：表达式不带外层括号
+	token := makeFuncToken("abs(`price`)", "1")
+	got := mysqlIndexColDDLExpr(token)
+	want := "(abs(`price`))"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestMysqlIndexColDDLExpr_FuncIndex_NoOuterParens_Multiword(t *testing.T) {
+	token := makeFuncToken("lower(`email`)", "1")
+	got := mysqlIndexColDDLExpr(token)
+	want := "(lower(`email`))"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestFixAlterIndexSqlExec_FuncIndex_NoOuterParens(t *testing.T) {
+	// 验证 MySQL 实际格式（无外层括号）生成的修复 SQL 语法正确
+	my := newFixStruct("mul")
+	token := makeFuncToken("abs(`price`)", "1")
+	sqls := my.FixAlterIndexSqlExec(
+		[]string{"idx_5"},
+		nil,
+		map[string][]string{"idx_5": {token}},
+		"mysql", 1,
+	)
+	if len(sqls) != 1 {
+		t.Fatalf("expected 1 sql, got %d: %v", len(sqls), sqls)
+	}
+	got := sqls[0]
+	// 必须含双括号形式：ADD INDEX `idx_5`((abs(`price`)))
+	want := "ADD INDEX `idx_5`((abs(`price`)))"
+	if !strings.Contains(got, want) {
+		t.Errorf("functional index DDL wrong, got: %s\nwant substring: %s", got, want)
 	}
 }
