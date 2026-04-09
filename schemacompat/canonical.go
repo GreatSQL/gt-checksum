@@ -666,6 +666,7 @@ func CanonicalizeMySQLIndexes(indexMap map[string][]string, visibilityMap map[st
 	for _, name := range names {
 		type indexColumn struct {
 			name   string
+			expr   string // 非空时为函数索引表达式（已规范化为小写）
 			seq    int
 			prefix int
 		}
@@ -673,9 +674,29 @@ func CanonicalizeMySQLIndexes(indexMap map[string][]string, visibilityMap map[st
 		parsedCols := make([]indexColumn, 0, len(indexMap[name]))
 		for _, token := range indexMap[name] {
 			colName := token
+			expr := ""
 			seq := 0
 			prefix := 0
-			if parts := strings.Split(token, "/*seq*/"); len(parts) == 2 {
+			// 检测函数索引 token（格式：/*expr*/EXPRESSION/*seq*/N/*type*//*prefix*/0）
+			if strings.HasPrefix(token, "/*expr*/") {
+				rest := strings.TrimPrefix(token, "/*expr*/")
+				if seqIdx := strings.Index(rest, "/*seq*/"); seqIdx >= 0 {
+					expr = strings.ToLower(strings.TrimSpace(rest[:seqIdx]))
+					seqRest := rest[seqIdx+len("/*seq*/"):]
+					if typeIdx := strings.Index(seqRest, "/*type*/"); typeIdx >= 0 {
+						if parsed, err := strconv.Atoi(strings.TrimSpace(seqRest[:typeIdx])); err == nil {
+							seq = parsed
+						}
+					} else {
+						if parsed, err := strconv.Atoi(strings.TrimSpace(seqRest)); err == nil {
+							seq = parsed
+						}
+					}
+				} else {
+					expr = strings.ToLower(strings.TrimSpace(rest))
+				}
+				colName = "" // 函数索引无对应列名
+			} else if parts := strings.Split(token, "/*seq*/"); len(parts) == 2 {
 				colName = strings.TrimSpace(parts[0])
 				rest := parts[1]
 				typeParts := strings.Split(rest, "/*type*/")
@@ -693,7 +714,7 @@ func CanonicalizeMySQLIndexes(indexMap map[string][]string, visibilityMap map[st
 					}
 				}
 			}
-			parsedCols = append(parsedCols, indexColumn{name: colName, seq: seq, prefix: prefix})
+			parsedCols = append(parsedCols, indexColumn{name: colName, expr: expr, seq: seq, prefix: prefix})
 		}
 
 		sort.Slice(parsedCols, func(i, j int) bool {
@@ -705,11 +726,13 @@ func CanonicalizeMySQLIndexes(indexMap map[string][]string, visibilityMap map[st
 
 		cols := make([]string, 0, len(parsedCols))
 		prefixes := make([]int, 0, len(parsedCols))
+		exprs := make([]string, 0, len(parsedCols))
 		for _, col := range parsedCols {
 			// MySQL column identifiers are not case-sensitive, so keep index
 			// semantics stable when metadata formatting differs only by case.
 			cols = append(cols, strings.ToLower(col.name))
 			prefixes = append(prefixes, col.prefix)
+			exprs = append(exprs, col.expr)
 		}
 
 		visibility := IndexVisibilityVisible
@@ -718,10 +741,11 @@ func CanonicalizeMySQLIndexes(indexMap map[string][]string, visibilityMap map[st
 		}
 
 		indexes = append(indexes, CanonicalIndex{
-			Name:         name,
-			Columns:      cols,
-			PrefixLength: prefixes,
-			Visibility:   visibility,
+			Name:                  name,
+			Columns:               cols,
+			PrefixLength:          prefixes,
+			NormalizedExpressions: exprs,
+			Visibility:            visibility,
 		})
 	}
 
@@ -824,7 +848,67 @@ func CanonicalizeForeignKeyDefinitions(defs map[string]string) []CanonicalConstr
 	return items
 }
 
+// indexHasExpr 判断 CanonicalIndex 中是否包含函数索引列（NormalizedExpressions 非全空）。
+func indexHasExpr(idx CanonicalIndex) bool {
+	for _, e := range idx.NormalizedExpressions {
+		if e != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// indexElemKey 返回第 i 个位置的比较键：函数列返回规范化表达式，普通列返回列名。
+func indexElemKey(idx CanonicalIndex, i int) string {
+	if i < len(idx.NormalizedExpressions) && idx.NormalizedExpressions[i] != "" {
+		return idx.NormalizedExpressions[i]
+	}
+	if i < len(idx.Columns) {
+		return idx.Columns[i]
+	}
+	return ""
+}
+
 func DecideIndexCompatibility(source, target CanonicalIndex) CompatibilityDecision {
+	// 若任一侧含函数索引列，则按位置逐元素比较（表达式 vs 表达式，或列名 vs 列名）
+	if indexHasExpr(source) || indexHasExpr(target) {
+		if len(source.Columns) != len(target.Columns) {
+			return CompatibilityDecision{
+				State:  CompatibilityUnsupported,
+				Reason: fmt.Sprintf("index column count differs: source=%d target=%d", len(source.Columns), len(target.Columns)),
+				Source: strings.Join(source.Columns, ","),
+				Target: strings.Join(target.Columns, ","),
+			}
+		}
+		for i := range source.Columns {
+			srcKey := indexElemKey(source, i)
+			dstKey := indexElemKey(target, i)
+			if srcKey != dstKey {
+				return CompatibilityDecision{
+					State:  CompatibilityUnsupported,
+					Reason: fmt.Sprintf("index element[%d] differs: source=%q target=%q", i, srcKey, dstKey),
+					Source: srcKey,
+					Target: dstKey,
+				}
+			}
+		}
+		// 列匹配后继续检查可见性
+		if source.Visibility != target.Visibility {
+			return CompatibilityDecision{
+				State:  CompatibilityUnsupported,
+				Reason: fmt.Sprintf("index visibility differs: source=%s target=%s", source.Visibility, target.Visibility),
+				Source: string(source.Visibility),
+				Target: string(target.Visibility),
+			}
+		}
+		return CompatibilityDecision{
+			State:  CompatibilityEqual,
+			Reason: "index definition matches exactly",
+			Source: strings.Join(source.Columns, ","),
+			Target: strings.Join(target.Columns, ","),
+		}
+	}
+
 	if strings.Join(source.Columns, ",") != strings.Join(target.Columns, ",") {
 		return CompatibilityDecision{
 			State:  CompatibilityUnsupported,
