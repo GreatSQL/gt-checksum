@@ -34,10 +34,32 @@ func mysqlQuoteIdent(name string) string {
 	return "`" + strings.ReplaceAll(name, "`", "``") + "`"
 }
 
-// mysqlIndexColDDLExpr 从索引 token（格式：colName/*seq*/N/*type*/T/*prefix*/P）
-// 中提取列名与前缀长度，返回可直接用于 DDL 的表达式，例如 `goods_name`(20) 或 `id`。
-// 旧格式 token（无 /*prefix*/ 段）向后兼容：prefix 视为 0。
+// mysqlIndexColDDLExpr 从索引 token 中提取可直接用于 DDL 的表达式。
+//
+// 普通列 token（格式：colName/*seq*/N/*type*/T/*prefix*/P）：
+//   - 返回 `colName` 或 `colName`(prefix)
+//   - 旧格式 token（无 /*prefix*/ 段）向后兼容：prefix 视为 0
+//
+// 函数索引 token（格式：/*expr*/EXPRESSION/*seq*/N/*type*//*prefix*/0）：
+//   - 返回带括号的表达式（例如 (abs(`price`))），可直接嵌入 ADD INDEX idx_name((EXPR))
+//   - MySQL information_schema.EXPRESSION 不含外层括号，DDL 需手动补括号
 func mysqlIndexColDDLExpr(token string) string {
+	// 函数索引 token 以 /*expr*/ 开头
+	if strings.HasPrefix(token, "/*expr*/") {
+		rest := strings.TrimPrefix(token, "/*expr*/")
+		var expr string
+		if seqIdx := strings.Index(rest, "/*seq*/"); seqIdx >= 0 {
+			expr = strings.TrimSpace(rest[:seqIdx])
+		} else {
+			expr = strings.TrimSpace(rest)
+		}
+		// MySQL 函数索引 DDL 必须用括号包裹表达式：ADD INDEX idx((expr))
+		if !strings.HasPrefix(expr, "(") {
+			expr = "(" + expr + ")"
+		}
+		return expr
+	}
+
 	colName := strings.TrimSpace(token)
 	prefix := 0
 	if seqParts := strings.Split(token, "/*seq*/"); len(seqParts) == 2 {

@@ -7103,8 +7103,24 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 
 		// 辅助函数：按序号排序列，返回可直接用于 DDL 的带引号列表达式（含前缀长度）。
 		// token 格式：colName/*seq*/N/*type*/T/*prefix*/P
+		// 函数索引 token 格式：/*expr*/EXPRESSION/*seq*/N/*type*//*prefix*/0
 		// 旧格式（无 /*prefix*/）兼容处理：prefix 视为 0。
 		quoteColumnWithPrefix = func(token string) string {
+			// 函数索引 token 以 /*expr*/ 开头，返回带括号的表达式（MySQL DDL 要求）
+			if strings.HasPrefix(token, "/*expr*/") {
+				rest := strings.TrimPrefix(token, "/*expr*/")
+				var expr string
+				if seqIdx := strings.Index(rest, "/*seq*/"); seqIdx >= 0 {
+					expr = strings.TrimSpace(rest[:seqIdx])
+				} else {
+					expr = strings.TrimSpace(rest)
+				}
+				// MySQL 函数索引 DDL 必须用括号包裹表达式：ADD INDEX idx((expr))
+				if !strings.HasPrefix(expr, "(") {
+					expr = "(" + expr + ")"
+				}
+				return expr
+			}
 			colName := strings.TrimSpace(token)
 			prefix := 0
 			if seqParts := strings.Split(token, "/*seq*/"); len(seqParts) == 2 {
