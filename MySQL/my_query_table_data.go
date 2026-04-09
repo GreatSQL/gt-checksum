@@ -51,12 +51,12 @@ func scopedColumnCacheKey(db *sql.DB, schema, table, column string) string {
 func buildMySQLIndexStatisticsQuery(schema, table string, includeVisibility bool) string {
 	if includeVisibility {
 		return fmt.Sprintf(
-			"SELECT isc.COLUMN_NAME AS columnName, isc.COLUMN_TYPE AS columnType, isc.COLUMN_KEY AS columnKey, isc.EXTRA AS autoIncrement, iss.NON_UNIQUE AS nonUnique, iss.INDEX_NAME AS indexName, iss.SEQ_IN_INDEX AS IndexSeq, isc.ORDINAL_POSITION AS columnSeq, iss.IS_VISIBLE AS indexVisibility FROM INFORMATION_SCHEMA.COLUMNS isc INNER JOIN (SELECT NON_UNIQUE, INDEX_NAME, SEQ_IN_INDEX, COLUMN_NAME, IS_VISIBLE FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s') AS iss ON isc.COLUMN_NAME=iss.COLUMN_NAME WHERE isc.TABLE_SCHEMA='%s' AND isc.TABLE_NAME='%s';",
+			"SELECT isc.COLUMN_NAME AS columnName, isc.COLUMN_TYPE AS columnType, isc.COLUMN_KEY AS columnKey, isc.EXTRA AS autoIncrement, iss.NON_UNIQUE AS nonUnique, iss.INDEX_NAME AS indexName, iss.SEQ_IN_INDEX AS IndexSeq, isc.ORDINAL_POSITION AS columnSeq, iss.IS_VISIBLE AS indexVisibility, iss.SUB_PART AS subPart FROM INFORMATION_SCHEMA.COLUMNS isc INNER JOIN (SELECT NON_UNIQUE, INDEX_NAME, SEQ_IN_INDEX, COLUMN_NAME, SUB_PART, IS_VISIBLE FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s') AS iss ON isc.COLUMN_NAME=iss.COLUMN_NAME WHERE isc.TABLE_SCHEMA='%s' AND isc.TABLE_NAME='%s';",
 			schema, table, schema, table,
 		)
 	}
 	return fmt.Sprintf(
-		"SELECT isc.COLUMN_NAME AS columnName, isc.COLUMN_TYPE AS columnType, isc.COLUMN_KEY AS columnKey, isc.EXTRA AS autoIncrement, iss.NON_UNIQUE AS nonUnique, iss.INDEX_NAME AS indexName, iss.SEQ_IN_INDEX AS IndexSeq, isc.ORDINAL_POSITION AS columnSeq, 'VISIBLE' AS indexVisibility FROM INFORMATION_SCHEMA.COLUMNS isc INNER JOIN (SELECT NON_UNIQUE, INDEX_NAME, SEQ_IN_INDEX, COLUMN_NAME FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s') AS iss ON isc.COLUMN_NAME=iss.COLUMN_NAME WHERE isc.TABLE_SCHEMA='%s' AND isc.TABLE_NAME='%s';",
+		"SELECT isc.COLUMN_NAME AS columnName, isc.COLUMN_TYPE AS columnType, isc.COLUMN_KEY AS columnKey, isc.EXTRA AS autoIncrement, iss.NON_UNIQUE AS nonUnique, iss.INDEX_NAME AS indexName, iss.SEQ_IN_INDEX AS IndexSeq, isc.ORDINAL_POSITION AS columnSeq, 'VISIBLE' AS indexVisibility, iss.SUB_PART AS subPart FROM INFORMATION_SCHEMA.COLUMNS isc INNER JOIN (SELECT NON_UNIQUE, INDEX_NAME, SEQ_IN_INDEX, COLUMN_NAME, SUB_PART FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s') AS iss ON isc.COLUMN_NAME=iss.COLUMN_NAME WHERE isc.TABLE_SCHEMA='%s' AND isc.TABLE_NAME='%s';",
 		schema, table, schema, table,
 	)
 }
@@ -162,6 +162,34 @@ func (my *QueryTable) IndexDisposF(queryData []map[string]interface{}, logThread
 		// 获取索引可见性信息
 		indexVisibility := fmt.Sprintf("%s", v["indexVisibility"])
 
+		// 提取前缀索引长度（SUB_PART），NULL 表示全列索引，记为 0
+		subPartVal := 0
+		if sp, ok := v["subPart"]; ok && sp != nil {
+			switch val := sp.(type) {
+			case int64:
+				subPartVal = int(val)
+			case uint64:
+				subPartVal = int(val)
+			case int:
+				subPartVal = val
+			case []byte:
+				if n, err := strconv.Atoi(string(val)); err == nil {
+					subPartVal = n
+				} else {
+					logMsg = fmt.Sprintf("(%d) [%s] Failed to parse SUB_PART []byte value %q for %s.%s column %s: %v", logThreadSeq, Event, string(val), my.Schema, my.Table, columnName, err)
+					global.Wlog.Debug(logMsg)
+				}
+			case string:
+				if n, err := strconv.Atoi(val); err == nil {
+					subPartVal = n
+				} else {
+					logMsg = fmt.Sprintf("(%d) [%s] Failed to parse SUB_PART string value %q for %s.%s column %s: %v", logThreadSeq, Event, val, my.Schema, my.Table, columnName, err)
+					global.Wlog.Debug(logMsg)
+				}
+			}
+		}
+		subPartStr := strconv.Itoa(subPartVal)
+
 		// 初始化map
 		if _, exists := indexColumns[currIndexName]; !exists {
 			indexColumns[currIndexName] = make(map[string]string)
@@ -169,8 +197,8 @@ func (my *QueryTable) IndexDisposF(queryData []map[string]interface{}, logThread
 			indexVisibilityMap[currIndexName] = indexVisibility
 		}
 
-		// 存储列的顺序信息
-		indexColumns[currIndexName][indexSeq] = columnName + "/*seq*/" + indexSeq + "/*type*/" + columnType
+		// 存储列的顺序信息，格式：columnName/*seq*/N/*type*/columnType/*prefix*/P
+		indexColumns[currIndexName][indexSeq] = columnName + "/*seq*/" + indexSeq + "/*type*/" + columnType + "/*prefix*/" + subPartStr
 
 		// 更新当前索引名
 		if currIndexName != indexName {

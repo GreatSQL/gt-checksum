@@ -7074,7 +7074,7 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 			return colName, seq
 		}
 
-		// 辅助函数：按序号排序列并返回纯列名
+		// 辅助函数：按序号排序列并返回纯列名（仅用于大小写比较等不需要前缀的场景）
 		sortColumns = func(columns []string) []string {
 			type ColumnInfo struct {
 				name string
@@ -7097,6 +7097,49 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 			var result []string
 			for _, col := range columnInfos {
 				result = append(result, fmt.Sprintf("%s", col.name))
+			}
+			return result
+		}
+
+		// 辅助函数：按序号排序列，返回可直接用于 DDL 的带引号列表达式（含前缀长度）。
+		// token 格式：colName/*seq*/N/*type*/T/*prefix*/P
+		// 旧格式（无 /*prefix*/）兼容处理：prefix 视为 0。
+		quoteColumnWithPrefix = func(token string) string {
+			colName := strings.TrimSpace(token)
+			prefix := 0
+			if seqParts := strings.Split(token, "/*seq*/"); len(seqParts) == 2 {
+				colName = strings.TrimSpace(seqParts[0])
+				if typeParts := strings.Split(seqParts[1], "/*type*/"); len(typeParts) == 2 {
+					if prefixParts := strings.Split(typeParts[1], "/*prefix*/"); len(prefixParts) == 2 {
+						if n, err := strconv.Atoi(strings.TrimSpace(prefixParts[1])); err == nil {
+							prefix = n
+						}
+					}
+				}
+			}
+			quoted := fmt.Sprintf("`%s`", strings.ReplaceAll(colName, "`", "``"))
+			if prefix > 0 {
+				return fmt.Sprintf("%s(%d)", quoted, prefix)
+			}
+			return quoted
+		}
+
+		sortColumnsPreservingPrefix = func(columns []string) []string {
+			type ColumnInfo struct {
+				expr string
+				seq  int
+			}
+			var columnInfos []ColumnInfo
+			for _, col := range columns {
+				_, seq := extractColumnInfo(col)
+				columnInfos = append(columnInfos, ColumnInfo{expr: quoteColumnWithPrefix(col), seq: seq})
+			}
+			sort.Slice(columnInfos, func(i, j int) bool {
+				return columnInfos[i].seq < columnInfos[j].seq
+			})
+			var result []string
+			for _, col := range columnInfos {
+				result = append(result, col.expr)
 			}
 			return result
 		}
@@ -7176,8 +7219,8 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 				newIndexMap := make(map[string][]string)
 				for _, idx := range e {
 					if cols, ok := smu[idx]; ok {
-						// 对列进行排序并去除序号信息
-						newIndexMap[idx] = sortColumns(cols)
+						// 传入原始 token（含前缀信息），由 FixAlterIndexSqlExec 内部解析
+						newIndexMap[idx] = cols
 					}
 				}
 				// 获取数据修复实例
@@ -7202,10 +7245,11 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 				}
 
 				// 执行索引修复SQL生成
-				cc = fixInstance.FixAlterIndexSqlExec(e, f, newIndexMap, stcls.sourceDrive, logThreadSeq)
-			} else {
-				// 即使索引名称相同，也要比较索引的具体内容
-				for k, sColumns := range smu {
+				cc = append(cc, fixInstance.FixAlterIndexSqlExec(e, f, newIndexMap, stcls.sourceDrive, logThreadSeq)...)
+			}
+			// 无论索引名称集合是否一致，都要对两端均存在的同名索引比较具体内容
+			// （名称集合不同时，同名但内容不同的索引会被上方分支跳过，需在此补充检查）
+			for k, sColumns := range smu {
 					if dColumns, exists := dmu[k]; exists {
 						semanticMismatch := false
 						canonicalKey := constraintNameKey(k)
@@ -7277,19 +7321,19 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 								destSchema = mappedSchema
 							}
 
-							// 2. 获取排序后的纯列名
-							sortedColumns := sSortedColumns
+							// 2. 纯列名（用于自增主键检测等需要原始列名的场景）
+							plainColumns := sSortedColumns
 
 							// 检查是否是主键且该列是自增列
 							isAutoIncrementPrimaryKey := false
-							if indexType == "pri" && len(sortedColumns) == 1 {
+							if indexType == "pri" && len(plainColumns) == 1 {
 								// 构建键名：schema.table.column
-								key := fmt.Sprintf("%s.%s.%s", destSchema, stcls.table, sortedColumns[0])
+								key := fmt.Sprintf("%s.%s.%s", destSchema, stcls.table, plainColumns[0])
 								// 检查该列是否已经在添加列时设置了主键
 								if mysql.AutoIncrementColumnsWithPrimaryKey != nil && mysql.AutoIncrementColumnsWithPrimaryKey[key] {
 									isAutoIncrementPrimaryKey = true
 									vlog = fmt.Sprintf("(%d) %s Column %s is already set as PRIMARY KEY in ALTER TABLE ADD COLUMN statement, skipping index repair",
-										logThreadSeq, event, sortedColumns[0])
+										logThreadSeq, event, plainColumns[0])
 									global.Wlog.Debug(vlog)
 								}
 							}
@@ -7301,11 +7345,8 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 								destSchema = mappedSchema
 							}
 
-							// 为每个列名添加反引号，确保大小写敏感性
-							quotedColumns := make([]string, len(sortedColumns))
-							for i, col := range sortedColumns {
-								quotedColumns[i] = fmt.Sprintf("`%s`", col)
-							}
+							// 带引号且保留前缀长度的列 DDL 表达式，例如 `goods_name`(20)
+							quotedColumns := sortColumnsPreservingPrefix(sColumns)
 
 							// 获取索引可见性信息
 							// MariaDB 使用 IGNORED 关键字，MySQL 使用 INVISIBLE。
@@ -7322,6 +7363,15 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 
 							// 只有当不是自增列主键时才生成创建索引的SQL
 							if !isAutoIncrementPrimaryKey {
+								// 1. 先删除目标端已存在的同名索引（先删后建，避免重复索引报错）
+								if indexType == "pri" {
+									cc = append(cc, fmt.Sprintf("ALTER TABLE `%s`.`%s` DROP PRIMARY KEY;",
+										destSchema, stcls.table))
+								} else {
+									cc = append(cc, fmt.Sprintf("ALTER TABLE `%s`.`%s` DROP INDEX `%s`;",
+										destSchema, stcls.table, k))
+								}
+								// 2. 再新建符合源端定义的索引
 								if indexType == "pri" {
 									cc = append(cc, fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD PRIMARY KEY(%s);",
 										destSchema, stcls.table, strings.Join(quotedColumns, ", ")))
@@ -7336,7 +7386,6 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 						}
 					}
 				}
-			}
 			return cc
 		}
 	)

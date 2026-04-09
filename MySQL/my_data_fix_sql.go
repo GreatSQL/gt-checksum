@@ -34,6 +34,29 @@ func mysqlQuoteIdent(name string) string {
 	return "`" + strings.ReplaceAll(name, "`", "``") + "`"
 }
 
+// mysqlIndexColDDLExpr 从索引 token（格式：colName/*seq*/N/*type*/T/*prefix*/P）
+// 中提取列名与前缀长度，返回可直接用于 DDL 的表达式，例如 `goods_name`(20) 或 `id`。
+// 旧格式 token（无 /*prefix*/ 段）向后兼容：prefix 视为 0。
+func mysqlIndexColDDLExpr(token string) string {
+	colName := strings.TrimSpace(token)
+	prefix := 0
+	if seqParts := strings.Split(token, "/*seq*/"); len(seqParts) == 2 {
+		colName = strings.TrimSpace(seqParts[0])
+		if typeParts := strings.Split(seqParts[1], "/*type*/"); len(typeParts) == 2 {
+			if prefixParts := strings.Split(typeParts[1], "/*prefix*/"); len(prefixParts) == 2 {
+				if n, err := strconv.Atoi(strings.TrimSpace(prefixParts[1])); err == nil {
+					prefix = n
+				}
+			}
+		}
+	}
+	quoted := mysqlQuoteIdent(colName)
+	if prefix > 0 {
+		return fmt.Sprintf("%s(%d)", quoted, prefix)
+	}
+	return quoted
+}
+
 // alterTablePrefixRe 匹配 "ALTER TABLE `schema`.`table` OPERATION[;]"
 // 并将 OPERATION 部分捕获为 group 1。
 // 标识符可以是反引号引用（含内部 “ 转义）或不含空格的裸名。
@@ -1109,15 +1132,37 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterIndexSqlExec(e, f []string, si map
 		global.Wlog.Warn(vlog)
 	}
 
+	// 先生成 DROP 操作（f），再生成 ADD 操作（e），确保合并后的 ALTER TABLE 中 DROP 在 ADD 之前
+	for _, v := range f {
+		// 检查是否是外键约束
+		isForeignKey := false
+		if my.ForeignKeyDefinitions != nil {
+			_, isForeignKey = my.ForeignKeyDefinitions[v]
+		}
+
+		if isForeignKey {
+			// 删除外键约束
+			strsql = fmt.Sprintf("ALTER TABLE %s.%s DROP FOREIGN KEY %s;", mysqlQuoteIdent(targetSchema), mysqlQuoteIdent(my.Table), mysqlQuoteIdent(v))
+		} else {
+			// 处理普通索引、唯一索引和主键索引
+			switch my.IndexType {
+			case "pri":
+				strsql = fmt.Sprintf("ALTER TABLE %s.%s DROP PRIMARY KEY;", mysqlQuoteIdent(targetSchema), mysqlQuoteIdent(my.Table))
+			case "uni":
+				strsql = fmt.Sprintf("ALTER TABLE %s.%s DROP INDEX %s;", mysqlQuoteIdent(targetSchema), mysqlQuoteIdent(my.Table), mysqlQuoteIdent(v))
+			case "mul":
+				strsql = fmt.Sprintf("ALTER TABLE %s.%s DROP INDEX %s;", mysqlQuoteIdent(targetSchema), mysqlQuoteIdent(my.Table), mysqlQuoteIdent(v))
+			}
+		}
+		sqlS = append(sqlS, strsql)
+	}
+
 	for _, v := range e {
 		var c []string
 		for _, vi := range si[v] {
-			// 从vi字符串中提取原始列名（格式：columnName/*seq*/indexSeq/*type*/columnType）
-			parts := strings.Split(vi, "/*seq*/")
-			if len(parts) > 0 {
-				// 保留原始列名的大小写
-				c = append(c, strings.TrimSpace(parts[0]))
-			}
+			// 从vi字符串中提取列名及前缀长度
+			// 格式：columnName/*seq*/indexSeq/*type*/columnType/*prefix*/P
+			c = append(c, mysqlIndexColDDLExpr(vi))
 		}
 
 		// 检查是否是外键约束
@@ -1151,35 +1196,11 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterIndexSqlExec(e, f []string, si map
 			}
 			switch my.IndexType {
 			case "pri":
-				strsql = fmt.Sprintf("ALTER TABLE %s.%s ADD PRIMARY KEY(`%s`);", mysqlQuoteIdent(targetSchema), mysqlQuoteIdent(my.Table), strings.Join(c, "`,`"))
+				strsql = fmt.Sprintf("ALTER TABLE %s.%s ADD PRIMARY KEY(%s);", mysqlQuoteIdent(targetSchema), mysqlQuoteIdent(my.Table), strings.Join(c, ", "))
 			case "uni":
-				strsql = fmt.Sprintf("ALTER TABLE %s.%s ADD UNIQUE INDEX %s(`%s`)%s;", mysqlQuoteIdent(targetSchema), mysqlQuoteIdent(my.Table), mysqlQuoteIdent(v), strings.Join(c, "`,`"), invisibleClause)
+				strsql = fmt.Sprintf("ALTER TABLE %s.%s ADD UNIQUE INDEX %s(%s)%s;", mysqlQuoteIdent(targetSchema), mysqlQuoteIdent(my.Table), mysqlQuoteIdent(v), strings.Join(c, ", "), invisibleClause)
 			case "mul":
-				strsql = fmt.Sprintf("ALTER TABLE %s.%s ADD INDEX %s(`%s`)%s;", mysqlQuoteIdent(targetSchema), mysqlQuoteIdent(my.Table), mysqlQuoteIdent(v), strings.Join(c, "`,`"), invisibleClause)
-			}
-		}
-		sqlS = append(sqlS, strsql)
-	}
-
-	for _, v := range f {
-		// 检查是否是外键约束
-		isForeignKey := false
-		if my.ForeignKeyDefinitions != nil {
-			_, isForeignKey = my.ForeignKeyDefinitions[v]
-		}
-
-		if isForeignKey {
-			// 删除外键约束
-			strsql = fmt.Sprintf("ALTER TABLE %s.%s DROP FOREIGN KEY %s;", mysqlQuoteIdent(targetSchema), mysqlQuoteIdent(my.Table), mysqlQuoteIdent(v))
-		} else {
-			// 处理普通索引、唯一索引和主键索引
-			switch my.IndexType {
-			case "pri":
-				strsql = fmt.Sprintf("ALTER TABLE %s.%s DROP PRIMARY KEY;", mysqlQuoteIdent(targetSchema), mysqlQuoteIdent(my.Table))
-			case "uni":
-				strsql = fmt.Sprintf("ALTER TABLE %s.%s DROP INDEX %s;", mysqlQuoteIdent(targetSchema), mysqlQuoteIdent(my.Table), mysqlQuoteIdent(v))
-			case "mul":
-				strsql = fmt.Sprintf("ALTER TABLE %s.%s DROP INDEX %s;", mysqlQuoteIdent(targetSchema), mysqlQuoteIdent(my.Table), mysqlQuoteIdent(v))
+				strsql = fmt.Sprintf("ALTER TABLE %s.%s ADD INDEX %s(%s)%s;", mysqlQuoteIdent(targetSchema), mysqlQuoteIdent(my.Table), mysqlQuoteIdent(v), strings.Join(c, ", "), invisibleClause)
 			}
 		}
 		sqlS = append(sqlS, strsql)

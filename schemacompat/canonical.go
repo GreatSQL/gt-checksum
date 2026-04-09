@@ -674,14 +674,26 @@ func CanonicalizeMySQLIndexes(indexMap map[string][]string, visibilityMap map[st
 		for _, token := range indexMap[name] {
 			colName := token
 			seq := 0
+			prefix := 0
 			if parts := strings.Split(token, "/*seq*/"); len(parts) == 2 {
 				colName = strings.TrimSpace(parts[0])
-				seqPart := strings.Split(parts[1], "/*type*/")[0]
+				rest := parts[1]
+				typeParts := strings.Split(rest, "/*type*/")
+				seqPart := typeParts[0]
 				if parsed, err := strconv.Atoi(seqPart); err == nil {
 					seq = parsed
 				}
+				// 解析前缀长度；旧 token 无 /*prefix*/ 时向后兼容回退为 0
+				if len(typeParts) == 2 {
+					prefixParts := strings.Split(typeParts[1], "/*prefix*/")
+					if len(prefixParts) == 2 {
+						if parsed, err := strconv.Atoi(strings.TrimSpace(prefixParts[1])); err == nil {
+							prefix = parsed
+						}
+					}
+				}
 			}
-			parsedCols = append(parsedCols, indexColumn{name: colName, seq: seq})
+			parsedCols = append(parsedCols, indexColumn{name: colName, seq: seq, prefix: prefix})
 		}
 
 		sort.Slice(parsedCols, func(i, j int) bool {
