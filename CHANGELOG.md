@@ -1,3 +1,7 @@
+## 1.4.0
+- [功能新增]：支持前缀索引/部分索引的检测与修复。
+- [测试完善]: 新增前缀索引全链路单元测试 11 个。
+
 ## 1.3.0
 - [功能新增]: 新增在 `checkObject=data` 模式下支持只校验部分字段功能，新增 `columns` 参数用于设置校验字段列表，该参数支持不同表名、字段名映射。支持同名列和源端→目标端列名映射；只比较选中的业务列，存在差异时生成 `UPDATE` 修复SQL；通过 `extraRowsSyncToSource` 参数控制是否生成 `DELETE`；当源端数据更多时生成 `columns-advisory.<schema>.<table>.sql` 文件提示人工介入处理。(issue #I6KGOJ #I6KGXF)
 - [功能新增]: `checkObject=struct` 模式新增 VIEW（视图）支持（仅限 MySQL→MySQL）；自动识别 `tables` 中的视图对象并比对定义与列元数据，差异时输出 `ObjectType=view`，修复建议以 advisory 形式写入 fixsql 文件，`checkObject=data` 模式会自动跳过视图对象。(issue #I899YZ)

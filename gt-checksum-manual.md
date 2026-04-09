@@ -377,7 +377,8 @@ bash scripts/regression-test-columns.sh \
 当前 `checkObject=struct` 的能力边界如下：
 
 1. `MySQL -> MySQL`
-   - 已覆盖普通列、默认值、`charset/collation`、`PRIMARY KEY`、`UNIQUE`、普通索引、外键、`CHECK` 风险输出；
+   - 已覆盖普通列、默认值、`charset/collation`、`PRIMARY KEY`、`UNIQUE`、普通索引（含前缀索引）、外键、`CHECK` 风险输出；
+   - 前缀索引支持：若源端或目标端存在前缀索引（如 `INDEX idx_name (col(20))`），程序会正确识别前缀长度差异（全列索引 vs. 前缀索引，或前缀长度不同），并在修复 SQL 中输出正确的 `` `col`(N) `` 语法；全列索引不会被错误修复为全列；
    - 已内置 `utf8 -> utf8mb3`、整数显示宽度、`ZEROFILL`、`ROW_FORMAT` 默认漂移、默认 `utf8mb4` 排序规则漂移等归一化规则；
    - `CHECK`、高风险外键不会自动执行高风险 DDL，而是保留为 `warn-only` 或 advisory 信息；
    - 当列宽度收窄（如 `VARCHAR(200)` → `VARCHAR(100)`）时，程序会自动检查目标端是否存在超宽数据行；若存在则输出 advisory SQL，不自动执行可能导致数据截断的 ALTER 操作。
@@ -1122,7 +1123,7 @@ result=PARTIAL_SUCCESS continue_on_error=true
 
 ## 已知缺陷/问题
 
-截止当前的 v1.3.0 版本，已知存在以下几个约束/问题。
+截止当前的 v1.4.0 版本，已知存在以下几个约束/问题。
 
 - 当存在触发器时，因为触发器的作用，可能导致在修复完一个表后，触发其他表被改变，从而看起来像是修复后仍不一致的情况。这种情况下，需要先临时删除触发器进行修复，完成后在重新创建触发器。
 
