@@ -186,6 +186,20 @@ func BuildTargetColumnRepairPlan(name string, attrs []string, sourceInfo, target
 		Collation: normalizeNullish(getColumnAttr(attrs, 2)),
 	}
 
+	// GENERATED COLUMN: 所有 flavor 组合统一走 DirectDefinition，保留表达式和正确语法。
+	// 必须在 MariaDB 早返回之前检查，否则 MySQL→MySQL 场景会跳过此处理。
+	if hasGeneratedColumnDefinition(createDefinition) {
+		plan.UseDirectDefinition = true
+		if sourceInfo.Flavor == global.DatabaseFlavorMariaDB && targetInfo.Flavor == global.DatabaseFlavorMySQL {
+			plan.DirectDefinition = convertMariaDBColumnDefinitionForMySQL(name, createDefinition)
+		} else {
+			// MySQL→MySQL 及其他组合：createDefinition 来自 SHOW CREATE TABLE，已是合法 DDL，直接使用。
+			def := normalizeWhitespace(strings.TrimSpace(stripLeadingColumnIdentifier(name, createDefinition)))
+			plan.DirectDefinition = def
+		}
+		return plan
+	}
+
 	if sourceInfo.Flavor != global.DatabaseFlavorMariaDB || targetInfo.Flavor != global.DatabaseFlavorMySQL {
 		// MariaDB→MariaDB: COMPRESSED, PERSISTENT and similar attributes are
 		// natively supported on the target side — do not strip them.
@@ -207,9 +221,6 @@ func BuildTargetColumnRepairPlan(name string, attrs []string, sourceInfo, target
 			plan.Charset = "null"
 			plan.Collation = "null"
 		}
-	case hasGeneratedColumnDefinition(createDefinition):
-		plan.UseDirectDefinition = true
-		plan.DirectDefinition = convertMariaDBColumnDefinitionForMySQL(name, createDefinition)
 	case isMariaDBINET6Definition(name, createDefinition) || strings.EqualFold(normalizeWhitespace(plan.Type), "inet6"):
 		plan.Type = "varchar(39)"
 		plan.Charset = "null"
