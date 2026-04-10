@@ -377,14 +377,15 @@ bash scripts/regression-test-columns.sh \
 当前 `checkObject=struct` 的能力边界如下：
 
 1. `MySQL -> MySQL`
-   - 已覆盖普通列、默认值、`charset/collation`、`PRIMARY KEY`、`UNIQUE`、普通索引（含前缀索引）、前缀索引、函数索引、外键、`CHECK` 风险输出；
+   - 已覆盖普通列、默认值、`charset/collation`、`PRIMARY KEY`、`UNIQUE`、普通索引（含前缀索引）、前缀索引、函数索引、虚拟列/生成列（STORED/VIRTUAL Generated Columns）、外键、`CHECK` 风险输出；
    - 已内置 `utf8 -> utf8mb3`、整数显示宽度、`ZEROFILL`、`ROW_FORMAT` 默认漂移、默认 `utf8mb4` 排序规则漂移等归一化规则；
    - `CHECK`、高风险外键不会自动执行高风险 DDL，而是保留为 `warn-only` 或 advisory 信息；
    - 当列宽度收窄（如 `VARCHAR(200)` → `VARCHAR(100)`）时，程序会自动检查目标端是否存在超宽数据行；若存在则输出 advisory SQL，不自动执行可能导致数据截断的 ALTER 操作。
 2. `MariaDB -> MySQL 8.0/8.4`
    - 已覆盖安全子集：`JSON`、generated columns、`INET6`、`UUID`、`COMPRESSED`、`IGNORED INDEX`；
    - `MariaDB JSON` 可通过 `mariaDBJSONTargetType` 配置为 `JSON`、`LONGTEXT` 或 `TEXT`；
-   - `COMPRESSED`、`MariaDB JSON -> LONGTEXT/TEXT` 的语义降级会保留为 `warn-only`。
+   - `COMPRESSED`、`MariaDB JSON -> LONGTEXT/TEXT` 的语义降级会保留为 `warn-only`；
+   - **MariaDB 10.0 生成列兼容**：MariaDB 10.0 的 `INFORMATION_SCHEMA.COLUMNS.EXTRA` 对 STORED 生成列只返回 `PERSISTENT`，对 VIRTUAL 生成列只返回 `VIRTUAL`（均无 `GENERATED` 后缀），程序可自动识别并与 MySQL 8.0 的 `STORED GENERATED`/`VIRTUAL GENERATED` 等价比对；MariaDB 10.0 表达式的大写无反引号格式（如 `CAST(col AS SIGNED)`）与 MySQL 8.0 小写带反引号格式（如 `cast(\`col\` as signed)`）也会自动归一化，不产生误报。
 3. `MariaDB -> MariaDB`（同系列或升级方向）
    - 支持所有 MySQL→MySQL 覆盖的常规列、索引、默认值、charset/collation 比对与 fix SQL 生成；
    - `COMPRESSED`、`PERSISTENT` 等 MariaDB 原生列属性在目标端保留，不会被剥除；
