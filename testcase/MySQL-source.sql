@@ -287,13 +287,32 @@ CREATE TABLE indext(
     `modify_time` DATETIME DEFAULT NULL,
     `deleted` TINYINT(1) NOT NULL DEFAULT '0',
     `商品描述` VARCHAR(200) DEFAULT NULL COMMENT '商品描述',  -- 测试中文字段名
-    `price_off_08` DECIMAL(10,2) GENERATED ALWAYS AS (price * 0.8) STORED,
-    `price_off_05` DECIMAL(10,2) GENERATED ALWAYS AS (price * 0.5) VIRTUAL,
+    
+    /* === 虚拟列和函数索引测试（平行声明，各取所需） === */
+    /* 1. 这一组专属 MySQL 5.7+ 和 8.0+ */
+    /*!50706 `v_price_off_08` DECIMAL(10,2) GENERATED ALWAYS AS (price * 0.8) STORED, */
+    /*!50706 `v_price_off_05` DECIMAL(10,2) GENERATED ALWAYS AS (price * 0.5) VIRTUAL, */
+    /*!50706 `v_abs_price` DECIMAL(10,2) GENERATED ALWAYS AS (ABS(price)) VIRTUAL, */
+    
+    /* 2. 这一组专属 MariaDB 10.2.1+ */
+    /*M!100201 `v_price_off_08` DECIMAL(10,2) GENERATED ALWAYS AS (price * 0.8) STORED, */
+    /*M!100201 `v_price_off_05` DECIMAL(10,2) GENERATED ALWAYS AS (price * 0.5) VIRTUAL, */
+    /*M!100201 `v_abs_price` DECIMAL(10,2) GENERATED ALWAYS AS (ABS(price)) VIRTUAL, */
+    
     PRIMARY KEY (`id`),
     KEY `idx 2` (`tenantry_id`,`code`),
     KEY `idx_3` (`code`,`tenantry_id`),
-    KEY `idx_4` (goods_name(20)),  -- 测试前缀索引/部分索引
-    KEY `idx_5` ((ABS(`price`))),  -- 测试函数索引
+    KEY `idx_4` (goods_name(20)),
+    
+    /* MySQL 8.0.13+ 原生函数索引 */
+    /*!80013 KEY `idx_5` ((ABS(`price`))), */
+    
+    /* MySQL 5.7+ 基于虚拟列的索引 */
+    /*!50706 KEY `idx_6` (v_abs_price), */
+    
+    /* MariaDB 10.2.1+ 基于虚拟列的索引 */
+    /*M!100201 KEY `idx_6` (v_abs_price), */
+
     KEY `中文索引` (`商品描述`)  -- 测试中文索引名
 ) ENGINE=InnoDB AUTO_INCREMENT=10 COMMENT 'table indext';
 INSERT INTO indext(`id`,`tenantry_id`,`code`,`goods_name`,`props_name`,`price`,`price_url`,`create_time`,`modify_time`,`deleted`,`商品描述`) VALUES ('583532949','8674665223082153551','aut','animi','eum','1.99','fugit','2026-02-17 16:04:25','2025-06-20 22:10:41','1','高品质商品');
