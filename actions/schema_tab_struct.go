@@ -614,6 +614,27 @@ func hasAutoIncrementColumnAttribute(columnDefinition []string) bool {
 	return false
 }
 
+// adjustDestColumnSeqAfterDrops 删除 destColumnSeq 中 dropped 列的条目，
+// 并将剩余列的序号向前压缩，消除因 DROP 列引起的位置偏移。
+// 例如：目标端 my_row_id(pos=0)/f1(pos=1)/f2(pos=2)，DROP my_row_id 后
+// f1→0、f2→1，与源端 f1(pos=0)/f2(pos=1) 保持一致，避免误判为序号不匹配。
+func adjustDestColumnSeqAfterDrops(destColumnSeq map[string]int, dropped []string) {
+	droppedPositions := make([]int, 0, len(dropped))
+	for _, col := range dropped {
+		droppedPositions = append(droppedPositions, destColumnSeq[col])
+		delete(destColumnSeq, col)
+	}
+	sort.Ints(droppedPositions)
+	for col, seq := range destColumnSeq {
+		adj := 0
+		for _, dp := range droppedPositions {
+			if dp < seq {
+				adj++
+			}
+		}
+		destColumnSeq[col] -= adj
+	}
+}
 
 func (stcls *schemaTable) sourceVersionInfo() global.MySQLVersionInfo {
 	if stcls != nil && strings.TrimSpace(stcls.sourceVersion.Raw) != "" {
@@ -3443,10 +3464,13 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 				alterSlice = append(alterSlice, dropSql)
 				colsToDelete = append(colsToDelete, v1)
 			}
-			// 在循环外删除所有标记的列
+			// 在循环外删除所有标记的列，并同步调整 destColumnSeq
+			// 若不调整，被删列之后的列序号与源端对比时会产生偏移，
+			// 导致仅有 collation 差异的列被误判为"序号不匹配"而生成重复 MODIFY。
 			for _, col := range colsToDelete {
 				delete(destColumnMap, col)
 			}
+			adjustDestColumnSeqAfterDrops(destColumnSeq, colsToDelete)
 		}
 		vlog = fmt.Sprintf("(%d) %s DROP SQL for %s.%s: %v", logThreadSeq, event, destSchema, stcls.table, alterSlice)
 		global.Wlog.Debug(vlog)

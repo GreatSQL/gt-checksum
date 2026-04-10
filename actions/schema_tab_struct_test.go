@@ -1308,3 +1308,88 @@ func TestShouldCompareRoutineMetadata(t *testing.T) {
 		})
 	}
 }
+
+// ---------- adjustDestColumnSeqAfterDrops ----------
+
+// TestAdjustDestColumnSeqAfterDrops_singleDropAtHead 模拟 MySQL 8.4 目标端
+// 存在隐式主键 my_row_id（position=0），DROP 后剩余列序号应向前压缩一位。
+// 这是 dul-fix-collation bug 的核心场景：若序号不调整，f1(dest=1) vs f1(src=0)
+// 被误判为序号不匹配，导致仅有 collation 差异的列也生成重复的 MODIFY 语句。
+func TestAdjustDestColumnSeqAfterDrops_singleDropAtHead(t *testing.T) {
+	seq := map[string]int{
+		"MY_ROW_ID": 0,
+		"F1":        1,
+		"F2":        2,
+		"F3":        3,
+	}
+	adjustDestColumnSeqAfterDrops(seq, []string{"MY_ROW_ID"})
+
+	if _, exists := seq["MY_ROW_ID"]; exists {
+		t.Fatal("MY_ROW_ID should have been removed from seq map")
+	}
+	want := map[string]int{"F1": 0, "F2": 1, "F3": 2}
+	for col, wantSeq := range want {
+		if got := seq[col]; got != wantSeq {
+			t.Errorf("seq[%s] = %d, want %d", col, got, wantSeq)
+		}
+	}
+}
+
+// TestAdjustDestColumnSeqAfterDrops_multipleDrops 验证连续删除多列后序号压缩正确。
+func TestAdjustDestColumnSeqAfterDrops_multipleDrops(t *testing.T) {
+	seq := map[string]int{
+		"A": 0,
+		"B": 1,
+		"C": 2,
+		"D": 3,
+		"E": 4,
+	}
+	// 删除 A(0) 和 C(2)，剩余 B→0，D→1，E→2
+	adjustDestColumnSeqAfterDrops(seq, []string{"A", "C"})
+
+	if _, exists := seq["A"]; exists {
+		t.Fatal("A should have been removed")
+	}
+	if _, exists := seq["C"]; exists {
+		t.Fatal("C should have been removed")
+	}
+	want := map[string]int{"B": 0, "D": 1, "E": 2}
+	for col, wantSeq := range want {
+		if got := seq[col]; got != wantSeq {
+			t.Errorf("seq[%s] = %d, want %d", col, got, wantSeq)
+		}
+	}
+}
+
+// TestAdjustDestColumnSeqAfterDrops_dropAtTail 删除末尾列，前面列序号不变。
+func TestAdjustDestColumnSeqAfterDrops_dropAtTail(t *testing.T) {
+	seq := map[string]int{
+		"F1": 0,
+		"F2": 1,
+		"F3": 2,
+	}
+	adjustDestColumnSeqAfterDrops(seq, []string{"F3"})
+
+	want := map[string]int{"F1": 0, "F2": 1}
+	for col, wantSeq := range want {
+		if got := seq[col]; got != wantSeq {
+			t.Errorf("seq[%s] = %d, want %d", col, got, wantSeq)
+		}
+	}
+}
+
+// TestAdjustDestColumnSeqAfterDrops_noDrop 无删除列时 seq 保持不变。
+func TestAdjustDestColumnSeqAfterDrops_noDrop(t *testing.T) {
+	seq := map[string]int{
+		"F1": 0,
+		"F2": 1,
+	}
+	adjustDestColumnSeqAfterDrops(seq, []string{})
+
+	want := map[string]int{"F1": 0, "F2": 1}
+	for col, wantSeq := range want {
+		if got := seq[col]; got != wantSeq {
+			t.Errorf("seq[%s] = %d, want %d", col, got, wantSeq)
+		}
+	}
+}
