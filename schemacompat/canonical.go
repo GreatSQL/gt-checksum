@@ -114,6 +114,7 @@ var (
 	fkDeleteRuleRegexp         = regexp.MustCompile(`(?i)\bon\s+delete\s+(cascade|restrict|set null|no action|set default)`)
 	fkUpdateRuleRegexp         = regexp.MustCompile(`(?i)\bon\s+update\s+(cascade|restrict|set null|no action|set default)`)
 	mariadbCompressedComment   = regexp.MustCompile(`(?i)/\*m!\d+\s+compressed\s*\*/`)
+	backtickIdentifierRegexp   = regexp.MustCompile("`([^`]+)`")
 )
 
 func normalizeWhitespace(v string) string {
@@ -293,6 +294,18 @@ func normalizeMySQLColumnType(raw string) (string, string, ColumnVisibility, boo
 		generatedKind = "VIRTUAL"
 		s = strings.ReplaceAll(s, " virtual generated", " ")
 	}
+	// MariaDB 10.0 reports EXTRA as "PERSISTENT" or "VIRTUAL" without the
+	// "GENERATED" suffix that newer MariaDB/MySQL versions append.  Handle
+	// these standalone markers so they are treated identically to the
+	// "STORED GENERATED" / "VIRTUAL GENERATED" forms.
+	if generatedKind == "" && (strings.Contains(s, " persistent") || strings.HasSuffix(s, "persistent")) {
+		generatedKind = "STORED"
+		s = strings.ReplaceAll(s, " persistent", " ")
+	}
+	if generatedKind == "" && (strings.Contains(s, " virtual") || strings.HasSuffix(s, "virtual")) {
+		generatedKind = "VIRTUAL"
+		s = strings.ReplaceAll(s, " virtual", " ")
+	}
 	if strings.Contains(s, " generated always") {
 		s = strings.ReplaceAll(s, " generated always", " ")
 	}
@@ -432,6 +445,21 @@ func normalizeGeneratedExpression(expr string) string {
 	for hasBalancedOuterParentheses(normalized) {
 		normalized = normalizeWhitespace(normalized[1 : len(normalized)-1])
 	}
+	// Normalize to lowercase: SQL keywords and function names are case-insensitive.
+	// MariaDB 10.0 preserves the original case written by the user (e.g. CAST, AS
+	// SIGNED), while MySQL 8.0 and newer MariaDB versions always lowercase the
+	// expression in SHOW CREATE TABLE output.
+	// Note: ToLower also affects string literals inside expressions.  Differences
+	// in string-literal case between source and target (e.g. 'ABC' vs 'abc') will
+	// be silently ignored.  This is an accepted trade-off: generated-column
+	// expressions that contain string literals whose case differs across databases
+	// are extremely rare in practice.
+	normalized = strings.ToLower(normalized)
+	// Strip backtick quoting from identifiers.  MySQL 8.0 always quotes column
+	// references inside generated-column expressions (e.g. `num1`), whereas
+	// MariaDB 10.0 emits bare identifiers (e.g. num1).  Removing the backticks
+	// makes the two representations compare equal.
+	normalized = backtickIdentifierRegexp.ReplaceAllString(normalized, "$1")
 	return normalized
 }
 

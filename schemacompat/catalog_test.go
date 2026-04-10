@@ -322,3 +322,161 @@ func TestBuildSchemaFeatureCatalogMariaDBInvisibleIndexes(t *testing.T) {
 		})
 	}
 }
+
+// TestNormalizeMySQLColumnTypeMariaDB100Generated 验证 MariaDB 10.0 的生成列归一化行为。
+// MariaDB 10.0 的 INFORMATION_SCHEMA.COLUMNS.EXTRA 对 STORED 生成列只返回 "PERSISTENT"，
+// 对 VIRTUAL 生成列只返回 "VIRTUAL"（均不带 "GENERATED" 后缀）。与 MySQL 8.0 的
+// "STORED GENERATED" / "VIRTUAL GENERATED" 应被识别为等价。
+func TestNormalizeMySQLColumnTypeMariaDB100Generated(t *testing.T) {
+	mariaDB100 := global.MySQLVersionInfo{Flavor: global.DatabaseFlavorMariaDB, Major: 10, Minor: 0, Series: "10.0"}
+	mysql80 := global.MySQLVersionInfo{Flavor: global.DatabaseFlavorMySQL, Major: 8, Minor: 0, Series: "8.0"}
+
+	tests := []struct {
+		name        string
+		srcType     string // MariaDB 10.0 侧（EXTRA 仅含 PERSISTENT/VIRTUAL）
+		dstType     string // MySQL 8.0 侧（EXTRA 含 STORED GENERATED / VIRTUAL GENERATED）
+		wantCompat  bool   // 期望两者被判定为兼容（无差异）
+	}{
+		{
+			name:       "bigint-persistent-vs-stored-generated",
+			srcType:    "bigint(20) PERSISTENT",
+			dstType:    "bigint STORED GENERATED",
+			wantCompat: true,
+		},
+		{
+			name:       "varchar-persistent-vs-stored-generated",
+			srcType:    "varchar(5) PERSISTENT",
+			dstType:    "varchar(5) STORED GENERATED",
+			wantCompat: true,
+		},
+		{
+			name:       "char-persistent-vs-stored-generated",
+			srcType:    "char(5) PERSISTENT",
+			dstType:    "char(5) STORED GENERATED",
+			wantCompat: true,
+		},
+		{
+			name:       "varchar-virtual-vs-virtual-generated",
+			srcType:    "varchar(5) VIRTUAL",
+			dstType:    "varchar(5) VIRTUAL GENERATED",
+			wantCompat: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srcAttrs := []string{tt.srcType, "null", "null", "YES", "null", ""}
+			dstAttrs := []string{tt.dstType, "null", "null", "YES", "null", ""}
+			srcCanonical := CanonicalizeMySQLColumn("col", srcAttrs, mariaDB100)
+			dstCanonical := CanonicalizeMySQLColumn("col", dstAttrs, mysql80)
+			decision := DecideColumnDefinitionCompatibility(srcCanonical, dstCanonical)
+			if tt.wantCompat && decision.IsMismatch() {
+				t.Fatalf("expected compatible, got mismatch: src=%q dst=%q reason=%s",
+					tt.srcType, tt.dstType, decision.Reason)
+			}
+			if !tt.wantCompat && !decision.IsMismatch() {
+				t.Fatalf("expected mismatch, got compatible: src=%q dst=%q", tt.srcType, tt.dstType)
+			}
+		})
+	}
+}
+
+// TestDecideColumnDefinitionCompatibilityMariaDB100GeneratedExpression 回归验证
+// MariaDB 10.0 源端与 MySQL 8.0 目标端生成列表达式的兼容性判断。
+//
+// MariaDB 10.0 在 SHOW CREATE TABLE 中输出的生成列表达式保留用户原始大小写、
+// 且列引用不带反引号（如 CAST(num1 AS SIGNED)）；MySQL 8.0 则总是输出小写、
+// 带反引号的形式（如 cast(`num1` as signed)）并在最外层再套一对括号。
+// 修复前两者被误判为不同，导致不必要的 MODIFY COLUMN 修复 SQL 产生。
+func TestDecideColumnDefinitionCompatibilityMariaDB100GeneratedExpression(t *testing.T) {
+	mariaDB100 := global.MySQLVersionInfo{Flavor: global.DatabaseFlavorMariaDB, Major: 10, Minor: 0, Series: "10.0"}
+	mysql80 := global.MySQLVersionInfo{Flavor: global.DatabaseFlavorMySQL, Major: 8, Minor: 0, Series: "8.0"}
+
+	tests := []struct {
+		name          string
+		srcType       string // MariaDB 10.0 EXTRA（PERSISTENT/VIRTUAL，无 GENERATED 后缀）
+		srcDefinition string // MariaDB 10.0 SHOW CREATE TABLE 列定义片段（大写+无反引号）
+		dstType       string // MySQL 8.0 EXTRA（STORED GENERATED / VIRTUAL GENERATED）
+		dstDefinition string // MySQL 8.0 SHOW CREATE TABLE 列定义片段（小写+反引号+双层括号）
+		wantCompat    bool
+	}{
+		{
+			// good_sub.vnum: CAST 表达式，大小写+反引号差异
+			name:          "mariadb100-cast-expression-vs-mysql80-lowercase-backtick",
+			srcType:       "bigint(20) PERSISTENT",
+			srcDefinition: "`vnum` bigint(20) AS (CAST(num1 AS SIGNED) - CAST(num2 AS SIGNED)) PERSISTENT",
+			dstType:       "bigint STORED GENERATED",
+			dstDefinition: "`vnum` bigint GENERATED ALWAYS AS ((cast(`num1` as signed) - cast(`num2` as signed))) STORED",
+			wantCompat:    true,
+		},
+		{
+			// good_pad.vtxt: RTRIM 函数，大小写+反引号差异
+			name:          "mariadb100-rtrim-expression-vs-mysql80-lowercase-backtick",
+			srcType:       "varchar(5) PERSISTENT",
+			srcDefinition: "`vtxt` varchar(5) AS (RTRIM(txt)) PERSISTENT",
+			dstType:       "varchar(5) STORED GENERATED",
+			dstDefinition: "`vtxt` varchar(5) collate utf8mb4_general_ci GENERATED ALWAYS AS (rtrim(`txt`)) STORED",
+			wantCompat:    true,
+		},
+		{
+			// good_pad.vtxt2: 裸列引用，反引号差异
+			name:          "mariadb100-bare-column-ref-vs-mysql80-backtick-virtual",
+			srcType:       "varchar(5) VIRTUAL",
+			srcDefinition: "`vtxt2` varchar(5) AS (txt) VIRTUAL",
+			dstType:       "varchar(5) VIRTUAL GENERATED",
+			dstDefinition: "`vtxt2` varchar(5) collate utf8mb4_general_ci GENERATED ALWAYS AS (`txt`) VIRTUAL",
+			wantCompat:    true,
+		},
+		{
+			// good_pad.txt2: 裸列引用 PERSISTENT vs MySQL STORED，反引号差异
+			name:          "mariadb100-bare-column-ref-persistent-vs-mysql80-backtick-stored",
+			srcType:       "char(5) PERSISTENT",
+			srcDefinition: "`txt2` char(5) AS (txt) PERSISTENT",
+			dstType:       "char(5) STORED GENERATED",
+			dstDefinition: "`txt2` char(5) collate utf8mb4_general_ci GENERATED ALWAYS AS (`txt`) STORED",
+			wantCompat:    true,
+		},
+		{
+			// 真正不同的表达式，仍应判为不兼容
+			name:          "mariadb100-truly-different-expression",
+			srcType:       "bigint(20) PERSISTENT",
+			srcDefinition: "`v` bigint(20) AS (a + b) PERSISTENT",
+			dstType:       "bigint STORED GENERATED",
+			dstDefinition: "`v` bigint GENERATED ALWAYS AS (`a` * `b`) STORED",
+			wantCompat:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srcAttrs := []string{tt.srcType, "null", "null", "YES", "null", ""}
+			dstAttrs := []string{tt.dstType, "null", "null", "YES", "null", ""}
+
+			colName := "col"
+			// 从 srcDefinition 提取列名（取反引号之间的内容）
+			if len(tt.srcDefinition) > 0 && tt.srcDefinition[0] == '`' {
+				end := 1
+				for end < len(tt.srcDefinition) && tt.srcDefinition[end] != '`' {
+					end++
+				}
+				if end < len(tt.srcDefinition) {
+					colName = tt.srcDefinition[1:end]
+				}
+			}
+
+			srcCanonical := CanonicalizeColumnForComparison(colName, srcAttrs, mariaDB100, mysql80, tt.srcDefinition, "")
+			dstCanonical := CanonicalizeColumnForComparison(colName, dstAttrs, mysql80, mariaDB100, tt.dstDefinition, "")
+
+			decision := DecideColumnDefinitionCompatibility(srcCanonical, dstCanonical)
+			if tt.wantCompat && decision.IsMismatch() {
+				t.Fatalf("expected compatible, got mismatch:\n  src definition: %s\n  dst definition: %s\n  reason: %s\n  src expr: %q\n  dst expr: %q",
+					tt.srcDefinition, tt.dstDefinition, decision.Reason,
+					srcCanonical.GeneratedExpression, dstCanonical.GeneratedExpression)
+			}
+			if !tt.wantCompat && !decision.IsMismatch() {
+				t.Fatalf("expected mismatch, got compatible:\n  src definition: %s\n  dst definition: %s",
+					tt.srcDefinition, tt.dstDefinition)
+			}
+		})
+	}
+}
