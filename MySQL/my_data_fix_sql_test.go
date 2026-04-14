@@ -751,3 +751,55 @@ func TestFixAlterIndexSqlExec_FuncIndex_NoOuterParens(t *testing.T) {
 		t.Errorf("functional index DDL wrong, got: %s\nwant substring: %s", got, want)
 	}
 }
+
+// TestFixAlterIndexSqlExec_FuncIndex_JSONWithSingleQuotes 验证含单引号的 JSON 函数索引
+// 生成的 DDL 中不包含反斜杠转义的单引号（修复 INFORMATION_SCHEMA.EXPRESSION 转义问题）。
+func TestFixAlterIndexSqlExec_FuncIndex_JSONWithSingleQuotes(t *testing.T) {
+	my := newFixStruct("mul")
+	// 模拟 EXPRESSION 列反转义后的表达式（单引号已还原）
+	jsonExpr := "cast(json_extract(`f9`,_utf8mb4'$.tags') as char(50) array)"
+	token := makeFuncToken(jsonExpr, "1")
+	sqls := my.FixAlterIndexSqlExec(
+		[]string{"idx_multi_tags"},
+		nil,
+		map[string][]string{"idx_multi_tags": {token}},
+		"mysql", 1,
+	)
+	if len(sqls) != 1 {
+		t.Fatalf("expected 1 sql, got %d: %v", len(sqls), sqls)
+	}
+	got := sqls[0]
+	// DDL 中必须包含正常单引号，不能有反斜杠转义
+	if strings.Contains(got, `\'`) {
+		t.Errorf("DDL must NOT contain escaped single quotes (\\'), got: %s", got)
+	}
+	if !strings.Contains(got, "_utf8mb4'$.tags'") {
+		t.Errorf("DDL should contain unescaped single quotes, got: %s", got)
+	}
+	if !strings.Contains(got, "ADD INDEX `idx_multi_tags`") {
+		t.Errorf("DDL missing index name, got: %s", got)
+	}
+}
+
+// TestFixAlterIndexSqlExec_FuncIndex_JSONUnquoteWithSingleQuotes 验证 json_unquote 函数索引。
+func TestFixAlterIndexSqlExec_FuncIndex_JSONUnquoteWithSingleQuotes(t *testing.T) {
+	my := newFixStruct("mul")
+	jsonExpr := "cast(json_unquote(json_extract(`f9`,_utf8mb4'$.status')) as char(50) charset utf8mb4)"
+	token := makeFuncToken(jsonExpr, "1")
+	sqls := my.FixAlterIndexSqlExec(
+		[]string{"idx_v_f9"},
+		nil,
+		map[string][]string{"idx_v_f9": {token}},
+		"mysql", 1,
+	)
+	if len(sqls) != 1 {
+		t.Fatalf("expected 1 sql, got %d: %v", len(sqls), sqls)
+	}
+	got := sqls[0]
+	if strings.Contains(got, `\'`) {
+		t.Errorf("DDL must NOT contain escaped single quotes (\\'), got: %s", got)
+	}
+	if !strings.Contains(got, "_utf8mb4'$.status'") {
+		t.Errorf("DDL should contain unescaped single quotes, got: %s", got)
+	}
+}

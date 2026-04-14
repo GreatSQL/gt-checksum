@@ -217,6 +217,10 @@ func (my *QueryTable) IndexDisposF(queryData []map[string]interface{}, logThread
 		funcExpr := ""
 		if e, ok := v["expression"]; ok && e != nil {
 			funcExpr = fmt.Sprintf("%s", e)
+			// MySQL INFORMATION_SCHEMA.STATISTICS.EXPRESSION 列会对字符串字面值中的
+			// 单引号做反斜杠转义（如 _utf8mb4\'$.tags\' → _utf8mb4'$.tags'）。
+			// 生成 DDL 时必须还原为原始单引号，否则 ALTER TABLE 语法报错。
+			funcExpr = strings.ReplaceAll(funcExpr, `\'`, `'`)
 		}
 		isFuncIndex := rawColumnName == nil || columnName == "<nil>"
 
