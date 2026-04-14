@@ -68,8 +68,8 @@ CREATE TABLE teststring(
    f9 SET('aa','bb','cc','dd')
 );
 ALTER TABLE teststring ADD INDEX idx_teststring_1(f1);
-INSERT INTO teststring(f1,f2,f3,f4,f5,f6,f7,f8,f9) VALUES('1','abcde','abc123','abcd.1234','hello gt-checksum','hello ','hello gt-checksum','a','aa,bb');
-INSERT INTO teststring(f1,f2,f3,f4,f5,f6,f7,f8,f9) VALUES('3','klmno','ghi789','ijkl.9012',"a\\\b\\'c",'hello ','hello gt-checksum','c','cc,dd');
+INSERT INTO teststring(f1,f2,f3,f4,f5,f6,f7,f8) VALUES('1','abcde','abc123','abcd.1234','hello gt-checksum','hello ','hello gt-checksum','a');
+INSERT INTO teststring(f1,f2,f3,f4,f5,f6,f7,f8) VALUES('3','klmno','ghi789','ijkl.9012',"a\\\b\\'c",'hello ','hello gt-checksum','c');
 
 -- 测试view
 create view v_teststring as select * from teststring where f1<='3';

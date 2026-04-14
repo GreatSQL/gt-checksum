@@ -57,6 +57,7 @@ INSERT INTO testtime(f1,f2,f3,f4,f5,f6) VALUES('2026',2026,'2026-02-12','15:15:3
 
 DROP TABLE IF EXISTS teststring;
 CREATE TABLE teststring(
+   id INT UNSIGNED NOT NULL AUTO_INCREMENT,
    f1 CHAR,
    f2 CHAR(5),
    f3 VARCHAR(10),
@@ -65,12 +66,43 @@ CREATE TABLE teststring(
    f6 MEDIUMTEXT,
    f7 LONGTEXT,
    f8 ENUM('a','b','c','d'),
-   f9 SET('aa','bb','cc','dd')
+   /*!50708 f9 JSON COMMENT 'MySQL原生JSON类型', */
+   /*M!100207 f9 JSON COMMENT 'MariaDB别名JSON类型', */
+   /*M!100207 v_f9 VARCHAR(50) AS (JSON_UNQUOTE(JSON_EXTRACT(`f9`, '$.status'))) VIRTUAL, */
+   f10 SET('aa','bb','cc','dd'),
+   PRIMARY KEY(id),
+   /*!80017 KEY `idx_v_f9`((CAST(JSON_UNQUOTE(JSON_EXTRACT(`f9`, '$.status')) AS CHAR(50)))), */
+   /*M!100207 KEY `idx_v_f9`(v_f9), */
+   /*!80017 KEY `idx_multi_tags`((CAST(`f9`->'$.tags' AS CHAR(50) ARRAY))), */
+   KEY idx_teststring_f2(f2)
 );
-ALTER TABLE teststring ADD INDEX idx_teststring_1(f1);
-INSERT INTO teststring(f1,f2,f3,f4,f5,f6,f7,f8,f9) VALUES('1','abcde','abc123','abcd.1234','hello gt-checksum','hello ','hello gt-checksum','a','aa,bb');
-INSERT INTO teststring(f1,f2,f3,f4,f5,f6,f7,f8,f9) VALUES('2','fghij','def456','efgh.5678',"hello, i\'m gt-checksum",'hello ','hello gt-checksum','b','cc,dd');
-INSERT INTO teststring(f1,f2,f3,f4,f5,f6,f7,f8,f9) VALUES('3','klmno','ghi789','ijkl.9012',"a\\\b\\'c",'hello ','hello gt-checksum','c','cc,dd');
+INSERT INTO teststring(
+   f1, f2, f3, f4, f5, f6, f7, f8, f10
+   /*!50708 , f9 */
+   /*M!100207 , f9 */
+) VALUES (
+   '1', 'abcde', 'abc123', 'abcd.1234', 'hello gt-checksum', 'hello ', 'hello gt-checksum', 'a', 'aa,bb'
+   /*!50708 , '{"status": 1, "tags": ["tagA"]}' */
+   /*M!100207 , '{"status": 1, "tags": ["tagA"]}' */
+);
+INSERT INTO teststring(
+   f1, f2, f3, f4, f5, f6, f7, f8, f10
+   /*!50708 , f9 */
+   /*M!100207 , f9 */
+) VALUES (
+   '2', 'fghij', 'def456', 'efgh.5678', "hello, i\'m gt-checksum", 'hello ', 'hello gt-checksum', 'b', 'cc,dd'
+   /*!50708 , '{"status": 2, "tags": ["tagB"]}' */
+   /*M!100207 , '{"status": 2, "tags": ["tagB"]}' */
+);
+INSERT INTO teststring(
+   f1, f2, f3, f4, f5, f6, f7, f8, f10
+   /*!50708 , f9 */
+   /*M!100207 , f9 */
+) VALUES (
+   '3', 'klmno', 'ghi789', 'ijkl.9012', "a\\\b\\'c", 'hello ', 'hello gt-checksum', 'c', 'cc,dd'
+   /*!50708 , '{"status": 3, "tags": ["tagC"]}' */
+   /*M!100207 , '{"status": 3, "tags": ["tagC"]}' */
+);
 
 -- 测试view
 create view v_teststring as select * from teststring where f1>'3';
