@@ -5,6 +5,7 @@
 - [测试完善]: 新增 MariaDB 10.0 生成列兼容性单元测试 9 个（`TestNormalizeMySQLColumnTypeMariaDB100Generated`、`TestDecideColumnDefinitionCompatibilityMariaDB100GeneratedExpression`），覆盖 PERSISTENT/VIRTUAL 关键字归一化、CAST/RTRIM/裸列引用等表达式跨版本等价性验证；testcase 生成列声明改为版本条件注释格式（`/*!50706 */`），提升测试用例跨版本兼容性。
 - [测试完善]: 新增 `TestBuildTargetColumnRepairPlanGeneratedColumn` 单元测试 8 个，覆盖 MySQL→MySQL STORED/VIRTUAL 列表达式完整性、关键字保留、MariaDB→MySQL PERSISTENT→STORED 转换、空 createDefinition 及非生成列安全性等场景；同步在 `testcase/MySQL-source.sql` 的 `indext` 表新增 `price_off_08`/`price_off_05` 生成列字段，补全回归测例。
 - [测试完善]: 新增前缀索引专项单元测试 11 个，覆盖全列/前缀差异、长度不同、多列复合等场景。
+- [问题修复]: 修复 DROP 列后 destColumnSeq 未同步压缩导致 collation 修复列重复出现在 ALTER TABLE 中的问题：当目标端含需 DROP 的列（如 MySQL 8.4 隐式主键 my_row_id）时，旧逻辑仅从 destColumnMap 移除该列而未更新列序号，导致剩余列位置全部偏移、触发"序号不匹配"，collation 修复候选列因此被重复追加至 ALTER TABLE；修复后在 DROP 处理块完成后调用 adjustDestColumnSeqAfterDrops() 压缩序号；修复 JSON 函数索引表达式中单引号被转义导致 DDL 语法报错；新增 4 个单元测试覆盖主场景及边界情况。
 - [问题修复]: 修复同名索引内容不同时漏检的问题；原来只在索引名称集合有差异时才对比同名索引的具体内容，现在无论名称集合是否一致都会进行内容比对，确保不遗漏。
 
 ## 1.3.0
