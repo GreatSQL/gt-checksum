@@ -485,6 +485,45 @@ func TestViewColumnSignaturesEqual_collationDiff(t *testing.T) {
 	}
 }
 
+// TestNormalizeViewColumnTypeForCompare_intDisplayWidth verifies that
+// MariaDB-style "int(10) unsigned" and MySQL 8.0 "int unsigned" normalise to
+// the same canonical form, which is the root-cause fix for the
+// "id|int(10) unsigned|NO||" vs "id|int unsigned|NO||" view metadata drift.
+func TestNormalizeViewColumnTypeForCompare_intDisplayWidth(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"int(10) unsigned", "int unsigned"},
+		{"INT UNSIGNED", "int unsigned"},
+		{"bigint(20)", "bigint"},
+		{"BIGINT", "bigint"},
+		{"tinyint(1)", "tinyint"},
+		{"integer(11)", "int"},
+		{"year(4)", "year"},
+		{"varchar(100)", "varchar(100)"}, // unchanged
+	}
+	for _, c := range cases {
+		if got := normalizeViewColumnTypeForCompare(c.in); got != c.want {
+			t.Errorf("normalize(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestViewColumnSignaturesEqual_intDisplayWidthDrift is the end-to-end regression
+// for the user-reported bug: src=MariaDB 10.0 reports "int(10) unsigned" while
+// dst=MySQL 8.0 reports "int unsigned" for the same column; the two signatures
+// must compare equal after normalization.
+func TestViewColumnSignaturesEqual_intDisplayWidthDrift(t *testing.T) {
+	// Signatures are the post-normalization shape that queryMySQLViewColumnSignature
+	// produces — both ends should land on "int unsigned".
+	src := []string{"id|" + normalizeViewColumnTypeForCompare("int(10) unsigned") + "|NO||"}
+	dst := []string{"id|" + normalizeViewColumnTypeForCompare("int unsigned") + "|NO||"}
+	ok, reason := viewColumnSignaturesEqual(src, dst)
+	if !ok {
+		t.Errorf("int(10) unsigned vs int unsigned should be equal after normalization, got reason=%q", reason)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // viewColumnSignaturesCollationOnly
 // ---------------------------------------------------------------------------

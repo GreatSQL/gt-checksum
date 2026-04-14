@@ -2288,6 +2288,32 @@ func warnViewSQLSecurityDifference(logThreadSeq int64, sourceSchema, sourceViewN
 	return true
 }
 
+// viewIntegerDisplayWidthRegex matches MySQL/MariaDB integer display widths such as
+// "int(10)" or "bigint(20)".  MySQL 8.0.17+ removed display widths from
+// INFORMATION_SCHEMA.COLUMNS for integer types (except those declared with ZEROFILL),
+// so a MariaDB 10.x source reporting "int(10) unsigned" will textually differ from a
+// MySQL 8.0 destination reporting "int unsigned" even though the columns are
+// semantically identical.  This regex lets us strip the display width before
+// comparing view column signatures.
+var viewIntegerDisplayWidthRegex = regexp.MustCompile(`\b(tinyint|smallint|mediumint|int|integer|bigint)\s*\(\s*\d+\s*\)`)
+
+// viewYearDisplayWidthRegex normalises the legacy "year(4)" form (MySQL 5.6/5.7)
+// to plain "year" (MySQL 8.0+ rendering).
+var viewYearDisplayWidthRegex = regexp.MustCompile(`\byear\s*\(\s*\d+\s*\)`)
+
+// normalizeViewColumnTypeForCompare lowercases the column type and erases
+// display-width drift that is purely a rendering difference between MariaDB/MySQL
+// versions.  It must be applied to BOTH source and destination signatures so that
+// callers can compare apples-to-apples.
+func normalizeViewColumnTypeForCompare(colType string) string {
+	s := strings.ToLower(strings.TrimSpace(colType))
+	s = viewIntegerDisplayWidthRegex.ReplaceAllString(s, "${1}")
+	s = viewYearDisplayWidthRegex.ReplaceAllString(s, "year")
+	// "integer" and "int" are aliases — collapse to the shorter form.
+	s = regexp.MustCompile(`\binteger\b`).ReplaceAllString(s, "int")
+	return strings.Join(strings.Fields(s), " ")
+}
+
 // queryMySQLViewColumnSignature queries INFORMATION_SCHEMA.COLUMNS for a view and returns
 // a slice of canonical column descriptors ordered by ORDINAL_POSITION.  Each descriptor
 // has the form "name|column_type|is_nullable|charset|collation".
@@ -2336,7 +2362,7 @@ func queryMySQLViewColumnSignature(db *sql.DB, schema, view string, caseSensitiv
 		}
 		sigs = append(sigs, fmt.Sprintf("%s|%s|%s|%s|%s",
 			colName,
-			strings.ToLower(colType),
+			normalizeViewColumnTypeForCompare(colType),
 			strings.ToUpper(isNullable), // YES / NO — normalise to upper
 			strings.ToLower(charset),
 			strings.ToLower(collation),
