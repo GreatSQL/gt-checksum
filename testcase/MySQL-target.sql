@@ -87,6 +87,25 @@ CREATE TABLE testbin(
 ALTER TABLE testbin ADD INDEX idx_testbin_1(f1);
 INSERT INTO testbin(f1,f2,f3,f4,f5,f6,f7) VALUES('a','abc','abcd.1234','01010101','0x9023123123','hello gt-checksum','hello gt-checksum');
 
+-- 测试全文索引
+DROP TABLE IF EXISTS `articles`;
+CREATE TABLE `articles` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `doc_code` char(20) NOT NULL DEFAULT '' COMMENT '文档固定编号',
+  `title` varchar(150) NOT NULL DEFAULT '' COMMENT '文章标题',
+  `author_desc` varchar(255) DEFAULT NULL COMMENT '作者简介',  
+  `full_content` text COMMENT '文章正文',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_doc_code` (`doc_code`),
+  FULLTEXT KEY `ft_content` (`full_content`),
+  FULLTEXT KEY `ft_title_desc` (`title`, `author_desc`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='全文索引迁移测试表';
+
+INSERT INTO `articles` (`doc_code`, `title`, `author_desc`, `full_content`) VALUES 
+('DOC-0000000000000001', 'MySQL 8.0 Migration Guide', 'DBA Expert', 'This document explains how to upgrade from MySQL 5.6 to 8.0.'),
+('DOC-0000000000000003', '数据库大版本升级指南', '资深架构师', '在升级过程中，字符集和全文索引的兼容性是最大的挑战。'),
+('DOC-0000000000000004', 'InnoDB 存储引擎解析', '内核开发者', 'InnoDB 在 5.6 版本正式引入了对全文索引的支持。');
+
 /*!80030 SET SESSION sql_generate_invisible_primary_key=0 */;
 -- 测试触发器的处理
 DROP TABLE IF EXISTS account;
