@@ -1080,8 +1080,8 @@ func buildForeignKeyConstraintDefinition(name, referencedSchema, referencedTable
 		"FOREIGN KEY %s(%s) REFERENCES %s.%s(%s)",
 		strings.ToUpper(strings.TrimSpace(name)),
 		strings.Join(columns, ","),
-		strings.TrimSpace(referencedSchema),
-		strings.TrimSpace(referencedTable),
+		strings.ToLower(strings.TrimSpace(referencedSchema)),
+		strings.ToLower(strings.TrimSpace(referencedTable)),
 		strings.Join(referencedColumns, ","),
 	)
 	if deleteRule != "" {
