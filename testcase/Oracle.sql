@@ -197,6 +197,22 @@ EXCEPTION
 END;
 /
 
+BEGIN
+    EXECUTE IMMEDIATE 'DROP TABLE t1';
+EXCEPTION
+    WHEN OTHERS THEN
+        NULL;
+END;
+/
+
+BEGIN
+    EXECUTE IMMEDIATE 'DROP TABLE t2';
+EXCEPTION
+    WHEN OTHERS THEN
+        NULL;
+END;
+/
+
 
 
 -- Test basic data types
@@ -517,4 +533,70 @@ INSERT INTO t1 VALUES (
 
 -- 3. 全 NULL 值测试 (主键除外)
 INSERT INTO t1 (id) VALUES (3);
+
+-- 补充测试：完整覆盖 Oracle=>MySQL 常用数据类型映射
+-- 重点补齐 t1 未覆盖的 NUMBER(p,0)=>INT/BIGINT/SMALLINT、BLOB=>LONGBLOB、RAW=>VARBINARY
+CREATE TABLE t2 (
+    id          NUMBER(10) NOT NULL,   -- NUMBER(p,0) => INT
+    c_bigint    NUMBER(19),             -- NUMBER(p,0) => BIGINT
+    c_smallint  NUMBER(5),              -- NUMBER(p,0) => SMALLINT
+    c_varchar2  VARCHAR2(255),          -- VARCHAR2(n) => VARCHAR(n)
+    c_char      CHAR(5),                -- CHAR(n)     => CHAR(n)
+    c_nchar     NCHAR(5),               -- NCHAR(n)    => CHAR(n) utf8mb4
+    c_nvarchar2 NVARCHAR2(100),         -- NVARCHAR2(n)=> VARCHAR(n) utf8mb4
+    c_number    NUMBER(10,2),           -- NUMBER(p,s) => DECIMAL(p,s)
+    c_float     FLOAT,                  -- FLOAT       => DOUBLE
+    c_decimal   DECIMAL(8,3),           -- DECIMAL     => DECIMAL
+    c_date      DATE,                   -- DATE        => DATETIME
+    c_timestamp TIMESTAMP(3),           -- TIMESTAMP(n)=> DATETIME(n)
+    c_clob      CLOB,                   -- CLOB        => LONGTEXT
+    c_blob      BLOB,                   -- BLOB        => LONGBLOB
+    c_raw       RAW(16),                -- RAW(n)      => VARBINARY(n)
+    c_bool      NUMBER(1),              -- NUMBER(1)   => TINYINT(1)
+    PRIMARY KEY (id)
+);
+
+-- 1. 常规标准数据
+INSERT INTO t2 VALUES (
+    1,
+    9223372036854775807,
+    32767,
+    'Standard VARCHAR2 text',
+    'ABCDE',
+    N'中文5',
+    N'多语言 NVARCHAR2',
+    12345.67,
+    123.456,
+    99.125,
+    TO_DATE('2023-10-01 12:30:00', 'YYYY-MM-DD HH24:MI:SS'),
+    TO_TIMESTAMP('2023-10-01 12:30:00.123', 'YYYY-MM-DD HH24:MI:SS.FF3'),
+    TO_CLOB('Standard CLOB data.'),
+    HEXTORAW('48656C6C6F20474343'),
+    HEXTORAW('DEADBEEFCAFEBABE'),
+    1
+);
+
+-- 2. 边界值与特殊字符
+INSERT INTO t2 VALUES (
+    2,
+    -9223372036854775808,
+    -32768,
+    'Special: ~!@#$%^&*()_+ 汉字 / 🚀',
+    'X    ',
+    N'Z    ',
+    N'こんにちは, 안녕하세요, 🚀',
+    -99999999.99,
+    9007199254740991,
+    -99999.999,
+    TO_DATE('9999-12-31 23:59:59', 'YYYY-MM-DD HH24:MI:SS'),
+    TO_TIMESTAMP('1970-01-01 00:00:00.000', 'YYYY-MM-DD HH24:MI:SS.FF3'),
+    TO_CLOB('Special CLOB: 汉字/🚀'),
+    UTL_RAW.CAST_TO_RAW('hello blob'),
+    HEXTORAW('00FF00FF00FF00FF'),
+    0
+);
+
+-- 3. 全 NULL 值测试 (主键除外)
+INSERT INTO t2 (id) VALUES (3);
+
 COMMIT;

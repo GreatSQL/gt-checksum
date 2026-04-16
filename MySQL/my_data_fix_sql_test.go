@@ -803,3 +803,40 @@ func TestFixAlterIndexSqlExec_FuncIndex_JSONUnquoteWithSingleQuotes(t *testing.T
 		t.Errorf("DDL should contain unescaped single quotes, got: %s", got)
 	}
 }
+
+// TestBuildFloatDeletePredicate_BareFloat 验证裸 FLOAT 列 DELETE WHERE 使用 CAST(val AS FLOAT)。
+// Bug：原 fallback 生成 `F1 = 123.449997`（DOUBLE 字面量），与 MySQL FLOAT 列比较时
+// 因 IEEE 754 单精度→双精度转换差异导致 WHERE 命中 0 行，修复 SQL 永远无效。
+func TestBuildFloatDeletePredicate_BareFloat(t *testing.T) {
+	cases := []struct {
+		dataType    string
+		value       string
+		wantContain string // 期望 predicate 包含的关键字
+	}{
+		// 裸 FLOAT → 必须使用 CAST(... AS FLOAT)
+		{"FLOAT", "123.449997", "CAST(123.449997 AS FLOAT)"},
+		{"float", "123.449997", "CAST(123.449997 AS FLOAT)"},
+		// FLOAT(M,D) → 使用 ROUND
+		{"FLOAT(5,2)", "123.449997", "ROUND("},
+		// DOUBLE → fallback，不需要 CAST AS FLOAT
+		{"DOUBLE", "123.449997", "123.449997"},
+		// DOUBLE(M,D) → 不是 FLOAT 前缀，走 plain 路径
+		{"DOUBLE(10,4)", "123.4499", "123.4499"},
+	}
+	for _, c := range cases {
+		pred, ok := buildFloatDeletePredicate("F1", c.value, c.dataType)
+		if !ok {
+			t.Errorf("buildFloatDeletePredicate(F1, %q, %q) returned ok=false", c.value, c.dataType)
+			continue
+		}
+		if !strings.Contains(pred, c.wantContain) {
+			t.Errorf("buildFloatDeletePredicate(F1, %q, %q) = %q; want to contain %q",
+				c.value, c.dataType, pred, c.wantContain)
+		}
+	}
+
+	// 非 float 类型返回 ok=false
+	if _, ok := buildFloatDeletePredicate("F1", "123.45", "VARCHAR(32)"); ok {
+		t.Error("buildFloatDeletePredicate should return ok=false for VARCHAR")
+	}
+}

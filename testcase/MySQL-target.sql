@@ -125,6 +125,7 @@ CREATE TABLE tmp_account (
 -- 注意：针对account表，创建触发器，会造成第一次校验并修复后，因为触发器导致tmp_account表数据发生变化
 --      修复结束后再次校验报告tmp_account表数据不一致，这种情况下需要先把触发器删除
 -- 监控insert
+-- 监控delete
 DELIMITER ||
 DROP TRIGGER IF EXISTS accountInsert;
 CREATE TRIGGER accountInsert BEFORE INSERT
@@ -371,4 +372,70 @@ INSERT INTO t1 VALUES(
 -- 3. 全 NULL 值测试 (主键除外)
 -- 这条语句的语法在 Oracle 和 MySQL 中是完全一致的
 INSERT INTO t1 (id) VALUES (3);
+
+-- 补充测试：完整覆盖 Oracle=>MySQL 常用数据类型映射
+-- 重点补齐 t1 未覆盖的 NUMBER(p,0)=>INT/BIGINT/SMALLINT、BLOB=>LONGBLOB、RAW=>VARBINARY
+DROP TABLE IF EXISTS t2;
+CREATE TABLE t2 (
+    id          INT          NOT NULL,  -- NUMBER(p,0) => INT
+    c_bigint    BIGINT,                 -- NUMBER(p,0) => BIGINT
+    c_smallint  SMALLINT,                -- NUMBER(p,0) => SMALLINT
+    c_varchar2  VARCHAR(255),            -- VARCHAR2(n) => VARCHAR(n)
+    c_char      CHAR(5),                 -- CHAR(n)     => CHAR(n)
+    c_nchar     CHAR(5),                 -- NCHAR(n)    => CHAR(n)
+    c_nvarchar2 VARCHAR(100),            -- NVARCHAR2(n)=> VARCHAR(n)
+    c_number    DECIMAL(10,2),           -- NUMBER(p,s) => DECIMAL
+    c_float     DOUBLE,                  -- FLOAT       => DOUBLE
+    c_decimal   DECIMAL(8,3),            -- DECIMAL     => DECIMAL
+    c_date      DATETIME,                -- DATE        => DATETIME
+    c_timestamp DATETIME(3),              -- TIMESTAMP(n)=> DATETIME(n)
+    c_clob      LONGTEXT,                -- CLOB        => LONGTEXT
+    c_blob      LONGBLOB,                -- BLOB        => LONGBLOB
+    c_raw       VARBINARY(16),           -- RAW(n)      => VARBINARY(n)
+    c_bool      TINYINT(1),              -- NUMBER(1)   => TINYINT(1)
+    PRIMARY KEY (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 1. 常规标准数据
+INSERT INTO t2 VALUES (
+    1,
+    9223372036854775807,
+    32767,
+    'Standard VARCHAR2 text',
+    'ABCDE',
+    '中文5',
+    '多语言 NVARCHAR2',
+    12345.67,
+    123.456,
+    99.125,
+    '2023-10-01 12:30:00',
+    '2023-10-01 12:30:00.123',
+    'Standard CLOB data.',
+    UNHEX('48656C6C6F20474343'),
+    UNHEX('DEADBEEFCAFEBABE'),
+    1
+);
+
+-- 2. 边界值与特殊字符
+INSERT INTO t2 VALUES (
+    2,
+    -9223372036854775808,
+    -32768,
+    'Special: ~!@#$%^&*()_+ 汉字 / 🚀',
+    'X    ',
+    'Z    ',
+    'こんにちは, 안녕하세요, 🚀',
+    -99999999.99,
+    9007199254740991,
+    -99999.999,
+    '9999-12-31 23:59:59',
+    '1970-01-01 00:00:00.000',
+    'Special CLOB: 汉字/🚀',
+    'hello blob',
+    UNHEX('00FF00FF00FF00FF'),
+    0
+);
+
+-- 3. 全 NULL 值测试 (主键除外)
+INSERT INTO t2 (id) VALUES (3);
 COMMIT;
