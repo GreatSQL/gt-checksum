@@ -1126,6 +1126,11 @@ func (stcls *schemaTable) isMariaDBToMySQL() bool {
 		stcls.destVersionInfo().Flavor == global.DatabaseFlavorMySQL
 }
 
+func (stcls *schemaTable) isOracleToMySQL() bool {
+	return isOracleDrive(stcls.sourceDrive) &&
+		stcls.destVersionInfo().Flavor == global.DatabaseFlavorMySQL
+}
+
 func isIgnorableGeneratedInvisibleColumn(colName string, columnMap map[string][]string) bool {
 	if !strings.EqualFold(strings.TrimSpace(colName), "my_row_id") {
 		return false
@@ -1559,6 +1564,59 @@ var mysqlCreateObjectCommentPattern = regexp.MustCompile(`(?is)\bCOMMENT\s+'((?:
 var mysqlTableAutoIncrementOptionPattern = regexp.MustCompile(`(?i)\)\s*ENGINE\s*=.*?\bAUTO_INCREMENT\s*=\s*([0-9]+)\b`)
 var mysqlAlterTableStatementPattern = regexp.MustCompile("(?is)^\\s*ALTER\\s+TABLE\\s+((?:`[^`]+`\\.`[^`]+`)|(?:[^\\s]+))\\s+(.*?);?\\s*$")
 
+// queryOraclePrimaryKeyColumns fetches the primary key column list (ordered by
+// position) for an Oracle table from DBA_CONSTRAINTS/DBA_CONS_COLUMNS. The
+// result is used to generate a MySQL CREATE TABLE PRIMARY KEY clause so the
+// DDL is acceptable to MySQL 8.0+ instances with sql_require_primary_key=ON.
+func queryOraclePrimaryKeyColumns(db *sql.DB, schema, table string) ([]string, error) {
+	query := `SELECT cc.column_name
+FROM dba_constraints c
+JOIN dba_cons_columns cc ON c.owner = cc.owner AND c.constraint_name = cc.constraint_name
+WHERE c.constraint_type = 'P' AND c.owner = :1 AND c.table_name = :2
+ORDER BY cc.position`
+	rows, err := db.Query(query, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var cols []string
+	for rows.Next() {
+		var col string
+		if scanErr := rows.Scan(&col); scanErr != nil {
+			return nil, scanErr
+		}
+		cols = append(cols, col)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	return cols, nil
+}
+
+// queryMySQLForeignKeyIndexNames 返回 MySQL 表上所有外键约束名的集合（大写）。
+// 在 Oracle→MySQL 比对时，Oracle FK 约束不会自动创建 backing index，而 MySQL 会。
+// 调用方应将返回集合中的索引名从 dmul 中排除，避免误生成 DROP INDEX。
+func queryMySQLForeignKeyIndexNames(db *sql.DB, schema, table string) (map[string]bool, error) {
+	result := make(map[string]bool)
+	rows, err := db.Query(`
+		SELECT CONSTRAINT_NAME
+		FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+		WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND REFERENCED_TABLE_NAME IS NOT NULL
+		GROUP BY CONSTRAINT_NAME`, schema, table)
+	if err != nil {
+		return result, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			continue
+		}
+		result[strings.ToUpper(name)] = true
+	}
+	return result, rows.Err()
+}
+
 func queryMySQLCreateTableStatement(db *sql.DB, schema, table string) (string, error) {
 	query := fmt.Sprintf("SHOW CREATE TABLE `%s`.`%s`", escapeMySQLIdentifier(schema), escapeMySQLIdentifier(table))
 	var (
@@ -1969,9 +2027,9 @@ func buildConstraintAdvisoryLines(scope string, suggestions []schemacompat.Const
 
 	lines := []string{
 		fmt.Sprintf("-- gt-checksum advisory begin: %s", scope),
-		"-- generated as manual review SQL only; these statements are not auto-executed by gt-checksum",
 	}
 	for _, suggestion := range suggestions {
+		isManualReview := suggestion.Level == schemacompat.ConstraintRepairLevelManualReview
 		lines = append(lines, fmt.Sprintf("-- level: %s", suggestion.Level))
 		lines = append(lines, fmt.Sprintf("-- kind: %s", suggestion.Kind))
 		if suggestion.ConstraintName != "" {
@@ -1985,7 +2043,17 @@ func buildConstraintAdvisoryLines(scope string, suggestions []schemacompat.Const
 			continue
 		}
 		for _, stmt := range suggestion.Statements {
-			lines = append(lines, fmt.Sprintf("-- %s", strings.TrimSpace(stmt)))
+			stmt = strings.TrimSpace(stmt)
+			if isManualReview {
+				// manual-review 级别：SQL 语句写为可执行形式，确保末尾有分号
+				if !strings.HasSuffix(stmt, ";") {
+					stmt += ";"
+				}
+				lines = append(lines, stmt)
+			} else {
+				// advisory-only 级别：SQL 语句以注释形式写出，仅供参考
+				lines = append(lines, fmt.Sprintf("-- %s", stmt))
+			}
 		}
 	}
 	lines = append(lines, fmt.Sprintf("-- gt-checksum advisory end: %s", scope))
@@ -2962,6 +3030,50 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 			vlog = fmt.Sprintf("(%d) %s Processing table creation with mapping - source: %s.%s -> dest: %s.%s", logThreadSeq, event, sourceSchema, sourceTableName, destSchema, destTableName)
 			global.Wlog.Debug(vlog)
 
+			// Oracle→MySQL: generate CREATE TABLE from Oracle metadata
+			if stcls.isOracleToMySQL() {
+				tc := dbExec.TableColumnNameStruct{Drive: stcls.sourceDrive, Schema: sourceSchema, Table: sourceTableName}
+				oracleColumns, oraErr := tc.Query().TableColumnName(stcls.sourceDB, logThreadSeq)
+				if oraErr != nil {
+					vlog = fmt.Sprintf("(%d) %s Error querying Oracle columns for CREATE TABLE %s.%s: %v", logThreadSeq, event, sourceSchema, sourceTableName, oraErr)
+					global.Wlog.Error(vlog)
+					return nil, nil, oraErr
+				}
+				// Query Oracle primary key columns so the generated CREATE TABLE
+				// includes a PRIMARY KEY clause; this is required when the target
+				// MySQL has sql_require_primary_key=ON (default on MySQL 8.0+).
+				oracleIndexData := make(map[string][]string)
+				if pkCols, pkErr := queryOraclePrimaryKeyColumns(stcls.sourceDB, sourceSchema, sourceTableName); pkErr != nil {
+					vlog = fmt.Sprintf("(%d) %s Warning: failed to query Oracle primary key for %s.%s: %v (proceeding without PK)", logThreadSeq, event, sourceSchema, sourceTableName, pkErr)
+					global.Wlog.Warn(vlog)
+				} else if len(pkCols) > 0 {
+					oracleIndexData["PRIMARY"] = pkCols
+				}
+				createTableSql := schemacompat.GenerateOracleToMySQLCreateTableSQL(destSchema, destTableName, oracleColumns, oracleIndexData, stcls.destVersionInfo())
+				if createTableSql != "" {
+					vlog = fmt.Sprintf("(%d) %s Generated Oracle→MySQL CREATE TABLE for %s.%s", logThreadSeq, event, destSchema, destTableName)
+					global.Wlog.Info(vlog)
+					originalSchema, originalTable, originalDestTable := stcls.schema, stcls.table, stcls.destTable
+					stcls.schema = destSchema
+					stcls.table = destTableName
+					stcls.destTable = destTableName
+					if err = stcls.writeFixSql([]string{createTableSql}, logThreadSeq); err != nil {
+						stcls.schema, stcls.table, stcls.destTable = originalSchema, originalTable, originalDestTable
+						return nil, nil, err
+					}
+					stcls.schema, stcls.table, stcls.destTable = originalSchema, originalTable, originalDestTable
+					stcls.appendPod(Pod{
+						Schema:      sourceSchema,
+						Table:       sourceTableName,
+						CheckObject: stcls.checkRules.CheckObject,
+						DIFFS:       "yes",
+						Datafix:     stcls.datafix,
+					})
+					abnormalTableList = append(abnormalTableList, mappedTableKey)
+				}
+				continue
+			}
+
 			sourceMeta, sourceMetaErr := queryMySQLTableLevelMetadata(stcls.sourceDB, sourceSchema, sourceTableName)
 			if sourceMetaErr != nil {
 				vlog = fmt.Sprintf("(%d) %s Failed to query source table metadata for %s.%s before CREATE TABLE generation: %v", logThreadSeq, event, sourceSchema, sourceTableName, sourceMetaErr)
@@ -3313,6 +3425,22 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 						}
 					}
 
+					// Oracle→MySQL: 列名仅大小写不同时不视为真实差异。
+					// Oracle 默认将列名存为大写，MySQL 列名大小写不敏感，
+					// 不应生成 CHANGE COLUMN SQL，避免误报 inconsistent。
+					// 只需将 destColumnMap key 从旧列名（MySQL 小写）重映射到
+					// 源列名（Oracle 大写），同时保留原始 MySQL 列定义供后续类型比对。
+					if stcls.isOracleToMySQL() {
+						originalDestDef := destColumnMap[colPair.destCol]
+						delete(destColumnMap, colPair.destCol)
+						destColumnMap[colPair.sourceCol] = originalDestDef
+						destColumnSeq[colPair.sourceCol] = sourceColumnSeq[colPair.sourceCol]
+						vlog = fmt.Sprintf("(%d) %s Column %s only differs in case from %s (Oracle→MySQL: case difference skipped, not a real mismatch)", logThreadSeq, event, colPair.destCol, colPair.sourceCol)
+						global.Wlog.Debug(vlog)
+						_ = sourceDef
+						continue
+					}
+
 					// 生成CHANGE操作的SQL
 					// 使用格式"原始列名:新列名"
 					changeColName := fmt.Sprintf("%s:%s", colPair.destCol, colPair.sourceCol)
@@ -3452,12 +3580,13 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 		columnAdvisorySuggestions := make([]schemacompat.ConstraintRepairSuggestion, 0)
 		columnCollationRepairCandidates := make([]columnCollationRepairCandidate, 0)
 		columnRiskDifferent := false
-		useCanonicalCompare := strings.EqualFold(stcls.sourceDrive, "mysql") && strings.EqualFold(stcls.destDrive, "mysql")
+		isOracleToMySQL := stcls.isOracleToMySQL()
+		useCanonicalCompare := (strings.EqualFold(stcls.sourceDrive, "mysql") && strings.EqualFold(stcls.destDrive, "mysql")) || isOracleToMySQL
 		sourceCreateSQL := ""
 		destCreateSQL := ""
 		sourceColumnDefinitions := make(map[string]string)
 		destColumnDefinitions := make(map[string]string)
-		if useCanonicalCompare {
+		if useCanonicalCompare && !isOracleToMySQL {
 			if sourceCreateSQL, err = queryMySQLCreateTableStatement(stcls.sourceDB, sourceSchema, stcls.table); err != nil {
 				vlog = fmt.Sprintf("(%d) %s Failed to query source SHOW CREATE TABLE for %s.%s: %v", logThreadSeq, event, sourceSchema, stcls.table, err)
 				global.Wlog.Warn(vlog)
@@ -3465,6 +3594,16 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 			} else {
 				sourceColumnDefinitions = schemacompat.ExtractColumnDefinitionsFromCreateSQL(sourceCreateSQL)
 			}
+			if destCreateSQL, err = queryMySQLCreateTableStatement(stcls.destDB, destSchema, stcls.destTable); err != nil {
+				vlog = fmt.Sprintf("(%d) %s Failed to query target SHOW CREATE TABLE for %s.%s: %v", logThreadSeq, event, destSchema, stcls.destTable, err)
+				global.Wlog.Warn(vlog)
+				destCreateSQL = ""
+			} else {
+				destColumnDefinitions = schemacompat.ExtractColumnDefinitionsFromCreateSQL(destCreateSQL)
+			}
+		}
+		if isOracleToMySQL {
+			// Oracle→MySQL: only query dest (MySQL) side for CREATE TABLE
 			if destCreateSQL, err = queryMySQLCreateTableStatement(stcls.destDB, destSchema, stcls.destTable); err != nil {
 				vlog = fmt.Sprintf("(%d) %s Failed to query target SHOW CREATE TABLE for %s.%s: %v", logThreadSeq, event, destSchema, stcls.destTable, err)
 				global.Wlog.Warn(vlog)
@@ -3535,14 +3674,22 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 				var sourceCanonical schemacompat.CanonicalColumn
 				var destCanonical schemacompat.CanonicalColumn
 				if useCanonicalCompare {
-					sourceCanonical = schemacompat.CanonicalizeColumnForComparison(
-						sourceOriginalColName,
-						sourceColumnMap[v1],
-						stcls.sourceVersionInfo(),
-						stcls.destVersionInfo(),
-						sourceColumnDefinitions[sourceOriginalColName],
-						stcls.checkRules.MariaDBJSONTargetType,
-					)
+					if isOracleToMySQL {
+						sourceCanonical = schemacompat.CanonicalizeOracleColumnForComparison(
+							sourceOriginalColName,
+							sourceColumnMap[v1],
+							stcls.destVersionInfo(),
+						)
+					} else {
+						sourceCanonical = schemacompat.CanonicalizeColumnForComparison(
+							sourceOriginalColName,
+							sourceColumnMap[v1],
+							stcls.sourceVersionInfo(),
+							stcls.destVersionInfo(),
+							sourceColumnDefinitions[sourceOriginalColName],
+							stcls.checkRules.MariaDBJSONTargetType,
+						)
+					}
 					destCanonical = schemacompat.CanonicalizeColumnForComparison(
 						destOriginalColName,
 						destColumnMap[v1],
@@ -3559,7 +3706,12 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 
 				// 比较列类型
 				if useCanonicalCompare {
-					decision := schemacompat.DecideColumnDefinitionCompatibility(sourceCanonical, destCanonical)
+					var decision schemacompat.CompatibilityDecision
+					if isOracleToMySQL {
+						decision = schemacompat.DecideOracleToMySQLTypeCompatibility(sourceCanonical, destCanonical)
+					} else {
+						decision = schemacompat.DecideColumnDefinitionCompatibility(sourceCanonical, destCanonical)
+					}
 					if decision.IsMismatch() {
 						if shouldDeferPartitionKeyColumnRepair(partitionExpressions, decision, sourceOriginalColName, destOriginalColName) {
 							vlog = fmt.Sprintf("(%d) %s Column %s definition mismatch requires manual review because it participates in the partition expression: source=%s, dest=%s, reason=%s",
@@ -3614,7 +3766,12 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 				if (sourceCharset != "null" && sourceCharset != "") ||
 					(destCharset != "null" && destCharset != "") {
 					if useCanonicalCompare {
-						decision := schemacompat.DecideColumnCharsetCompatibility(sourceCanonical, destCanonical)
+						var decision schemacompat.CompatibilityDecision
+						if isOracleToMySQL {
+							decision = schemacompat.DecideOracleToMySQLCharsetCompatibility(sourceCanonical, destCanonical)
+						} else {
+							decision = schemacompat.DecideColumnCharsetCompatibility(sourceCanonical, destCanonical)
+						}
 						if shouldDeferPartitionKeyColumnRepair(partitionExpressions, decision, sourceOriginalColName, destOriginalColName) {
 							vlog = fmt.Sprintf("(%d) %s Column %s charset mismatch requires manual review because it participates in the partition expression: source=%s, dest=%s, reason=%s",
 								logThreadSeq, event, repairColumnName, sourceCharset, destCharset, decision.Reason)
@@ -3658,7 +3815,12 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 				if (sourceCollation != "null" && sourceCollation != "") ||
 					(destCollation != "null" && destCollation != "") {
 					if useCanonicalCompare {
-						decision := schemacompat.DecideColumnCollationCompatibility(sourceCanonical, destCanonical)
+						var decision schemacompat.CompatibilityDecision
+						if isOracleToMySQL {
+							decision = schemacompat.DecideOracleToMySQLCollationCompatibility(sourceCanonical, destCanonical)
+						} else {
+							decision = schemacompat.DecideColumnCollationCompatibility(sourceCanonical, destCanonical)
+						}
 						// MariaDB→MySQL：非 MariaDB 特有的 collation 在 MySQL 中合法存在，视为真实差异
 						if decision.State == schemacompat.CompatibilityWarnOnly && stcls.isMariaDBToMySQL() {
 							if _, isMappable := schemacompat.MapMariaDBCollationToMySQL(sourceCollation); !isMappable {
@@ -3730,7 +3892,14 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 					destIsNull = destColumnMap[v1][3]
 				}
 
-				if sourceIsNull != destIsNull {
+				nullMismatch := false
+				if useCanonicalCompare {
+					// Oracle 返回 Y/N，MySQL 返回 YES/NO；canonical 层已统一为 bool，直接比较
+					nullMismatch = sourceCanonical.Nullable != destCanonical.Nullable
+				} else {
+					nullMismatch = sourceIsNull != destIsNull
+				}
+				if nullMismatch {
 					tableAbnormalBool = true
 					vlog = fmt.Sprintf("(%d) %s Column %s NULL constraint mismatch: source=%s, dest=%s",
 						logThreadSeq, event, repairColumnName, sourceIsNull, destIsNull)
@@ -3816,14 +3985,23 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 					originalLastColumn := getTargetPositionColumnName(lastcolumn)
 					repairAttrs := append([]string(nil), alterColumnData...)
 					if useCanonicalCompare {
-						repairPlan := schemacompat.BuildTargetColumnRepairPlan(
-							sourceOriginalColName,
-							repairAttrs,
-							stcls.sourceVersionInfo(),
-							stcls.destVersionInfo(),
-							sourceColumnDefinitions[sourceOriginalColName],
-							stcls.checkRules.MariaDBJSONTargetType,
-						)
+						var repairPlan schemacompat.ColumnRepairPlan
+						if isOracleToMySQL {
+							repairPlan = schemacompat.BuildOracleToMySQLRepairPlan(
+								sourceOriginalColName,
+								repairAttrs,
+								stcls.destVersionInfo(),
+							)
+						} else {
+							repairPlan = schemacompat.BuildTargetColumnRepairPlan(
+								sourceOriginalColName,
+								repairAttrs,
+								stcls.sourceVersionInfo(),
+								stcls.destVersionInfo(),
+								sourceColumnDefinitions[sourceOriginalColName],
+								stcls.checkRules.MariaDBJSONTargetType,
+							)
+						}
 						if len(repairAttrs) < 6 {
 							for len(repairAttrs) < 6 {
 								repairAttrs = append(repairAttrs, "null")
@@ -3844,6 +4022,16 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 							} else {
 								repairAttrs[6] = repairPlan.DirectDefinition
 							}
+						}
+					}
+					// Oracle nullable 格式（N/Y）规范化为 MySQL 格式（NO/YES）
+					// Oracle 返回 N 表示 NOT NULL，但 FixAlterColumnSqlDispos 只识别 "NO"
+					if isOracleToMySQL && len(repairAttrs) > 3 {
+						switch strings.ToUpper(strings.TrimSpace(repairAttrs[3])) {
+						case "N":
+							repairAttrs[3] = "NO"
+						case "Y":
+							repairAttrs[3] = "YES"
 						}
 					}
 					// 检查目标表是否存在主键
@@ -3873,14 +4061,23 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 				originalLastColumn := getTargetPositionColumnName(lastcolumn)
 				repairAttrs := append([]string(nil), sourceColumnMap[v1]...)
 				if useCanonicalCompare {
-					repairPlan := schemacompat.BuildTargetColumnRepairPlan(
-						originalColName,
-						repairAttrs,
-						stcls.sourceVersionInfo(),
-						stcls.destVersionInfo(),
-						sourceColumnDefinitions[originalColName],
-						stcls.checkRules.MariaDBJSONTargetType,
-					)
+					var repairPlan schemacompat.ColumnRepairPlan
+					if isOracleToMySQL {
+						repairPlan = schemacompat.BuildOracleToMySQLRepairPlan(
+							originalColName,
+							repairAttrs,
+							stcls.destVersionInfo(),
+						)
+					} else {
+						repairPlan = schemacompat.BuildTargetColumnRepairPlan(
+							originalColName,
+							repairAttrs,
+							stcls.sourceVersionInfo(),
+							stcls.destVersionInfo(),
+							sourceColumnDefinitions[originalColName],
+							stcls.checkRules.MariaDBJSONTargetType,
+						)
+					}
 					if len(repairAttrs) < 6 {
 						for len(repairAttrs) < 6 {
 							repairAttrs = append(repairAttrs, "null")
@@ -3901,6 +4098,15 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 						} else {
 							repairAttrs[6] = repairPlan.DirectDefinition
 						}
+					}
+				}
+				// Oracle nullable 格式（N/Y）规范化为 MySQL 格式（NO/YES）
+				if isOracleToMySQL && len(repairAttrs) > 3 {
+					switch strings.ToUpper(strings.TrimSpace(repairAttrs[3])) {
+					case "N":
+						repairAttrs[3] = "NO"
+					case "Y":
+						repairAttrs[3] = "YES"
 					}
 				}
 				// 检查目标表是否存在主键
@@ -6923,6 +7129,72 @@ func (stcls *schemaTable) Partitions(dtabS []string, logThreadSeq, logThreadSeq2
 		stcls.schema = sourceSchema
 		stcls.table = sourceTable
 		stcls.destTable = destTable
+
+		// Oracle→MySQL: partition syntax differs drastically; only do existence comparison.
+		// First check whether either side actually has partitions. If neither does, treat
+		// as consistent (same as MySQL→MySQL behaviour) and skip without any advisory.
+		if stcls.isOracleToMySQL() {
+			tcSrc := dbExec.TableColumnNameStruct{Schema: sourceSchema, Table: sourceTable, Drive: stcls.sourceDrive}
+			srcParts, srcPartsErr := tcSrc.Query().Partitions(stcls.sourceDB, logThreadSeq2)
+			tcDst := dbExec.TableColumnNameStruct{Schema: destSchema, Table: destTable, Drive: stcls.destDrive}
+			dstParts, dstPartsErr := tcDst.Query().Partitions(stcls.destDB, logThreadSeq2)
+
+			if srcPartsErr != nil {
+				global.Wlog.Warnf("(%d) Oracle→MySQL: failed to query source partitions for %s.%s: %v", logThreadSeq, sourceSchema, sourceTable, srcPartsErr)
+			}
+			if dstPartsErr != nil {
+				global.Wlog.Warnf("(%d) Oracle→MySQL: failed to query dest partitions for %s.%s: %v", logThreadSeq, destSchema, destTable, dstPartsErr)
+			}
+
+			sourceTableKey := fmt.Sprintf("%s.%s", sourceSchema, sourceTable)
+			cleanTableKey := sourceTableKey
+			if strings.Contains(sourceTableKey, ":") {
+				cleanTableKey = strings.Split(sourceTableKey, ":")[0]
+			}
+
+			// If both sides have no partitions, treat as consistent — no advisory, no warn-only.
+			if len(srcParts) == 0 && len(dstParts) == 0 && srcPartsErr == nil && dstPartsErr == nil {
+				vlog = fmt.Sprintf("(%d) Oracle→MySQL table %s.%s: no partitions on either side, skipping partition check", logThreadSeq, sourceSchema, sourceTable)
+				global.Wlog.Debug(vlog)
+				if len(isCalledFromStruct) > 0 && isCalledFromStruct[0] {
+					if stcls.partitionDiffsMap == nil {
+						stcls.partitionDiffsMap = make(map[string]bool)
+					}
+					stcls.partitionDiffsMap[cleanTableKey] = false
+				}
+				continue
+			}
+
+			// At least one side has partitions: emit advisory warn-only.
+			pods.Schema = sourceSchema
+			pods.Table = sourceTable
+			pods.DIFFS = global.SkipDiffsWarnOnly
+			advisoryNote := fmt.Sprintf("-- [Advisory] Oracle→MySQL partition comparison for table %s.%s is not supported in this version; please verify partitions manually", sourceSchema, sourceTable)
+			vlog = fmt.Sprintf("(%d) Skipping detailed partition comparison for Oracle→MySQL table %s.%s (advisory only)", logThreadSeq, sourceSchema, sourceTable)
+			global.Wlog.Info(vlog)
+			if stcls.datafix == "file" {
+				if err = stcls.writeAdvisoryFixSql([]string{advisoryNote}, logThreadSeq); err != nil {
+					global.Wlog.Errorf("(%d) Failed to write partition advisory for Oracle→MySQL table %s.%s: %v", logThreadSeq, sourceSchema, sourceTable, err)
+				}
+			} else {
+				global.Wlog.Warnf("(%d) Oracle→MySQL table %s.%s partition advisory skipped (datafix=%s); please verify manually", logThreadSeq, sourceSchema, sourceTable, stcls.datafix)
+			}
+			if len(isCalledFromStruct) > 0 && isCalledFromStruct[0] {
+				if stcls.partitionDiffsMap == nil {
+					stcls.partitionDiffsMap = make(map[string]bool)
+				}
+				if stcls.structWarnOnlyDiffsMap == nil {
+					stcls.structWarnOnlyDiffsMap = make(map[string]bool)
+				}
+				stcls.partitionDiffsMap[cleanTableKey] = false
+				stcls.structWarnOnlyDiffsMap[cleanTableKey] = true
+			}
+			if len(isCalledFromStruct) == 0 || !isCalledFromStruct[0] {
+				stcls.appendPod(pods)
+			}
+			continue
+		}
+
 		vlog = fmt.Sprintf("(%d) Start processing srcDSN {%s} table %s.%s partitions data. to dispos it...", logThreadSeq, stcls.sourceDrive, sourceSchema, sourceTable)
 		global.Wlog.Debug(vlog)
 		tc := dbExec.TableColumnNameStruct{Schema: sourceSchema, Table: sourceTable, Drive: stcls.sourceDrive}
@@ -7524,6 +7796,23 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 		dpri, duni, dmul, destIndexVisibilityMap = idxc.TableIndexColumn().IndexDisposF(dqueryData, logThreadSeq2)
 		if destCreateSQL, err := queryMySQLCreateTableStatement(stcls.destDB, destSchema, stcls.destTable); err == nil {
 			destIndexVisibilityMap = mergeIndexVisibilityHints(destIndexVisibilityMap, schemacompat.ExtractIndexVisibilityHintsFromCreateSQL(destCreateSQL))
+		}
+		// Oracle→MySQL：Oracle FK 约束不会自动创建 backing index，但 MySQL 会。
+		// 将 MySQL 目标端中属于 FK 约束的自动 backing index 从比对集合中排除，
+		// 避免误生成 DROP INDEX 修复语句。
+		if stcls.isOracleToMySQL() {
+			if fkIndexNames, fkErr := queryMySQLForeignKeyIndexNames(stcls.destDB, destSchema, destTable); fkErr == nil {
+				for idxName := range dmul {
+					if fkIndexNames[strings.ToUpper(idxName)] {
+						delete(dmul, idxName)
+					}
+				}
+				for idxName := range duni {
+					if fkIndexNames[strings.ToUpper(idxName)] {
+						delete(duni, idxName)
+					}
+				}
+			}
 		}
 		vlog = fmt.Sprintf("(%d) %s The index column data of the dest %s database table %s.%s is {primary:%v,unique key:%v,index key:%v}",
 			logThreadSeq,

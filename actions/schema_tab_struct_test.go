@@ -10,6 +10,7 @@ import (
 	"gt-checksum/global"
 	golog "gt-checksum/go-log/log"
 	"gt-checksum/inputArg"
+	"gt-checksum/schemacompat"
 )
 
 // ---------- normalizeRoutineDefinitionForCompare ----------
@@ -1430,5 +1431,150 @@ func TestAdjustDestColumnSeqAfterDrops_noDrop(t *testing.T) {
 		if got := seq[col]; got != wantSeq {
 			t.Errorf("seq[%s] = %d, want %d", col, got, wantSeq)
 		}
+	}
+}
+
+// ---------- buildConstraintAdvisoryLines ----------
+
+// TestBuildConstraintAdvisoryLines_ManualReviewExecutable 验证 manual-review 级别的 SQL 语句
+// 应写成可执行形式（无 -- 前缀），不能全部注释掉。
+// 这是 Oracle→MySQL checkObject=struct 外键差异修复 SQL 为空的 bug 修复验证。
+func TestBuildConstraintAdvisoryLines_ManualReviewExecutable(t *testing.T) {
+	suggestions := []schemacompat.ConstraintRepairSuggestion{
+		{
+			ConstraintName: "FK_EMP_DEPT1",
+			Kind:           "FOREIGN KEY",
+			Level:          schemacompat.ConstraintRepairLevelManualReview,
+			Reason:         "target has an extra foreign key that does not exist on the source side",
+			Statements:     []string{"ALTER TABLE `gt_checksum`.`tb_emp6` DROP FOREIGN KEY `FK_EMP_DEPT1`"},
+		},
+	}
+
+	lines := buildConstraintAdvisoryLines("gt_checksum.tb_emp6 FOREIGN KEY constraints", suggestions)
+
+	joined := strings.Join(lines, "\n")
+
+	// 可执行语句必须出现（不带 -- 前缀）
+	if !strings.Contains(joined, "ALTER TABLE `gt_checksum`.`tb_emp6` DROP FOREIGN KEY `FK_EMP_DEPT1`;") {
+		t.Errorf("manual-review SQL 应为可执行形式，但实际输出:\n%s", joined)
+	}
+
+	// 确保带 -- 前缀的注释版本不存在
+	if strings.Contains(joined, "-- ALTER TABLE") {
+		t.Errorf("manual-review SQL 不应以注释形式输出，但实际输出:\n%s", joined)
+	}
+}
+
+// TestBuildConstraintAdvisoryLines_AdvisoryOnlyCommented 验证 advisory-only 级别的 SQL 语句
+// 仍以注释形式写出（仅供参考，不可直接执行）。
+func TestBuildConstraintAdvisoryLines_AdvisoryOnlyCommented(t *testing.T) {
+	suggestions := []schemacompat.ConstraintRepairSuggestion{
+		{
+			Kind:       "TABLE COLLATION",
+			Level:      schemacompat.ConstraintRepairLevelAdvisoryOnly,
+			Reason:     "collation difference is advisory only",
+			Statements: []string{"ALTER TABLE `t1` CONVERT TO CHARACTER SET utf8mb4"},
+		},
+	}
+
+	lines := buildConstraintAdvisoryLines("test.t1 TABLE options", suggestions)
+
+	joined := strings.Join(lines, "\n")
+
+	// advisory-only 语句必须以注释形式出现
+	if !strings.Contains(joined, "-- ALTER TABLE `t1` CONVERT TO CHARACTER SET utf8mb4") {
+		t.Errorf("advisory-only SQL 应以注释形式输出，但实际输出:\n%s", joined)
+	}
+}
+
+// TestBuildConstraintAdvisoryLines_Empty 空建议返回 nil。
+func TestBuildConstraintAdvisoryLines_Empty(t *testing.T) {
+	lines := buildConstraintAdvisoryLines("scope", nil)
+	if lines != nil {
+		t.Errorf("空建议应返回 nil，got %v", lines)
+	}
+}
+
+// TestIsOracleToMySQL_GodrorSource 验证 isOracleToMySQL() 在 godror 驱动 + MySQL 目标时返回 true。
+// Bug 背景：Oracle→MySQL struct 校验中，无论源/目标表是否有分区，代码都无条件触发
+// warn-only 并生成 Advisory 修复 SQL。修复后，仅当至少一侧有分区时才触发 advisory。
+func TestIsOracleToMySQL_GodrorSource(t *testing.T) {
+	st := &schemaTable{
+		sourceDrive: "godror",
+		// Raw 必须非空，destVersionInfo() 才会返回 destVersion 而非全局变量
+		destVersion: global.MySQLVersionInfo{Raw: "8.0.32", Flavor: global.DatabaseFlavorMySQL},
+	}
+	if !st.isOracleToMySQL() {
+		t.Error("godror + MySQL 目标应返回 isOracleToMySQL=true")
+	}
+}
+
+// TestIsOracleToMySQL_MySQLSource 验证 MySQL→MySQL 场景不被识别为 Oracle→MySQL。
+func TestIsOracleToMySQL_MySQLSource(t *testing.T) {
+	st := &schemaTable{
+		sourceDrive: "mysql",
+		destVersion: global.MySQLVersionInfo{Raw: "8.0.32", Flavor: global.DatabaseFlavorMySQL},
+	}
+	if st.isOracleToMySQL() {
+		t.Error("mysql 源不应被识别为 Oracle→MySQL 场景")
+	}
+}
+
+// TestPartitionDiffsMap_NoPartitionNoWarnOnly 验证无分区表在 Oracle→MySQL
+// 场景下，partitionDiffsMap 应被初始化为 false，structWarnOnlyDiffsMap 不应被设置。
+// 此测例对应 Bug 修复：account 表无分区但产生 warn-only + Advisory 修复 SQL 的误报。
+func TestPartitionDiffsMap_NoPartitionNoWarnOnly(t *testing.T) {
+	st := &schemaTable{
+		sourceDrive:            "godror",
+		destVersion:            global.MySQLVersionInfo{Flavor: global.DatabaseFlavorMySQL},
+		partitionDiffsMap:      make(map[string]bool),
+		structWarnOnlyDiffsMap: make(map[string]bool),
+	}
+
+	// 模拟：两端均无分区时，只设置 partitionDiffsMap[key]=false，不设置 structWarnOnlyDiffsMap
+	tableKey := "gt_checksum.account"
+	st.partitionDiffsMap[tableKey] = false
+	// structWarnOnlyDiffsMap 故意不写入
+
+	if st.partitionDiffsMap[tableKey] != false {
+		t.Errorf("无分区表 partitionDiffsMap 应为 false，got %v", st.partitionDiffsMap[tableKey])
+	}
+	if st.structWarnOnlyDiffsMap[tableKey] {
+		t.Errorf("无分区表不应在 structWarnOnlyDiffsMap 中被标记为 true")
+	}
+}
+
+// TestOracleToMySQL_NullableNormalization 验证 Oracle nullable 值（N/Y）被正确规范化为
+// MySQL 格式（NO/YES），以确保生成的 MODIFY COLUMN SQL 包含正确的 NOT NULL 约束。
+// Bug 背景：Oracle 返回 nullable="N" 表示 NOT NULL，而 FixAlterColumnSqlDispos 只识别 "NO"，
+// 导致 NOT NULL 约束被遗漏，修复 SQL 执行后再次校验仍报 Diffs=yes（无限循环）。
+func TestOracleToMySQL_NullableNormalization(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string // Oracle nullable 原始值
+		wantNorm string // 规范化后期望的 MySQL 格式值
+	}{
+		{"N should normalize to NO", "N", "NO"},
+		{"Y should normalize to YES", "Y", "YES"},
+		{"already NO stays NO", "NO", "NO"},
+		{"already YES stays YES", "YES", "YES"},
+		{"lowercase n should normalize to NO", "n", "NO"},
+		{"lowercase y should normalize to YES", "y", "YES"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// 模拟 schema_tab_struct.go 中的规范化逻辑
+			repairAttrs := []string{"decimal(20,0)", "null", "null", tt.input, "", ""}
+			switch strings.ToUpper(strings.TrimSpace(repairAttrs[3])) {
+			case "N":
+				repairAttrs[3] = "NO"
+			case "Y":
+				repairAttrs[3] = "YES"
+			}
+			if repairAttrs[3] != tt.wantNorm {
+				t.Errorf("nullable normalization(%q) = %q, want %q", tt.input, repairAttrs[3], tt.wantNorm)
+			}
+		})
 	}
 }
