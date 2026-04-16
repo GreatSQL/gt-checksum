@@ -381,8 +381,13 @@ func buildFloatDeletePredicate(columnName, value, dataType string) (string, bool
 	if scale, ok := floatDeleteScaleByType(dataType); ok {
 		return fmt.Sprintf("ROUND(`%s`, %d) = ROUND(%s, %d)", columnName, scale, floatLiteral, scale), true
 	}
-	// Fallback for FLOAT without declared scale:
-	// keep both sides as plain numeric comparison to avoid unnecessary CAST in fix SQL.
+	// Fallback for bare FLOAT without declared scale:
+	// Use CAST to force single-precision comparison; plain FLOAT = double-literal
+	// fails because IEEE 754 single→double conversion differs from the double literal.
+	t := strings.ToUpper(strings.TrimSpace(dataType))
+	if strings.HasPrefix(t, "FLOAT") {
+		return fmt.Sprintf("`%s` = CAST(%s AS FLOAT)", columnName, floatLiteral), true
+	}
 	return fmt.Sprintf("`%s` = %s", columnName, floatLiteral), true
 }
 

@@ -515,6 +515,25 @@ func (sp *SchedulePlan) QueryDataCheckSum(stt, dtt string, md5chan chan<- map[st
 	displayTableName := sp.getDisplayTableName()
 	vlog = fmt.Sprintf("(%d) Verifying data blocks for table without index %s", logThreadSeq, displayTableName)
 	global.Wlog.Debug(vlog)
+
+	// 对无索引表的行数据应用 float 规范化，处理 Oracle 精确十进制与
+	// MySQL 二进制浮点的字符串差异（如 Oracle 返回 123.45，MySQL FLOAT 返回 123.449997）。
+	sourceKey := fmt.Sprintf("%s_gtchecksum_%s", sp.sourceSchema, sp.table)
+	destKey := fmt.Sprintf("%s_gtchecksum_%s", sp.destSchema, sp.getDestTableName())
+	if srcColData, ok := sp.tableAllCol[sourceKey]; ok {
+		if dstColData, ok2 := sp.tableAllCol[destKey]; ok2 {
+			floatScales := buildFloatComparisonScales(srcColData.SColumnInfo, dstColData.DColumnInfo)
+			if len(floatScales) > 0 {
+				sttRows := strings.Split(stt, "/*go actions rowData*/")
+				dttRows := strings.Split(dtt, "/*go actions rowData*/")
+				sttRows = normalizeRowsForFloatComparison(sttRows, floatScales)
+				dttRows = normalizeRowsForFloatComparison(dttRows, floatScales)
+				stt = strings.Join(sttRows, "/*go actions rowData*/")
+				dtt = strings.Join(dttRows, "/*go actions rowData*/")
+			}
+		}
+	}
+
 	if aa.CheckMd5(stt) != aa.CheckMd5(dtt) {
 		displayTableName := sp.getDisplayTableName()
 		vlog = fmt.Sprintf("(%d) MD5 checksum mismatch in round %d for table without index %s", logThreadSeq, chunkSeq, displayTableName)

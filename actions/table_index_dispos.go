@@ -1449,6 +1449,11 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 							earlyPKPositions, _ = columnsModeSplitPKAndCompare(effectiveSrcCols, sp.columnName)
 						}
 
+						// 归一化前保存目标端原始行快照：归一化仅用于比对，
+						// DELETE WHERE 子句必须使用 MySQL 实际存储值，否则无法命中目标行。
+						origCleanDestData := append([]string(nil), cleanDestData...)
+						anyNormApplied := false
+
 						floatCompareScales := buildFloatComparisonScales(effectiveSrcCols, effectiveDstCols)
 						for _, pos := range earlyPKPositions {
 							if pos < len(floatCompareScales) {
@@ -1458,6 +1463,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 						if len(floatCompareScales) > 0 {
 							cleanSourceData = normalizeRowsForFloatComparison(cleanSourceData, floatCompareScales)
 							cleanDestData = normalizeRowsForFloatComparison(cleanDestData, floatCompareScales)
+							anyNormApplied = true
 							global.Wlog.Debugf("(%d) Applied float normalization for %s.%s before Arrcmp", logThreadSeq, c1.Schema, c1.Table)
 						}
 						temporalCompareKinds := buildTemporalCompareKinds(effectiveSrcCols, effectiveDstCols)
@@ -1469,7 +1475,13 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 						if len(temporalCompareKinds) > 0 {
 							cleanSourceData = normalizeRowsForTemporalComparison(cleanSourceData, temporalCompareKinds)
 							cleanDestData = normalizeRowsForTemporalComparison(cleanDestData, temporalCompareKinds)
+							anyNormApplied = true
 							global.Wlog.Debugf("(%d) Applied temporal normalization for %s.%s before Arrcmp", logThreadSeq, c1.Schema, c1.Table)
+						}
+						charTrimFlags := buildCharTrimFlags(effectiveSrcCols)
+						if len(charTrimFlags) > 0 {
+							cleanSourceData = normalizeRowsForCharComparison(cleanSourceData, charTrimFlags)
+							global.Wlog.Debugf("(%d) Applied CHAR trailing-space normalization for %s.%s before Arrcmp", logThreadSeq, c1.Schema, c1.Table)
 						}
 
 						if len(cleanSourceData) == len(cleanDestData) &&
@@ -1487,6 +1499,12 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 								global.Wlog.Warnf("(%d) Reconciled %d temporal null artifacts for %s.%s (INTERVAL/TIME scan compatibility)",
 									logThreadSeq, healed, c1.Schema, c1.Table)
 							}
+						}
+						// 将 del 中经归一化处理后的行替换回目标端原始存储值。
+						// 归一化（float/temporal）使 Arrcmp 能正确识别语义等价行，但修复 SQL
+						// 的 DELETE WHERE 条件必须使用 MySQL 实际存储值才能精确命中目标行。
+						if anyNormApplied && len(del) > 0 {
+							del = remapDelToOriginalDest(del, cleanDestData, origCleanDestData)
 						}
 						stt, dtt = "", ""
 
@@ -3515,6 +3533,12 @@ func resolveFloatComparisonScale(sourceType, destType string) int {
 	if destOK {
 		return destScale
 	}
+	// 当两端均为 FLOAT/BINARY_FLOAT 且无显式小数精度时，
+	// 使用 float32 精度哨兵规范化：消除 Oracle 精确十进制（123.45）
+	// 与 MySQL 二进制浮点（123.449997）的字符串差异，两者在 float32 层面实际相同。
+	if isFloatComparisonType(sourceType) && isFloatComparisonType(destType) {
+		return floatSinglePrecisionSentinel
+	}
 	return 6
 }
 
@@ -3546,13 +3570,29 @@ func buildFloatComparisonScales(sourceCols, destCols []map[string]string) []int 
 	return scales
 }
 
+// floatSinglePrecisionSentinel 作为 scale 哨兵值，指示使用 float32 精度规范化。
+// 用于处理 Oracle FLOAT（以精确十进制存储，如 123.45）与
+// MySQL FLOAT（IEEE 754 单精度，返回 123.449997）的字符串表示不一致问题。
+const floatSinglePrecisionSentinel = -3
+
 func normalizeFloatComparisonValue(raw string, scale int) string {
-	if scale < 0 {
+	if scale == -1 {
 		return raw
 	}
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" || trimmed == dataDispos.ValueNullPlaceholder || trimmed == dataDispos.ValueEmptyPlaceholder {
 		return raw
+	}
+	if scale == floatSinglePrecisionSentinel {
+		// 使用 float32 精度规范化：将两端值都下转为 float32 再格式化，
+		// 消除 Oracle 精确十进制与 MySQL 二进制浮点的字符串表示差异。
+		f, err := strconv.ParseFloat(trimmed, 64)
+		if err != nil {
+			return raw
+		}
+		f32 := float32(f)
+		result := strconv.FormatFloat(float64(f32), 'g', -1, 32)
+		return result
 	}
 	f, err := strconv.ParseFloat(trimmed, 64)
 	if err != nil {
@@ -3585,12 +3625,102 @@ func normalizeRowsForFloatComparison(rows []string, scales []int) []string {
 		}
 		changed := false
 		for colIdx := 0; colIdx < limit; colIdx++ {
-			if scales[colIdx] < 0 {
+			if scales[colIdx] == -1 {
 				continue
 			}
 			normalized := normalizeFloatComparisonValue(parts[colIdx], scales[colIdx])
 			if normalized != parts[colIdx] {
 				parts[colIdx] = normalized
+				changed = true
+			}
+		}
+		if changed {
+			normalizedRows[rowIdx] = strings.Join(parts, columnSep)
+		} else {
+			normalizedRows[rowIdx] = row
+		}
+	}
+	return normalizedRows
+}
+
+// remapDelToOriginalDest 将 Arrcmp 返回的 del 行（来自归一化后的 cleanDestData）
+// 映射回归一化前的目标端原始行（origDest），确保 DELETE WHERE 使用 MySQL 实际存储值。
+//
+// 原理：normalizeRowsForFloatComparison / normalizeRowsForTemporalComparison 按位置
+// 修改每行字段，因此 normalizedDest[i] 与 origDest[i] 一一对应。
+// 本函数通过 "归一化行→原始行队列" 映射表逐行消费，正确处理多行归一化后相同的边界情况。
+func remapDelToOriginalDest(normalizedDel, normalizedDest, origDest []string) []string {
+	if len(normalizedDest) != len(origDest) {
+		// 长度不一致时保守地返回原 del，避免越界
+		return normalizedDel
+	}
+	// 构建 normalizedRow → []originalRow 队列映射
+	normToOrig := make(map[string][]string, len(normalizedDest))
+	for i, norm := range normalizedDest {
+		normToOrig[norm] = append(normToOrig[norm], origDest[i])
+	}
+	result := make([]string, 0, len(normalizedDel))
+	for _, normRow := range normalizedDel {
+		if queue, ok := normToOrig[normRow]; ok && len(queue) > 0 {
+			result = append(result, queue[0])
+			normToOrig[normRow] = queue[1:]
+		} else {
+			// 找不到对应原始行时回退使用归一化行（不应发生）
+			result = append(result, normRow)
+		}
+	}
+	return result
+}
+
+// buildCharTrimFlags 检查源端（Oracle）列类型，对 CHAR/NCHAR 列返回 true，
+// 指示在 Arrcmp 前需要对该列的值执行尾部空格裁剪。
+// Oracle CHAR/NCHAR 存储时以空格填充至列定义长度（如 'A         '），
+// 而 MySQL CHAR SELECT 时自动去除尾部空格（返回 'A'），
+// 若不归一化则字符串不等，导致无限 diff 循环。
+func buildCharTrimFlags(sourceCols []map[string]string) []bool {
+	if len(sourceCols) == 0 {
+		return nil
+	}
+	flags := make([]bool, len(sourceCols))
+	hasChar := false
+	for i, col := range sourceCols {
+		t := strings.ToUpper(strings.TrimSpace(col["dataType"]))
+		if strings.HasPrefix(t, "NCHAR") || strings.HasPrefix(t, "CHAR") {
+			flags[i] = true
+			hasChar = true
+		}
+	}
+	if !hasChar {
+		return nil
+	}
+	return flags
+}
+
+// normalizeRowsForCharComparison 对 Oracle CHAR/NCHAR 列的值裁剪尾部空格，
+// 使其与 MySQL 自动去除尾部空格后的值一致。
+func normalizeRowsForCharComparison(rows []string, flags []bool) []string {
+	if len(rows) == 0 || len(flags) == 0 {
+		return rows
+	}
+	const columnSep = "/*go actions columnData*/"
+	normalizedRows := make([]string, len(rows))
+	for rowIdx, row := range rows {
+		parts := strings.Split(row, columnSep)
+		limit := len(flags)
+		if len(parts) < limit {
+			limit = len(parts)
+		}
+		changed := false
+		for colIdx := 0; colIdx < limit; colIdx++ {
+			if !flags[colIdx] {
+				continue
+			}
+			if parts[colIdx] == dataDispos.ValueNullPlaceholder || parts[colIdx] == dataDispos.ValueEmptyPlaceholder {
+				continue
+			}
+			trimmed := strings.TrimRight(parts[colIdx], " ")
+			if trimmed != parts[colIdx] {
+				parts[colIdx] = trimmed
 				changed = true
 			}
 		}

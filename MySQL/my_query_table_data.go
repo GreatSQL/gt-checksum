@@ -1365,7 +1365,7 @@ func formatComparableColumnExpr(columnExpr, dataType string) string {
 	if isMySQLTimeOnlyType(t) {
 		formatted = fmt.Sprintf("time_format(%s,'%%H:%%i:%%s')", formatted)
 	}
-	if t == "DATETIME" {
+	if strings.HasPrefix(t, "DATETIME") {
 		formatted = fmt.Sprintf("date_format(%s,'%%Y-%%m-%%d %%H:%%i:%%s')", formatted)
 	}
 	if strings.Contains(t, "TIMESTAMP") {
