@@ -38,6 +38,7 @@ type DatabaseFlavor string
 const (
 	DatabaseFlavorMySQL   DatabaseFlavor = "MySQL"
 	DatabaseFlavorMariaDB DatabaseFlavor = "MariaDB"
+	DatabaseFlavorOracle  DatabaseFlavor = "Oracle"
 )
 
 type MySQLVersionInfo struct {
@@ -96,6 +97,9 @@ func DetectDatabaseFlavor(raw string) DatabaseFlavor {
 	normalized := strings.ToLower(strings.TrimSpace(raw))
 	if strings.Contains(normalized, "mariadb") {
 		return DatabaseFlavorMariaDB
+	}
+	if strings.Contains(normalized, "oracle") {
+		return DatabaseFlavorOracle
 	}
 	return DatabaseFlavorMySQL
 }
@@ -184,6 +188,13 @@ func ValidateMySQLCompatibilityPolicy(src, dst MySQLVersionInfo, checkObject str
 			return nil
 		default:
 			return fmt.Errorf("source database %s to destination %s only supports checkObject=data, struct, routine or trigger; checkObject=%s is not supported", FormatDatabaseVersion(src), FormatDatabaseVersion(dst), checkObject)
+		}
+	case src.Flavor == DatabaseFlavorOracle && dst.Flavor == DatabaseFlavorMySQL:
+		switch normalizedCheckObject {
+		case "data", "struct":
+			return nil
+		default:
+			return fmt.Errorf("source database %s to destination %s only supports checkObject=data or struct; checkObject=%s is not supported", FormatDatabaseVersion(src), FormatDatabaseVersion(dst), checkObject)
 		}
 	case src.Flavor == DatabaseFlavorMySQL && dst.Flavor == DatabaseFlavorMariaDB:
 		return fmt.Errorf("source database %s to destination %s is not supported", FormatDatabaseVersion(src), FormatDatabaseVersion(dst))

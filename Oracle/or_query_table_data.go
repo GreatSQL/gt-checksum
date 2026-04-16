@@ -20,7 +20,7 @@ func (or *QueryTable) QueryTableIndexColumnInfo(db *sql.DB, logThreadSeq int64) 
 		tableData []map[string]interface{}
 		err       error
 	)
-	strsql = fmt.Sprintf("SELECT c.COLUMN_NAME AS \"columnName\", DECODE(c.DATA_TYPE, 'DATE', c.data_type, c.DATA_TYPE || '(' || c.data_LENGTH || ')') AS \"columnType\", DECODE(co.constraint_type, 'P', '1', '0') AS \"columnKey\", i.UNIQUENESS AS \"nonUnique\", ic.INDEX_NAME AS \"indexName\", ic.COLUMN_POSITION AS \"IndexSeq\", c.COLUMN_ID AS \"columnSeq\" FROM all_tab_cols c INNER JOIN all_ind_columns ic ON c.TABLE_NAME=ic.TABLE_NAME AND c.OWNER=ic.INDEX_OWNER AND c.COLUMN_NAME=ic.COLUMN_NAME INNER JOIN all_indexes i ON ic.INDEX_OWNER=i.OWNER AND ic.INDEX_NAME=i.INDEX_NAME AND ic.TABLE_NAME=i.TABLE_NAME LEFT JOIN all_constraints co ON co.owner=c.owner AND co.table_name=c.table_name AND co.index_name=i.index_name WHERE %s AND %s ORDER BY I.INDEX_NAME, ic.COLUMN_POSITION", oracleMetadataMatchExpr("c.OWNER", or.Schema), oracleMetadataMatchExpr("c.TABLE_NAME", or.Table))
+	strsql := fmt.Sprintf("SELECT c.COLUMN_NAME AS \"columnName\", DECODE(c.DATA_TYPE, 'DATE', c.data_type, c.DATA_TYPE || '(' || c.data_LENGTH || ')') AS \"columnType\", DECODE(co.constraint_type, 'P', '1', '0') AS \"columnKey\", i.UNIQUENESS AS \"nonUnique\", ic.INDEX_NAME AS \"indexName\", ic.COLUMN_POSITION AS \"IndexSeq\", c.COLUMN_ID AS \"columnSeq\" FROM all_tab_cols c INNER JOIN all_ind_columns ic ON c.TABLE_NAME=ic.TABLE_NAME AND c.OWNER=ic.INDEX_OWNER AND c.COLUMN_NAME=ic.COLUMN_NAME INNER JOIN all_indexes i ON ic.INDEX_OWNER=i.OWNER AND ic.INDEX_NAME=i.INDEX_NAME AND ic.TABLE_NAME=i.TABLE_NAME LEFT JOIN all_constraints co ON co.owner=c.owner AND co.table_name=c.table_name AND co.index_name=i.index_name WHERE %s AND %s ORDER BY I.INDEX_NAME, ic.COLUMN_POSITION", oracleMetadataMatchExpr("c.OWNER", or.Schema), oracleMetadataMatchExpr("c.TABLE_NAME", or.Table))
 	vlog = fmt.Sprintf("(%d) [%s] Generate a sql statement to query the index statistics of table %s.%s under the %s database.sql messige is {%s}", logThreadSeq, Event, or.Schema, or.Table, DBType, strsql)
 	global.Wlog.Debug(vlog)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
@@ -54,6 +54,8 @@ func (or *QueryTable) IndexDisposF(queryData []map[string]interface{}, logThread
 
 	// 用于临时存储每个索引的列顺序
 	indexColumns := make(map[string]map[string]string)
+	// 记录哪些索引是主键（Oracle 主键约束名为系统生成，如 SYS_C0014700，通过 columnKey=1 识别）
+	primaryIndexNames := make(map[string]bool)
 
 	for _, v := range queryData {
 		currIndexName = fmt.Sprintf("%s", v["indexName"])
@@ -64,6 +66,11 @@ func (or *QueryTable) IndexDisposF(queryData []map[string]interface{}, logThread
 		columnName := fmt.Sprintf("%s", v["columnName"])
 		indexSeq := fmt.Sprintf("%s", v["IndexSeq"])
 		columnType := fmt.Sprintf("%s", v["columnType"])
+
+		// columnKey = '1' 表示该列属于主键约束（DECODE(co.constraint_type,'P','1','0')）
+		if fmt.Sprintf("%s", v["columnKey"]) == "1" {
+			primaryIndexNames[currIndexName] = true
+		}
 
 		// 初始化map
 		if _, exists := indexColumns[currIndexName]; !exists {
@@ -97,14 +104,15 @@ func (or *QueryTable) IndexDisposF(queryData []map[string]interface{}, logThread
 		}
 
 		// 根据索引类型添加到相应的map中
-		if idxName == "PRIMARY" {
+		// Oracle 主键约束名为系统生成（如 SYS_C0014700），使用 primaryIndexNames 集合识别
+		if primaryIndexNames[idxName] {
 			priIndexColumnMap["pri"] = orderedColumns
 		} else {
-			// 检查第一个匹配的索引列来确定是否为唯一索引
+			// Oracle all_indexes.UNIQUENESS 返回 "UNIQUE" 或 "NONUNIQUE"
 			isUnique := false
 			for _, v := range queryData {
 				if fmt.Sprintf("%s", v["indexName"]) == idxName {
-					isUnique = v["nonUnique"].(string) == "0"
+					isUnique = v["nonUnique"].(string) == "UNIQUE"
 					break
 				}
 			}
@@ -173,7 +181,7 @@ func (or *QueryTable) TmpTableIndexColumnRowsCount(db *sql.DB, logThreadSeq int6
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start to query the total number of rows in the following table %s.%s of the %s database.", logThreadSeq, Event, or.Schema, or.Table, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("SELECT COUNT(1) AS \"sum\" FROM %s", oracleQualifiedTable(or.Schema, or.Table))
+	strsql := fmt.Sprintf("SELECT COUNT(1) AS \"sum\" FROM %s", oracleQualifiedTable(or.Schema, or.Table))
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return 0, err
@@ -207,7 +215,7 @@ func (or *QueryTable) TmpTableColumnGroupDataDispos(db *sql.DB, where string, co
 		whereExist = fmt.Sprintf("where %s ", where)
 	}
 	columnRef := oracleColumnIdentifier(columnName)
-	strsql = fmt.Sprintf("SELECT %s AS \"columnName\", COUNT(1) AS \"count\" FROM %s %s GROUP BY %s ORDER BY %s", columnRef, oracleQualifiedTable(or.Schema, or.Table), whereExist, columnRef, columnRef)
+	strsql := fmt.Sprintf("SELECT %s AS \"columnName\", COUNT(1) AS \"count\" FROM %s %s GROUP BY %s ORDER BY %s", columnRef, oracleQualifiedTable(or.Schema, or.Table), whereExist, columnRef, columnRef)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return nil, err
@@ -228,7 +236,7 @@ func (or *QueryTable) TableRows(db *sql.DB, logThreadSeq int64) (uint64, error) 
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start to query the total number of rows in the following table %s.%s of the %s database.", logThreadSeq, Event, or.Schema, or.Table, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("SELECT COUNT(1) AS \"sum\" FROM %s", oracleQualifiedTable(or.Schema, or.Table))
+	strsql := fmt.Sprintf("SELECT COUNT(1) AS \"sum\" FROM %s", oracleQualifiedTable(or.Schema, or.Table))
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return 0, err
@@ -282,7 +290,7 @@ func (or *QueryTable) NoIndexGeneratingQueryCriteria(db *sql.DB, beginSeq uint64
 	if queryColumn == "" {
 		queryColumn = "*"
 	}
-	strsql = fmt.Sprintf("SELECT %s FROM ( SELECT A.*, ROWNUM RN FROM (SELECT * FROM %s) A WHERE ROWNUM <= %d) WHERE RN > %d", queryColumn, oracleQualifiedTable(or.Schema, or.Table), beginSeq+uint64(chanrowCount), beginSeq)
+	strsql := fmt.Sprintf("SELECT %s FROM ( SELECT A.*, ROWNUM RN FROM (SELECT * FROM %s) A WHERE ROWNUM <= %d) WHERE RN > %d", queryColumn, oracleQualifiedTable(or.Schema, or.Table), beginSeq+uint64(chanrowCount), beginSeq)
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return "", err
@@ -357,6 +365,12 @@ func oracleComparableColumnExpr(columnName, dataType string) string {
 		// then parse to HH:MM:SS in Go comparison layer.
 		// This avoids driver-dependent binary/nanosecond representations.
 		return fmt.Sprintf("CASE WHEN %s IS NULL THEN NULL ELSE TRIM(TO_CHAR(%s)) END", columnExpr, columnExpr)
+	}
+	// Oracle CHAR/NCHAR 以固定长度存储，查询时返回尾部填充空格的完整值。
+	// MySQL CHAR 查询时自动剥离尾部空格。
+	// 用 RTRIM 对齐两端行为，避免修复SQL因尾部空格永远不匹配而循环生成。
+	if t == "CHAR" || strings.HasPrefix(t, "CHAR(") || t == "NCHAR" || strings.HasPrefix(t, "NCHAR(") {
+		return fmt.Sprintf("RTRIM(%s)", columnExpr)
 	}
 	if strings.HasPrefix(t, "NUMBER(") {
 		parts := strings.Split(t, ",")

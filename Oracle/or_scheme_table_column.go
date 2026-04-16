@@ -177,7 +177,7 @@ func (or *QueryTable) TableColumnName(db *sql.DB, logThreadSeq int64) ([]map[str
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start querying the metadata information of table %s.%s in the %s database and get all the column names", logThreadSeq, Event, or.Schema, or.Table, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("SELECT tc.column_name AS \"columnName\", DECODE(tc.data_type, 'NUMBER', NVL2(DATA_PRECISION, 'NUMBER(' || tc.DATA_PRECISION || ',' || tc.DATA_SCALE || ')', 'NUMBER'), 'VARCHAR2', 'VARCHAR2(' || tc.DATA_LENGTH || ')', 'CHAR', 'CHAR(' || tc.DATA_LENGTH || ')', 'RAW', 'RAW(' || tc.DATA_LENGTH || ')',tc.DATA_TYPE) AS \"columnType\", NULLABLE AS \"isNull\", '', '', TO_NCHAR(cc.comments) AS \"columnComment\", DATA_DEFAULT AS \"columnDefault\" FROM dba_tab_columns tc JOIN dba_col_comments cc ON tc.OWNER=cc.owner AND tc.TABLE_NAME=cc.table_name AND tc.COLUMN_NAME=cc.column_name WHERE %s AND %s ORDER BY tc.COLUMN_ID", oracleMetadataMatchExpr("tc.OWNER", or.Schema), oracleMetadataMatchExpr("tc.TABLE_NAME", or.Table))
+	strsql := fmt.Sprintf("SELECT tc.column_name AS \"columnName\", DECODE(tc.data_type, 'NUMBER', NVL2(DATA_PRECISION, 'NUMBER(' || tc.DATA_PRECISION || ',' || tc.DATA_SCALE || ')', 'NUMBER'), 'VARCHAR2', 'VARCHAR2(' || tc.DATA_LENGTH || ')', 'CHAR', 'CHAR(' || tc.DATA_LENGTH || ')', 'NCHAR', 'NCHAR(' || tc.CHAR_LENGTH || ')', 'NVARCHAR2', 'NVARCHAR2(' || tc.CHAR_LENGTH || ')', 'RAW', 'RAW(' || tc.DATA_LENGTH || ')', 'FLOAT', NVL2(tc.DATA_PRECISION, 'FLOAT(' || tc.DATA_PRECISION || ')', 'FLOAT'), 'TIMESTAMP', 'TIMESTAMP(' || NVL(tc.DATA_SCALE, 6) || ')', tc.DATA_TYPE) AS \"columnType\", NULLABLE AS \"isNull\", '', '', TO_NCHAR(cc.comments) AS \"columnComment\", DATA_DEFAULT AS \"columnDefault\" FROM dba_tab_columns tc JOIN dba_col_comments cc ON tc.OWNER=cc.owner AND tc.TABLE_NAME=cc.table_name AND tc.COLUMN_NAME=cc.column_name WHERE %s AND %s ORDER BY tc.COLUMN_ID", oracleMetadataMatchExpr("tc.OWNER", or.Schema), oracleMetadataMatchExpr("tc.TABLE_NAME", or.Table))
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		if err != nil {
@@ -433,7 +433,7 @@ func (or *QueryTable) TableAllColumn(db *sql.DB, logThreadSeq int64) ([]map[stri
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start to query the metadata of all the columns of table %s.%s in the %s database", logThreadSeq, Event, or.Schema, or.Table, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf("SELECT column_name AS \"columnName\", CASE WHEN data_type='NUMBER' AND DATA_PRECISION IS NULL THEN DATA_TYPE WHEN data_type='NUMBER' AND DATA_PRECISION IS NOT NULL THEN DATA_TYPE || '(' || DATA_PRECISION || ',' || NVL(DATA_SCALE,0) || ')' WHEN data_type='VARCHAR2' THEN DATA_TYPE||'('||DATA_LENGTH||')' ELSE DATA_TYPE END AS \"dataType\", COLUMN_id AS \"columnSeq\", NULLABLE AS \"isNull\" FROM all_tab_columns WHERE %s AND %s ORDER BY column_id", oracleMetadataMatchExpr("owner", or.Schema), oracleMetadataMatchExpr("TABLE_NAME", or.Table))
+	strsql := fmt.Sprintf("SELECT column_name AS \"columnName\", CASE WHEN data_type='NUMBER' AND DATA_PRECISION IS NULL THEN DATA_TYPE WHEN data_type='NUMBER' AND DATA_PRECISION IS NOT NULL THEN DATA_TYPE || '(' || DATA_PRECISION || ',' || NVL(DATA_SCALE,0) || ')' WHEN data_type='VARCHAR2' THEN DATA_TYPE||'('||DATA_LENGTH||')' ELSE DATA_TYPE END AS \"dataType\", COLUMN_id AS \"columnSeq\", NULLABLE AS \"isNull\" FROM all_tab_columns WHERE %s AND %s ORDER BY column_id", oracleMetadataMatchExpr("owner", or.Schema), oracleMetadataMatchExpr("TABLE_NAME", or.Table))
 
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
@@ -755,58 +755,83 @@ Oracle 外键检查
 */
 func (or *QueryTable) Foreign(db *sql.DB, logThreadSeq int64) (map[string]string, error) {
 	var (
-		routineNameM = make(map[string]int)
-		tmpb         = make(map[string]string)
-		Event        = "Q_Foreign"
+		tmpb  = make(map[string]string)
+		Event = "Q_Foreign"
 	)
 	vlog = fmt.Sprintf("(%d) [%s] Start to query the Foreign information under the %s database.", logThreadSeq, Event, DBType)
 	global.Wlog.Debug(vlog)
-	strsql = fmt.Sprintf(" SELECT c.OWNER AS DATABASE, c.table_name AS TABLENAME, c.r_constraint_name, c.delete_rule, cc.column_name, cc.position FROM user_constraints c JOIN user_cons_columns cc ON c.constraint_name=cc.constraint_name AND c.table_name=cc.table_name WHERE c.constraint_type='R' AND c.validated='VALIDATED' AND c.OWNER = '%s' AND c.table_name='%s'", or.Schema, or.Table)
+
+	// 使用 all_constraints / all_cons_columns 代替 user_* 视图，
+	// 以支持连接用户与表 owner 不同的跨 schema 场景。
+	// 同时直接从系统目录构建 FK 定义，支持一张表有多个外键。
+	strsql = fmt.Sprintf(`SELECT fk.CONSTRAINT_NAME, fkcol.COLUMN_NAME, fkcol.POSITION, fk.R_OWNER AS REF_OWNER, rk.TABLE_NAME AS REF_TABLE, rkcol.COLUMN_NAME AS REF_COLUMN, fk.DELETE_RULE FROM all_constraints fk JOIN all_cons_columns fkcol ON fk.OWNER=fkcol.OWNER AND fk.CONSTRAINT_NAME=fkcol.CONSTRAINT_NAME AND fk.TABLE_NAME=fkcol.TABLE_NAME JOIN all_constraints rk ON fk.R_OWNER=rk.OWNER AND fk.R_CONSTRAINT_NAME=rk.CONSTRAINT_NAME JOIN all_cons_columns rkcol ON rk.OWNER=rkcol.OWNER AND rk.CONSTRAINT_NAME=rkcol.CONSTRAINT_NAME AND rkcol.POSITION=fkcol.POSITION WHERE fk.CONSTRAINT_TYPE='R' AND UPPER(fk.OWNER)=UPPER('%s') AND UPPER(fk.TABLE_NAME)=UPPER('%s') ORDER BY fk.CONSTRAINT_NAME, fkcol.POSITION`, or.Schema, or.Table)
 
 	dispos := dataDispos.DBdataDispos{DBType: DBType, LogThreadSeq: logThreadSeq, Event: Event, DB: db}
 	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
 		return nil, err
 	}
-	foreignName, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
+	rows, err := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
 	if err != nil {
 		return nil, err
 	}
-	for _, v := range foreignName {
-		routineNameM[fmt.Sprintf("%s.%s", v["DATABASE"], v["TABLENAME"])]++
-	}
-	for k, _ := range routineNameM {
-		schema, table := strings.Split(k, ".")[0], strings.Split(k, ".")[1]
-		strsql = fmt.Sprintf("SELECT DBMS_METADATA.GET_DDL('TABLE','%s','%s') AS CREATE_FOREIGN FROM DUAL", table, schema)
-
-		if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
-			return nil, err
-		}
-		createForeign, err1 := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
-		if err1 != nil {
-			return nil, err1
-		}
-		for _, b := range createForeign {
-			var p, q, o string
-			d := fmt.Sprintf("%s", b["CREATE_FOREIGN"])
-			f := strings.Split(d, "\n")
-			for _, g := range f {
-				if strings.Contains(g, "CONSTRAINT") {
-					p = strings.TrimSpace(g)
-				}
-				if strings.Contains(g, "REFERENCES") {
-					q = strings.TrimSpace(g)
-				}
-			}
-			if strings.Contains(p, "CONSTRAINT") && strings.Contains(p, "REFERENCES") {
-				o = p
-			}
-			if strings.HasPrefix(q, "REFERENCES") {
-				o = strings.ReplaceAll(fmt.Sprintf("%s %s", p, q), " ENABLE", "")
-			}
-			tmpb[k] = strings.ToUpper(strings.ReplaceAll(o, "\"", "!"))
-		}
-	}
 	defer dispos.SqlRows.Close()
+
+	// 按 FK 名称分组收集列信息
+	type fkEntry struct {
+		refOwner   string
+		refTable   string
+		fkCols     []string
+		refCols    []string
+		deleteRule string
+	}
+	fkMap := make(map[string]*fkEntry)
+	var fkOrder []string
+
+	for _, row := range rows {
+		name := strings.ToUpper(fmt.Sprintf("%s", row["CONSTRAINT_NAME"]))
+		col := strings.ToUpper(fmt.Sprintf("%s", row["COLUMN_NAME"]))
+		refOwner := strings.ToUpper(fmt.Sprintf("%s", row["REF_OWNER"]))
+		refTable := strings.ToUpper(fmt.Sprintf("%s", row["REF_TABLE"]))
+		refCol := strings.ToUpper(fmt.Sprintf("%s", row["REF_COLUMN"]))
+		deleteRule := strings.ToUpper(fmt.Sprintf("%s", row["DELETE_RULE"]))
+
+		if _, exists := fkMap[name]; !exists {
+			fkMap[name] = &fkEntry{
+				refOwner:   refOwner,
+				refTable:   refTable,
+				deleteRule: deleteRule,
+			}
+			fkOrder = append(fkOrder, name)
+		}
+		fkMap[name].fkCols = append(fkMap[name].fkCols, col)
+		fkMap[name].refCols = append(fkMap[name].refCols, refCol)
+	}
+
+	// 构造与 MySQL 侧格式一致的定义字符串：
+	// CONSTRAINT !NAME! FOREIGN KEY (!col1!, !col2!) REFERENCES !schema!.!table! (!rcol1!, !rcol2!)
+	for _, name := range fkOrder {
+		info := fkMap[name]
+		fkColParts := make([]string, len(info.fkCols))
+		for i, c := range info.fkCols {
+			fkColParts[i] = "!" + c + "!"
+		}
+		refColParts := make([]string, len(info.refCols))
+		for i, c := range info.refCols {
+			refColParts[i] = "!" + c + "!"
+		}
+		def := fmt.Sprintf("CONSTRAINT !%s! FOREIGN KEY (%s) REFERENCES !%s!.!%s! (%s)",
+			name,
+			strings.Join(fkColParts, ", "),
+			info.refOwner,
+			info.refTable,
+			strings.Join(refColParts, ", "),
+		)
+		if info.deleteRule != "" && info.deleteRule != "NO ACTION" {
+			def += " ON DELETE " + info.deleteRule
+		}
+		tmpb[name] = def
+	}
+
 	vlog = fmt.Sprintf("(%d) [%s] Complete the Foreign information query under the %s database.", logThreadSeq, Event, DBType)
 	global.Wlog.Debug(vlog)
 	return tmpb, nil
