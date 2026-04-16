@@ -165,6 +165,7 @@ sbtest  F1              Function        no      no
 | 源端版本主线小于目标端版本主线，且两端均在 `5.6`、`5.7`、`8.0`、`8.4` 范围内 | 支持 | 支持 | 支持 | 支持 | 例如 `5.6 -> 5.7`、`5.6 -> 8.0`、`5.7 -> 8.0`、`8.0 -> 8.4`。 |
 | 源端为 `MariaDB 10.x+`，目标端为 `MySQL 8.0/8.4` | 支持 | 支持 | 支持 | 支持 | `struct` 仅覆盖安全子集；`routine`/`trigger` 已支持 charset 元数据三维度比对。 |
 | 源端与目标端均为 `MariaDB`（同序列或升级，支持系列见下方说明） | 支持 | 支持 | 支持 | 支持 | 仅支持升级方向（src ≤ dst），不支持 downgrade；struct fix 的隐藏索引使用 `IGNORED` 关键字；COMPRESSED/PERSISTENT 等原生列属性会在目标端保留；routine/trigger 元数据比对已开放。 |
+| 源端为 `Oracle`，目标端为 `MySQL 8.0/8.4` | 支持 | 支持 | 不支持 | 不支持 | `data` 模式支持 `CHAR`/`NCHAR` 尾部空格归一化、`FLOAT`/`BINARY_FLOAT` float32 精度归一化；`struct` 模式支持目标端缺表时自动生成 `CREATE TABLE`（含主键）、列类型规范化比对（`VARCHAR2`/`NUMBER`/`TIMESTAMP`/`DATE`/`FLOAT`/`CLOB`/`BLOB` 等完整映射）、列名大小写差异忽略。 |
 | 源端为 `MariaDB 10.x+`，目标端为 `MySQL 8.0` 以下版本 | 不支持 | 不支持 | 不支持 | 不支持 | 程序会在启动阶段直接退出，并提示当前组合不受支持。 |
 | 源端为 `MySQL`，目标端为 `MariaDB` | 不支持 | 不支持 | 不支持 | 不支持 | 程序会在启动阶段直接退出，并提示当前组合不受支持。 |
 | 源端版本主线大于目标端版本主线 | 不支持 | 不支持 | 不支持 | 不支持 | 程序会在启动阶段直接退出，并明确提示 downgrade 场景不受支持。 |
@@ -391,11 +392,33 @@ bash scripts/regression-test-columns.sh \
    - `COMPRESSED`、`PERSISTENT` 等 MariaDB 原生列属性在目标端保留，不会被剥除；
    - 当目标端为支持隐藏索引语法的 MariaDB 版本时，隐藏索引 fix SQL 使用 `IGNORED` 关键字，而非 MySQL 的 `INVISIBLE`；
    - 建议在回放前先审查 fix SQL，尤其关注隐藏索引、`DEFINER` 与跨版本 collation 相关语句。
-4. 以下对象当前只做识别、告警和 advisory 输出，不自动修复：
+4. `Oracle -> MySQL 8.0/8.4`
+   - 目标端缺表时，自动从 Oracle 元数据生成 MySQL `CREATE TABLE` 语句，包含主键定义，适配 `sql_require_primary_key=ON`；
+   - 列类型比对引入完整 Oracle→MySQL 类型映射层，对可接受的类型差异（如精度兼容）采用宽松判定，减少误报；映射关系如下：
+
+     | Oracle 类型 | MySQL 映射类型 | 备注 |
+     |---|---|---|
+     | `VARCHAR2(n)` | `VARCHAR(n)` | |
+     | `CHAR(n)` | `CHAR(n)` | |
+     | `NCHAR(n)` | `CHAR(n)` | |
+     | `NVARCHAR2(n)` | `VARCHAR(n)` | |
+     | `NUMBER(p,s)` | `DECIMAL(p,s)` | |
+     | `NUMBER(p)` | `TINYINT` / `SMALLINT` / `INT` / `BIGINT` | 按精度自动选择 |
+     | `DATE` | `DATETIME` | |
+     | `TIMESTAMP(n)` | `DATETIME(n)` | |
+     | `FLOAT` | `DOUBLE` | |
+     | `BINARY_FLOAT` | `FLOAT` | |
+     | `BINARY_DOUBLE` | `DOUBLE` | |
+     | `CLOB` / `NCLOB` | `LONGTEXT` | |
+     | `BLOB` | `LONGBLOB` | |
+     | `RAW(n)` | `VARBINARY(n)` | |
+   - 列名仅大小写不同（Oracle 默认大写存储、MySQL 大小写不敏感）时不视为差异，不生成 `CHANGE COLUMN`；
+   - `routine`/`trigger` 模式暂不支持 Oracle→MySQL 场景，启动阶段直接拒绝。
+5. 以下对象当前只做识别、告警和 advisory 输出，不自动修复：
    - `SYSTEM VERSIONING`
    - `WITHOUT OVERLAPS`
    - `SEQUENCE`
-4. **VIEW（视图）支持**（MySQL → MySQL 限定）：
+6. **VIEW（视图）支持**（MySQL → MySQL 限定）：
    - `checkObject=struct` 会自动识别 `tables` 参数中的视图对象，并对视图定义进行比对；
    - 差异时 `Diffs=yes`，`ObjectType=view`；修复建议以 advisory 块形式写入 fixsql 文件，gt-checksum 本身不自动执行，DBA 手工审阅后可通过 repairDB 应用；
    - 差异来源分两层：① VIEW 定义（`SHOW CREATE VIEW`）不一致时，advisory 块中输出可执行的 `CREATE OR REPLACE VIEW` 建议 SQL（含前后字符集 SESSION 变量设置）；② 定义文本一致但列元数据（类型、nullable、charset、collation）存在漂移时，advisory 块标注 `suggested SQL: none`，**不提供可执行修复 SQL**（此类漂移通常源于底层基表结构变更，单纯重建视图无法修复）；

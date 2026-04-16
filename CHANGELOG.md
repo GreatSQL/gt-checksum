@@ -1,4 +1,6 @@
 ## 1.4.0
+- [功能新增]: 支持Oracle→MySQL `data/struct` 模式，采用列类型映射方式实现宽松兼容，支持 `VARCHAR2`/`CHAR`/`NCHAR`/`NVARCHAR2`/`NUMBER`/`FLOAT`/`TIMESTAMP`/`DATE`/`CLOB`/`BLOB`/`RAW` 等。
+- [测试完善]: 新增数个Oracle→MySQL多个回归测例，覆盖 Oracle 索引类型识别、`CHAR`/`NCHAR` 归一化、FLOAT 精度、其他完整类型映射等场景；新增 `scripts/regression-test-oracle.sh` 端到端回归脚本。
 - [功能新增]: 支持前缀索引、函数索引、生成列/虚拟列（Generated Columns）的检测与修复。
 - [功能新增] 支持MySQL→MySQL 场景下的生成列（STORED/VIRTUAL GENERATED）的检测与修复。
 - [功能优化]: 扩展生成列兼容性检测，支持 MariaDB 10.0 特有格式：`PERSISTENT` 关键字（无 GENERATED 后缀）与 MySQL 8.0 `STORED GENERATED` 等价识别，`VIRTUAL` 同理；生成列表达式归一化新增大小写折叠和反引号剥离，消除 MariaDB 10.0（大写无反引号）与 MySQL 8.0（小写带反引号）格式之间的误判。
