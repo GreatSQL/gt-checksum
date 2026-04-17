@@ -144,7 +144,12 @@ func NormalizeOracleColumnType(oracleType string) string {
 	case "LONG RAW":
 		return "longblob"
 	case "BINARY_FLOAT":
-		return "float"
+		// Oracle BINARY_FLOAT is a 32-bit IEEE754 single-precision float.
+		// Map to MySQL `double` (not `float`) to avoid the same single-precision
+		// comparison/aggregation accuracy issues already addressed elsewhere for
+		// bare FLOAT columns. Users who need strict 32-bit semantics can still
+		// explicitly define FLOAT(24) in MySQL.
+		return "double"
 	case "BINARY_DOUBLE":
 		return "double"
 	case "XMLTYPE":
@@ -344,14 +349,15 @@ func DecideOracleToMySQLTypeCompatibility(source, target CanonicalColumn) Compat
 		}
 	}
 
-	// Oracle NUMBER without explicit precision (raw type = "NUMBER") has an
-	// implied scale of 0 and maps canonically to decimal(38,0). If the MySQL
-	// target column is any integer type, treat it as compatible — the user
-	// intentionally chose an integer type that fits their actual data range.
+	// Oracle NUMBER without explicit precision can actually store arbitrary
+	// decimals (precision up to 38, scale up to 127). Silently treating it as
+	// equivalent to a MySQL integer type would truncate fractional data without
+	// any warning. Downgrade to WarnOnly so operators can verify the data shape
+	// before accepting the mapping.
 	if srcRawUpper == "NUMBER" && isMySQLIntegerType(dstType) {
 		return CompatibilityDecision{
-			State:  CompatibilityNormalizedEqual,
-			Reason: fmt.Sprintf("Oracle NUMBER (unspecified precision, implicit scale=0) is compatible with MySQL integer type %s", target.RawType),
+			State:  CompatibilityWarnOnly,
+			Reason: fmt.Sprintf("Oracle NUMBER (no precision) may hold fractional values; MySQL integer type %s would truncate — verify sample data before treating as compatible", target.RawType),
 			Source: source.RawType,
 			Target: target.RawType,
 		}

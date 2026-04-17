@@ -817,7 +817,18 @@ func CanonicalizeUniqueConstraints(indexes []CanonicalIndex) []CanonicalConstrai
 	return constraints
 }
 
+// CanonicalizeForeignKeyDefinitions is kept for backward compatibility and
+// defaults to case-insensitive schema/table normalization (legacy behavior).
+// New callers should prefer CanonicalizeForeignKeyDefinitionsWithOptions.
 func CanonicalizeForeignKeyDefinitions(defs map[string]string) []CanonicalConstraint {
+	return CanonicalizeForeignKeyDefinitionsWithOptions(defs, true)
+}
+
+// CanonicalizeForeignKeyDefinitionsWithOptions lets callers declare whether
+// referenced schema/table identifiers should be compared case-insensitively.
+// Set caseInsensitive=true for Oracle→MySQL or MySQL with
+// lower_case_table_names != 0; set false for case-sensitive MySQL deployments.
+func CanonicalizeForeignKeyDefinitionsWithOptions(defs map[string]string, caseInsensitive bool) []CanonicalConstraint {
 	items := make([]CanonicalConstraint, 0, len(defs))
 	names := make([]string, 0, len(defs))
 	for name := range defs {
@@ -859,6 +870,7 @@ func CanonicalizeForeignKeyDefinitions(defs map[string]string) []CanonicalConstr
 			normalizedReferencedColumns,
 			deleteRule,
 			updateRule,
+			caseInsensitive,
 		)
 		items = append(items, CanonicalConstraint{
 			Name:                 strings.ToUpper(name),
@@ -1075,13 +1087,25 @@ func normalizeIdentifierList(items []string) []string {
 	return normalized
 }
 
-func buildForeignKeyConstraintDefinition(name, referencedSchema, referencedTable string, columns, referencedColumns []string, deleteRule, updateRule string) string {
+// buildForeignKeyConstraintDefinition builds the normalized FK definition
+// string. When caseInsensitive is true (Oracle→MySQL path, or MySQL instances
+// running with lower_case_table_names != 0), the referenced schema/table are
+// lowercased for comparison. In all other paths the original case is preserved
+// so that Linux MySQL deployments with lower_case_table_names=0 retain true
+// identifier differences instead of silently treating e.g. `Users` == `users`.
+func buildForeignKeyConstraintDefinition(name, referencedSchema, referencedTable string, columns, referencedColumns []string, deleteRule, updateRule string, caseInsensitive bool) string {
+	refSchema := strings.TrimSpace(referencedSchema)
+	refTable := strings.TrimSpace(referencedTable)
+	if caseInsensitive {
+		refSchema = strings.ToLower(refSchema)
+		refTable = strings.ToLower(refTable)
+	}
 	definition := fmt.Sprintf(
 		"FOREIGN KEY %s(%s) REFERENCES %s.%s(%s)",
 		strings.ToUpper(strings.TrimSpace(name)),
 		strings.Join(columns, ","),
-		strings.ToLower(strings.TrimSpace(referencedSchema)),
-		strings.ToLower(strings.TrimSpace(referencedTable)),
+		refSchema,
+		refTable,
 		strings.Join(referencedColumns, ","),
 	)
 	if deleteRule != "" {

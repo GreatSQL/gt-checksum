@@ -48,7 +48,9 @@ func TestNormalizeOracleColumnType(t *testing.T) {
 		// Float/Double
 		{"FLOAT", "double"},
 		{"FLOAT(126)", "double"},
-		{"BINARY_FLOAT", "float"},
+		// Oracle BINARY_FLOAT (IEEE754 single precision) maps to MySQL `double`
+		// to avoid the single-precision accuracy issues previously hit by bare FLOAT.
+		{"BINARY_FLOAT", "double"},
 		{"BINARY_DOUBLE", "double"},
 		{"DECIMAL", "decimal"},
 
@@ -197,23 +199,23 @@ func TestDecideOracleToMySQLTypeCompatibility(t *testing.T) {
 			wantState: CompatibilityUnsupported,
 		},
 		// Oracle NUMBER (no precision) should be compatible with any MySQL integer type.
-		// NUMBER without precision has an implicit scale=0 and users often map it to
-		// an integer type that fits their actual data range.
+		// Bare NUMBER can hold fractional values — downgrade to WarnOnly against
+		// MySQL integer targets so silent truncation is surfaced to operators.
 		{
-			name:      "NUMBER (no precision) vs INT - compatible",
+			name:      "NUMBER (no precision) vs INT - warn-only",
 			srcRaw:    "NUMBER",
 			srcNorm:   "decimal(38,0)",
 			dstRaw:    "int",
 			dstNorm:   "int",
-			wantState: CompatibilityNormalizedEqual,
+			wantState: CompatibilityWarnOnly,
 		},
 		{
-			name:      "NUMBER (no precision) vs BIGINT - compatible",
+			name:      "NUMBER (no precision) vs BIGINT - warn-only",
 			srcRaw:    "NUMBER",
 			srcNorm:   "decimal(38,0)",
 			dstRaw:    "bigint",
 			dstNorm:   "bigint",
-			wantState: CompatibilityNormalizedEqual,
+			wantState: CompatibilityWarnOnly,
 		},
 		{
 			name:      "NUMBER (no precision) vs decimal(38,0) - exact canonical match",
