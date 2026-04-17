@@ -531,6 +531,15 @@ func (sp *SchedulePlan) QueryDataCheckSum(stt, dtt string, md5chan chan<- map[st
 				stt = strings.Join(sttRows, "/*go actions rowData*/")
 				dtt = strings.Join(dttRows, "/*go actions rowData*/")
 			}
+			// Oracle CHAR/NCHAR 存储时以空格填充至定义长度，MySQL SELECT 自动去除尾部空格。
+			// 无索引表 MD5 比较前需同步归一化，与有索引表路径（AbnormalDataDispos）保持一致，
+			// 避免持续误报差异形成无限修复循环。
+			charFlags := buildCharTrimFlags(srcColData.SColumnInfo)
+			if len(charFlags) > 0 {
+				sttRows := strings.Split(stt, "/*go actions rowData*/")
+				sttRows = normalizeRowsForCharComparison(sttRows, charFlags)
+				stt = strings.Join(sttRows, "/*go actions rowData*/")
+			}
 		}
 	}
 

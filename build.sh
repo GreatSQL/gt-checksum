@@ -13,7 +13,7 @@ export CXXFLAGS="-stdlib=libstdc++" CC=/usr/bin/gcc CXX=/usr/bin/g++
 
 vs=`cat ./inputArg/flagHelp.go| grep "app.Version"|awk -F "=" '{print $2}'|sed 's/\"//g'|sed 's/\/\/版本//g'|sed 's/ //g'`
 OracleDrive="instantclient_11_2"
-HASH="99c04e8"
+HASH="2a3cb62"
 
 # 自动适配CPU架构类型
 if [ ! -z "`which uname > /dev/null 2>&1`" ] ; then

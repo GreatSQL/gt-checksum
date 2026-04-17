@@ -76,6 +76,35 @@ func adaptWhereForDrive(where, drive string) string {
 	return where
 }
 
+// buildChunkRangeWhere 组合外层 WHERE 与本次分片的范围谓词。
+// 当 low/high 为空字符串时跳过对应边界，避免在 Oracle 上生成 `col >= ''`
+// 这类谓词触发 ORA-01722: invalid number（Oracle 将空串视为 NULL，
+// 数值列的隐式转换会失败）。
+func buildChunkRangeWhere(outer, col, low, high string, highInclusive bool) string {
+	var preds []string
+	if low != "" {
+		preds = append(preds, fmt.Sprintf("`%s` >= '%s'", col, low))
+	}
+	if high != "" {
+		op := "<"
+		if highInclusive {
+			op = "<="
+		}
+		preds = append(preds, fmt.Sprintf("`%s` %s '%s'", col, op, high))
+	}
+	chunk := strings.Join(preds, " and ")
+	switch {
+	case outer != "" && chunk != "":
+		return fmt.Sprintf("%s and %s", outer, chunk)
+	case outer != "":
+		return outer
+	case chunk != "":
+		return chunk
+	default:
+		return "1=1"
+	}
+}
+
 func oracleMetadataMatchExpr(column, value string) string {
 	escaped := strings.ReplaceAll(value, "'", "''")
 	return fmt.Sprintf("UPPER(%s)=UPPER('%s')", column, escaped)
@@ -210,6 +239,20 @@ func hasInsertKey(raw string, enabled bool) bool {
 func isIntegerColumnType(columnType string) bool {
 	ct := strings.ToLower(strings.TrimSpace(columnType))
 	if ct == "" {
+		return false
+	}
+	// Oracle NUMBER(p,0) 亦为整数。识别后可走数值分片 fast path，避免进入 GROUP BY
+	// 递归路径，后者在目标端为 MySQL BIT 列时会把原始字节当作 chunk 边界值回传
+	// Oracle NUMBER 谓词，触发 ORA-01722: invalid number。
+	if strings.HasPrefix(ct, "number(") {
+		rest := strings.TrimSuffix(strings.TrimPrefix(ct, "number("), ")")
+		parts := strings.Split(rest, ",")
+		if len(parts) == 2 {
+			scale := strings.TrimSpace(parts[1])
+			if scale == "0" {
+				return true
+			}
+		}
 		return false
 	}
 	return strings.HasPrefix(ct, "tinyint") ||
@@ -582,11 +625,7 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 				// 当d==0且e不为空时，说明上一个chunk刚好在边界处结束，
 				// e被设置为下一个值但从未被包含在任何chunk中，需要补发一个最终chunk
 				if e != "" {
-					var whereExist string
-					if where != "" {
-						whereExist = fmt.Sprintf("%v and ", where)
-					}
-					sqlwhere = fmt.Sprintf("%v `%v` >= '%v' ", whereExist, sp.columnName[level], e)
+					sqlwhere = buildChunkRangeWhere(where, sp.columnName[level], e, "", false)
 					global.Wlog.Debugf("(%d) Final chunk emitted for remaining boundary value: %s", logThreadSeq, sqlwhere)
 					sqlWhere <- sqlwhere
 					sqlwhere = ""
@@ -668,16 +707,12 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 				if d < queryNum && d > 0 && key == dataDispos.StreamEndMarker {
 					vlog = fmt.Sprintf("(%d) Processing end of index column %s level %d", logThreadSeq, sp.columnName[level], level)
 					global.Wlog.Debug(vlog)
-					var whereExist string
-					if where != "" {
-						whereExist = fmt.Sprintf("%v and ", where)
-					}
-					// 修复：对于最后一段数据，使用没有上界的条件以确保包含所有剩余记录
+					// 修复：对于最后一段数据，使用没有上界的条件以确保包含所有剩余记录；
+					// 若起始值 e 为空（如全表仅有 NULL/空首值），跳过 `>= ''` 以免
+					// Oracle 数值列触发 ORA-01722。
+					sqlwhere = buildChunkRangeWhere(where, sp.columnName[level], e, "", false)
 					if partFirstValue {
-						sqlwhere = fmt.Sprintf("%v `%v` >= '%v' ", whereExist, sp.columnName[level], e)
 						partFirstValue = false
-					} else {
-						sqlwhere = fmt.Sprintf("%v `%v` >= '%v' ", whereExist, sp.columnName[level], e)
 					}
 					//global.Wlog.Debug("DEBUG_WHERE7: %s", sqlwhere)
 
@@ -693,13 +728,9 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 			if d >= queryNum {
 				//判断联合索引列深度
 				if level < len(sp.columnName)-1 { //如果不是最后一列，继续递归处理
-					// 修复：对于复合主键，确保递归时传递完整的WHERE条件
-					var newWhere string
-					if where != "" {
-						newWhere = fmt.Sprintf("%s and `%s` >= '%s' and `%s` < '%s'", where, sp.columnName[level], e, sp.columnName[level], g)
-					} else {
-						newWhere = fmt.Sprintf("`%s` >= '%s' and `%s` < '%s'", sp.columnName[level], e, sp.columnName[level], g)
-					}
+					// 修复：对于复合主键，确保递归时传递完整的WHERE条件；
+					// 若 e/g 为空则跳过对应边界，避免 Oracle ORA-01722。
+					newWhere := buildChunkRangeWhere(where, sp.columnName[level], e, g, false)
 					//global.Wlog.Debug("DEBUG_WHERE3: %s", newWhere)
 
 					level++ //索引列层数递增
@@ -710,22 +741,17 @@ func (sp *SchedulePlan) recursiveIndexColumn(sqlWhere chanString, sdb, ddb *sql.
 						e = key
 					}
 				} else { //如果是最后一列，直接输出当前索引列深度的条件
-					var whereExist string
-					if where != "" { //非第一层索引列数据
-						whereExist = fmt.Sprintf("%s and ", where)
-					}
 					if d == c && c >= queryNum { //单行索引列数据的group值大于并发数
+						var whereExist string
+						if where != "" {
+							whereExist = fmt.Sprintf("%s and ", where)
+						}
 						sqlwhere = fmt.Sprintf("%s `%v` = '%v' ", whereExist, sp.columnName[level], g)
 					} else {
-						if partFirstValue { //每段的首行数据
-							sqlwhere = fmt.Sprintf("%s `%v` >= '%v' and `%v` < '%v' ", whereExist, sp.columnName[level], e, sp.columnName[level], g)
-							//global.Wlog.Debug("DEBUG_WHERE8: %s", sqlwhere)
-
+						// 若 e/g 为空则跳过对应边界，避免 Oracle ORA-01722。
+						sqlwhere = buildChunkRangeWhere(where, sp.columnName[level], e, g, false)
+						if partFirstValue {
 							partFirstValue = false
-						} else {
-							sqlwhere = fmt.Sprintf("%s `%v` >= '%v' and `%v` < '%v' ", whereExist, sp.columnName[level], e, sp.columnName[level], g)
-							//global.Wlog.Debug("DEBUG_WHERE10: %s", sqlwhere)
-
 						}
 					}
 					//global.Wlog.Debug("DEBUG_WHERE2: %s", sqlwhere)
@@ -3648,7 +3674,9 @@ func normalizeRowsForFloatComparison(rows []string, scales []int) []string {
 //
 // 原理：normalizeRowsForFloatComparison / normalizeRowsForTemporalComparison 按位置
 // 修改每行字段，因此 normalizedDest[i] 与 origDest[i] 一一对应。
-// 本函数通过 "归一化行→原始行队列" 映射表逐行消费，正确处理多行归一化后相同的边界情况。
+// 本函数通过 "归一化行→原始行队列" 映射表逐行消费；对多条目标行在归一化后字面相同
+// 的"歧义"场景（例如多行 float 归一化到同值且与主键无关）提供 FIFO 兜底并显式告警，
+// 让运维可借助日志人工复核，避免把错误原始行写入 DELETE WHERE。
 func remapDelToOriginalDest(normalizedDel, normalizedDest, origDest []string) []string {
 	if len(normalizedDest) != len(origDest) {
 		// 长度不一致时保守地返回原 del，避免越界
@@ -3656,16 +3684,28 @@ func remapDelToOriginalDest(normalizedDel, normalizedDest, origDest []string) []
 	}
 	// 构建 normalizedRow → []originalRow 队列映射
 	normToOrig := make(map[string][]string, len(normalizedDest))
+	ambiguous := make(map[string]bool)
 	for i, norm := range normalizedDest {
+		if queue, exists := normToOrig[norm]; exists {
+			// 多条原始行归一化后字面相同：结果可能依赖 Arrcmp 顺序（潜在错位）
+			if len(queue) > 0 && queue[0] != origDest[i] {
+				ambiguous[norm] = true
+			}
+		}
 		normToOrig[norm] = append(normToOrig[norm], origDest[i])
 	}
 	result := make([]string, 0, len(normalizedDel))
 	for _, normRow := range normalizedDel {
 		if queue, ok := normToOrig[normRow]; ok && len(queue) > 0 {
+			if ambiguous[normRow] {
+				global.Wlog.Warnf("remapDelToOriginalDest: normalized dest row matches %d distinct originals (float/time collapse); "+
+					"FIFO selecting first remaining — verify generated DELETE WHERE targets the intended row", len(queue))
+			}
 			result = append(result, queue[0])
 			normToOrig[normRow] = queue[1:]
 		} else {
 			// 找不到对应原始行时回退使用归一化行（不应发生）
+			global.Wlog.Warnf("remapDelToOriginalDest: normalized del row not found in normalizedDest; falling back to normalized form")
 			result = append(result, normRow)
 		}
 	}

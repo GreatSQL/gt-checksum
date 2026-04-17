@@ -1,6 +1,9 @@
 package actions
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestColumnsModeSplitPKAndCompare_CaseInsensitive(t *testing.T) {
 	filteredCols := []map[string]string{
@@ -344,6 +347,8 @@ func TestNormalizeFloatComparisonValue_Float32Sentinel_MoreValues(t *testing.T) 
 
 // TestResolveFloatComparisonScale_FloatFloat_ReturnsSentinel 验证两端均为 FLOAT 且无显式精度时，
 // resolveFloatComparisonScale 返回 floatSinglePrecisionSentinel，触发 float32 精度归一化。
+// Oracle→MySQL 场景重点：Oracle BINARY_FLOAT 与 MySQL float（小写，实际元数据返回形式）
+// 的组合也必须触发哨兵，确保数据比对路径正确使用 float32 精度归一化。
 func TestResolveFloatComparisonScale_FloatFloat_ReturnsSentinel(t *testing.T) {
 	cases := []struct {
 		src, dst string
@@ -352,6 +357,9 @@ func TestResolveFloatComparisonScale_FloatFloat_ReturnsSentinel(t *testing.T) {
 		{"float", "float"},
 		{"BINARY_FLOAT", "FLOAT"},
 		{"FLOAT", "BINARY_FLOAT"},
+		// Oracle→MySQL 实际场景：Oracle BINARY_FLOAT vs MySQL float（小写）
+		{"BINARY_FLOAT", "float"},
+		{"binary_float", "float"},
 	}
 	for _, tc := range cases {
 		got := resolveFloatComparisonScale(tc.src, tc.dst)
@@ -359,6 +367,81 @@ func TestResolveFloatComparisonScale_FloatFloat_ReturnsSentinel(t *testing.T) {
 			t.Errorf("resolveFloatComparisonScale(%q, %q) = %d, want floatSinglePrecisionSentinel (%d)",
 				tc.src, tc.dst, got, floatSinglePrecisionSentinel)
 		}
+	}
+}
+
+// TestBuildFloatComparisonScales_BinaryFloatColumn 验证 buildFloatComparisonScales 对
+// Oracle BINARY_FLOAT 列（元数据 dataType="BINARY_FLOAT"）与 MySQL float 列正确返回
+// floatSinglePrecisionSentinel，覆盖有索引路径和无索引路径共用的数据归一化入口。
+func TestBuildFloatComparisonScales_BinaryFloatColumn(t *testing.T) {
+	// 模拟 Oracle 源端 BINARY_FLOAT 列元数据（QueryDataCheckSum / AbnormalDataDispos 实际格式）
+	srcCols := []map[string]string{
+		{"columnName": "id", "dataType": "NUMBER"},
+		{"columnName": "f1", "dataType": "BINARY_FLOAT"},
+		{"columnName": "name", "dataType": "VARCHAR2(50)"},
+	}
+	// 模拟 MySQL 目标端 float 列元数据（MySQL INFORMATION_SCHEMA 返回小写）
+	dstCols := []map[string]string{
+		{"columnName": "id", "dataType": "int"},
+		{"columnName": "f1", "dataType": "float"},
+		{"columnName": "name", "dataType": "varchar(50)"},
+	}
+
+	scales := buildFloatComparisonScales(srcCols, dstCols)
+	if scales == nil {
+		t.Fatal("buildFloatComparisonScales returned nil for BINARY_FLOAT/float column pair")
+	}
+	if len(scales) != 3 {
+		t.Fatalf("expected 3 scale entries, got %d", len(scales))
+	}
+	// 列 0 (NUMBER/int): 非 float 类型，scale 应为 -1（跳过）
+	if scales[0] != -1 {
+		t.Errorf("column 0 (NUMBER/int): expected scale=-1, got %d", scales[0])
+	}
+	// 列 1 (BINARY_FLOAT/float): 必须返回 floatSinglePrecisionSentinel
+	if scales[1] != floatSinglePrecisionSentinel {
+		t.Errorf("column 1 (BINARY_FLOAT/float): expected floatSinglePrecisionSentinel (%d), got %d",
+			floatSinglePrecisionSentinel, scales[1])
+	}
+	// 列 2 (VARCHAR2/varchar): 非 float 类型，scale 应为 -1（跳过）
+	if scales[2] != -1 {
+		t.Errorf("column 2 (VARCHAR2/varchar): expected scale=-1, got %d", scales[2])
+	}
+}
+
+// TestNormalizeRowsForFloatComparison_BinaryFloatEndToEnd 端到端验证 Oracle BINARY_FLOAT 列
+// 的数据比对归一化路径：buildFloatComparisonScales → normalizeRowsForFloatComparison。
+// 模拟 Oracle 返回精确十进制 "123.45"，MySQL float 返回 "123.449997"，归一化后应相同。
+func TestNormalizeRowsForFloatComparison_BinaryFloatEndToEnd(t *testing.T) {
+	const sep = "/*go actions columnData*/"
+
+	srcCols := []map[string]string{
+		{"columnName": "id", "dataType": "NUMBER"},
+		{"columnName": "f1", "dataType": "BINARY_FLOAT"},
+	}
+	dstCols := []map[string]string{
+		{"columnName": "id", "dataType": "int"},
+		{"columnName": "f1", "dataType": "float"},
+	}
+	scales := buildFloatComparisonScales(srcCols, dstCols)
+	if scales == nil {
+		t.Fatal("buildFloatComparisonScales returned nil")
+	}
+
+	// Oracle 行：id=1, BINARY_FLOAT=123.45（Oracle 精确十进制表示）
+	oracleRow := "1" + sep + "123.45"
+	// MySQL 行：id=1, float=123.449997（MySQL IEEE 754 单精度字符串）
+	mysqlRow := "1" + sep + "123.449997"
+
+	oracleNorm := normalizeRowsForFloatComparison([]string{oracleRow}, scales)
+	mysqlNorm := normalizeRowsForFloatComparison([]string{mysqlRow}, scales)
+
+	if len(oracleNorm) != 1 || len(mysqlNorm) != 1 {
+		t.Fatalf("unexpected row count: oracle=%d mysql=%d", len(oracleNorm), len(mysqlNorm))
+	}
+	if oracleNorm[0] != mysqlNorm[0] {
+		t.Errorf("BINARY_FLOAT end-to-end: Oracle %q and MySQL %q not unified after normalization:\n  oracle→%q\n  mysql →%q",
+			oracleRow, mysqlRow, oracleNorm[0], mysqlNorm[0])
 	}
 }
 
@@ -536,6 +619,68 @@ func TestNormalizeRowsForCharComparison_T2Scenario(t *testing.T) {
 	if oracleResult[0] != mysqlResult[0] {
 		t.Errorf("T2 scenario: after CHAR trim, Oracle row %q and MySQL row %q should be equal; got %q vs %q",
 			oracleRow, mysqlRow, oracleResult[0], mysqlResult[0])
+	}
+}
+
+// TestIsIntegerColumnType_OracleNumber 验证 isIntegerColumnType 能识别 Oracle NUMBER 整数类型。
+// 回归：Oracle TESTBIT 表 F1 NUMBER(1,0) 作为索引列时，应走数值分片路径（generateFirstLevelNumericChunks），
+// 而非 recursiveIndexColumn GROUP BY 路径。后者会将 MySQL bit 列的二进制值 \x00/\x01
+// 作为 WHERE 边界，导致 Oracle NUMBER 列比较空字符串触发 ORA-01722。
+func TestIsIntegerColumnType_OracleNumber(t *testing.T) {
+	integerCases := []string{
+		"NUMBER(1,0)",
+		"NUMBER(5,0)",
+		"NUMBER(19,0)",
+		"NUMBER(38,0)",
+		"number(1,0)",
+		"NUMBER( 10 , 0 )",
+	}
+	for _, ct := range integerCases {
+		if !isIntegerColumnType(ct) {
+			t.Errorf("isIntegerColumnType(%q) = false, want true", ct)
+		}
+	}
+
+	nonIntegerCases := []string{
+		"NUMBER(10,2)",
+		"NUMBER(19,3)",
+		"number(5,1)",
+		"VARCHAR2(10)",
+		"DATE",
+		"FLOAT",
+		"",
+		"bit(1)",
+		"bit(64)",
+	}
+	for _, ct := range nonIntegerCases {
+		if isIntegerColumnType(ct) {
+			t.Errorf("isIntegerColumnType(%q) = true, want false", ct)
+		}
+	}
+}
+
+// TestBuildNumericChunkWhereClauses_OracleNumberBit1 验证当 Oracle NUMBER(1,0) 索引列
+// min=1, max=1 时（TESTBIT 场景），生成的 WHERE 子句不包含空字符串边界。
+// 修复前：递归路径生成 WHERE "F1" >= '' 触发 ORA-01722。
+// 修复后：数值路径生成 WHERE F1 >= 1（纯数值比较，Oracle NUMBER 和 MySQL bit 均支持）。
+func TestBuildNumericChunkWhereClauses_OracleNumberBit1(t *testing.T) {
+	// 模拟 TESTBIT.F1 NUMBER(1,0) 场景：min=1, max=1, 1 行数据
+	clauses := buildNumericChunkWhereClauses("F1", "", "godror", 1, 1, 100, 1, false)
+	if len(clauses) == 0 {
+		t.Fatal("expected at least one clause, got none")
+	}
+	for _, clause := range clauses {
+		if clause == "" {
+			t.Errorf("empty clause generated, would cause ORA-01722 in Oracle NUMBER comparison")
+		}
+		// 不应包含空字符串边界 ''
+		if strings.Contains(clause, "''") {
+			t.Errorf("clause contains empty string boundary: %q", clause)
+		}
+		// 应包含数值而非字符串比较
+		if strings.Contains(clause, ">= '") || strings.Contains(clause, "<= '") {
+			t.Errorf("clause uses string boundary instead of numeric: %q", clause)
+		}
 	}
 }
 

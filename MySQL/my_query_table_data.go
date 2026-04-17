@@ -790,11 +790,21 @@ func (my QueryTable) TmpTableColumnGroupDataDispos(db *sql.DB, where string, col
 		global.Wlog.Info(logMsg)
 	}
 
-	accurateForceSQL := fmt.Sprintf("SELECT %s AS columnName, COUNT(1) AS count FROM `%s`.`%s`%s %s GROUP BY %s ORDER BY %s", columnName, my.Schema, my.Table, forceIndexClause, whereExist, columnName, columnName)
-	accuratePlainSQL := fmt.Sprintf("SELECT %s AS columnName, COUNT(1) AS count FROM `%s`.`%s` %s GROUP BY %s ORDER BY %s", columnName, my.Schema, my.Table, whereExist, columnName, columnName)
+	// BIT 列原始字节作为分组键会产生不可打印字符，跨库比对时无法与 Oracle NUMBER
+	// 的 TO_CHAR 结果对齐。对 BIT 列改用 CAST(col AS UNSIGNED) 做归一化，使分组键
+	// 变成可比较的十进制字符串。
+	selectExpr := fmt.Sprintf("`%s`", columnName)
+	groupOrderExpr := fmt.Sprintf("`%s`", columnName)
+	if isBitColumnType(my.resolveColumnDataType(db, columnName, logThreadSeq)) {
+		selectExpr = fmt.Sprintf("CAST(`%s` AS UNSIGNED)", columnName)
+		groupOrderExpr = selectExpr
+	}
 
-	fastForceSQL := fmt.Sprintf("SELECT %s AS columnName, 1 AS count FROM `%s`.`%s`%s %s GROUP BY %s ORDER BY %s", columnName, my.Schema, my.Table, forceIndexClause, whereExist, columnName, columnName)
-	fastPlainSQL := fmt.Sprintf("SELECT %s AS columnName, 1 AS count FROM `%s`.`%s` %s GROUP BY %s ORDER BY %s", columnName, my.Schema, my.Table, whereExist, columnName, columnName)
+	accurateForceSQL := fmt.Sprintf("SELECT %s AS columnName, COUNT(1) AS count FROM `%s`.`%s`%s %s GROUP BY %s ORDER BY %s", selectExpr, my.Schema, my.Table, forceIndexClause, whereExist, groupOrderExpr, groupOrderExpr)
+	accuratePlainSQL := fmt.Sprintf("SELECT %s AS columnName, COUNT(1) AS count FROM `%s`.`%s` %s GROUP BY %s ORDER BY %s", selectExpr, my.Schema, my.Table, whereExist, groupOrderExpr, groupOrderExpr)
+
+	fastForceSQL := fmt.Sprintf("SELECT %s AS columnName, 1 AS count FROM `%s`.`%s`%s %s GROUP BY %s ORDER BY %s", selectExpr, my.Schema, my.Table, forceIndexClause, whereExist, groupOrderExpr, groupOrderExpr)
+	fastPlainSQL := fmt.Sprintf("SELECT %s AS columnName, 1 AS count FROM `%s`.`%s` %s GROUP BY %s ORDER BY %s", selectExpr, my.Schema, my.Table, whereExist, groupOrderExpr, groupOrderExpr)
 
 	primarySQL := accurateForceSQL
 	secondarySQL := accuratePlainSQL
@@ -1382,7 +1392,54 @@ func formatComparableColumnExpr(columnExpr, dataType string) string {
 		// Ignore display-only leading zeros from ZEROFILL when comparing data.
 		formatted = fmt.Sprintf("CAST(%s AS DECIMAL(65,0))", formatted)
 	}
+	// BIT(N) 在 Go MySQL 驱动中返回原始字节，直接作为分片键或对比值会产生不可打印
+	// 字符（如 0x01），塞回 Oracle NUMBER 列谓词会触发 ORA-01722。用 CAST 归一化为
+	// 无符号整数文本后，Oracle 端 TO_CHAR(NUMBER,'FM…') 的输出亦可一一匹配。
+	if t == "BIT" || strings.HasPrefix(t, "BIT(") {
+		formatted = fmt.Sprintf("CAST(%s AS UNSIGNED)", formatted)
+	}
 	return formatted
+}
+
+// isBitColumnType 判断 MySQL 的列类型是否为 BIT 系列。
+func isBitColumnType(dataType string) bool {
+	t := strings.ToUpper(strings.TrimSpace(dataType))
+	return t == "BIT" || strings.HasPrefix(t, "BIT(")
+}
+
+// resolveColumnDataType 按 TableColumn → 全局缓存 → INFORMATION_SCHEMA.COLUMNS
+// 的顺序获取指定列的 COLUMN_TYPE；任何一级命中即返回。跨库场景下对于目标端 MySQL
+// BIT 列是否要做 CAST 归一化需要它来判断。
+func (my *QueryTable) resolveColumnDataType(db *sql.DB, columnName string, logThreadSeq int64) string {
+	if columnName == "" {
+		return ""
+	}
+	for _, col := range my.TableColumn {
+		if col["columnName"] == columnName {
+			if dt := col["dataType"]; dt != "" {
+				return dt
+			}
+		}
+	}
+	cacheKey := scopedColumnCacheKey(db, my.Schema, my.Table, columnName)
+	cacheMutex.RLock()
+	if dt, ok := columnDataTypeGlobalCache[cacheKey]; ok && dt != "" {
+		cacheMutex.RUnlock()
+		return dt
+	}
+	cacheMutex.RUnlock()
+	query := fmt.Sprintf("SELECT COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s' AND COLUMN_NAME='%s'",
+		my.Schema, my.Table, columnName)
+	var dt string
+	if err := db.QueryRow(query).Scan(&dt); err != nil {
+		return ""
+	}
+	if dt != "" {
+		cacheMutex.Lock()
+		columnDataTypeGlobalCache[cacheKey] = dt
+		cacheMutex.Unlock()
+	}
+	return dt
 }
 
 func normalizeColumnLookupKey(name string) string {
