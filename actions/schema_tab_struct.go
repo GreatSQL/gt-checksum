@@ -1569,9 +1569,13 @@ var mysqlAlterTableStatementPattern = regexp.MustCompile("(?is)^\\s*ALTER\\s+TAB
 // result is used to generate a MySQL CREATE TABLE PRIMARY KEY clause so the
 // DDL is acceptable to MySQL 8.0+ instances with sql_require_primary_key=ON.
 func queryOraclePrimaryKeyColumns(db *sql.DB, schema, table string) ([]string, error) {
+	// Use ALL_* views (not DBA_*) so that non-DBA application accounts with only
+	// SELECT privileges on the target schema can still retrieve PK columns. Using
+	// DBA_* requires SELECT_CATALOG_ROLE which production accounts rarely have,
+	// and failing back to a PK-less CREATE TABLE breaks sql_require_primary_key=ON.
 	query := `SELECT cc.column_name
-FROM dba_constraints c
-JOIN dba_cons_columns cc ON c.owner = cc.owner AND c.constraint_name = cc.constraint_name
+FROM all_constraints c
+JOIN all_cons_columns cc ON c.owner = cc.owner AND c.constraint_name = cc.constraint_name
 WHERE c.constraint_type = 'P' AND c.owner = :1 AND c.table_name = :2
 ORDER BY cc.position`
 	rows, err := db.Query(query, schema, table)
@@ -1593,28 +1597,108 @@ ORDER BY cc.position`
 	return cols, nil
 }
 
-// queryMySQLForeignKeyIndexNames 返回 MySQL 表上所有外键约束名的集合（大写）。
-// 在 Oracle→MySQL 比对时，Oracle FK 约束不会自动创建 backing index，而 MySQL 会。
-// 调用方应将返回集合中的索引名从 dmul 中排除，避免误生成 DROP INDEX。
+// queryMySQLForeignKeyIndexNames 返回 MySQL 表上所有外键对应 backing index 名称集合（大写）。
+// MySQL 通常将 FK 约束名作为自动创建的 backing index 名，但以下场景会导致"FK 约束名 ≠ 索引名"：
+//  1. 用户在创建 FK 前已显式创建可用索引，MySQL 复用该索引；
+//  2. FK 创建语句显式使用 `FOREIGN KEY index_name (...)` 指定索引名；
+//  3. 升级/迁移过程 FK 与索引被拆分并重命名。
+//
+// 为了精准识别 backing index，我们先查出每个 FK 的列顺序，再在 STATISTICS 中匹配
+// "同表、同列、同 SEQ_IN_INDEX 前缀"的索引，避免把误把其他索引当 backing 剔除。
 func queryMySQLForeignKeyIndexNames(db *sql.DB, schema, table string) (map[string]bool, error) {
 	result := make(map[string]bool)
-	rows, err := db.Query(`
-		SELECT CONSTRAINT_NAME
+
+	// Step1: 按 FK 名 + POSITION 收集列顺序
+	fkColRows, err := db.Query(`
+		SELECT CONSTRAINT_NAME, COLUMN_NAME, ORDINAL_POSITION
 		FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
 		WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND REFERENCED_TABLE_NAME IS NOT NULL
-		GROUP BY CONSTRAINT_NAME`, schema, table)
+		ORDER BY CONSTRAINT_NAME, ORDINAL_POSITION`, schema, table)
 	if err != nil {
 		return result, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			continue
+	fkColumns := make(map[string][]string)
+	for fkColRows.Next() {
+		var constraintName, columnName string
+		var ordinalPos int
+		if scanErr := fkColRows.Scan(&constraintName, &columnName, &ordinalPos); scanErr != nil {
+			fkColRows.Close()
+			global.Wlog.Warnf("queryMySQLForeignKeyIndexNames: scan FK column row failed for %s.%s: %v", schema, table, scanErr)
+			return result, scanErr
 		}
-		result[strings.ToUpper(name)] = true
+		fkColumns[strings.ToUpper(constraintName)] = append(fkColumns[strings.ToUpper(constraintName)], columnName)
 	}
-	return result, rows.Err()
+	fkColRows.Close()
+	if err = fkColRows.Err(); err != nil {
+		return result, err
+	}
+
+	if len(fkColumns) == 0 {
+		return result, nil
+	}
+
+	// Step2: 查表上全部索引的列序列
+	idxRows, err := db.Query(`
+		SELECT INDEX_NAME, COLUMN_NAME, SEQ_IN_INDEX
+		FROM INFORMATION_SCHEMA.STATISTICS
+		WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+		ORDER BY INDEX_NAME, SEQ_IN_INDEX`, schema, table)
+	if err != nil {
+		// 查不到 STATISTICS 时回退为"FK 约束名即 backing index 名"——与旧版本一致
+		global.Wlog.Warnf("queryMySQLForeignKeyIndexNames: STATISTICS lookup failed for %s.%s (%v); falling back to constraint-name heuristic", schema, table, err)
+		for name := range fkColumns {
+			result[name] = true
+		}
+		return result, nil
+	}
+	indexCols := make(map[string][]string)
+	for idxRows.Next() {
+		var indexName, columnName string
+		var seqInIndex int
+		if scanErr := idxRows.Scan(&indexName, &columnName, &seqInIndex); scanErr != nil {
+			idxRows.Close()
+			global.Wlog.Warnf("queryMySQLForeignKeyIndexNames: scan index row failed for %s.%s: %v", schema, table, scanErr)
+			return result, scanErr
+		}
+		indexCols[indexName] = append(indexCols[indexName], columnName)
+	}
+	idxRows.Close()
+	if err = idxRows.Err(); err != nil {
+		return result, err
+	}
+
+	// Step3: 为每个 FK 匹配第一个列序列完全以 FK 列为前缀的索引
+	//   - 若同名索引存在（默认情况），优先匹配同名；
+	//   - 否则按列前缀匹配；
+	//   - 最后兜底：FK 约束名也放入结果，避免遗漏。
+	for fkName, cols := range fkColumns {
+		matched := false
+		if _, ok := indexCols[fkName]; ok {
+			result[fkName] = true
+			matched = true
+		}
+		for idxName, idxColList := range indexCols {
+			if len(idxColList) < len(cols) {
+				continue
+			}
+			isPrefix := true
+			for i, c := range cols {
+				if !strings.EqualFold(idxColList[i], c) {
+					isPrefix = false
+					break
+				}
+			}
+			if isPrefix {
+				result[strings.ToUpper(idxName)] = true
+				matched = true
+			}
+		}
+		if !matched {
+			// 两种场景都没匹配到时保留 FK 约束名以兼容旧逻辑
+			result[fkName] = true
+		}
+	}
+	return result, nil
 }
 
 func queryMySQLCreateTableStatement(db *sql.DB, schema, table string) (string, error) {
@@ -2027,6 +2111,7 @@ func buildConstraintAdvisoryLines(scope string, suggestions []schemacompat.Const
 
 	lines := []string{
 		fmt.Sprintf("-- gt-checksum advisory begin: %s", scope),
+		"-- generated as manual review SQL only; review carefully before execution",
 	}
 	for _, suggestion := range suggestions {
 		isManualReview := suggestion.Level == schemacompat.ConstraintRepairLevelManualReview
@@ -2045,11 +2130,16 @@ func buildConstraintAdvisoryLines(scope string, suggestions []schemacompat.Const
 		for _, stmt := range suggestion.Statements {
 			stmt = strings.TrimSpace(stmt)
 			if isManualReview {
-				// manual-review 级别：SQL 语句写为可执行形式，确保末尾有分号
+				// manual-review 级别：SQL 语句写为可执行形式，但必须加显著 banner
+				// 提醒用户在 `source` 修复脚本前先人工审核，避免意外执行。
 				if !strings.HasSuffix(stmt, ";") {
 					stmt += ";"
 				}
+				lines = append(lines, "")
+				lines = append(lines, "-- !!! ACTION REQUIRED: manual review required before running the statement below !!!")
 				lines = append(lines, stmt)
+				lines = append(lines, "-- !!! END manual-review block !!!")
+				lines = append(lines, "")
 			} else {
 				// advisory-only 级别：SQL 语句以注释形式写出，仅供参考
 				lines = append(lines, fmt.Sprintf("-- %s", stmt))
@@ -3434,7 +3524,15 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 						originalDestDef := destColumnMap[colPair.destCol]
 						delete(destColumnMap, colPair.destCol)
 						destColumnMap[colPair.sourceCol] = originalDestDef
-						destColumnSeq[colPair.sourceCol] = sourceColumnSeq[colPair.sourceCol]
+						// Preserve the *target* column's ordinal position when
+						// renaming the map key. Overwriting with the source
+						// ordinal would hide real column-order mismatches that
+						// should still be detected (e.g. MySQL DDL reordered a
+						// column relative to the Oracle definition).
+						if destOrd, ok := destColumnSeq[colPair.destCol]; ok {
+							destColumnSeq[colPair.sourceCol] = destOrd
+							delete(destColumnSeq, colPair.destCol)
+						}
 						vlog = fmt.Sprintf("(%d) %s Column %s only differs in case from %s (Oracle→MySQL: case difference skipped, not a real mismatch)", logThreadSeq, event, colPair.destCol, colPair.sourceCol)
 						global.Wlog.Debug(vlog)
 						_ = sourceDef
@@ -3919,7 +4017,15 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 				// 如果两者都不为null，则比较
 				if sourceDefault != "null" && destDefault != "null" {
 					if useCanonicalCompare {
-						decision := schemacompat.DecideColumnDefaultCompatibility(sourceCanonical, destCanonical)
+						var decision schemacompat.CompatibilityDecision
+						if stcls.isOracleToMySQL() {
+							// Oracle→MySQL uses dedicated comparison so that
+							// seq.NEXTVAL-cleared defaults become WarnOnly
+							// instead of Unsupported.
+							decision = schemacompat.DecideOracleToMySQLDefaultCompatibility(sourceCanonical, destCanonical)
+						} else {
+							decision = schemacompat.DecideColumnDefaultCompatibility(sourceCanonical, destCanonical)
+						}
 						if decision.IsMismatch() {
 							tableAbnormalBool = true
 							vlog = fmt.Sprintf("(%d) %s Column %s default value mismatch: source=%s, dest=%s, reason=%s",
@@ -7001,8 +7107,13 @@ func (stcls *schemaTable) Foreign(dtabS []string, logThreadSeq, logThreadSeq2 in
 			continue
 		}
 
-		sourceCanonicalFKs := schemacompat.CanonicalizeForeignKeyDefinitions(sourceForeign)
-		destCanonicalFKs := schemacompat.CanonicalizeForeignKeyDefinitions(destForeign)
+		// Oracle identifiers are always upper-case; MySQL identifier case depends on
+		// lower_case_table_names. For Oracle→MySQL comparisons we must normalize
+		// case, but for MySQL→MySQL we must preserve it to honor case-sensitive
+		// deployments (lower_case_table_names=0 on Linux).
+		fkCaseInsensitive := stcls.isOracleToMySQL()
+		sourceCanonicalFKs := schemacompat.CanonicalizeForeignKeyDefinitionsWithOptions(sourceForeign, fkCaseInsensitive)
+		destCanonicalFKs := schemacompat.CanonicalizeForeignKeyDefinitionsWithOptions(destForeign, fkCaseInsensitive)
 		sourceByName := make(map[string]schemacompat.CanonicalConstraint)
 		destByName := make(map[string]schemacompat.CanonicalConstraint)
 		unionNames := make(map[string]struct{})
@@ -7165,11 +7276,19 @@ func (stcls *schemaTable) Partitions(dtabS []string, logThreadSeq, logThreadSeq2
 				continue
 			}
 
-			// At least one side has partitions: emit advisory warn-only.
+			// At least one side has partitions OR a partition query failed:
+			// fall back to advisory warn-only and explicitly mark the failure
+			// in the advisory note so users know the comparison is indicative
+			// rather than authoritative.
 			pods.Schema = sourceSchema
 			pods.Table = sourceTable
 			pods.DIFFS = global.SkipDiffsWarnOnly
-			advisoryNote := fmt.Sprintf("-- [Advisory] Oracle→MySQL partition comparison for table %s.%s is not supported in this version; please verify partitions manually", sourceSchema, sourceTable)
+			var advisoryNote string
+			if srcPartsErr != nil || dstPartsErr != nil {
+				advisoryNote = fmt.Sprintf("-- [Advisory] Oracle→MySQL partition query FAILED for table %s.%s (srcErr=%v, dstErr=%v); please verify partitions manually", sourceSchema, sourceTable, srcPartsErr, dstPartsErr)
+			} else {
+				advisoryNote = fmt.Sprintf("-- [Advisory] Oracle→MySQL partition comparison for table %s.%s is not supported in this version; please verify partitions manually", sourceSchema, sourceTable)
+			}
 			vlog = fmt.Sprintf("(%d) Skipping detailed partition comparison for Oracle→MySQL table %s.%s (advisory only)", logThreadSeq, sourceSchema, sourceTable)
 			global.Wlog.Info(vlog)
 			if stcls.datafix == "file" {

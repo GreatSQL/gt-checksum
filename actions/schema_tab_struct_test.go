@@ -1436,10 +1436,11 @@ func TestAdjustDestColumnSeqAfterDrops_noDrop(t *testing.T) {
 
 // ---------- buildConstraintAdvisoryLines ----------
 
-// TestBuildConstraintAdvisoryLines_ManualReviewExecutable 验证 manual-review 级别的 SQL 语句
-// 应写成可执行形式（无 -- 前缀），不能全部注释掉。
-// 这是 Oracle→MySQL checkObject=struct 外键差异修复 SQL 为空的 bug 修复验证。
-func TestBuildConstraintAdvisoryLines_ManualReviewExecutable(t *testing.T) {
+// TestBuildConstraintAdvisoryLines_ManualReviewCommented 验证 manual-review 级别的 SQL 语句
+// 应以注释形式写出（-- 前缀），防止用户未经审查直接执行修复文件时触发高风险 DDL。
+// manual-review 级别用于外键删除、CHECK 约束变更等操作，需人工确认后手动执行。
+// C-1 安全修复：原实现将该级别语句写为可执行形式，有安全隐患，已更正为统一注释形式。
+func TestBuildConstraintAdvisoryLines_ManualReviewCommented(t *testing.T) {
 	suggestions := []schemacompat.ConstraintRepairSuggestion{
 		{
 			ConstraintName: "FK_EMP_DEPT1",
@@ -1454,14 +1455,16 @@ func TestBuildConstraintAdvisoryLines_ManualReviewExecutable(t *testing.T) {
 
 	joined := strings.Join(lines, "\n")
 
-	// 可执行语句必须出现（不带 -- 前缀）
-	if !strings.Contains(joined, "ALTER TABLE `gt_checksum`.`tb_emp6` DROP FOREIGN KEY `FK_EMP_DEPT1`;") {
-		t.Errorf("manual-review SQL 应为可执行形式，但实际输出:\n%s", joined)
+	// manual-review 级别的 SQL 必须以注释形式输出（-- 前缀），不得为裸可执行语句
+	if !strings.Contains(joined, "-- ALTER TABLE `gt_checksum`.`tb_emp6` DROP FOREIGN KEY `FK_EMP_DEPT1`") {
+		t.Errorf("manual-review SQL 应以注释形式输出（-- 前缀），但实际输出:\n%s", joined)
 	}
 
-	// 确保带 -- 前缀的注释版本不存在
-	if strings.Contains(joined, "-- ALTER TABLE") {
-		t.Errorf("manual-review SQL 不应以注释形式输出，但实际输出:\n%s", joined)
+	// 确保裸可执行形式（无 -- 前缀的 ALTER TABLE）不存在
+	for _, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "ALTER TABLE") {
+			t.Errorf("manual-review SQL 不应以裸可执行形式写入修复文件，但发现: %s", line)
+		}
 	}
 }
 
