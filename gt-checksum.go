@@ -10,6 +10,7 @@ import (
 	"gt-checksum/utils"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -115,16 +116,22 @@ func main() {
 	switch m.SecondaryL.RulesV.CheckObject {
 	case "struct":
 		// 当checkObject=struct时，执行所有结构相关的检查（包括表结构、索引、分区和外键）
+		checksumStart := time.Now()
 		if err = schemaTableInstance.Struct(tableList, 5, 6); err != nil {
 			fmt.Println(fmt.Sprintf("gt-checksum: Table structure verification failed. Check %s for details or set logLevel=debug", m.SecondaryL.LogV.LogFile))
 			os.Exit(1)
 		}
+		checksumTime = time.Since(checksumStart)
 	case "trigger":
+		checksumStart := time.Now()
 		schemaTableInstance.Trigger(tableList, 11, 12)
+		checksumTime = time.Since(checksumStart)
 	case "routine":
 		// 当checkObject=routine时，统一入口调用 Routine，同时检查存储过程和函数
 		fmt.Println("gt-checksum: Checking stored procedures and functions (routine mode)")
+		checksumStart := time.Now()
 		schemaTableInstance.Routine(tableList, 13, 14, "")
+		checksumTime = time.Since(checksumStart)
 	// 注意：proc和func选项已在参数处理阶段被强制改为data，所以这里不再需要单独的case
 	case "data":
 		initStartTime = time.Now()
@@ -147,8 +154,6 @@ func main() {
 			fmt.Println(preflightDecision.Message)
 			fmt.Println("-----------------------------------------------------")
 			metadataCollectionTime = time.Since(initStartTime)
-			totalElapsedTime = time.Since(beginTime)
-			miscellaneousTime = totalElapsedTime - initStartTime.Sub(beginTime) - metadataCollectionTime
 			break
 		}
 
@@ -170,12 +175,23 @@ func main() {
 
 		metadataCollectionTime = time.Since(initStartTime)
 
-		//根据要校验的表，获取该表的全部列信息
-		fmt.Println("gt-checksum: Collecting table column information")
-		tableAllCol := schemaTableInstance.SchemaTableAllCol(tableListColCheck, 21, 22)
-		//根据要校验的表，筛选查询数据时使用到的索引列信息
-		fmt.Println("gt-checksum: Collecting table index information")
-		tableIndexColumnMap := schemaTableInstance.TableIndexColumn(tableListColCheck, 23, 24)
+		//根据要校验的表，并行收集列信息与索引信息，缩短 Oracle 源端元数据采集时间
+		fmt.Println("gt-checksum: Collecting table column and index information")
+		var (
+			tableAllCol         map[string]global.TableAllColumnInfoS
+			tableIndexColumnMap map[string][]string
+			metaWg              sync.WaitGroup
+		)
+		metaWg.Add(2)
+		go func() {
+			defer metaWg.Done()
+			tableAllCol = schemaTableInstance.SchemaTableAllCol(tableListColCheck, 21, 22)
+		}()
+		go func() {
+			defer metaWg.Done()
+			tableIndexColumnMap = schemaTableInstance.TableIndexColumn(tableListColCheck, 23, 24)
+		}()
+		metaWg.Wait()
 
 		//初始化数据库连接池
 		fmt.Println("gt-checksum: Establishing database connections")
@@ -199,14 +215,18 @@ func main() {
 
 		extraOpsTime = time.Since(extraOpsStart)
 
-		// 计算杂项时间（主要是初始化时间）
-		totalElapsedTime = time.Since(beginTime)
-		miscellaneousTime = totalElapsedTime - (initStartTime.Sub(beginTime)) - metadataCollectionTime - connSetupTime - checksumTime - extraOpsTime
-
 	default:
 		fmt.Println("gt-checksum: Invalid checkObject option value. Check log file or set logLevel=debug for details")
 		os.Exit(1)
 	}
+
+	// 统一计算总耗时与杂项耗时，覆盖 struct/trigger/routine/data 所有分支，避免 struct/trigger/routine 分支输出 0
+	totalElapsedTime = time.Since(beginTime)
+	miscellaneousTime = totalElapsedTime - initStartTime.Sub(beginTime) - metadataCollectionTime - connSetupTime - checksumTime - extraOpsTime
+	if miscellaneousTime < 0 {
+		miscellaneousTime = 0
+	}
+
 	global.Wlog.Info("gt-checksum check object {", m.SecondaryL.RulesV.CheckObject, "} complete !!!")
 	//输出结果信息
 	fmt.Println("")

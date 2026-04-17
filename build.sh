@@ -13,7 +13,7 @@ export CXXFLAGS="-stdlib=libstdc++" CC=/usr/bin/gcc CXX=/usr/bin/g++
 
 vs=`cat ./inputArg/flagHelp.go| grep "app.Version"|awk -F "=" '{print $2}'|sed 's/\"//g'|sed 's/\/\/版本//g'|sed 's/ //g'`
 OracleDrive="instantclient_11_2"
-HASH="19ffe64"
+HASH="ad10cba"
 
 # 自动适配CPU架构类型
 if [ ! -z "`which uname > /dev/null 2>&1`" ] ; then
@@ -24,8 +24,8 @@ else
   arch=x86_64
 fi
 
-rm -fr gt-checksum-${vs}-${HASH}-linux-${arch} release
-mkdir -p gt-checksum-${vs}-${HASH}-linux-${arch} release
+rm -fr gt-checksum-${vs}-${HASH}-linux-${arch} v${vs}
+mkdir -p gt-checksum-${vs}-${HASH}-linux-${arch} v${vs}
 
 echo -n "1. "
 go version
@@ -53,8 +53,8 @@ tar cf gt-checksum-${vs}-${HASH}-linux-${arch}.tar gt-checksum-${vs}-${HASH}-lin
 tar cf gt-checksum-${vs}-${HASH}-linux-${arch}-minimal.tar --exclude=gt-checksum-${vs}-${HASH}-linux-${arch}/${OracleDrive}.tar.xz gt-checksum-${vs}-${HASH}-linux-${arch} && \
 xz -9 -f gt-checksum-${vs}-${HASH}-linux-${arch}.tar && \
 xz -9 -f gt-checksum-${vs}-${HASH}-linux-${arch}-minimal.tar && \
-echo "5. The gt-checksum binary package is: gt-checksum-${vs}-${HASH}-linux-${arch}.tar.gz under directory release" && \
-mv gt-checksum-${vs}-${HASH}-linux-${arch}.tar.xz release && \
-mv gt-checksum-${vs}-${HASH}-linux-${arch}-minimal.tar.xz release && \
-ls -la release && \
+echo "5. The gt-checksum binary package is: gt-checksum-${vs}-${HASH}-linux-${arch}.tar.gz under directory v${vs}" && \
+mv gt-checksum-${vs}-${HASH}-linux-${arch}.tar.xz v${vs} && \
+mv gt-checksum-${vs}-${HASH}-linux-${arch}-minimal.tar.xz v${vs} && \
+ls -la v${vs} && \
 rm -fr gt-checksum-${vs}-${HASH}-linux-${arch}
