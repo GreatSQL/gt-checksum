@@ -804,24 +804,26 @@ func TestFixAlterIndexSqlExec_FuncIndex_JSONUnquoteWithSingleQuotes(t *testing.T
 	}
 }
 
-// TestBuildFloatDeletePredicate_BareFloat 验证裸 FLOAT 列 DELETE WHERE 使用 CAST(val AS FLOAT)。
-// Bug：原 fallback 生成 `F1 = 123.449997`（DOUBLE 字面量），与 MySQL FLOAT 列比较时
-// 因 IEEE 754 单精度→双精度转换差异导致 WHERE 命中 0 行，修复 SQL 永远无效。
+// TestBuildFloatDeletePredicate_BareFloat 验证裸 FLOAT 列 DELETE WHERE 使用 ROUND(.,7)。
+// Bug：之前使用 `CAST(... AS FLOAT)` 只在 MySQL 8.0.17+ 支持，在 MySQL 5.7 /
+// MySQL 8.0.0-8.0.16 / MariaDB 10.x 上会报 Syntax error 导致 fix 脚本失败。
+// 现改为 ROUND(col,7) = ROUND(val,7) —— 7 有效数字匹配 IEEE754 单精度。
 func TestBuildFloatDeletePredicate_BareFloat(t *testing.T) {
 	cases := []struct {
 		dataType    string
 		value       string
 		wantContain string // 期望 predicate 包含的关键字
+		wantAvoid   string // 期望 predicate 不包含的关键字
 	}{
-		// 裸 FLOAT → 必须使用 CAST(... AS FLOAT)
-		{"FLOAT", "123.449997", "CAST(123.449997 AS FLOAT)"},
-		{"float", "123.449997", "CAST(123.449997 AS FLOAT)"},
+		// 裸 FLOAT → 使用 ROUND(col,7) = ROUND(val,7)，不再使用 CAST
+		{"FLOAT", "123.449997", "ROUND(`F1`, 7) = ROUND(123.449997, 7)", "CAST"},
+		{"float", "123.449997", "ROUND(`F1`, 7) = ROUND(123.449997, 7)", "CAST"},
 		// FLOAT(M,D) → 使用 ROUND
-		{"FLOAT(5,2)", "123.449997", "ROUND("},
+		{"FLOAT(5,2)", "123.449997", "ROUND(", ""},
 		// DOUBLE → fallback，不需要 CAST AS FLOAT
-		{"DOUBLE", "123.449997", "123.449997"},
+		{"DOUBLE", "123.449997", "123.449997", "CAST"},
 		// DOUBLE(M,D) → 不是 FLOAT 前缀，走 plain 路径
-		{"DOUBLE(10,4)", "123.4499", "123.4499"},
+		{"DOUBLE(10,4)", "123.4499", "123.4499", "CAST"},
 	}
 	for _, c := range cases {
 		pred, ok := buildFloatDeletePredicate("F1", c.value, c.dataType)
@@ -832,6 +834,10 @@ func TestBuildFloatDeletePredicate_BareFloat(t *testing.T) {
 		if !strings.Contains(pred, c.wantContain) {
 			t.Errorf("buildFloatDeletePredicate(F1, %q, %q) = %q; want to contain %q",
 				c.value, c.dataType, pred, c.wantContain)
+		}
+		if c.wantAvoid != "" && strings.Contains(pred, c.wantAvoid) {
+			t.Errorf("buildFloatDeletePredicate(F1, %q, %q) = %q; must not contain %q",
+				c.value, c.dataType, pred, c.wantAvoid)
 		}
 	}
 

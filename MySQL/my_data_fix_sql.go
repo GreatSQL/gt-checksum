@@ -30,6 +30,26 @@ var (
 )
 
 // mysqlQuoteIdent 对 MySQL 标识符加反引号，并对内部反引号做双写转义。
+// filterPKColumnsAgainstSource 保留能在源端列集合中找到的主键列，过滤掉
+// 目标端特有（如 MySQL 8.0 自动生成的 my_row_id 隐藏主键）的列。
+// 返回过滤后的主键列以及被丢弃的列。
+func filterPKColumnsAgainstSource(pkColumns []string, sourceColData []map[string]string) (kept, dropped []string) {
+	sourceColSet := make(map[string]struct{}, len(sourceColData))
+	for _, col := range sourceColData {
+		if name, ok := col["columnName"]; ok && name != "" {
+			sourceColSet[strings.ToLower(name)] = struct{}{}
+		}
+	}
+	for _, pk := range pkColumns {
+		if _, ok := sourceColSet[strings.ToLower(pk)]; ok {
+			kept = append(kept, pk)
+		} else {
+			dropped = append(dropped, pk)
+		}
+	}
+	return kept, dropped
+}
+
 func mysqlQuoteIdent(name string) string {
 	return "`" + strings.ReplaceAll(name, "`", "``") + "`"
 }
@@ -382,11 +402,12 @@ func buildFloatDeletePredicate(columnName, value, dataType string) (string, bool
 		return fmt.Sprintf("ROUND(`%s`, %d) = ROUND(%s, %d)", columnName, scale, floatLiteral, scale), true
 	}
 	// Fallback for bare FLOAT without declared scale:
-	// Use CAST to force single-precision comparison; plain FLOAT = double-literal
-	// fails because IEEE 754 single→double conversion differs from the double literal.
+	// CAST(... AS FLOAT) is only supported from MySQL 8.0.17+; avoid it so that
+	// MySQL 5.7 / 8.0.0-8.0.16 / MariaDB 10.x can still execute the repair SQL.
+	// Use ROUND with 7 significant digits (matches FLOAT single precision).
 	t := strings.ToUpper(strings.TrimSpace(dataType))
 	if strings.HasPrefix(t, "FLOAT") {
-		return fmt.Sprintf("`%s` = CAST(%s AS FLOAT)", columnName, floatLiteral), true
+		return fmt.Sprintf("ROUND(`%s`, 7) = ROUND(%s, 7)", columnName, floatLiteral), true
 	}
 	return fmt.Sprintf("`%s` = %s", columnName, floatLiteral), true
 }
@@ -658,6 +679,20 @@ func (my *MysqlDataAbnormalFixStruct) FixDeleteSqlExec(db *sql.DB, sourceDrive s
 		tablePrimaryKeyMutex.Lock()
 		TablePrimaryKeyColumns[tableKey] = primaryKeyColumns
 		tablePrimaryKeyMutex.Unlock()
+	}
+
+	// 过滤掉源端数据中不存在的主键列，避免 MySQL 8.0 自动生成的隐藏主键
+	// my_row_id（或其它目标端独有列）导致 WHERE 条件无法构造。
+	// 当过滤后 PK 为空时，回退到 uni/mul 分支以便用其它列或全部列构造条件。
+	if hasPrimaryKey && len(primaryKeyColumns) > 0 && len(my.ColData) > 0 {
+		filtered, dropped := filterPKColumnsAgainstSource(primaryKeyColumns, my.ColData)
+		if len(dropped) > 0 {
+			vlog = fmt.Sprintf("(%d) Dropping primary key columns %v absent from source row data for %s.%s (likely MySQL-generated invisible PK), falling back to other conditions",
+				logThreadSeq, dropped, targetSchema, my.Table)
+			global.Wlog.Debug(vlog)
+		}
+		primaryKeyColumns = filtered
+		hasPrimaryKey = len(filtered) > 0
 	}
 
 	// 如果表有主键，强制使用主键作为条件
