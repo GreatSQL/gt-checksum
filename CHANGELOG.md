@@ -5,6 +5,7 @@
 - [测试完善]: 新增 `TestFilterPKColumnsAgainstSource_*`（3 个）、`TestBuildChunkRangeWhere_EmptyBoundsSkipped`（6 个子用例）、`TestFormatComparableColumnExpr_BitNormalization`、`TestIsBitColumnType`、`TestIsIntegerColumnType_OracleNumber`、`TestBuildNumericChunkWhereClauses_OracleNumberBit1` 等单元测试，覆盖 my_row_id 过滤、分片空边界跳过、BIT/NUMBER(p,0) 归一化与分片路径选择。
 - [测试完善]: 更新测例 `TestBuildFloatDeletePredicate_BareFloat`，覆盖 Oracle `BINARY_FLOAT` 与 MySQL 小写 `float` 的端到端归一化；更新 `TestNormalizeOracleColumnType`、`TestDecideOracleToMySQLTypeCompatibility` 测例，同步 `BINARY_FLOAT→double` 与裸 `NUMBER` 对整数类型降级为 WarnOnly 的新判定。
 - [测试完善]: 新增数个Oracle→MySQL多个回归测例，覆盖 Oracle 索引类型识别、`CHAR`/`NCHAR` 归一化、FLOAT 精度、其他完整类型映射等场景；新增 `scripts/regression-test-oracle.sh` 端到端回归脚本。
+- [测试完善]: `scripts/regression-test-oracle.sh` 在 data 模式用例执行前新增 struct 预修复环节（`run_struct_prepass`），先通过 struct 校验+repairDB 将目标端表结构收敛到与源端一致后再做数据比对，避免因列类型/缺列/索引差异引发的 data 误报；最多 `MAX_REPAIR_ROUNDS+1` 轮，无论收敛与否均继续后续 data 校验。
 - [测试完善]: 新增 MariaDB 10.0 生成列兼容性单元测试 9 个（`TestNormalizeMySQLColumnTypeMariaDB100Generated`、`TestDecideColumnDefinitionCompatibilityMariaDB100GeneratedExpression`），覆盖 PERSISTENT/VIRTUAL 关键字归一化、CAST/RTRIM/裸列引用等表达式跨版本等价性验证；testcase 生成列声明改为版本条件注释格式（`/*!50706 */`），提升测试用例跨版本兼容性。
 - [测试完善]: 新增 `TestBuildTargetColumnRepairPlanGeneratedColumn` 单元测试 8 个，覆盖 MySQL→MySQL STORED/VIRTUAL 列表达式完整性、关键字保留、MariaDB→MySQL PERSISTENT→STORED 转换、空 createDefinition 及非生成列安全性等场景；同步在 `testcase/MySQL-source.sql` 的 `indext` 表新增 `price_off_08`/`price_off_05` 生成列字段，补全回归测例。
 - [测试完善]: 新增前缀索引专项单元测试 11 个，覆盖全列/前缀差异、长度不同、多列复合等场景。

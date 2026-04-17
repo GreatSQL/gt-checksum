@@ -448,6 +448,64 @@ evaluate_diffs() {
 # ============================================================
 # SECTION 10: 单用例执行
 # ============================================================
+
+# data 模式前置 struct 预修复：先把目标端表结构收敛到与源一致，
+# 避免因结构差异（列类型 / 缺失列 / 索引缺失）导致 data 校验误报。
+# 无论收敛成功与否都返回 0，继续后续 data 校验（记录警告由调用方感知）。
+run_struct_prepass() {
+    local dst_port="$1" case_dir="$2" case_id="$3"
+    local prepass_dir="${case_dir}/struct-prepass"
+    mkdir -p "${prepass_dir}/fixsql"
+
+    generate_gt_checksum_config "$dst_port" "struct" "$prepass_dir"
+    generate_repairdb_config "$dst_port" "$prepass_dir"
+
+    log_info "  [${case_id}] struct 预修复开始"
+
+    local round=0
+    while [[ $round -lt $((MAX_REPAIR_ROUNDS + 1)) ]]; do
+        round=$((round + 1))
+        rm -rf "${prepass_dir}/fixsql"
+        mkdir -p "${prepass_dir}/fixsql"
+
+        local gt_exit=0
+        run_with_timeout "$CASE_TIMEOUT" \
+            "$GT_CHECKSUM" -c "${prepass_dir}/gt-checksum.conf" \
+            > "${prepass_dir}/round${round}-output.txt" 2>&1 || gt_exit=$?
+
+        [[ -f "${prepass_dir}/gt-checksum.log" ]] && \
+            cp "${prepass_dir}/gt-checksum.log" "${prepass_dir}/round${round}-gt-checksum.log" 2>/dev/null || true
+
+        local diffs verdict
+        diffs="$(parse_diffs_from_output "${prepass_dir}/round${round}-output.txt" "struct")"
+        verdict="$(evaluate_diffs "$diffs")"
+
+        if [[ "$verdict" == "PASS" || "$verdict" == "NO_OUTPUT" ]]; then
+            log_info "  [${case_id}] struct 预修复收敛 (round ${round})"
+            return 0
+        fi
+
+        if [[ $round -gt $MAX_REPAIR_ROUNDS ]]; then
+            log_warn "  [${case_id}] struct 预修复 ${MAX_REPAIR_ROUNDS} 轮后仍有差异: ${diffs}（继续 data 校验）"
+            return 0
+        fi
+
+        local fixsql_count
+        fixsql_count=$(find "${prepass_dir}/fixsql" -name "*.sql" -type f 2>/dev/null | wc -l | tr -d ' ')
+        if [[ "$fixsql_count" -eq 0 ]]; then
+            log_warn "  [${case_id}] struct 预修复 Diffs=${diffs} 但未生成 fixsql，跳过"
+            return 0
+        fi
+
+        run_with_timeout "$CASE_TIMEOUT" \
+            "$REPAIR_DB" -conf "${prepass_dir}/repairDB.conf" \
+            > "${prepass_dir}/round${round}-repair-output.txt" 2>&1 || \
+            log_warn "  [${case_id}] struct 预修复 repairDB 非零退出 (round ${round})"
+        log_info "  [${case_id}] struct 预修复 round ${round}: 修复完成 (fixsql=${fixsql_count} files)"
+    done
+    return 0
+}
+
 run_single_test_case() {
     local dst_label="$1" dst_port="$2" mode="$3"
     local case_id="${SRC_LABEL}-to-${dst_label}-${mode}"
@@ -455,6 +513,11 @@ run_single_test_case() {
 
     mkdir -p "${case_dir}"
     reinit_target "$dst_label" "$dst_port"
+
+    # data 模式：先跑 struct 预修复，使目标表结构收敛后再做 data 校验
+    if [[ "$mode" == "data" ]]; then
+        run_struct_prepass "$dst_port" "$case_dir" "$case_id"
+    fi
 
     generate_gt_checksum_config "$dst_port" "$mode" "$case_dir"
     generate_repairdb_config "$dst_port" "$case_dir"
