@@ -165,7 +165,7 @@ sbtest  F1              Function        no      no
 | 源端版本主线小于目标端版本主线，且两端均在 `5.6`、`5.7`、`8.0`、`8.4` 范围内 | 支持 | 支持 | 支持 | 支持 | 例如 `5.6 -> 5.7`、`5.6 -> 8.0`、`5.7 -> 8.0`、`8.0 -> 8.4`。 |
 | 源端为 `MariaDB 10.x+`，目标端为 `MySQL 8.0/8.4` | 支持 | 支持 | 支持 | 支持 | `struct` 仅覆盖安全子集；`routine`/`trigger` 已支持 charset 元数据三维度比对。 |
 | 源端与目标端均为 `MariaDB`（同序列或升级，支持系列见下方说明） | 支持 | 支持 | 支持 | 支持 | 仅支持升级方向（src ≤ dst），不支持 downgrade；struct fix 的隐藏索引使用 `IGNORED` 关键字；COMPRESSED/PERSISTENT 等原生列属性会在目标端保留；routine/trigger 元数据比对已开放。 |
-| 源端为 `Oracle`，目标端为 `MySQL 8.0/8.4` | 支持 | 支持 | 不支持 | 不支持 | `data` 模式支持 `CHAR`/`NCHAR` 尾部空格归一化、`FLOAT`/`BINARY_FLOAT` float32 精度归一化；`struct` 模式支持目标端缺表时自动生成 `CREATE TABLE`（含主键）、列类型规范化比对（`VARCHAR2`/`NUMBER`/`TIMESTAMP`/`DATE`/`FLOAT`/`CLOB`/`BLOB` 等完整映射）、列名大小写差异忽略。 |
+| 源端为 `Oracle`，目标端为 `MySQL 8.0/8.4` | 支持 | 支持 | 不支持 | 不支持 | `data` 模式支持 `CHAR`/`NCHAR` 尾部空格归一化（有/无索引路径均覆盖）、`FLOAT`/`BINARY_FLOAT` float32 精度归一化、MySQL `BIT(n)` 自动 `CAST AS UNSIGNED` 避免 ORA-01722、`NUMBER(p,0)` 走数值分片路径；`struct` 模式支持目标端缺表时自动生成 `CREATE TABLE`（含主键，基于 `ALL_*` 视图）、列类型规范化比对（`VARCHAR2`/`NUMBER`/`TIMESTAMP`/`DATE`/`FLOAT`/`CLOB`/`BLOB`/`BINARY_FLOAT→DOUBLE` 等完整映射）、外键 backing index 按列序列精准匹配、列名大小写差异忽略。 |
 | 源端为 `MariaDB 10.x+`，目标端为 `MySQL 8.0` 以下版本 | 不支持 | 不支持 | 不支持 | 不支持 | 程序会在启动阶段直接退出，并提示当前组合不受支持。 |
 | 源端为 `MySQL`，目标端为 `MariaDB` | 不支持 | 不支持 | 不支持 | 不支持 | 程序会在启动阶段直接退出，并提示当前组合不受支持。 |
 | 源端版本主线大于目标端版本主线 | 不支持 | 不支持 | 不支持 | 不支持 | 程序会在启动阶段直接退出，并明确提示 downgrade 场景不受支持。 |
@@ -381,7 +381,9 @@ bash scripts/regression-test-columns.sh \
    - 已覆盖普通列、默认值、`charset/collation`、`PRIMARY KEY`、`UNIQUE`、普通索引（含前缀索引）、前缀索引、函数索引、虚拟列/生成列（STORED/VIRTUAL Generated Columns）、外键、`CHECK` 风险输出；
    - 已内置 `utf8 -> utf8mb3`、整数显示宽度、`ZEROFILL`、`ROW_FORMAT` 默认漂移、默认 `utf8mb4` 排序规则漂移等归一化规则；
    - `CHECK`、高风险外键不会自动执行高风险 DDL，而是保留为 `warn-only` 或 advisory 信息；
-   - 当列宽度收窄（如 `VARCHAR(200)` → `VARCHAR(100)`）时，程序会自动检查目标端是否存在超宽数据行；若存在则输出 advisory SQL，不自动执行可能导致数据截断的 ALTER 操作。
+   - 外键引用的 schema/table 名在归一化时保留原大小写，适配 Linux 上 `lower_case_table_names=0` 的 MySQL 部署，不把 `Users` 与 `users` 静默视为等价（Oracle→MySQL 场景仍为大小写不敏感）；
+   - 当列宽度收窄（如 `VARCHAR(200)` → `VARCHAR(100)`）时，程序会自动检查目标端是否存在超宽数据行；若存在则输出 advisory SQL，不自动执行可能导致数据截断的 ALTER 操作；
+   - **manual-review 级别 advisory（外键 DROP、CHECK 约束变更等高风险 DDL）**：在修复文件中以可执行 SQL 形式写入，但前后附加 `-- !!! ACTION REQUIRED: manual review required !!!` 与 `-- !!! END manual-review block !!!` 醒目注释；执行 `source` 或 `repairDB` 前请先人工审阅该块内的语句，确认无误后再应用。
 2. `MariaDB -> MySQL 8.0/8.4`
    - 已覆盖安全子集：`JSON`、generated columns、`INET6`、`UUID`、`COMPRESSED`、`IGNORED INDEX`；
    - `MariaDB JSON` 可通过 `mariaDBJSONTargetType` 配置为 `JSON`、`LONGTEXT` 或 `TEXT`；
@@ -393,7 +395,8 @@ bash scripts/regression-test-columns.sh \
    - 当目标端为支持隐藏索引语法的 MariaDB 版本时，隐藏索引 fix SQL 使用 `IGNORED` 关键字，而非 MySQL 的 `INVISIBLE`；
    - 建议在回放前先审查 fix SQL，尤其关注隐藏索引、`DEFINER` 与跨版本 collation 相关语句。
 4. `Oracle -> MySQL 8.0/8.4`
-   - 目标端缺表时，自动从 Oracle 元数据生成 MySQL `CREATE TABLE` 语句，包含主键定义，适配 `sql_require_primary_key=ON`；
+   - 目标端缺表时，自动从 Oracle 元数据（`ALL_CONSTRAINTS`/`ALL_CONS_COLUMNS` 视图）生成 MySQL `CREATE TABLE` 语句，包含主键定义，适配 `sql_require_primary_key=ON`；应用账号具备 schema `SELECT` 权限即可，无需 `SELECT_CATALOG_ROLE`；
+   - MySQL 端外键的 "backing index" 会按 FK 列序列在 `INFORMATION_SCHEMA.STATISTICS` 中精准匹配：先取 FK 列顺序，再匹配列前缀完全一致的索引名，避免"FK 约束名即索引名"这一默认规则失效时误把无关索引当作 backing index 剔除（覆盖用户显式指定索引名、FK 复用已有索引等场景）；
    - 列类型比对引入完整 Oracle→MySQL 类型映射层，对可接受的类型差异（如精度兼容）采用宽松判定，减少误报；映射关系如下：
 
      | Oracle 类型 | MySQL 映射类型 | 备注 |
@@ -407,12 +410,17 @@ bash scripts/regression-test-columns.sh \
      | `DATE` | `DATETIME` | |
      | `TIMESTAMP(n)` | `DATETIME(n)` | |
      | `FLOAT` | `DOUBLE` | |
-     | `BINARY_FLOAT` | `FLOAT` | |
+     | `BINARY_FLOAT` | `DOUBLE` | Oracle 为 IEEE754 单精度；映射到 `DOUBLE` 以规避单精度比较/聚合精度误差。若确需严格单精度可在 MySQL 端显式声明 `FLOAT(24)`。 |
      | `BINARY_DOUBLE` | `DOUBLE` | |
      | `CLOB` / `NCLOB` | `LONGTEXT` | |
      | `BLOB` | `LONGBLOB` | |
      | `RAW(n)` | `VARBINARY(n)` | |
    - 列名仅大小写不同（Oracle 默认大写存储、MySQL 大小写不敏感）时不视为差异，不生成 `CHANGE COLUMN`；
+   - 列类型兼容性判定补充说明：**Oracle 裸 `NUMBER`（无精度声明）**→**MySQL 整数类型**判定为 `WarnOnly`（不再视为等价），因为裸 NUMBER 可存储小数，目标端整数列有静默截断风险，需 DBA 采样确认；**Oracle `seq.NEXTVAL` 默认值**与 MySQL 端无默认值的差异判定为 `WarnOnly`，不阻断修复流程；
+   - 主键元数据读取采用 `ALL_CONSTRAINTS`/`ALL_CONS_COLUMNS` 视图，应用账号具备待检 schema 的 `SELECT` 权限即可；不再要求 `SELECT_CATALOG_ROLE`/`DBA_*` 访问能力；
+   - 目标端 MySQL 8.0 自动生成的隐式主键 `my_row_id` 不存在于 Oracle 源端列时自动剔除，`FixDeleteSqlExec` 会回退至其他可用列构造 `DELETE WHERE`，避免生成空谓词；
+   - 目标端 MySQL `BIT(n)` 列在分组/比对阶段统一归一化为 `CAST(col AS UNSIGNED)`，避免原始字节与 Oracle `NUMBER` 比较时触发 `ORA-01722: invalid number`；Oracle `NUMBER(p,0)` 作为索引列会走整数数值分片路径，不再进入 GROUP BY 递归路径；
+   - 无索引表 `data` 校验 MD5 比对前同步 `CHAR`/`NCHAR` 尾部空格归一化，与有索引路径一致，避免持续误报形成无限修复循环；
    - `routine`/`trigger` 模式暂不支持 Oracle→MySQL 场景，启动阶段直接拒绝。
 5. 以下对象当前只做识别、告警和 advisory 输出，不自动修复：
    - `SYSTEM VERSIONING`

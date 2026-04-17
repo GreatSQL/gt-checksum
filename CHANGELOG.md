@@ -1,9 +1,10 @@
 ## 1.4.0
-- [功能新增]: 支持Oracle→MySQL `data/struct` 模式，采用列类型映射方式实现宽松兼容，支持 `VARCHAR2`/`CHAR`/`NCHAR`/`NVARCHAR2`/`NUMBER`/`FLOAT`/`TIMESTAMP`/`DATE`/`CLOB`/`BLOB`/`RAW` 等。
-- [测试完善]: 新增数个Oracle→MySQL多个回归测例，覆盖 Oracle 索引类型识别、`CHAR`/`NCHAR` 归一化、FLOAT 精度、其他完整类型映射等场景；新增 `scripts/regression-test-oracle.sh` 端到端回归脚本。
 - [功能新增]: 支持前缀索引、函数索引、生成列/虚拟列（Generated Columns）的检测与修复。
 - [功能新增] 支持MySQL→MySQL 场景下的生成列（STORED/VIRTUAL GENERATED）的检测与修复。
 - [功能优化]: 扩展生成列兼容性检测，支持 MariaDB 10.0 特有格式：`PERSISTENT` 关键字（无 GENERATED 后缀）与 MySQL 8.0 `STORED GENERATED` 等价识别，`VIRTUAL` 同理；生成列表达式归一化新增大小写折叠和反引号剥离，消除 MariaDB 10.0（大写无反引号）与 MySQL 8.0（小写带反引号）格式之间的误判。
+- [测试完善]: 新增 `TestFilterPKColumnsAgainstSource_*`（3 个）、`TestBuildChunkRangeWhere_EmptyBoundsSkipped`（6 个子用例）、`TestFormatComparableColumnExpr_BitNormalization`、`TestIsBitColumnType`、`TestIsIntegerColumnType_OracleNumber`、`TestBuildNumericChunkWhereClauses_OracleNumberBit1` 等单元测试，覆盖 my_row_id 过滤、分片空边界跳过、BIT/NUMBER(p,0) 归一化与分片路径选择。
+- [测试完善]: 更新测例 `TestBuildFloatDeletePredicate_BareFloat`，覆盖 Oracle `BINARY_FLOAT` 与 MySQL 小写 `float` 的端到端归一化；更新 `TestNormalizeOracleColumnType`、`TestDecideOracleToMySQLTypeCompatibility` 测例，同步 `BINARY_FLOAT→double` 与裸 `NUMBER` 对整数类型降级为 WarnOnly 的新判定。
+- [测试完善]: 新增数个Oracle→MySQL多个回归测例，覆盖 Oracle 索引类型识别、`CHAR`/`NCHAR` 归一化、FLOAT 精度、其他完整类型映射等场景；新增 `scripts/regression-test-oracle.sh` 端到端回归脚本。
 - [测试完善]: 新增 MariaDB 10.0 生成列兼容性单元测试 9 个（`TestNormalizeMySQLColumnTypeMariaDB100Generated`、`TestDecideColumnDefinitionCompatibilityMariaDB100GeneratedExpression`），覆盖 PERSISTENT/VIRTUAL 关键字归一化、CAST/RTRIM/裸列引用等表达式跨版本等价性验证；testcase 生成列声明改为版本条件注释格式（`/*!50706 */`），提升测试用例跨版本兼容性。
 - [测试完善]: 新增 `TestBuildTargetColumnRepairPlanGeneratedColumn` 单元测试 8 个，覆盖 MySQL→MySQL STORED/VIRTUAL 列表达式完整性、关键字保留、MariaDB→MySQL PERSISTENT→STORED 转换、空 createDefinition 及非生成列安全性等场景；同步在 `testcase/MySQL-source.sql` 的 `indext` 表新增 `price_off_08`/`price_off_05` 生成列字段，补全回归测例。
 - [测试完善]: 新增前缀索引专项单元测试 11 个，覆盖全列/前缀差异、长度不同、多列复合等场景。
