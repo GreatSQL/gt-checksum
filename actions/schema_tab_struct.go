@@ -381,18 +381,13 @@ func classifyPartitionRepairDiffState(execRepairSQLs, advisoryRepairSQLs []strin
 	return global.SkipDiffsYes
 }
 
-func loadTablePartitionExpressions(db *sql.DB, drive, schemaName, tableName, caseSensitiveObjectName string, logThreadSeq int64) []string {
-	tc := dbExec.TableColumnNameStruct{
-		Drive:                   drive,
-		Schema:                  schemaName,
-		Table:                   tableName,
-		CaseSensitiveObjectName: caseSensitiveObjectName,
-	}
-	partitions, err := tc.Query().Partitions(db, logThreadSeq)
+func (stcls *schemaTable) loadTablePartitionExpressions(db *sql.DB, drive, schemaName, tableName, caseSensitiveObjectName string, logThreadSeq int64) []string {
+	partitions, err := stcls.cachedPartitions(db, drive, schemaName, tableName, logThreadSeq)
 	if err != nil {
 		global.Wlog.Warn(fmt.Sprintf("(%d) Failed to load partition expressions for %s.%s: %v", logThreadSeq, schemaName, tableName, err))
 		return nil
 	}
+	_ = caseSensitiveObjectName
 	tableKey := fmt.Sprintf("%s.%s", schemaName, tableName)
 	entries := parsePartitionMetadataEntries(partitions, tableKey)
 	if len(entries) == 0 {
@@ -568,6 +563,180 @@ type schemaTable struct {
 	// columnPlan 非 nil 时表示当前运行处于部分列校验模式（columns 参数已配置）。
 	// 在 TableColumnNameCheck 中用于豁免已明确映射的列对，避免误报 DDL mismatch。
 	columnPlan *inputArg.TableColumnPlan
+
+	// partitionsCache 缓存 Partitions() 结果，key=drive|schema|table（大小写敏感保留原值）。
+	// 避免 struct 模式下同一张表在列校验与分区专项两个阶段重复查询。
+	partitionsCache map[string]map[string]string
+
+	// sourceOracleColumnsCache 批量预加载的 Oracle 源端列元数据（按 schema→table→rows）。
+	// 仅在 Oracle 源端启用；一次 dba_tab_columns 扫描替代 N 次逐表 Q_table_columns。
+	sourceOracleColumnsCache map[string]map[string][]map[string]interface{}
+
+	// tableExistenceCache 按 "drive|SCHEMA" 预加载 schema 下所有 BASE TABLE 名称（统一大写）。
+	// 消除 TableColumnNameCheck 中 42 次 tableExistsByDrive 的 COUNT(1) 小查询。
+	tableExistenceCache map[string]map[string]struct{}
+
+	// partitionedTableCache 按 "drive|SCHEMA" 预加载 schema 下「已分区」表名（统一大写）。
+	// 仅 Oracle 侧启用；未列入的表视为非分区表，cachedPartitions 可直接返回空 map，
+	// 跳过原逐表 all_tables COUNT(1) + DBMS_METADATA.GET_DDL 两次往返。
+	partitionedTableCache map[string]map[string]struct{}
+	// partitionedTableCacheLoaded 记录某 drive|schema 是否已完成批量预加载，避免重复建缓存。
+	partitionedTableCacheLoaded map[string]bool
+}
+
+// preloadOraclePartitionedTables 批量拉取 schemas 下 partitioned='YES' 的表集合。
+// 结果写入 partitionedTableCache 供 cachedPartitions 快速判定。
+func (stcls *schemaTable) preloadOraclePartitionedTables(db *sql.DB, drive string, schemas []string) {
+	if db == nil || !isOracleDrive(drive) || len(schemas) == 0 {
+		return
+	}
+	if stcls.partitionedTableCache == nil {
+		stcls.partitionedTableCache = make(map[string]map[string]struct{})
+	}
+	if stcls.partitionedTableCacheLoaded == nil {
+		stcls.partitionedTableCacheLoaded = make(map[string]bool)
+	}
+	upperSchemas := make([]string, 0, len(schemas))
+	seen := make(map[string]struct{}, len(schemas))
+	for _, s := range schemas {
+		if s == "" {
+			continue
+		}
+		k := strings.ToUpper(s)
+		if _, ok := seen[k]; ok {
+			continue
+		}
+		seen[k] = struct{}{}
+		upperSchemas = append(upperSchemas, k)
+		cacheKey := drive + "|" + k
+		if _, ok := stcls.partitionedTableCache[cacheKey]; !ok {
+			stcls.partitionedTableCache[cacheKey] = make(map[string]struct{})
+		}
+		stcls.partitionedTableCacheLoaded[cacheKey] = true
+	}
+	if len(upperSchemas) == 0 {
+		return
+	}
+	quoted := make([]string, 0, len(upperSchemas))
+	for _, s := range upperSchemas {
+		quoted = append(quoted, "'"+escapeSQLLiteral(s)+"'")
+	}
+	query := fmt.Sprintf("SELECT UPPER(owner) AS owner, UPPER(table_name) AS table_name FROM all_tables WHERE partitioned='YES' AND UPPER(owner) IN (%s)", strings.Join(quoted, ","))
+	rows, err := db.Query(query)
+	if err != nil {
+		global.Wlog.Warn(fmt.Sprintf("preloadOraclePartitionedTables failed: %v", err))
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var owner, tableName string
+		if err := rows.Scan(&owner, &tableName); err != nil {
+			continue
+		}
+		cacheKey := drive + "|" + strings.ToUpper(owner)
+		if _, ok := stcls.partitionedTableCache[cacheKey]; !ok {
+			stcls.partitionedTableCache[cacheKey] = make(map[string]struct{})
+		}
+		stcls.partitionedTableCache[cacheKey][strings.ToUpper(tableName)] = struct{}{}
+	}
+}
+
+// preloadTableExistence 预加载 schemas 内所有 BASE TABLE 名称，写入 stcls.tableExistenceCache。
+// Oracle 走 ALL_TABLES、MySQL 走 INFORMATION_SCHEMA.TABLES，均只发送一次 SQL。
+func (stcls *schemaTable) preloadTableExistence(db *sql.DB, drive string, schemas []string) {
+	if db == nil || len(schemas) == 0 {
+		return
+	}
+	if stcls.tableExistenceCache == nil {
+		stcls.tableExistenceCache = make(map[string]map[string]struct{})
+	}
+	upperSchemas := make([]string, 0, len(schemas))
+	seen := make(map[string]struct{}, len(schemas))
+	for _, s := range schemas {
+		if s == "" {
+			continue
+		}
+		k := strings.ToUpper(s)
+		if _, ok := seen[k]; ok {
+			continue
+		}
+		seen[k] = struct{}{}
+		upperSchemas = append(upperSchemas, k)
+		cacheKey := drive + "|" + k
+		if _, ok := stcls.tableExistenceCache[cacheKey]; !ok {
+			stcls.tableExistenceCache[cacheKey] = make(map[string]struct{})
+		}
+	}
+	if len(upperSchemas) == 0 {
+		return
+	}
+	quoted := make([]string, 0, len(upperSchemas))
+	for _, s := range upperSchemas {
+		quoted = append(quoted, "'"+escapeSQLLiteral(s)+"'")
+	}
+	var query string
+	if isOracleDrive(drive) {
+		query = fmt.Sprintf("SELECT UPPER(owner) AS owner, UPPER(table_name) AS table_name FROM all_tables WHERE UPPER(owner) IN (%s)", strings.Join(quoted, ","))
+	} else {
+		query = fmt.Sprintf("SELECT UPPER(TABLE_SCHEMA) AS owner, UPPER(TABLE_NAME) AS table_name FROM INFORMATION_SCHEMA.TABLES WHERE UPPER(TABLE_SCHEMA) IN (%s) AND TABLE_TYPE='BASE TABLE'", strings.Join(quoted, ","))
+	}
+	rows, err := db.Query(query)
+	if err != nil {
+		global.Wlog.Warn(fmt.Sprintf("preloadTableExistence failed for drive=%s: %v", drive, err))
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var owner, tableName string
+		if err := rows.Scan(&owner, &tableName); err != nil {
+			continue
+		}
+		cacheKey := drive + "|" + strings.ToUpper(owner)
+		if _, ok := stcls.tableExistenceCache[cacheKey]; !ok {
+			stcls.tableExistenceCache[cacheKey] = make(map[string]struct{})
+		}
+		stcls.tableExistenceCache[cacheKey][strings.ToUpper(tableName)] = struct{}{}
+	}
+}
+
+// cachedPartitions 统一从缓存读取 Partitions()，未命中则回源并写回缓存。
+// key 使用 drive|schema|table 组合，drive 已隐含 src/dst 方向。
+func (stcls *schemaTable) cachedPartitions(db *sql.DB, drive, schema, table string, logThreadSeq int64) (map[string]string, error) {
+	if stcls == nil || db == nil {
+		tc := dbExec.TableColumnNameStruct{Schema: schema, Table: table, Drive: drive}
+		return tc.Query().Partitions(db, logThreadSeq)
+	}
+	key := drive + "|" + schema + "|" + table
+	if stcls.partitionsCache != nil {
+		if cached, ok := stcls.partitionsCache[key]; ok {
+			return cached, nil
+		}
+	}
+	// Oracle 场景：若批量预加载确认该表未分区，直接返回空 map，跳过两次 Oracle 往返。
+	if isOracleDrive(drive) && stcls.partitionedTableCacheLoaded != nil {
+		cacheKey := drive + "|" + strings.ToUpper(schema)
+		if stcls.partitionedTableCacheLoaded[cacheKey] {
+			partitionedSet := stcls.partitionedTableCache[cacheKey]
+			if _, ok := partitionedSet[strings.ToUpper(table)]; !ok {
+				empty := map[string]string{}
+				if stcls.partitionsCache == nil {
+					stcls.partitionsCache = make(map[string]map[string]string)
+				}
+				stcls.partitionsCache[key] = empty
+				return empty, nil
+			}
+		}
+	}
+	tc := dbExec.TableColumnNameStruct{Schema: schema, Table: table, Drive: drive}
+	parts, err := tc.Query().Partitions(db, logThreadSeq)
+	if err != nil {
+		return parts, err
+	}
+	if stcls.partitionsCache == nil {
+		stcls.partitionsCache = make(map[string]map[string]string)
+	}
+	stcls.partitionsCache[key] = parts
+	return parts, nil
 }
 
 func cloneSQLStatements(sqls []string) []string {
@@ -1077,8 +1246,17 @@ func (stcls *schemaTable) tableColumnName(db *sql.DB, tc dbExec.TableColumnNameS
 			}
 		}
 	)
-	if queryData, err = tc.Query().TableColumnName(db, logThreadSeq2); err != nil {
-		return col, err
+	// 若是 Oracle 源端且已批量预加载列元数据，则直接命中缓存，避免一次
+	// dba_tab_columns 单表查询的网络往返 + 解析开销。
+	if db == stcls.sourceDB && isOracleDrive(tc.Drive) && stcls.sourceOracleColumnsCache != nil {
+		if cached, ok := lookupOracleTableColumns(stcls.sourceOracleColumnsCache, tc.Schema, tc.Table); ok {
+			queryData = cached
+		}
+	}
+	if queryData == nil {
+		if queryData, err = tc.Query().TableColumnName(db, logThreadSeq2); err != nil {
+			return col, err
+		}
 	}
 	vlog = fmt.Sprintf("(%d) [%s] Starting column validation", logThreadSeq, Event)
 	global.Wlog.Debug(vlog)
@@ -2272,6 +2450,17 @@ func (stcls *schemaTable) tableExistsByDrive(db *sql.DB, drive, schema, table, o
 		query string
 	)
 
+	// 仅 BASE TABLE 校验可走预加载缓存；VIEW 仍回源查询以保留原有语义。
+	if stcls != nil && stcls.tableExistenceCache != nil {
+		kind := strings.ToLower(strings.TrimSpace(objectKind))
+		if kind == "" || kind == "table" {
+			if tables, ok := stcls.tableExistenceCache[drive+"|"+strings.ToUpper(schema)]; ok {
+				_, exists := tables[strings.ToUpper(table)]
+				return exists, nil
+			}
+		}
+	}
+
 	if isOracleDrive(drive) {
 		query = fmt.Sprintf(
 			"SELECT COUNT(1) FROM all_tables WHERE UPPER(owner)=UPPER('%s') AND UPPER(table_name)=UPPER('%s')",
@@ -2979,6 +3168,55 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 	stcls.emitMariaDBSequenceWarnings(checkTableList, logThreadSeq)
 	vlog = fmt.Sprintf("(%d) %s Validating structure differences between source and target", logThreadSeq, event)
 	global.Wlog.Debug(vlog)
+
+	// 批量预加载源/目标端 BASE TABLE 名单，tableExistsByDrive 将从缓存命中。
+	if stcls.tableExistenceCache == nil {
+		srcSchemas := make(map[string]struct{}, len(checkTableList))
+		dstSchemas := make(map[string]struct{}, len(checkTableList))
+		for _, item := range checkTableList {
+			srcSchema, _, dstSchema, _ := parseSourceAndDestTablePair(item, stcls.tableMappings)
+			if srcSchema != "" {
+				srcSchemas[strings.ToUpper(srcSchema)] = struct{}{}
+			}
+			if dstSchema != "" {
+				dstSchemas[strings.ToUpper(dstSchema)] = struct{}{}
+			}
+		}
+		toSlice := func(m map[string]struct{}) []string {
+			out := make([]string, 0, len(m))
+			for k := range m {
+				out = append(out, k)
+			}
+			return out
+		}
+		stcls.preloadTableExistence(stcls.sourceDB, stcls.sourceDrive, toSlice(srcSchemas))
+		stcls.preloadTableExistence(stcls.destDB, stcls.destDrive, toSlice(dstSchemas))
+		// Oracle 源端：批量识别已分区表，cachedPartitions 对非分区表可短路返回空结果。
+		if isOracleDrive(stcls.sourceDrive) {
+			stcls.preloadOraclePartitionedTables(stcls.sourceDB, stcls.sourceDrive, toSlice(srcSchemas))
+		}
+		if isOracleDrive(stcls.destDrive) {
+			stcls.preloadOraclePartitionedTables(stcls.destDB, stcls.destDrive, toSlice(dstSchemas))
+		}
+	}
+
+	// Oracle 源端一次性批量预加载列元数据，避免后续 21 次逐表 Q_table_columns。
+	if isOracleDrive(stcls.sourceDrive) && stcls.sourceOracleColumnsCache == nil {
+		schemasSet := make(map[string]struct{}, len(checkTableList))
+		for _, item := range checkTableList {
+			srcSchema, _, _, _ := parseSourceAndDestTablePair(item, stcls.tableMappings)
+			if srcSchema != "" {
+				schemasSet[strings.ToUpper(srcSchema)] = struct{}{}
+			}
+		}
+		if len(schemasSet) > 0 {
+			schemas := make([]string, 0, len(schemasSet))
+			for s := range schemasSet {
+				schemas = append(schemas, s)
+			}
+			stcls.sourceOracleColumnsCache = preloadOracleTableColumns(stcls.sourceDB, schemas, logThreadSeq2)
+		}
+	}
 	for _, v := range checkTableList {
 		// 处理可能存在的映射规则（格式：sourceSchema.sourceTable:destSchema.destTable）
 		sourceTable := v
@@ -3336,8 +3574,8 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 		vlog = fmt.Sprintf("(%d) %s Target table %s.%s has %d columns", logThreadSeq, event, destSchema, stcls.table, len(dColumn))
 		global.Wlog.Debug(vlog)
 
-		sourcePartitionExpressions := loadTablePartitionExpressions(stcls.sourceDB, stcls.sourceDrive, sourceSchema, sourceTableName, stcls.caseSensitiveObjectName, logThreadSeq2)
-		destPartitionExpressions := loadTablePartitionExpressions(stcls.destDB, stcls.destDrive, destSchema, destTableName, stcls.caseSensitiveObjectName, logThreadSeq2)
+		sourcePartitionExpressions := stcls.loadTablePartitionExpressions(stcls.sourceDB, stcls.sourceDrive, sourceSchema, sourceTableName, stcls.caseSensitiveObjectName, logThreadSeq2)
+		destPartitionExpressions := stcls.loadTablePartitionExpressions(stcls.destDB, stcls.destDrive, destSchema, destTableName, stcls.caseSensitiveObjectName, logThreadSeq2)
 		partitionExpressions := append([]string{}, sourcePartitionExpressions...)
 		partitionExpressions = append(partitionExpressions, destPartitionExpressions...)
 
@@ -5353,10 +5591,9 @@ func (stcls *schemaTable) SchemaTableFilter(logThreadSeq1, logThreadSeq2 int64) 
 */
 func (stcls *schemaTable) SchemaTableAllCol(tableList []string, logThreadSeq, logThreadSeq2 int64) map[string]global.TableAllColumnInfoS {
 	var (
-		a, b           []map[string]interface{}
-		err            error
 		vlog           string
 		tableCol       = make(map[string]global.TableAllColumnInfoS)
+		tableColMu     sync.Mutex
 		interfToString = func(colData []map[string]interface{}) []map[string]string {
 			kel := make([]map[string]string, 0)
 			for i := range colData {
@@ -5372,6 +5609,13 @@ func (stcls *schemaTable) SchemaTableAllCol(tableList []string, logThreadSeq, lo
 
 	vlog = fmt.Sprintf("(%d) Start to obtain the metadata information of the source-target verification table ...", logThreadSeq)
 	global.Wlog.Info(vlog)
+
+	workers := stcls.tableIndexMetaWorkerCount(len(tableList))
+	type job struct {
+		sourceSchema, tableName, destSchema, destTableName string
+	}
+	jobs := make(chan job, len(tableList))
+
 	for _, i := range tableList {
 		// 添加调试日志，查看当前处理的表项
 		vlog = fmt.Sprintf("(%d) Processing table entry: %s", logThreadSeq, i)
@@ -5427,49 +5671,56 @@ func (stcls *schemaTable) SchemaTableAllCol(tableList []string, logThreadSeq, lo
 			}
 		}
 
-		vlog = fmt.Sprintf("(%d) Start to query all column information of srcDSN {%s} table %s.%s", logThreadSeq, stcls.sourceDrive, sourceSchema, tableName)
-		global.Wlog.Debug(vlog)
-		tc := dbExec.TableColumnNameStruct{Schema: sourceSchema, Table: tableName, Drive: stcls.sourceDrive}
-		a, err = tc.Query().TableAllColumn(stcls.sourceDB, logThreadSeq2)
-		if err != nil {
-			return nil
-		}
-		vlog = fmt.Sprintf("(%d) All column information query of srcDSN {%s} table %s.%s is completed", logThreadSeq, stcls.sourceDrive, sourceSchema, tableName)
-		global.Wlog.Debug(vlog)
-		vlog = fmt.Sprintf("(%d) Start to query all column information of dstDSN {%s} table %s.%s", logThreadSeq, stcls.destDrive, destSchema, destTableName)
-		global.Wlog.Debug(vlog)
-		tc.Schema = destSchema
-		tc.Table = destTableName
-		tc.Drive = stcls.destDrive
-		b, err = tc.Query().TableAllColumn(stcls.destDB, logThreadSeq2)
-		if err != nil {
-			return nil
-		}
-		vlog = fmt.Sprintf("(%d) All column information query of dstDSN {%s} table %s.%s is completed", logThreadSeq, stcls.destDrive, destSchema, destTableName)
-		global.Wlog.Debug(vlog)
-		sourceColInfo := interfToString(a)
-		destColInfo := interfToString(b)
-		if strings.EqualFold(stcls.checkRules.CheckObject, "data") {
-			var strippedGeneratedColumns []string
-			sourceColInfo, destColInfo, strippedGeneratedColumns = normalizeDataCheckColumnInfo(sourceColInfo, destColInfo)
-			if len(strippedGeneratedColumns) > 0 {
-				vlog = fmt.Sprintf("(%d) Stripped generated invisible columns from data-check target metadata for %s.%s -> %s.%s: %v", logThreadSeq, sourceSchema, tableName, destSchema, destTableName, strippedGeneratedColumns)
-				global.Wlog.Info(vlog)
-			}
-		}
-		entry := global.TableAllColumnInfoS{
-			SColumnInfo: sourceColInfo,
-			DColumnInfo: destColInfo,
-		}
-		srcKey := fmt.Sprintf("%s_gtchecksum_%s", sourceSchema, tableName)
-		dstKey := fmt.Sprintf("%s_gtchecksum_%s", destSchema, destTableName)
-		tableCol[srcKey] = entry
-		if dstKey != srcKey {
-			tableCol[dstKey] = entry
-		}
-		vlog = fmt.Sprintf("(%d) all column information query of source table %s.%s and target table %s.%s is completed. table column message is {source: %s, dest: %s}", logThreadSeq, sourceSchema, tableName, destSchema, destTableName, sourceColInfo, destColInfo)
-		global.Wlog.Debug(vlog)
+		jobs <- job{sourceSchema: sourceSchema, tableName: tableName, destSchema: destSchema, destTableName: destTableName}
 	}
+	close(jobs)
+
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := range jobs {
+				tc := dbExec.TableColumnNameStruct{Schema: j.sourceSchema, Table: j.tableName, Drive: stcls.sourceDrive}
+				a, err := tc.Query().TableAllColumn(stcls.sourceDB, logThreadSeq2)
+				if err != nil {
+					global.Wlog.Warn(fmt.Sprintf("(%d) Source TableAllColumn query failed for %s.%s: %v", logThreadSeq, j.sourceSchema, j.tableName, err))
+					continue
+				}
+				tc.Schema = j.destSchema
+				tc.Table = j.destTableName
+				tc.Drive = stcls.destDrive
+				b, err := tc.Query().TableAllColumn(stcls.destDB, logThreadSeq2)
+				if err != nil {
+					global.Wlog.Warn(fmt.Sprintf("(%d) Target TableAllColumn query failed for %s.%s: %v", logThreadSeq, j.destSchema, j.destTableName, err))
+					continue
+				}
+				sourceColInfo := interfToString(a)
+				destColInfo := interfToString(b)
+				if strings.EqualFold(stcls.checkRules.CheckObject, "data") {
+					var strippedGeneratedColumns []string
+					sourceColInfo, destColInfo, strippedGeneratedColumns = normalizeDataCheckColumnInfo(sourceColInfo, destColInfo)
+					if len(strippedGeneratedColumns) > 0 {
+						global.Wlog.Info(fmt.Sprintf("(%d) Stripped generated invisible columns from data-check target metadata for %s.%s -> %s.%s: %v", logThreadSeq, j.sourceSchema, j.tableName, j.destSchema, j.destTableName, strippedGeneratedColumns))
+					}
+				}
+				entry := global.TableAllColumnInfoS{
+					SColumnInfo: sourceColInfo,
+					DColumnInfo: destColInfo,
+				}
+				srcKey := fmt.Sprintf("%s_gtchecksum_%s", j.sourceSchema, j.tableName)
+				dstKey := fmt.Sprintf("%s_gtchecksum_%s", j.destSchema, j.destTableName)
+				tableColMu.Lock()
+				tableCol[srcKey] = entry
+				if dstKey != srcKey {
+					tableCol[dstKey] = entry
+				}
+				tableColMu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+
 	vlog = fmt.Sprintf("(%d) The metadata information of the source target verification table has been obtained", logThreadSeq)
 	global.Wlog.Info(vlog)
 	return tableCol
@@ -5496,6 +5747,24 @@ func (stcls *schemaTable) TableIndexColumn(dtabS []string, logThreadSeq, logThre
 	workers := stcls.tableIndexMetaWorkerCount(len(dtabS))
 	vlog = fmt.Sprintf("(%d) TableIndexColumn worker pool size: %d", logThreadSeq, workers)
 	global.Wlog.Debug(vlog)
+
+	// Oracle 源端：一次性批量拉取全部 schema 的索引元数据，避免对每张表各发一次
+	// ALL_* 4-way JOIN（Oracle 11g 单次 ~1s，N 张表并行 4 worker 仍需 N/4 秒）。
+	var sourceOracleIndexCache map[string]map[string][]map[string]interface{}
+	if isOracleDrive(stcls.sourceDrive) {
+		schemasSet := make(map[string]struct{}, len(dtabS))
+		for _, entry := range dtabS {
+			srcSchema, _, _, _, ok := parseSchemaTableMappingEntry(entry)
+			if ok && srcSchema != "" {
+				schemasSet[strings.ToUpper(srcSchema)] = struct{}{}
+			}
+		}
+		schemas := make([]string, 0, len(schemasSet))
+		for s := range schemasSet {
+			schemas = append(schemas, s)
+		}
+		sourceOracleIndexCache = preloadOracleIndexRows(stcls.sourceDB, schemas, logThreadSeq2)
+	}
 
 	type tableIndexJob struct {
 		rawEntry     string
@@ -5527,11 +5796,17 @@ func (stcls *schemaTable) TableIndexColumn(dtabS []string, logThreadSeq, logThre
 				global.Wlog.Debug(logMsg)
 
 				idxc := dbExec.IndexColumnStruct{Schema: job.sourceSchema, Table: job.sourceTable, Drivce: stcls.sourceDrive, CaseSensitiveObjectName: stcls.caseSensitiveObjectName}
-				queryData, err := idxc.TableIndexColumn().QueryTableIndexColumnInfo(stcls.sourceDB, logThreadSeq2)
-				if err != nil {
-					logMsg = fmt.Sprintf("(%d) Error querying source table index for %s.%s: %v", logThreadSeq, job.sourceSchema, job.sourceTable, err)
-					global.Wlog.Error(logMsg)
-					continue
+				var queryData []map[string]interface{}
+				if cached, ok := lookupOracleIndexRows(sourceOracleIndexCache, job.sourceSchema, job.sourceTable); ok {
+					queryData = cached
+				} else {
+					var err error
+					queryData, err = idxc.TableIndexColumn().QueryTableIndexColumnInfo(stcls.sourceDB, logThreadSeq2)
+					if err != nil {
+						logMsg = fmt.Sprintf("(%d) Error querying source table index for %s.%s: %v", logThreadSeq, job.sourceSchema, job.sourceTable, err)
+						global.Wlog.Error(logMsg)
+						continue
+					}
 				}
 
 				tc := dbExec.TableColumnNameStruct{Schema: job.sourceSchema, Table: job.sourceTable, Drive: stcls.sourceDrive, Db: stcls.sourceDB}
@@ -7054,6 +7329,339 @@ func (stcls *schemaTable) Func(dtabS []string, logThreadSeq, logThreadSeq2 int64
 	return
 }
 
+// preloadOracleForeignKeys runs a single all_constraints/all_cons_columns JOIN
+// against Oracle to collect every FK definition across the given schemas. This
+// replaces a per-table query loop (21 tables × ~3s on Oracle 11g = ~60s) with
+// one batch query, and the result is served from memory in Foreign().
+//
+// The returned map is keyed by upper-cased schema/table/constraint, with values
+// formatted identically to Oracle/or_scheme_table_column.go:Foreign so that
+// canonicalization downstream sees an identical shape.
+func preloadOracleForeignKeys(db *sql.DB, schemas []string, logThreadSeq int64) map[string]map[string]map[string]string {
+	if db == nil || len(schemas) == 0 {
+		return nil
+	}
+	uniq := make(map[string]struct{}, len(schemas))
+	inList := make([]string, 0, len(schemas))
+	for _, s := range schemas {
+		up := strings.ToUpper(strings.TrimSpace(s))
+		if up == "" {
+			continue
+		}
+		if _, dup := uniq[up]; dup {
+			continue
+		}
+		uniq[up] = struct{}{}
+		inList = append(inList, "'"+strings.ReplaceAll(up, "'", "''")+"'")
+	}
+	if len(inList) == 0 {
+		return nil
+	}
+
+	// Oracle 元数据视图的 OWNER 列默认按 unquoted identifier 存储为大写，
+	// 上面已经用 strings.ToUpper 处理过 schema 名，这里直接等值匹配即可避免
+	// UPPER(fk.OWNER) 包裹索引列导致 all_constraints.OWNER 上的索引失效。
+	q := fmt.Sprintf(`SELECT fk.OWNER, fk.TABLE_NAME, fk.CONSTRAINT_NAME, fkcol.COLUMN_NAME, fkcol.POSITION, fk.R_OWNER, rk.TABLE_NAME AS REF_TABLE, rkcol.COLUMN_NAME AS REF_COLUMN, fk.DELETE_RULE FROM all_constraints fk JOIN all_cons_columns fkcol ON fk.OWNER=fkcol.OWNER AND fk.CONSTRAINT_NAME=fkcol.CONSTRAINT_NAME AND fk.TABLE_NAME=fkcol.TABLE_NAME JOIN all_constraints rk ON fk.R_OWNER=rk.OWNER AND fk.R_CONSTRAINT_NAME=rk.CONSTRAINT_NAME JOIN all_cons_columns rkcol ON rk.OWNER=rkcol.OWNER AND rk.CONSTRAINT_NAME=rkcol.CONSTRAINT_NAME AND rkcol.POSITION=fkcol.POSITION WHERE fk.CONSTRAINT_TYPE='R' AND fk.OWNER IN (%s) ORDER BY fk.OWNER, fk.TABLE_NAME, fk.CONSTRAINT_NAME, fkcol.POSITION`, strings.Join(inList, ","))
+
+	rows, err := db.Query(q)
+	if err != nil {
+		global.Wlog.Warnf("(%d) [Q_Foreign_Batch] Oracle batch FK preload failed, fallback to per-table: %v", logThreadSeq, err)
+		return nil
+	}
+	defer rows.Close()
+
+	type fkKey struct{ schema, table, name string }
+	type fkEntry struct {
+		refOwner, refTable, deleteRule string
+		fkCols, refCols                []string
+	}
+	entries := make(map[fkKey]*fkEntry)
+	var order []fkKey
+
+	for rows.Next() {
+		var owner, table, name, col, refOwner, refTable, refCol, deleteRule sql.NullString
+		var position sql.NullInt64
+		if err := rows.Scan(&owner, &table, &name, &col, &position, &refOwner, &refTable, &refCol, &deleteRule); err != nil {
+			global.Wlog.Warnf("(%d) [Q_Foreign_Batch] scan row failed: %v", logThreadSeq, err)
+			return nil
+		}
+		k := fkKey{strings.ToUpper(owner.String), strings.ToUpper(table.String), strings.ToUpper(name.String)}
+		e, ok := entries[k]
+		if !ok {
+			e = &fkEntry{
+				refOwner:   strings.ToUpper(refOwner.String),
+				refTable:   strings.ToUpper(refTable.String),
+				deleteRule: strings.ToUpper(deleteRule.String),
+			}
+			entries[k] = e
+			order = append(order, k)
+		}
+		e.fkCols = append(e.fkCols, strings.ToUpper(col.String))
+		e.refCols = append(e.refCols, strings.ToUpper(refCol.String))
+	}
+	if err := rows.Err(); err != nil {
+		global.Wlog.Warnf("(%d) [Q_Foreign_Batch] row iteration failed: %v", logThreadSeq, err)
+		return nil
+	}
+
+	out := make(map[string]map[string]map[string]string)
+	// Ensure every requested schema has an entry so downstream callers can
+	// distinguish "preloaded but empty" from "not preloaded" via presence.
+	for s := range uniq {
+		out[s] = make(map[string]map[string]string)
+	}
+	for _, k := range order {
+		e := entries[k]
+		fkParts := make([]string, len(e.fkCols))
+		for i, c := range e.fkCols {
+			fkParts[i] = "!" + c + "!"
+		}
+		refParts := make([]string, len(e.refCols))
+		for i, c := range e.refCols {
+			refParts[i] = "!" + c + "!"
+		}
+		def := fmt.Sprintf("CONSTRAINT !%s! FOREIGN KEY (%s) REFERENCES !%s!.!%s! (%s)",
+			k.name,
+			strings.Join(fkParts, ", "),
+			e.refOwner,
+			e.refTable,
+			strings.Join(refParts, ", "),
+		)
+		if e.deleteRule != "" && e.deleteRule != "NO ACTION" {
+			def += " ON DELETE " + e.deleteRule
+		}
+		if _, ok := out[k.schema]; !ok {
+			out[k.schema] = make(map[string]map[string]string)
+		}
+		if _, ok := out[k.schema][k.table]; !ok {
+			out[k.schema][k.table] = make(map[string]string)
+		}
+		out[k.schema][k.table][k.name] = def
+	}
+	global.Wlog.Debug(fmt.Sprintf("(%d) [Q_Foreign_Batch] Oracle batch FK preload done: schemas=%d, fks=%d", logThreadSeq, len(uniq), len(order)))
+	return out
+}
+
+// preloadOracleTableColumns batches per-table Q_table_columns lookups into one
+// dba_tab_columns/dba_col_comments scan across the given schemas. Callers can
+// then serve tableColumnName from memory instead of executing 21 separate
+// per-table queries (~100ms each on Oracle 11g).
+//
+// The returned nested map uses upper-cased schema/table keys. Each inner slice
+// matches the row shape produced by Oracle/or_scheme_table_column.go:
+// TableColumnName so downstream code sees an identical input.
+func preloadOracleTableColumns(db *sql.DB, schemas []string, logThreadSeq int64) map[string]map[string][]map[string]interface{} {
+	if db == nil || len(schemas) == 0 {
+		return nil
+	}
+	uniq := make(map[string]struct{}, len(schemas))
+	inList := make([]string, 0, len(schemas))
+	for _, s := range schemas {
+		up := strings.ToUpper(strings.TrimSpace(s))
+		if up == "" {
+			continue
+		}
+		if _, dup := uniq[up]; dup {
+			continue
+		}
+		uniq[up] = struct{}{}
+		inList = append(inList, "'"+strings.ReplaceAll(up, "'", "''")+"'")
+	}
+	if len(inList) == 0 {
+		return nil
+	}
+
+	// 使用与 Oracle/or_scheme_table_column.go:TableColumnName 完全一致的列裁剪
+	// 逻辑，加上 OWNER 作为分组键；按 (OWNER,TABLE_NAME,COLUMN_ID) 排序确保
+	// 与原单表查询相同的列顺序。
+	q := fmt.Sprintf(`SELECT tc.OWNER AS "schemaName", tc.TABLE_NAME AS "tableName", tc.COLUMN_NAME AS "columnName", `+
+		`DECODE(tc.DATA_TYPE, `+
+		`'NUMBER', NVL2(DATA_PRECISION, 'NUMBER(' || tc.DATA_PRECISION || ',' || tc.DATA_SCALE || ')', 'NUMBER'), `+
+		`'VARCHAR2', 'VARCHAR2(' || tc.DATA_LENGTH || ')', `+
+		`'CHAR', 'CHAR(' || tc.DATA_LENGTH || ')', `+
+		`'NCHAR', 'NCHAR(' || tc.CHAR_LENGTH || ')', `+
+		`'NVARCHAR2', 'NVARCHAR2(' || tc.CHAR_LENGTH || ')', `+
+		`'RAW', 'RAW(' || tc.DATA_LENGTH || ')', `+
+		`'FLOAT', NVL2(tc.DATA_PRECISION, 'FLOAT(' || tc.DATA_PRECISION || ')', 'FLOAT'), `+
+		`'TIMESTAMP', 'TIMESTAMP(' || NVL(tc.DATA_SCALE, 6) || ')', `+
+		`tc.DATA_TYPE) AS "columnType", `+
+		`tc.NULLABLE AS "isNull", `+
+		`TO_NCHAR(cc.COMMENTS) AS "columnComment", `+
+		`tc.DATA_DEFAULT AS "columnDefault" `+
+		`FROM dba_tab_columns tc `+
+		`JOIN dba_col_comments cc ON tc.OWNER=cc.OWNER AND tc.TABLE_NAME=cc.TABLE_NAME AND tc.COLUMN_NAME=cc.COLUMN_NAME `+
+		`WHERE tc.OWNER IN (%s) `+
+		`ORDER BY tc.OWNER, tc.TABLE_NAME, tc.COLUMN_ID`, strings.Join(inList, ","))
+
+	rows, err := db.Query(q)
+	if err != nil {
+		global.Wlog.Warnf("(%d) [Q_table_columns_Batch] Oracle batch column preload failed, fallback to per-table: %v", logThreadSeq, err)
+		return nil
+	}
+	defer rows.Close()
+
+	out := make(map[string]map[string][]map[string]interface{})
+	for s := range uniq {
+		out[s] = make(map[string][]map[string]interface{})
+	}
+	var total int
+	for rows.Next() {
+		var schemaName, tableName, columnName, columnType, isNull, columnComment, columnDefault sql.NullString
+		if err := rows.Scan(&schemaName, &tableName, &columnName, &columnType, &isNull, &columnComment, &columnDefault); err != nil {
+			global.Wlog.Warnf("(%d) [Q_table_columns_Batch] scan row failed: %v", logThreadSeq, err)
+			return nil
+		}
+		sch := strings.ToUpper(schemaName.String)
+		tbl := strings.ToUpper(tableName.String)
+		row := map[string]interface{}{
+			"columnName":    columnName.String,
+			"columnType":    columnType.String,
+			"isNull":        isNull.String,
+			"columnComment": columnComment.String,
+			"columnDefault": columnDefault.String,
+		}
+		if _, ok := out[sch]; !ok {
+			out[sch] = make(map[string][]map[string]interface{})
+		}
+		out[sch][tbl] = append(out[sch][tbl], row)
+		total++
+	}
+	if err := rows.Err(); err != nil {
+		global.Wlog.Warnf("(%d) [Q_table_columns_Batch] row iteration failed: %v", logThreadSeq, err)
+		return nil
+	}
+	global.Wlog.Debug(fmt.Sprintf("(%d) [Q_table_columns_Batch] Oracle batch column preload done: schemas=%d, rows=%d", logThreadSeq, len(uniq), total))
+	return out
+}
+
+// lookupOracleTableColumns returns the preloaded column rows for the given
+// schema/table, or (nil, false) if the cache does not cover this schema.
+// A schema entry with no table key means "preloaded but table empty"; in that
+// case an empty slice + true is returned so callers skip the per-table query.
+func lookupOracleTableColumns(cache map[string]map[string][]map[string]interface{}, schema, table string) ([]map[string]interface{}, bool) {
+	if cache == nil {
+		return nil, false
+	}
+	tabs, ok := cache[strings.ToUpper(schema)]
+	if !ok {
+		return nil, false
+	}
+	if rows, ok := tabs[strings.ToUpper(table)]; ok {
+		return rows, true
+	}
+	return []map[string]interface{}{}, true
+}
+
+// preloadOracleIndexRows batches the ALL_TAB_COLS/ALL_IND_COLUMNS/ALL_INDEXES/
+// ALL_CONSTRAINTS JOIN across multiple schemas into a single query. This
+// replaces per-table execution (21 tables × ~1s on Oracle 11g = ~21s) with one
+// schema-wide query served from memory.
+//
+// The returned map uses upper-cased schema/table keys. Each row matches the
+// column shape produced by Oracle/or_query_table_data.go:QueryTableIndexColumnInfo
+// (keys: columnName, columnType, columnKey, nonUnique, indexName, IndexSeq,
+// columnSeq), so IndexDisposF sees an identical input.
+func preloadOracleIndexRows(db *sql.DB, schemas []string, logThreadSeq int64) map[string]map[string][]map[string]interface{} {
+	if db == nil || len(schemas) == 0 {
+		return nil
+	}
+	uniq := make(map[string]struct{}, len(schemas))
+	inList := make([]string, 0, len(schemas))
+	for _, s := range schemas {
+		up := strings.ToUpper(strings.TrimSpace(s))
+		if up == "" {
+			continue
+		}
+		if _, dup := uniq[up]; dup {
+			continue
+		}
+		uniq[up] = struct{}{}
+		inList = append(inList, "'"+strings.ReplaceAll(up, "'", "''")+"'")
+	}
+	if len(inList) == 0 {
+		return nil
+	}
+
+	q := fmt.Sprintf(`SELECT c.OWNER AS "schemaName", c.TABLE_NAME AS "tableName", c.COLUMN_NAME AS "columnName", DECODE(c.DATA_TYPE, 'DATE', c.data_type, c.DATA_TYPE || '(' || c.data_LENGTH || ')') AS "columnType", DECODE(co.constraint_type, 'P', '1', '0') AS "columnKey", i.UNIQUENESS AS "nonUnique", ic.INDEX_NAME AS "indexName", ic.COLUMN_POSITION AS "IndexSeq", c.COLUMN_ID AS "columnSeq" FROM all_tab_cols c INNER JOIN all_ind_columns ic ON c.TABLE_NAME=ic.TABLE_NAME AND c.OWNER=ic.INDEX_OWNER AND c.COLUMN_NAME=ic.COLUMN_NAME INNER JOIN all_indexes i ON ic.INDEX_OWNER=i.OWNER AND ic.INDEX_NAME=i.INDEX_NAME AND ic.TABLE_NAME=i.TABLE_NAME LEFT JOIN all_constraints co ON co.owner=c.owner AND co.table_name=c.table_name AND co.index_name=i.index_name WHERE c.OWNER IN (%s) ORDER BY c.OWNER, c.TABLE_NAME, i.INDEX_NAME, ic.COLUMN_POSITION`, strings.Join(inList, ","))
+
+	rows, err := db.Query(q)
+	if err != nil {
+		global.Wlog.Warnf("(%d) [Q_Index_Statistics_Batch] Oracle batch index preload failed, fallback to per-table: %v", logThreadSeq, err)
+		return nil
+	}
+	defer rows.Close()
+
+	out := make(map[string]map[string][]map[string]interface{})
+	for s := range uniq {
+		out[s] = make(map[string][]map[string]interface{})
+	}
+	for rows.Next() {
+		var schemaName, tableName, columnName, columnType, columnKey, nonUnique, indexName sql.NullString
+		var indexSeq, columnSeq sql.NullInt64
+		if err := rows.Scan(&schemaName, &tableName, &columnName, &columnType, &columnKey, &nonUnique, &indexName, &indexSeq, &columnSeq); err != nil {
+			global.Wlog.Warnf("(%d) [Q_Index_Statistics_Batch] scan row failed: %v", logThreadSeq, err)
+			return nil
+		}
+		sch := strings.ToUpper(schemaName.String)
+		tbl := strings.ToUpper(tableName.String)
+		row := map[string]interface{}{
+			"columnName": columnName.String,
+			"columnType": columnType.String,
+			"columnKey":  columnKey.String,
+			"nonUnique":  nonUnique.String,
+			"indexName":  indexName.String,
+			"IndexSeq":   strconv.FormatInt(indexSeq.Int64, 10),
+			"columnSeq":  strconv.FormatInt(columnSeq.Int64, 10),
+		}
+		if _, ok := out[sch]; !ok {
+			out[sch] = make(map[string][]map[string]interface{})
+		}
+		out[sch][tbl] = append(out[sch][tbl], row)
+	}
+	if err := rows.Err(); err != nil {
+		global.Wlog.Warnf("(%d) [Q_Index_Statistics_Batch] row iteration failed: %v", logThreadSeq, err)
+		return nil
+	}
+	global.Wlog.Debug(fmt.Sprintf("(%d) [Q_Index_Statistics_Batch] Oracle batch index preload done: schemas=%d", logThreadSeq, len(uniq)))
+	return out
+}
+
+// lookupOracleIndexRows returns the preloaded index rows for (schema, table).
+// Returns (rows, true) when the schema was preloaded (even if the table has no
+// indexes, in which case rows is an empty slice). (nil, false) means the
+// caller must fall back to a live query.
+func lookupOracleIndexRows(cache map[string]map[string][]map[string]interface{}, schema, table string) ([]map[string]interface{}, bool) {
+	if cache == nil {
+		return nil, false
+	}
+	tabs, ok := cache[strings.ToUpper(schema)]
+	if !ok {
+		return nil, false
+	}
+	if rows, ok := tabs[strings.ToUpper(table)]; ok {
+		return rows, true
+	}
+	return []map[string]interface{}{}, true
+}
+
+// lookupForeignKeyCache returns the preloaded FK definitions for the given
+// schema/table, or nil if not present. Keys are case-insensitive.
+func lookupForeignKeyCache(cache map[string]map[string]map[string]string, schema, table string) (map[string]string, bool) {
+	if cache == nil {
+		return nil, false
+	}
+	tabs, ok := cache[strings.ToUpper(schema)]
+	if !ok {
+		return nil, false
+	}
+	fks, ok := tabs[strings.ToUpper(table)]
+	if !ok {
+		// Schema was preloaded but this table has no FKs — return empty map.
+		return map[string]string{}, true
+	}
+	return fks, true
+}
+
 func (stcls *schemaTable) Foreign(dtabS []string, logThreadSeq, logThreadSeq2 int64, isCalledFromStruct ...bool) {
 	var (
 		vlog                       string
@@ -7064,6 +7672,25 @@ func (stcls *schemaTable) Foreign(dtabS []string, logThreadSeq, logThreadSeq2 in
 			CheckObject: "foreign",
 		}
 	)
+
+	// Preload FK metadata in one batch query when the source is Oracle, so the
+	// per-table loop below does an in-memory lookup instead of 21× round-trips
+	// against all_constraints/all_cons_columns.
+	var sourceFKCache map[string]map[string]map[string]string
+	if isOracleDrive(stcls.sourceDrive) {
+		schemasSet := make(map[string]struct{}, len(dtabS))
+		for _, i := range dtabS {
+			srcSchema, _, _, _ := parseSourceAndDestTablePair(i, stcls.tableMappings)
+			if srcSchema != "" {
+				schemasSet[strings.ToUpper(srcSchema)] = struct{}{}
+			}
+		}
+		schemas := make([]string, 0, len(schemasSet))
+		for s := range schemasSet {
+			schemas = append(schemas, s)
+		}
+		sourceFKCache = preloadOracleForeignKeys(stcls.sourceDB, schemas, logThreadSeq2)
+	}
 
 	// 如果是从 Struct 函数调用的，则将 CheckObject 设置为 "struct"
 	if len(isCalledFromStruct) > 0 && isCalledFromStruct[0] {
@@ -7084,7 +7711,9 @@ func (stcls *schemaTable) Foreign(dtabS []string, logThreadSeq, logThreadSeq2 in
 		pods.Schema = sourceSchema
 		pods.Table = sourceTable
 		tc := dbExec.TableColumnNameStruct{Schema: sourceSchema, Table: sourceTable, Drive: stcls.sourceDrive}
-		if sourceForeign, err = tc.Query().Foreign(stcls.sourceDB, logThreadSeq2); err != nil {
+		if cached, ok := lookupForeignKeyCache(sourceFKCache, sourceSchema, sourceTable); ok {
+			sourceForeign = cached
+		} else if sourceForeign, err = tc.Query().Foreign(stcls.sourceDB, logThreadSeq2); err != nil {
 			return
 		}
 		vlog = fmt.Sprintf("(%d) srcDSN {%s} table %s.%s message is {%s}", logThreadSeq, stcls.sourceDrive, sourceSchema, sourceTable, sourceForeign)
@@ -7245,10 +7874,8 @@ func (stcls *schemaTable) Partitions(dtabS []string, logThreadSeq, logThreadSeq2
 		// First check whether either side actually has partitions. If neither does, treat
 		// as consistent (same as MySQL→MySQL behaviour) and skip without any advisory.
 		if stcls.isOracleToMySQL() {
-			tcSrc := dbExec.TableColumnNameStruct{Schema: sourceSchema, Table: sourceTable, Drive: stcls.sourceDrive}
-			srcParts, srcPartsErr := tcSrc.Query().Partitions(stcls.sourceDB, logThreadSeq2)
-			tcDst := dbExec.TableColumnNameStruct{Schema: destSchema, Table: destTable, Drive: stcls.destDrive}
-			dstParts, dstPartsErr := tcDst.Query().Partitions(stcls.destDB, logThreadSeq2)
+			srcParts, srcPartsErr := stcls.cachedPartitions(stcls.sourceDB, stcls.sourceDrive, sourceSchema, sourceTable, logThreadSeq2)
+			dstParts, dstPartsErr := stcls.cachedPartitions(stcls.destDB, stcls.destDrive, destSchema, destTable, logThreadSeq2)
 
 			if srcPartsErr != nil {
 				global.Wlog.Warnf("(%d) Oracle→MySQL: failed to query source partitions for %s.%s: %v", logThreadSeq, sourceSchema, sourceTable, srcPartsErr)
@@ -7316,8 +7943,7 @@ func (stcls *schemaTable) Partitions(dtabS []string, logThreadSeq, logThreadSeq2
 
 		vlog = fmt.Sprintf("(%d) Start processing srcDSN {%s} table %s.%s partitions data. to dispos it...", logThreadSeq, stcls.sourceDrive, sourceSchema, sourceTable)
 		global.Wlog.Debug(vlog)
-		tc := dbExec.TableColumnNameStruct{Schema: sourceSchema, Table: sourceTable, Drive: stcls.sourceDrive}
-		if sourcePartitions, err = tc.Query().Partitions(stcls.sourceDB, logThreadSeq2); err != nil {
+		if sourcePartitions, err = stcls.cachedPartitions(stcls.sourceDB, stcls.sourceDrive, sourceSchema, sourceTable, logThreadSeq2); err != nil {
 			global.Wlog.Errorf("(%d) Failed to get source partitions for table %s.%s: %v", logThreadSeq, sourceSchema, sourceTable, err)
 			return
 		}
@@ -7325,12 +7951,9 @@ func (stcls *schemaTable) Partitions(dtabS []string, logThreadSeq, logThreadSeq2
 		vlog = fmt.Sprintf("(%d) srcDSN {%s} table %s.%s partitions count: %d", logThreadSeq, stcls.sourceDrive, sourceSchema, sourceTable, len(sourcePartitions))
 		global.Wlog.Debug(vlog)
 
-		tc.Drive = stcls.destDrive
-		tc.Schema = destSchema
-		tc.Table = destTable
 		vlog = fmt.Sprintf("(%d) Start processing dstDSN {%s} table %s.%s partitions data. to dispos it...", logThreadSeq, stcls.destDrive, destSchema, destTable)
 		global.Wlog.Debug(vlog)
-		if destPartitions, err = tc.Query().Partitions(stcls.destDB, logThreadSeq2); err != nil {
+		if destPartitions, err = stcls.cachedPartitions(stcls.destDB, stcls.destDrive, destSchema, destTable, logThreadSeq2); err != nil {
 			global.Wlog.Errorf("(%d) Failed to get dest partitions for table %s.%s: %v", logThreadSeq, destSchema, destTable, err)
 			return
 		}
@@ -7852,6 +8475,26 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 	//校验索引
 	vlog = fmt.Sprintf("(%d) %s start init check source and target DB index Column. to check it...", logThreadSeq, event)
 	global.Wlog.Info(vlog)
+
+	// Preload Oracle index metadata across all source schemas so the per-table
+	// loop can serve QueryTableIndexColumnInfo from memory instead of firing
+	// one ALL_* 4-way JOIN per table (21 tables × ~1s on 11g = ~21s).
+	var sourceOracleIndexCache map[string]map[string][]map[string]interface{}
+	if isOracleDrive(stcls.sourceDrive) {
+		schemasSet := make(map[string]struct{}, len(dtabS))
+		for _, i := range dtabS {
+			srcSchema, _, _, _ := parseSourceAndDestTablePair(i, stcls.tableMappings)
+			if srcSchema != "" {
+				schemasSet[strings.ToUpper(srcSchema)] = struct{}{}
+			}
+		}
+		schemas := make([]string, 0, len(schemasSet))
+		for s := range schemasSet {
+			schemas = append(schemas, s)
+		}
+		sourceOracleIndexCache = preloadOracleIndexRows(stcls.sourceDB, schemas, logThreadSeq2)
+	}
+
 	for _, i := range dtabS {
 		sourceSchema, tableName, destSchema, destTable := parseSourceAndDestTablePair(i, stcls.tableMappings)
 		// 在正确的作用域内声明索引相关变量
@@ -7880,11 +8523,17 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 		idxc := dbExec.IndexColumnStruct{Schema: sourceSchema, Table: stcls.table, Drivce: stcls.sourceDrive, CaseSensitiveObjectName: stcls.caseSensitiveObjectName}
 		vlog = fmt.Sprintf("(%d) %s Start processing srcDSN {%s} table %s.%s index column data. to dispos it...", logThreadSeq, event, stcls.sourceDrive, sourceSchema, stcls.table)
 		global.Wlog.Debug(vlog)
-		squeryData, err := idxc.TableIndexColumn().QueryTableIndexColumnInfo(stcls.sourceDB, logThreadSeq2)
-		if err != nil {
-			vlog = fmt.Sprintf("(%d) %s Querying the index column data of srcDSN {%s} database table %s failed, and the error message is {%v}", logThreadSeq, event, stcls.sourceDrive, i, err)
-			global.Wlog.Error(vlog)
-			return err
+		var squeryData []map[string]interface{}
+		if cached, ok := lookupOracleIndexRows(sourceOracleIndexCache, sourceSchema, stcls.table); ok {
+			squeryData = cached
+		} else {
+			var qErr error
+			squeryData, qErr = idxc.TableIndexColumn().QueryTableIndexColumnInfo(stcls.sourceDB, logThreadSeq2)
+			if qErr != nil {
+				vlog = fmt.Sprintf("(%d) %s Querying the index column data of srcDSN {%s} database table %s failed, and the error message is {%v}", logThreadSeq, event, stcls.sourceDrive, i, qErr)
+				global.Wlog.Error(vlog)
+				return qErr
+			}
 		}
 		spri, suni, smul, sourceIndexVisibilityMap = idxc.TableIndexColumn().IndexDisposF(squeryData, logThreadSeq2)
 		if sourceCreateSQL, err := queryMySQLCreateTableStatement(stcls.sourceDB, sourceSchema, stcls.table); err == nil {
