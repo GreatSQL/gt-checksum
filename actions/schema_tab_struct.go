@@ -1309,6 +1309,59 @@ func (stcls *schemaTable) isOracleToMySQL() bool {
 		stcls.destVersionInfo().Flavor == global.DatabaseFlavorMySQL
 }
 
+// detectOracleToMySQLColumnHardMismatch 扫描 Oracle→MySQL 场景下同名列的
+// 类型 / 字符集 / 排序规则，返回首个 hard-mismatch（非 WarnOnly、非 NormalizedEqual）
+// 的列名与原因。用于 data 模式预检：当列名完全一致但底层定义不兼容时，
+// 应像同构数据库一样将表标记为 DDL-yes，避免 data 模式反复生成同样的修复 SQL。
+//
+// 仅返回首个差异即可：对用户而言，只要存在任一 hard-mismatch，就必须先跑 struct
+// 修复；不必枚举全部列（完整列表留给 struct 模式输出）。
+func (stcls *schemaTable) detectOracleToMySQLColumnHardMismatch(
+	sourceColumnMap, destColumnMap map[string][]string,
+	getSourceOriginalColumnName func(string) string,
+	getDestOriginalColumnName func(string) string,
+) (column string, reason string, found bool) {
+	for colKey, sourceAttrs := range sourceColumnMap {
+		destAttrs, ok := destColumnMap[colKey]
+		if !ok {
+			continue
+		}
+		sourceOriginal := getSourceOriginalColumnName(colKey)
+		destOriginal := getDestOriginalColumnName(colKey)
+		repairName := destOriginal
+		if strings.TrimSpace(repairName) == "" {
+			repairName = sourceOriginal
+		}
+		sourceCanonical := schemacompat.CanonicalizeOracleColumnForComparison(
+			sourceOriginal, sourceAttrs, stcls.destVersionInfo(),
+		)
+		destCanonical := schemacompat.CanonicalizeColumnForComparison(
+			destOriginal, destAttrs,
+			stcls.destVersionInfo(), stcls.sourceVersionInfo(),
+			"", stcls.checkRules.MariaDBJSONTargetType,
+		)
+		checks := []struct {
+			kind     string
+			decision schemacompat.CompatibilityDecision
+		}{
+			{"type", schemacompat.DecideOracleToMySQLTypeCompatibility(sourceCanonical, destCanonical)},
+			{"charset", schemacompat.DecideOracleToMySQLCharsetCompatibility(sourceCanonical, destCanonical)},
+			{"collation", schemacompat.DecideOracleToMySQLCollationCompatibility(sourceCanonical, destCanonical)},
+		}
+		for _, c := range checks {
+			if !c.decision.IsMismatch() {
+				continue
+			}
+			if c.decision.State == schemacompat.CompatibilityWarnOnly {
+				continue
+			}
+			return repairName, fmt.Sprintf("column %s %s mismatch: source=%s, target=%s (%s)",
+				repairName, c.kind, c.decision.Source, c.decision.Target, c.decision.Reason), true
+		}
+	}
+	return "", "", false
+}
+
 func isIgnorableGeneratedInvisibleColumn(colName string, columnMap map[string][]string) bool {
 	if !strings.EqualFold(strings.TrimSpace(colName), "my_row_id") {
 		return false
@@ -3852,6 +3905,34 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 				global.Wlog.Info(vlog)
 			}
 			if len(addColumn) == 0 && len(delColumn) == 0 {
+				// Oracle→MySQL data 模式预检：列名全一致时仍需扫描列定义，
+				// 捕获类型/字符集/排序规则的硬不兼容（如 FLOAT vs DECIMAL、
+				// CHAR 长度差、DATETIME 精度差、BINARY 与 VARCHAR 互不兼容）。
+				// 命中即视为 DDL 差异，标记 DDL-yes 并提示用户先做 struct 修复，
+				// 避免 data 模式反复生成相同的修复 SQL。
+				if stcls.isOracleToMySQL() {
+					if col, reason, mismatch := stcls.detectOracleToMySQLColumnHardMismatch(
+						sourceColumnMap, destColumnMap,
+						getSourceOriginalColumnName, getDestOriginalColumnName,
+					); mismatch {
+						diffReason := fmt.Sprintf("DDL mismatch (Oracle→MySQL column %s): %s", col, reason)
+						vlog = fmt.Sprintf("(%d) %s Oracle→MySQL data precheck detected column definition mismatch %s.%s -> %s.%s: %s",
+							logThreadSeq, event, sourceSchema, stcls.table, destSchema, stcls.table, diffReason)
+						global.Wlog.Warn(vlog)
+						pod := Pod{
+							Schema:      sourceSchema,
+							Table:       stcls.table,
+							CheckObject: "data",
+							DIFFS:       "DDL-yes",
+							Datafix:     stcls.datafix,
+							Rows:        diffReason,
+						}
+						stcls.appendPod(pod)
+						global.AddSkippedTableWithDiffs(sourceSchema, stcls.table, "data", diffReason, global.SkipDiffsDDLYes)
+						abnormalTableList = append(abnormalTableList, mappedTableKey)
+						continue
+					}
+				}
 				// 使用目标端schema
 				newCheckTableList = append(newCheckTableList, mappedTableKey)
 			} else {
