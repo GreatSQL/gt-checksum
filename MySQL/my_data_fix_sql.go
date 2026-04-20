@@ -333,6 +333,19 @@ func formatMySQLInsertLiteral(value, dataType string) string {
 	if strings.EqualFold(dataType, "DATETIME") || strings.Contains(strings.ToUpper(dataType), "TIMESTAMP") {
 		return fmt.Sprintf("'%s'", escapeSQLString(normalizeMySQLDateTimeLiteral(value)))
 	}
+	if isBitColumnType(dataType) {
+		// BIT 列经过 CAST(col AS UNSIGNED) 归一化后返回十进制字符串，
+		// 直接作为整数字面量写入，MySQL 会按列位宽隐式转换，避免 ASCII 字节
+		// 被 `0x%X` 编码成超长字节串导致 ERROR 1406 (22001) Data too long。
+		v := strings.TrimSpace(value)
+		if v == "" {
+			return "0"
+		}
+		if _, err := strconv.ParseUint(v, 10, 64); err == nil {
+			return v
+		}
+		return fmt.Sprintf("0x%X", []byte(value))
+	}
 	if isBinaryLikeColumnType(dataType) {
 		return fmt.Sprintf("0x%X", []byte(value))
 	}

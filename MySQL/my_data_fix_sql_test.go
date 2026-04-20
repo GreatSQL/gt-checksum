@@ -846,3 +846,57 @@ func TestBuildFloatDeletePredicate_BareFloat(t *testing.T) {
 		t.Error("buildFloatDeletePredicate should return ok=false for VARCHAR")
 	}
 }
+
+// ---------- formatMySQLInsertLiteral: BIT 列归一化 ----------
+// 回归用例：commit 37f7e4286 将 BIT 列 SELECT 改为 CAST(col AS UNSIGNED) 后，
+// 返回值变为十进制字符串（如 "0"、"16"），原实现仍走 `0x%X` 把 ASCII 字节编码
+// 成 0x30/0x3136，对 BIT(1)/BIT(5) 插入时会触发 ERROR 1406 Data too long。
+// 这里锁定修复后应输出整数字面量。
+func TestFormatMySQLInsertLiteral_BitColumnNormalization(t *testing.T) {
+	cases := []struct {
+		dataType string
+		value    string
+		want     string
+	}{
+		{"BIT", "0", "0"},
+		{"BIT(1)", "1", "1"},
+		{"BIT(5)", "16", "16"},
+		{"BIT(64)", "34", "34"},
+		{"bit(8)", "255", "255"},
+	}
+	for _, c := range cases {
+		got := formatMySQLInsertLiteral(c.value, c.dataType)
+		if got != c.want {
+			t.Errorf("formatMySQLInsertLiteral(%q, %q) = %q; want %q",
+				c.value, c.dataType, got, c.want)
+		}
+	}
+}
+
+// BINARY/VARBINARY/BLOB 仍走 hex 编码，避免回归到 BIT 修复误伤其它二进制列。
+func TestFormatMySQLInsertLiteral_BinaryColumnsStillHex(t *testing.T) {
+	cases := []struct {
+		dataType string
+		value    string
+		want     string
+	}{
+		{"BINARY(4)", "abcd", "0x61626364"},
+		{"VARBINARY(10)", "ab", "0x6162"},
+		{"BLOB", "x", "0x78"},
+	}
+	for _, c := range cases {
+		got := formatMySQLInsertLiteral(c.value, c.dataType)
+		if got != c.want {
+			t.Errorf("formatMySQLInsertLiteral(%q, %q) = %q; want %q",
+				c.value, c.dataType, got, c.want)
+		}
+	}
+}
+
+// BIT 列若拿到非数字字符串（异常路径），兜底走 hex 编码避免产生非法 SQL。
+func TestFormatMySQLInsertLiteral_BitFallbackToHex(t *testing.T) {
+	got := formatMySQLInsertLiteral("not-a-number", "BIT(8)")
+	if got != "0x6E6F742D612D6E756D626572" {
+		t.Errorf("bit fallback = %q", got)
+	}
+}
