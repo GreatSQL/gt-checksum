@@ -16,7 +16,10 @@
 #   --timeout=SEC         单用例超时秒数（默认 120）
 #   --artifacts-dir=PATH  自定义输出目录
 #   --dry-run             仅打印测例列表，不执行
-#   --enable-oracle       运行 Oracle stub 错误处理测例（TC-ORA-01）
+#   --enable-oracle       运行 columns 模式下 Oracle 端被拒绝的负向用例（TC-ORA-01）
+#                         注意：columns 模式不支持任何一端为 Oracle，该开关仅用于
+#                         验证"遇到 Oracle srcDSN 时程序会非零退出并给出明确错误"，
+#                         并非启用 Oracle 数据源参与校验
 #   --help                显示帮助
 #
 # 示例:
@@ -338,12 +341,19 @@ parse_diffs_from_output() {
     local clean
     clean="$(strip_ansi < "$output_file")"
 
+    # 扫描整行匹配 Diffs 取值集合，避免受末尾 Mapping/Columns 列影响（columns 模式下列数可变）
     local diffs_values
     diffs_values=$(echo "$clean" \
         | grep -iE '\bdata\b' \
         | grep -vE '^\[|^Initializing|^Opening|^Checking|^gt-checksum|^$|^Schema' \
-        | awk 'NF>=7 {print $(NF-1)}' \
-        | grep -iE '^(yes|no|warn-only|collation-mapped|DDL-yes)$' || true)
+        | awk '{
+            for (i=1;i<=NF;i++) {
+                v=tolower($i)
+                if (v=="yes"||v=="no"||v=="warn-only"||v=="collation-mapped"||v=="ddl-yes") {
+                    print $i; break
+                }
+            }
+          }' || true)
 
     if [[ -n "$diffs_values" ]]; then
         echo "$diffs_values" | sort -u | paste -sd',' -
@@ -493,8 +503,13 @@ run_single_case() {
 
             NO_OUTPUT)
                 if [[ $gt_exit -ne 0 ]]; then
-                    final_verdict="ERROR"
-                    log_error "  [${case_id}] Round ${round}: gt-checksum 异常退出 (exit=${gt_exit}) 且无可解析输出"
+                    if [[ "$expected_verdict" == "ERROR-EXPECTED" ]]; then
+                        final_verdict="ERROR-EXPECTED"
+                        log_info "  [${case_id}] Round ${round}: 非零退出（预期行为），verdict=ERROR-EXPECTED"
+                    else
+                        final_verdict="ERROR"
+                        log_error "  [${case_id}] Round ${round}: gt-checksum 异常退出 (exit=${gt_exit}) 且无可解析输出"
+                    fi
                 else
                     final_verdict="PASS"
                     log_warn "  [${case_id}] Round ${round}: gt-checksum 正常退出但无 Diffs 行，视为 PASS"
@@ -574,7 +589,9 @@ run_single_case() {
 }
 
 # ============================================================
-# SECTION 10: Oracle stub 错误处理测例
+# SECTION 10: Oracle stub 错误处理测例（负向用例）
+# columns 模式产品约束：不支持任何一端为 Oracle。
+# 本用例使用 oracle srcDSN 触发 gt-checksum，验证程序会非零退出且错误消息可识别。
 # ============================================================
 run_oracle_stub_case() {
     local case_id="TC-ORA-01-cols-oracle-stub-error"
@@ -690,7 +707,7 @@ print_test_cases() {
     printf "%-40s %-18s %s\n" "TC-03-cols-source-only-advisory" "PASS-ADVISORY"  "source-only 行生成 advisory 文件"
     printf "%-40s %-18s %s\n" "TC-04-cols-simple-syntax"        "PASS"           "简单语法 columns=score"
     printf "%-40s %-18s %s\n" "TC-05-cols-cross-table-mapping"  "PASS"           "跨表列名映射修复后收敛"
-    printf "%-40s %-18s %s\n" "TC-06-cols-no-pk-ddl-yes"        "FAIL-EXPECTED"  "无主键表→DDL-yes（预期行为）"
+    printf "%-40s %-18s %s\n" "TC-06-cols-no-pk-ddl-yes"        "ERROR-EXPECTED" "无主键表→非零退出（预期行为）"
     printf "%-40s %-18s %s\n" "TC-07-cols-target-only-extra"    "PASS"           "target-only 行+extraRowsSyncToSource"
     printf "%-40s %-18s %s\n" "TC-08-cols-simple-multi-col"     "PASS"           "简单语法多字段 columns=score,note"
     if [[ "$ENABLE_ORACLE" == "true" ]]; then
@@ -778,15 +795,16 @@ main() {
         "${DB_SCHEMA}.old_orders.src_total:${DB_SCHEMA}.new_orders.dst_total" \
         "OFF" "no" "PASS"
 
-    # TC-06: 无主键表 → DDL-yes（预期行为）
-    # heap_data 无主键，与 col_data（有主键）一起指定，避免单表 os.Exit(1)
+    # TC-06: 无主键表 → 预期非零退出（ERROR-EXPECTED）
+    # heap_data 无主键，columns 模式下校验链路会在预检阶段拒绝无主键表，程序以非零退出
+    # 注：columns 选项强制所有列对同属一张表对，因此不能再混入 col_data 规避
     log_info ""
-    log_info "--- TC-06: 无主键表→DDL-yes（预期行为） ---"
+    log_info "--- TC-06: 无主键表→非零退出（预期行为） ---"
     run_single_case \
         "TC-06-cols-no-pk-ddl-yes" \
-        "${DB_SCHEMA}.heap_data,${DB_SCHEMA}.col_data" \
-        "${DB_SCHEMA}.heap_data.val:${DB_SCHEMA}.heap_data.val,${DB_SCHEMA}.col_data.id:${DB_SCHEMA}.col_data.id" \
-        "OFF" "yes" "FAIL-EXPECTED"
+        "${DB_SCHEMA}.heap_data" \
+        "${DB_SCHEMA}.heap_data.val:${DB_SCHEMA}.heap_data.val" \
+        "OFF" "yes" "ERROR-EXPECTED"
 
     # TC-07: target-only 行 + extraRowsSyncToSource=ON
     # 目标端多出 item_id=99，开启 extraRowsSyncToSource 生成 DELETE
