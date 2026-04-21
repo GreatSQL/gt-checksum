@@ -10,6 +10,13 @@ import (
 	"gt-checksum/global"
 )
 
+type triggerCreateResult struct {
+	CreateSQL           string
+	CharacterSetClient  string
+	CollationConnection string
+	DatabaseCollation   string
+}
+
 // buildTriggerCharsetSetStatements 生成 trigger fix SQL 需要的 charset session 变量 SET 语句
 func buildTriggerCharsetSetStatements(result triggerCreateResult, isMariaDBToMySQL bool) []string {
 	return buildRoutineCharsetSetStatements(result.CharacterSetClient, result.CollationConnection, result.DatabaseCollation, isMariaDBToMySQL)
