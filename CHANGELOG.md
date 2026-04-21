@@ -1,3 +1,6 @@
+## 2.0.1
+- [内部重构]: 大文件物理拆分 —— 在同包内按主题切分 `actions/schema_tab_struct.go`、`actions/table_index_dispos.go`、`MySQL/my_data_fix_sql.go` 三个超大源文件；`schema_tab_struct` 拆出 `_partition`/`_trigger`/`_foreignkey`/`_routine`/`_view`/`_charset`/`_advisory` 七个主题文件，`table_index_dispos` 拆出 `_chunk`/`_normalize`/`_writer`/`_query`/`_abnormal` 五个主题文件，`my_data_fix_sql` 拆出 `_insert`/`_delete`/`_alter`/`_update` 四个主题文件；测试文件同步按主题拆分。全部为纯物理搬移，零 API 变更、零调用方改动，全局 var/锁与入口分派保留在主文件以维持并发去重语义。
+
 ## 2.0.0
 - [性能优化]: Oracle 源端 `struct` 模式新增元数据批量预加载：列定义（`dba_tab_columns` + `dba_col_comments`）、索引（`all_tab_cols`/`all_ind_columns`/`all_indexes`/`all_constraints` 四表 JOIN）、外键（`all_constraints` + `all_cons_columns` JOIN）及分区表达式均改为按 schema 一次查询，逐表循环直接命中内存缓存；在测例场景下将元数据采集阶段耗时从 ~60s 降至 ~2s，同时避免 `UPPER(OWNER)` 导致索引失效。
 - [性能优化]: `data` 模式元数据采集阶段由串行改为并行，`SchemaTableAllCol`（列信息）与 `TableIndexColumn`（索引信息）两类查询通过 goroutine 同时执行；同时新增 schema 级 BASE TABLE 存在性缓存（`tableExistenceCache`）与分区状态缓存（`partitionedTableCache` / `partitionsCache`），避免 `TableColumnNameCheck` 对每张表重复发起 `COUNT(1)` 与 `DBMS_METADATA.GET_DDL` 探测。测例场景下 `data` 模式端到端耗时降低约一半。
