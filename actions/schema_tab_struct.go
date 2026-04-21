@@ -161,296 +161,6 @@ type partitionMetadata struct {
 	Rows        string
 }
 
-func normalizePartitionCompareText(value string) string {
-	normalized := strings.TrimSpace(value)
-	normalized = strings.ReplaceAll(normalized, "`", "")
-	normalized = strings.ReplaceAll(normalized, "!", "")
-	normalized = strings.Join(strings.Fields(normalized), " ")
-	normalized = partitionDelimiterSpacingPattern.ReplaceAllString(normalized, "$1")
-	return strings.ToUpper(normalized)
-}
-
-func normalizePartitionFullDefinition(value string) string {
-	normalized := strings.TrimSpace(value)
-	for {
-		matches := mysqlVersionedCommentWrapperPattern.FindStringSubmatch(normalized)
-		if len(matches) != 2 {
-			break
-		}
-		// SHOW CREATE TABLE may wrap the same partition clause in a versioned
-		// comment on one side but not the other. The wrapper itself is metadata
-		// noise and should not affect semantic comparison.
-		normalized = strings.TrimSpace(matches[1])
-	}
-	return normalizePartitionCompareText(normalized)
-}
-
-func parsePartitionMetadataEntries(partitions map[string]string, tableKey string) []partitionMetadata {
-	entries := make([]partitionMetadata, 0)
-	prefix := tableKey + "."
-	for key, value := range partitions {
-		if !strings.HasPrefix(key, prefix) {
-			continue
-		}
-		matches := partitionMetadataPattern.FindStringSubmatch(value)
-		if len(matches) != 7 {
-			continue
-		}
-		ordinal, err := strconv.Atoi(strings.TrimSpace(matches[2]))
-		if err != nil {
-			continue
-		}
-		entries = append(entries, partitionMetadata{
-			Name:        strings.TrimSpace(matches[1]),
-			Ordinal:     ordinal,
-			Method:      strings.TrimSpace(matches[3]),
-			Expression:  strings.TrimSpace(matches[4]),
-			Description: strings.TrimSpace(matches[5]),
-			Rows:        strings.TrimSpace(matches[6]),
-		})
-	}
-
-	sort.Slice(entries, func(i, j int) bool {
-		if entries[i].Ordinal == entries[j].Ordinal {
-			return entries[i].Name < entries[j].Name
-		}
-		return entries[i].Ordinal < entries[j].Ordinal
-	})
-	return entries
-}
-
-func partitionRowsReportedEmpty(meta partitionMetadata) bool {
-	rows := strings.TrimSpace(meta.Rows)
-	if rows == "" {
-		return false
-	}
-	value, err := strconv.ParseFloat(rows, 64)
-	if err != nil {
-		return false
-	}
-	return value == 0
-}
-
-func partitionsShareLeadingLayout(sourceParts, destParts []partitionMetadata) bool {
-	sharedCount := len(sourceParts)
-	if len(destParts) < sharedCount {
-		sharedCount = len(destParts)
-	}
-	for idx := 0; idx < sharedCount; idx++ {
-		sourceMeta := sourceParts[idx]
-		destMeta := destParts[idx]
-		if !strings.EqualFold(sourceMeta.Name, destMeta.Name) {
-			return false
-		}
-		if normalizePartitionCompareText(sourceMeta.Method) != normalizePartitionCompareText(destMeta.Method) {
-			return false
-		}
-		if normalizePartitionCompareText(sourceMeta.Expression) != normalizePartitionCompareText(destMeta.Expression) {
-			return false
-		}
-		if normalizePartitionCompareText(sourceMeta.Description) != normalizePartitionCompareText(destMeta.Description) {
-			return false
-		}
-	}
-	return true
-}
-
-func buildPartitionValidationQuery(schemaName, tableName, partitionName string) string {
-	return fmt.Sprintf("SELECT COUNT(*) FROM `%s`.`%s` PARTITION (`%s`);", schemaName, tableName, partitionName)
-}
-
-func buildDropPartitionAdvisoryLines(schemaName, tableName string, partitions []partitionMetadata) []string {
-	if len(partitions) == 0 {
-		return nil
-	}
-	lines := []string{
-		fmt.Sprintf("-- gt-checksum advisory begin: %s.%s partition repair", schemaName, tableName),
-	}
-	for _, partition := range partitions {
-		lines = append(lines, "-- 请在确认该分区不存在任何数据后再执行此操作")
-		lines = append(lines, fmt.Sprintf("-- %s", buildPartitionValidationQuery(schemaName, tableName, partition.Name)))
-		lines = append(lines, fmt.Sprintf("-- ALTER TABLE `%s`.`%s` DROP PARTITION `%s`;", schemaName, tableName, partition.Name))
-	}
-	lines = append(lines, fmt.Sprintf("-- gt-checksum advisory end: %s.%s partition repair", schemaName, tableName))
-	return lines
-}
-
-func formatPartitionDescriptionForAdd(meta partitionMetadata) (string, bool) {
-	description := strings.TrimSpace(meta.Description)
-	if description == "" {
-		return "", false
-	}
-	method := normalizePartitionCompareText(meta.Method)
-
-	switch {
-	case strings.HasPrefix(method, "RANGE"):
-		if strings.EqualFold(description, "MAXVALUE") {
-			if strings.Contains(method, "COLUMNS") {
-				return "(MAXVALUE)", true
-			}
-			return "MAXVALUE", true
-		}
-		if strings.HasPrefix(description, "(") && strings.HasSuffix(description, ")") {
-			return description, true
-		}
-		return fmt.Sprintf("(%s)", description), true
-	case strings.HasPrefix(method, "LIST"):
-		if strings.HasPrefix(description, "(") && strings.HasSuffix(description, ")") {
-			return description, true
-		}
-		return fmt.Sprintf("(%s)", description), true
-	default:
-		return "", false
-	}
-}
-
-func buildAddPartitionClause(meta partitionMetadata) (string, bool) {
-	formattedDescription, ok := formatPartitionDescriptionForAdd(meta)
-	if !ok {
-		return "", false
-	}
-	method := normalizePartitionCompareText(meta.Method)
-	switch {
-	case strings.HasPrefix(method, "RANGE"):
-		return fmt.Sprintf("PARTITION `%s` VALUES LESS THAN %s", meta.Name, formattedDescription), true
-	case strings.HasPrefix(method, "LIST"):
-		return fmt.Sprintf("PARTITION `%s` VALUES IN %s", meta.Name, formattedDescription), true
-	default:
-		return "", false
-	}
-}
-
-func buildAddPartitionSQL(schemaName, tableName string, partitions []partitionMetadata) []string {
-	clauses := make([]string, 0, len(partitions))
-	for _, partition := range partitions {
-		clause, ok := buildAddPartitionClause(partition)
-		if !ok {
-			return nil
-		}
-		clauses = append(clauses, clause)
-	}
-	if len(clauses) == 0 {
-		return nil
-	}
-	return []string{
-		fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD PARTITION (%s);", schemaName, tableName, strings.Join(clauses, ", ")),
-	}
-}
-
-func buildPartitionRepairSQLs(sourceSchema, sourceTable, destSchema, destTable string, sourcePartitions, destPartitions map[string]string) ([]string, []string, bool, string) {
-	sourceTableKey := fmt.Sprintf("%s.%s", sourceSchema, sourceTable)
-	destTableKey := fmt.Sprintf("%s.%s", destSchema, destTable)
-	sourceEntries := parsePartitionMetadataEntries(sourcePartitions, sourceTableKey)
-	destEntries := parsePartitionMetadataEntries(destPartitions, destTableKey)
-
-	if len(sourceEntries) == 0 || len(destEntries) == 0 {
-		return nil, nil, false, "partition metadata is incomplete"
-	}
-	if !partitionsShareLeadingLayout(sourceEntries, destEntries) {
-		return nil, nil, false, "shared partition prefix is not semantically identical"
-	}
-
-	switch {
-	case len(sourceEntries) < len(destEntries):
-		extraDestPartitions := destEntries[len(sourceEntries):]
-		for _, partition := range extraDestPartitions {
-			if !partitionRowsReportedEmpty(partition) {
-				return nil, nil, false, fmt.Sprintf("extra target partition %s is not reported empty", partition.Name)
-			}
-		}
-		return nil, buildDropPartitionAdvisoryLines(destSchema, destTable, extraDestPartitions), true, "extra empty tail partitions detected on target"
-	case len(sourceEntries) > len(destEntries):
-		missingDestPartitions := sourceEntries[len(destEntries):]
-		addSQL := buildAddPartitionSQL(destSchema, destTable, missingDestPartitions)
-		if len(addSQL) == 0 {
-			return nil, nil, false, "tail partitions require an unsupported ADD PARTITION shape"
-		}
-		return addSQL, nil, true, "missing tail partitions detected on target"
-	default:
-		return nil, nil, false, "partition counts are identical but definitions still differ"
-	}
-}
-
-func classifyPartitionRepairDiffState(execRepairSQLs, advisoryRepairSQLs []string, handled bool) string {
-	if !handled {
-		return global.SkipDiffsYes
-	}
-	if len(execRepairSQLs) == 0 && len(advisoryRepairSQLs) > 0 {
-		return global.SkipDiffsWarnOnly
-	}
-	return global.SkipDiffsYes
-}
-
-func (stcls *schemaTable) loadTablePartitionExpressions(db *sql.DB, drive, schemaName, tableName, caseSensitiveObjectName string, logThreadSeq int64) []string {
-	partitions, err := stcls.cachedPartitions(db, drive, schemaName, tableName, logThreadSeq)
-	if err != nil {
-		global.Wlog.Warn(fmt.Sprintf("(%d) Failed to load partition expressions for %s.%s: %v", logThreadSeq, schemaName, tableName, err))
-		return nil
-	}
-	_ = caseSensitiveObjectName
-	tableKey := fmt.Sprintf("%s.%s", schemaName, tableName)
-	entries := parsePartitionMetadataEntries(partitions, tableKey)
-	if len(entries) == 0 {
-		return nil
-	}
-	seen := make(map[string]struct{})
-	expressions := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		expr := normalizePartitionCompareText(entry.Expression)
-		if strings.TrimSpace(expr) == "" {
-			continue
-		}
-		if _, exists := seen[expr]; exists {
-			continue
-		}
-		seen[expr] = struct{}{}
-		expressions = append(expressions, expr)
-	}
-	return expressions
-}
-
-func partitionExpressionsReferenceColumn(expressions []string, columnNames ...string) bool {
-	if len(expressions) == 0 || len(columnNames) == 0 {
-		return false
-	}
-
-	// Pre-compile one regexp per unique column name so the inner expression
-	// loop never triggers repeated MustCompile calls.
-	type columnPattern struct {
-		pattern *regexp.Regexp
-	}
-	patterns := make([]columnPattern, 0, len(columnNames))
-	for _, candidate := range columnNames {
-		normalizedColumn := strings.ToUpper(strings.TrimSpace(strings.ReplaceAll(candidate, "`", "")))
-		if normalizedColumn == "" {
-			continue
-		}
-		patterns = append(patterns, columnPattern{
-			pattern: regexp.MustCompile(fmt.Sprintf(partitionExpressionColumnPatternTemplate, regexp.QuoteMeta(normalizedColumn))),
-		})
-	}
-	if len(patterns) == 0 {
-		return false
-	}
-
-	for _, expression := range expressions {
-		normalizedExpression := strings.ToUpper(strings.TrimSpace(strings.ReplaceAll(expression, "`", "")))
-		for _, cp := range patterns {
-			if cp.pattern.MatchString(normalizedExpression) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func shouldDeferPartitionKeyColumnRepair(expressions []string, decision schemacompat.CompatibilityDecision, columnNames ...string) bool {
-	if !decision.IsMismatch() || decision.State == schemacompat.CompatibilityWarnOnly {
-		return false
-	}
-	return partitionExpressionsReferenceColumn(expressions, columnNames...)
-}
-
 func mergeStructDiffState(current, incoming string) string {
 	switch strings.TrimSpace(incoming) {
 	case global.SkipDiffsYes, global.SkipDiffsDDLYes:
@@ -535,9 +245,9 @@ type schemaTable struct {
 	sourceDB                *sql.DB
 	destDB                  *sql.DB
 	caseSensitiveObjectName string
-	datafix           string
-	datafixSql        string
-	fixFileObjectType string // 文件名中的对象类型前缀，如 "table"/"view"/"trigger"/"routine"
+	datafix                 string
+	datafixSql              string
+	fixFileObjectType       string // 文件名中的对象类型前缀，如 "table"/"view"/"trigger"/"routine"
 	djdbc                   string
 	checkRules              inputArg.RulesS
 	// 添加表映射规则
@@ -582,63 +292,6 @@ type schemaTable struct {
 	partitionedTableCache map[string]map[string]struct{}
 	// partitionedTableCacheLoaded 记录某 drive|schema 是否已完成批量预加载，避免重复建缓存。
 	partitionedTableCacheLoaded map[string]bool
-}
-
-// preloadOraclePartitionedTables 批量拉取 schemas 下 partitioned='YES' 的表集合。
-// 结果写入 partitionedTableCache 供 cachedPartitions 快速判定。
-func (stcls *schemaTable) preloadOraclePartitionedTables(db *sql.DB, drive string, schemas []string) {
-	if db == nil || !isOracleDrive(drive) || len(schemas) == 0 {
-		return
-	}
-	if stcls.partitionedTableCache == nil {
-		stcls.partitionedTableCache = make(map[string]map[string]struct{})
-	}
-	if stcls.partitionedTableCacheLoaded == nil {
-		stcls.partitionedTableCacheLoaded = make(map[string]bool)
-	}
-	upperSchemas := make([]string, 0, len(schemas))
-	seen := make(map[string]struct{}, len(schemas))
-	for _, s := range schemas {
-		if s == "" {
-			continue
-		}
-		k := strings.ToUpper(s)
-		if _, ok := seen[k]; ok {
-			continue
-		}
-		seen[k] = struct{}{}
-		upperSchemas = append(upperSchemas, k)
-		cacheKey := drive + "|" + k
-		if _, ok := stcls.partitionedTableCache[cacheKey]; !ok {
-			stcls.partitionedTableCache[cacheKey] = make(map[string]struct{})
-		}
-		stcls.partitionedTableCacheLoaded[cacheKey] = true
-	}
-	if len(upperSchemas) == 0 {
-		return
-	}
-	quoted := make([]string, 0, len(upperSchemas))
-	for _, s := range upperSchemas {
-		quoted = append(quoted, "'"+escapeSQLLiteral(s)+"'")
-	}
-	query := fmt.Sprintf("SELECT UPPER(owner) AS owner, UPPER(table_name) AS table_name FROM all_tables WHERE partitioned='YES' AND UPPER(owner) IN (%s)", strings.Join(quoted, ","))
-	rows, err := db.Query(query)
-	if err != nil {
-		global.Wlog.Warn(fmt.Sprintf("preloadOraclePartitionedTables failed: %v", err))
-		return
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var owner, tableName string
-		if err := rows.Scan(&owner, &tableName); err != nil {
-			continue
-		}
-		cacheKey := drive + "|" + strings.ToUpper(owner)
-		if _, ok := stcls.partitionedTableCache[cacheKey]; !ok {
-			stcls.partitionedTableCache[cacheKey] = make(map[string]struct{})
-		}
-		stcls.partitionedTableCache[cacheKey][strings.ToUpper(tableName)] = struct{}{}
-	}
 }
 
 // preloadTableExistence 预加载 schemas 内所有 BASE TABLE 名称，写入 stcls.tableExistenceCache。
@@ -697,46 +350,6 @@ func (stcls *schemaTable) preloadTableExistence(db *sql.DB, drive string, schema
 		}
 		stcls.tableExistenceCache[cacheKey][strings.ToUpper(tableName)] = struct{}{}
 	}
-}
-
-// cachedPartitions 统一从缓存读取 Partitions()，未命中则回源并写回缓存。
-// key 使用 drive|schema|table 组合，drive 已隐含 src/dst 方向。
-func (stcls *schemaTable) cachedPartitions(db *sql.DB, drive, schema, table string, logThreadSeq int64) (map[string]string, error) {
-	if stcls == nil || db == nil {
-		tc := dbExec.TableColumnNameStruct{Schema: schema, Table: table, Drive: drive}
-		return tc.Query().Partitions(db, logThreadSeq)
-	}
-	key := drive + "|" + schema + "|" + table
-	if stcls.partitionsCache != nil {
-		if cached, ok := stcls.partitionsCache[key]; ok {
-			return cached, nil
-		}
-	}
-	// Oracle 场景：若批量预加载确认该表未分区，直接返回空 map，跳过两次 Oracle 往返。
-	if isOracleDrive(drive) && stcls.partitionedTableCacheLoaded != nil {
-		cacheKey := drive + "|" + strings.ToUpper(schema)
-		if stcls.partitionedTableCacheLoaded[cacheKey] {
-			partitionedSet := stcls.partitionedTableCache[cacheKey]
-			if _, ok := partitionedSet[strings.ToUpper(table)]; !ok {
-				empty := map[string]string{}
-				if stcls.partitionsCache == nil {
-					stcls.partitionsCache = make(map[string]map[string]string)
-				}
-				stcls.partitionsCache[key] = empty
-				return empty, nil
-			}
-		}
-	}
-	tc := dbExec.TableColumnNameStruct{Schema: schema, Table: table, Drive: drive}
-	parts, err := tc.Query().Partitions(db, logThreadSeq)
-	if err != nil {
-		return parts, err
-	}
-	if stcls.partitionsCache == nil {
-		stcls.partitionsCache = make(map[string]map[string]string)
-	}
-	stcls.partitionsCache[key] = parts
-	return parts, nil
 }
 
 func cloneSQLStatements(sqls []string) []string {
@@ -1006,11 +619,6 @@ func mapMariaDBCollationInRoutineSQL(createSQL string) string {
 		return match
 	})
 	return result
-}
-
-// buildTriggerCharsetSetStatements 生成 trigger fix SQL 需要的 charset session 变量 SET 语句
-func buildTriggerCharsetSetStatements(result triggerCreateResult, isMariaDBToMySQL bool) []string {
-	return buildRoutineCharsetSetStatements(result.CharacterSetClient, result.CollationConnection, result.DatabaseCollation, isMariaDBToMySQL)
 }
 
 func normalizeRoutineCreateSQLForCompareWithCatalog(createSQL string, infos ...global.MySQLVersionInfo) string {
@@ -1390,36 +998,6 @@ func filterIgnorableGeneratedInvisibleColumns(columns []string, columnMap map[st
 		kept = append(kept, col)
 	}
 	return kept, ignored
-}
-
-// Trigger metadata compare currently relies on INFORMATION_SCHEMA fields that
-// are stable for MySQL-family sources and MySQL targets in the first-stage
-// support matrix. When version info is unavailable, fall back to the driver
-// pair so the existing MySQL -> MySQL behavior does not regress.
-func (stcls *schemaTable) shouldCompareTriggerMetadata() bool {
-	src := stcls.sourceVersionInfo()
-	dst := stcls.destVersionInfo()
-
-	if strings.TrimSpace(src.Raw) == "" || strings.TrimSpace(dst.Raw) == "" {
-		return stcls.isMySQLToMySQL()
-	}
-
-	if dst.Flavor == global.DatabaseFlavorMariaDB {
-		return src.Flavor == global.DatabaseFlavorMariaDB
-	}
-
-	if dst.Flavor != global.DatabaseFlavorMySQL {
-		return false
-	}
-
-	switch src.Flavor {
-	case global.DatabaseFlavorMySQL:
-		return dst.Flavor == global.DatabaseFlavorMySQL
-	case global.DatabaseFlavorMariaDB:
-		return dst.Series == "8.0" || dst.Series == "8.4"
-	default:
-		return false
-	}
 }
 
 // Routine metadata compare follows the same first-stage support matrix as
@@ -1828,260 +1406,6 @@ ORDER BY cc.position`
 	return cols, nil
 }
 
-// queryMySQLForeignKeyIndexNames 返回 MySQL 表上所有外键对应 backing index 名称集合（大写）。
-// MySQL 通常将 FK 约束名作为自动创建的 backing index 名，但以下场景会导致"FK 约束名 ≠ 索引名"：
-//  1. 用户在创建 FK 前已显式创建可用索引，MySQL 复用该索引；
-//  2. FK 创建语句显式使用 `FOREIGN KEY index_name (...)` 指定索引名；
-//  3. 升级/迁移过程 FK 与索引被拆分并重命名。
-//
-// 为了精准识别 backing index，我们先查出每个 FK 的列顺序，再在 STATISTICS 中匹配
-// "同表、同列、同 SEQ_IN_INDEX 前缀"的索引，避免把误把其他索引当 backing 剔除。
-func queryMySQLForeignKeyIndexNames(db *sql.DB, schema, table string) (map[string]bool, error) {
-	result := make(map[string]bool)
-
-	// Step1: 按 FK 名 + POSITION 收集列顺序
-	fkColRows, err := db.Query(`
-		SELECT CONSTRAINT_NAME, COLUMN_NAME, ORDINAL_POSITION
-		FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
-		WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND REFERENCED_TABLE_NAME IS NOT NULL
-		ORDER BY CONSTRAINT_NAME, ORDINAL_POSITION`, schema, table)
-	if err != nil {
-		return result, err
-	}
-	fkColumns := make(map[string][]string)
-	for fkColRows.Next() {
-		var constraintName, columnName string
-		var ordinalPos int
-		if scanErr := fkColRows.Scan(&constraintName, &columnName, &ordinalPos); scanErr != nil {
-			fkColRows.Close()
-			global.Wlog.Warnf("queryMySQLForeignKeyIndexNames: scan FK column row failed for %s.%s: %v", schema, table, scanErr)
-			return result, scanErr
-		}
-		fkColumns[strings.ToUpper(constraintName)] = append(fkColumns[strings.ToUpper(constraintName)], columnName)
-	}
-	fkColRows.Close()
-	if err = fkColRows.Err(); err != nil {
-		return result, err
-	}
-
-	if len(fkColumns) == 0 {
-		return result, nil
-	}
-
-	// Step2: 查表上全部索引的列序列
-	idxRows, err := db.Query(`
-		SELECT INDEX_NAME, COLUMN_NAME, SEQ_IN_INDEX
-		FROM INFORMATION_SCHEMA.STATISTICS
-		WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
-		ORDER BY INDEX_NAME, SEQ_IN_INDEX`, schema, table)
-	if err != nil {
-		// 查不到 STATISTICS 时回退为"FK 约束名即 backing index 名"——与旧版本一致
-		global.Wlog.Warnf("queryMySQLForeignKeyIndexNames: STATISTICS lookup failed for %s.%s (%v); falling back to constraint-name heuristic", schema, table, err)
-		for name := range fkColumns {
-			result[name] = true
-		}
-		return result, nil
-	}
-	indexCols := make(map[string][]string)
-	for idxRows.Next() {
-		var indexName, columnName string
-		var seqInIndex int
-		if scanErr := idxRows.Scan(&indexName, &columnName, &seqInIndex); scanErr != nil {
-			idxRows.Close()
-			global.Wlog.Warnf("queryMySQLForeignKeyIndexNames: scan index row failed for %s.%s: %v", schema, table, scanErr)
-			return result, scanErr
-		}
-		indexCols[indexName] = append(indexCols[indexName], columnName)
-	}
-	idxRows.Close()
-	if err = idxRows.Err(); err != nil {
-		return result, err
-	}
-
-	// Step3: 为每个 FK 匹配第一个列序列完全以 FK 列为前缀的索引
-	//   - 若同名索引存在（默认情况），优先匹配同名；
-	//   - 否则按列前缀匹配；
-	//   - 最后兜底：FK 约束名也放入结果，避免遗漏。
-	for fkName, cols := range fkColumns {
-		matched := false
-		if _, ok := indexCols[fkName]; ok {
-			result[fkName] = true
-			matched = true
-		}
-		for idxName, idxColList := range indexCols {
-			if len(idxColList) < len(cols) {
-				continue
-			}
-			isPrefix := true
-			for i, c := range cols {
-				if !strings.EqualFold(idxColList[i], c) {
-					isPrefix = false
-					break
-				}
-			}
-			if isPrefix {
-				result[strings.ToUpper(idxName)] = true
-				matched = true
-			}
-		}
-		if !matched {
-			// 两种场景都没匹配到时保留 FK 约束名以兼容旧逻辑
-			result[fkName] = true
-		}
-	}
-	return result, nil
-}
-
-func queryMySQLCreateTableStatement(db *sql.DB, schema, table string) (string, error) {
-	query := fmt.Sprintf("SHOW CREATE TABLE `%s`.`%s`", escapeMySQLIdentifier(schema), escapeMySQLIdentifier(table))
-	var (
-		objectName string
-		createStmt string
-	)
-	if err := db.QueryRow(query).Scan(&objectName, &createStmt); err != nil {
-		return "", err
-	}
-	return createStmt, nil
-}
-
-func extractExplicitMySQLTableAutoIncrementValue(createStmt string) sql.NullInt64 {
-	matches := mysqlTableAutoIncrementOptionPattern.FindStringSubmatch(createStmt)
-	if len(matches) < 2 {
-		return sql.NullInt64{}
-	}
-	n, err := strconv.ParseInt(matches[1], 10, 64)
-	if err != nil {
-		return sql.NullInt64{}
-	}
-	return sql.NullInt64{Int64: n, Valid: true}
-}
-
-type mysqlUniqueIndexMetadata struct {
-	Name      string
-	Columns   []string
-	HasPrefix bool
-	IsPrimary bool
-	IsUnique  bool
-}
-
-func loadMySQLUniqueIndexMetadata(db *sql.DB, schema, table string) ([]mysqlUniqueIndexMetadata, error) {
-	rows, err := db.Query(`
-SELECT INDEX_NAME, NON_UNIQUE, SEQ_IN_INDEX, COLUMN_NAME, SUB_PART
-FROM INFORMATION_SCHEMA.STATISTICS
-WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
-ORDER BY INDEX_NAME, SEQ_IN_INDEX
-`, schema, table)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	type rowItem struct {
-		name      string
-		nonUnique int
-		seq       int
-		column    string
-		subPart   sql.NullInt64
-	}
-
-	grouped := make(map[string][]rowItem)
-	order := make([]string, 0)
-	for rows.Next() {
-		var item rowItem
-		if err := rows.Scan(&item.name, &item.nonUnique, &item.seq, &item.column, &item.subPart); err != nil {
-			return nil, err
-		}
-		if _, ok := grouped[item.name]; !ok {
-			order = append(order, item.name)
-		}
-		grouped[item.name] = append(grouped[item.name], item)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	result := make([]mysqlUniqueIndexMetadata, 0)
-	for _, name := range order {
-		items := grouped[name]
-		if len(items) == 0 {
-			continue
-		}
-		if items[0].nonUnique != 0 && !strings.EqualFold(name, "PRIMARY") {
-			continue
-		}
-		sort.Slice(items, func(i, j int) bool { return items[i].seq < items[j].seq })
-		meta := mysqlUniqueIndexMetadata{
-			Name:      name,
-			IsPrimary: strings.EqualFold(name, "PRIMARY"),
-			IsUnique:  true,
-		}
-		for _, item := range items {
-			meta.Columns = append(meta.Columns, item.column)
-			if item.subPart.Valid {
-				meta.HasPrefix = true
-			}
-		}
-		result = append(result, meta)
-	}
-	return result, nil
-}
-
-func foreignKeyMatchesStrictUniqueIndex(fk schemacompat.CanonicalConstraint, indexes []mysqlUniqueIndexMetadata) bool {
-	if len(fk.ReferencedColumns) == 0 {
-		return false
-	}
-	for _, idx := range indexes {
-		if idx.HasPrefix {
-			continue
-		}
-		if len(idx.Columns) != len(fk.ReferencedColumns) {
-			continue
-		}
-		match := true
-		for i := range idx.Columns {
-			if !strings.EqualFold(idx.Columns[i], fk.ReferencedColumns[i]) {
-				match = false
-				break
-			}
-		}
-		if match {
-			return true
-		}
-	}
-	return false
-}
-
-func detectStrictForeignKeyIssues(db *sql.DB, fks []schemacompat.CanonicalConstraint) ([]schemacompat.CanonicalConstraint, error) {
-	cache := make(map[string][]mysqlUniqueIndexMetadata)
-	issues := make([]schemacompat.CanonicalConstraint, 0)
-
-	for _, fk := range fks {
-		if fk.ReferencedSchema == "" || fk.ReferencedTable == "" {
-			continue
-		}
-		cacheKey := strings.ToLower(fmt.Sprintf("%s.%s", fk.ReferencedSchema, fk.ReferencedTable))
-		indexes, ok := cache[cacheKey]
-		if !ok {
-			loaded, err := loadMySQLUniqueIndexMetadata(db, fk.ReferencedSchema, fk.ReferencedTable)
-			if err != nil {
-				return nil, err
-			}
-			indexes = loaded
-			cache[cacheKey] = indexes
-		}
-		if !foreignKeyMatchesStrictUniqueIndex(fk, indexes) {
-			issues = append(issues, fk)
-		}
-	}
-
-	sort.Slice(issues, func(i, j int) bool {
-		left := fmt.Sprintf("%s:%s.%s", issues[i].Name, issues[i].ReferencedSchema, issues[i].ReferencedTable)
-		right := fmt.Sprintf("%s:%s.%s", issues[j].Name, issues[j].ReferencedSchema, issues[j].ReferencedTable)
-		return left < right
-	})
-	return issues, nil
-}
-
 func resolveMySQLTableAutoIncrementFixValue(sourceValue, destValue sql.NullInt64) (int64, bool) {
 	if sourceValue.Valid == destValue.Valid {
 		if !sourceValue.Valid {
@@ -2164,95 +1488,6 @@ type triggerCreateResult struct {
 	CharacterSetClient  string
 	CollationConnection string
 	DatabaseCollation   string
-}
-
-func showCreateTriggerSQL(db *sql.DB, schema, triggerName string) (string, error) {
-	result, err := showCreateTriggerSQLWithCharset(db, schema, triggerName)
-	if err != nil {
-		return "", err
-	}
-	return result.CreateSQL, nil
-}
-
-func showCreateTriggerSQLWithCharset(db *sql.DB, schema, triggerName string) (triggerCreateResult, error) {
-	row := db.QueryRow(
-		`SELECT DEFINER, ACTION_TIMING, EVENT_MANIPULATION, EVENT_OBJECT_TABLE, ACTION_STATEMENT,
-		        CHARACTER_SET_CLIENT, COLLATION_CONNECTION, DATABASE_COLLATION
-		   FROM INFORMATION_SCHEMA.TRIGGERS
-		  WHERE TRIGGER_SCHEMA = ? AND TRIGGER_NAME = ?`,
-		schema,
-		triggerName,
-	)
-
-	var definer, actionTiming, eventManipulation, eventObjectTable, actionStatement string
-	var csClient, colConnection, dbCollation sql.NullString
-	if err := row.Scan(&definer, &actionTiming, &eventManipulation, &eventObjectTable, &actionStatement,
-		&csClient, &colConnection, &dbCollation); err != nil {
-		if err == sql.ErrNoRows {
-			return triggerCreateResult{}, fmt.Errorf("no trigger metadata found for %s.%s", schema, triggerName)
-		}
-		return triggerCreateResult{}, err
-	}
-
-	createSQL := mysql.BuildTriggerCreateSQL(schema, triggerName, definer, actionTiming, eventManipulation, eventObjectTable, actionStatement)
-	return triggerCreateResult{
-		CreateSQL:           createSQL,
-		CharacterSetClient:  strings.TrimSpace(csClient.String),
-		CollationConnection: strings.TrimSpace(colConnection.String),
-		DatabaseCollation:   strings.TrimSpace(dbCollation.String),
-	}, nil
-}
-
-func loadMySQLTriggerMetadata(db *sql.DB, schema string, logThreadSeq int64) (map[string]string, map[string]string) {
-	comments := make(map[string]string)
-	definers := make(map[string]string)
-
-	rows, err := db.Query(`
-SELECT TRIGGER_NAME, DEFINER, ACTION_TIMING, EVENT_MANIPULATION, EVENT_OBJECT_TABLE, ACTION_STATEMENT
-FROM INFORMATION_SCHEMA.TRIGGERS
-WHERE TRIGGER_SCHEMA = ?
-`, schema)
-	if err != nil {
-		global.Wlog.Warn(fmt.Sprintf("(%d) [loadMySQLTriggerMetadata] failed to query trigger metadata for %s: %v", logThreadSeq, schema, err))
-		return comments, definers
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var triggerName string
-		var definer sql.NullString
-		var actionTiming string
-		var eventManipulation string
-		var eventObjectTable string
-		var actionStatement string
-
-		if err := rows.Scan(&triggerName, &definer, &actionTiming, &eventManipulation, &eventObjectTable, &actionStatement); err != nil {
-			global.Wlog.Warn(fmt.Sprintf("(%d) [loadMySQLTriggerMetadata] failed to scan trigger metadata for %s: %v", logThreadSeq, schema, err))
-			continue
-		}
-
-		key := strings.ToUpper(fmt.Sprintf("\"%s\".\"%s\"", schema, triggerName))
-		definers[key] = strings.TrimSpace(definer.String)
-
-		// Build the trigger definition from INFORMATION_SCHEMA once so comment
-		// extraction does not trigger an extra SHOW CREATE round-trip per row.
-		createSQL := mysql.BuildTriggerCreateSQL(
-			schema,
-			triggerName,
-			definer.String,
-			actionTiming,
-			eventManipulation,
-			eventObjectTable,
-			actionStatement,
-		)
-		comments[key] = extractMySQLObjectCommentFromCreate(createSQL)
-	}
-
-	if err := rows.Err(); err != nil {
-		global.Wlog.Warn(fmt.Sprintf("(%d) [loadMySQLTriggerMetadata] row iteration failed for %s: %v", logThreadSeq, schema, err))
-	}
-
-	return comments, definers
 }
 
 func buildMySQLRoutineCommentFixSQL(destSchema, name, routineType, comment string) string {
@@ -6095,382 +5330,6 @@ func (stcls *schemaTable) parseTableMappings(Ftable string) {
 }
 
 /*
-校验触发器
-*/
-func (stcls *schemaTable) Trigger(dtabS []string, logThreadSeq, logThreadSeq2 int64) {
-	var (
-		vlog       string
-		tmpM       = make(map[string]int)
-		schemaMap  = make(map[string]int)
-		triggerMap = make(map[string]string) // 存储具体的触发器名称
-		c, d       []string
-		pods       = Pod{
-			Datafix:     stcls.datafix,
-			CheckObject: "trigger",
-		}
-		sourceTrigger, destTrigger map[string]string
-		err                        error
-	)
-
-	vlog = fmt.Sprintf("(%d) Start init check source and target DB Trigger. to check it...", logThreadSeq)
-	global.Wlog.Info(vlog)
-
-	// 从dtabS中提取schema信息和触发器名称
-	for _, i := range dtabS {
-		// 处理映射格式 schema.trigger:schema.trigger
-		if strings.Contains(i, ":") {
-			parts := strings.Split(i, ":")
-			if len(parts) == 2 {
-				sourceParts := strings.Split(parts[0], ".")
-				if len(sourceParts) >= 1 {
-					schema := sourceParts[0]
-
-					// schema的名字要区分大小写
-					if stcls.caseSensitiveObjectName == "yes" {
-						// 当区分大小写时，保持原始大小写
-					} else {
-						// 当不区分大小写时，也保持原始大小写
-					}
-					schemaMap[schema] = 1
-
-					// 如果指定了具体的触发器名称
-					if len(sourceParts) >= 2 && sourceParts[1] != "*" {
-						// 保持trigger名称的原始大小写
-						triggerName := sourceParts[1]
-						triggerMap[schema+"."+triggerName] = triggerName
-					}
-				}
-			}
-		} else {
-			// 处理普通格式 schema.trigger 或 schema.*
-			parts := strings.Split(i, ".")
-			if len(parts) >= 1 {
-				schema := parts[0]
-
-				if stcls.caseSensitiveObjectName == "yes" {
-					// 当区分大小写时，保持原始大小写
-				} else {
-					// 当不区分大小写时，也保持原始大小写
-				}
-				schemaMap[schema] = 1
-
-				// 如果指定了具体的触发器名称
-				if len(parts) >= 2 && parts[1] != "*" {
-					triggerName := parts[1]
-					triggerMap[schema+"."+triggerName] = triggerName
-				}
-			}
-		}
-	}
-
-	// 添加调试日志，显示提取的schema和触发器信息
-	vlog = fmt.Sprintf("(%d) Extracted schema map: %v, trigger map: %v", logThreadSeq, schemaMap, triggerMap)
-	global.Wlog.Debug(vlog)
-
-	// 如果schemaMap为空，但stcls.schema不为空，则使用stcls.schema
-	if len(schemaMap) == 0 && stcls.schema != "" {
-		schema := stcls.schema
-		if stcls.caseSensitiveObjectName == "yes" {
-			// 当区分大小写时，保持原始大小写
-		} else {
-			// 当不区分大小写时，也保持原始大小写
-		}
-		schemaMap[schema] = 1
-		vlog = fmt.Sprintf("(%d) No schema found in dtabS, using default schema: %s", logThreadSeq, schema)
-		global.Wlog.Debug(vlog)
-	}
-	//校验触发器
-	for schema, _ := range schemaMap {
-		pods.Schema = schema
-		vlog = fmt.Sprintf("(%d) Start processing srcDSN {%s} databases %s Trigger. to dispos it...", logThreadSeq, stcls.sourceDrive, schema)
-		global.Wlog.Debug(vlog)
-		tc := dbExec.TableColumnNameStruct{
-			Schema:                  schema,
-			Drive:                   stcls.sourceDrive,
-			CaseSensitiveObjectName: stcls.caseSensitiveObjectName,
-		}
-
-		// 获取源数据库的触发器
-		if sourceTrigger, err = tc.Query().Trigger(stcls.sourceDB, logThreadSeq2); err != nil {
-			vlog = fmt.Sprintf("(%d) Error querying source triggers: %v", logThreadSeq, err)
-			global.Wlog.Error(vlog)
-			return
-		}
-
-		// 如果有指定具体的触发器，则过滤结果
-		if len(triggerMap) > 0 {
-			filteredSourceTrigger := make(map[string]string)
-			for k, v := range sourceTrigger {
-				// 提取触发器名称时需要更加小心
-				parts := strings.Split(k, ".")
-				var triggerName string
-				if len(parts) > 1 {
-					// 移除可能存在的引号
-					triggerName = strings.ReplaceAll(parts[1], "\"", "")
-				} else {
-					// 如果没有点号，使用整个键
-					triggerName = strings.ReplaceAll(k, "\"", "")
-				}
-
-				// 保持trigger名称的原始大小写，不做转换
-
-				triggerKey := schema + "." + triggerName
-
-				// 添加调试日志
-				vlog = fmt.Sprintf("(%d) Checking trigger: %s, key: %s", logThreadSeq, k, triggerKey)
-				global.Wlog.Debug(vlog)
-
-				// 检查是否在过滤映射中
-				if _, exists := triggerMap[triggerKey]; exists {
-					filteredSourceTrigger[k] = v
-					vlog = fmt.Sprintf("(%d) Keeping trigger: %s", logThreadSeq, k)
-					global.Wlog.Debug(vlog)
-				}
-			}
-			sourceTrigger = filteredSourceTrigger
-		} else {
-			// 如果triggerMap为空（表示使用通配符），则不进行过滤，保留所有触发器
-			vlog = fmt.Sprintf("(%d) No specific triggers specified, keeping all %d source triggers", logThreadSeq, len(sourceTrigger))
-			global.Wlog.Debug(vlog)
-
-			// 当使用通配符时，将所有触发器名称添加到triggerMap中，以便后续比较
-			for k, _ := range sourceTrigger {
-				parts := strings.Split(k, ".")
-				var triggerName string
-				if len(parts) > 1 {
-					triggerName = strings.ReplaceAll(parts[1], "\"", "")
-				} else {
-					triggerName = strings.ReplaceAll(k, "\"", "")
-				}
-
-				// 保持trigger名称的原始大小写，不做转换
-
-				triggerKey := schema + "." + triggerName
-				triggerMap[triggerKey] = triggerName
-				vlog = fmt.Sprintf("(%d) Added trigger to map: %s", logThreadSeq, triggerKey)
-				global.Wlog.Debug(vlog)
-			}
-		}
-
-		vlog = fmt.Sprintf("(%d) srcDSN {%s} databases %s message is {%s}", logThreadSeq, stcls.sourceDrive, schema, sourceTrigger)
-		global.Wlog.Debug(vlog)
-
-		vlog = fmt.Sprintf("(%d) Start processing dstDSN {%s} databases %s Trigger data. to dispos it...", logThreadSeq, stcls.destDrive, schema)
-		global.Wlog.Debug(vlog)
-		tc.Drive = stcls.destDrive
-
-		// 获取目标数据库的触发器
-		if destTrigger, err = tc.Query().Trigger(stcls.destDB, logThreadSeq2); err != nil {
-			vlog = fmt.Sprintf("(%d) Error querying destination triggers: %v", logThreadSeq, err)
-			global.Wlog.Error(vlog)
-			return
-		}
-
-		// 如果有指定具体的触发器，则过滤结果
-		if len(triggerMap) > 0 {
-			filteredDestTrigger := make(map[string]string)
-			for k, v := range destTrigger {
-				// 提取触发器名称时需要更加小心
-				parts := strings.Split(k, ".")
-				var triggerName string
-				if len(parts) > 1 {
-					// 移除可能存在的引号
-					triggerName = strings.ReplaceAll(parts[1], "\"", "")
-				} else {
-					// 如果没有点号，使用整个键
-					triggerName = strings.ReplaceAll(k, "\"", "")
-				}
-
-				// 保持trigger名称的原始大小写，不做转换
-
-				triggerKey := schema + "." + triggerName
-
-				// 添加调试日志
-				vlog = fmt.Sprintf("(%d) Checking dest trigger: %s, key: %s", logThreadSeq, k, triggerKey)
-				global.Wlog.Debug(vlog)
-
-				// 检查是否在过滤映射中
-				if _, exists := triggerMap[triggerKey]; exists {
-					filteredDestTrigger[k] = v
-					vlog = fmt.Sprintf("(%d) Keeping dest trigger: %s", logThreadSeq, k)
-					global.Wlog.Debug(vlog)
-				}
-			}
-			destTrigger = filteredDestTrigger
-		} else {
-			// 如果triggerMap为空（表示使用通配符），则不进行过滤，保留所有触发器
-			vlog = fmt.Sprintf("(%d) No specific triggers specified, keeping all %d destination triggers", logThreadSeq, len(destTrigger))
-			global.Wlog.Debug(vlog)
-
-			// 当使用通配符时，将所有目标端触发器名称也添加到triggerMap中
-			for k, _ := range destTrigger {
-				parts := strings.Split(k, ".")
-				var triggerName string
-				if len(parts) > 1 {
-					triggerName = strings.ReplaceAll(parts[1], "\"", "")
-				} else {
-					triggerName = strings.ReplaceAll(k, "\"", "")
-				}
-
-				// 保持trigger名称的原始大小写，不做转换
-
-				triggerKey := schema + "." + triggerName
-				triggerMap[triggerKey] = triggerName
-				vlog = fmt.Sprintf("(%d) Added dest trigger to map: %s", logThreadSeq, triggerKey)
-				global.Wlog.Debug(vlog)
-			}
-		}
-
-		vlog = fmt.Sprintf("(%d) dstDSN {%s} databases %s message is {%s}", logThreadSeq, stcls.destDrive, schema, destTrigger)
-		global.Wlog.Debug(vlog)
-
-		sourceTriggerComments := make(map[string]string)
-		destTriggerComments := make(map[string]string)
-		sourceTriggerDefiners := make(map[string]string)
-		destTriggerDefiners := make(map[string]string)
-		if stcls.shouldCompareTriggerMetadata() {
-			sourceTriggerComments, sourceTriggerDefiners = loadMySQLTriggerMetadata(stcls.sourceDB, schema, logThreadSeq)
-			destTriggerComments, destTriggerDefiners = loadMySQLTriggerMetadata(stcls.destDB, schema, logThreadSeq)
-		}
-
-		if len(sourceTrigger) == 0 && len(destTrigger) == 0 {
-			vlog = fmt.Sprintf("(%d) The current original target data is empty, and the verification of this databases %s will be skipped", logThreadSeq, schema)
-			global.Wlog.Debug(vlog)
-			continue
-		}
-
-		tmpM = make(map[string]int)
-		vlog = fmt.Sprintf("(%d) Start seeking the union of the source and target databases %s Trigger. to dispos it...", logThreadSeq, schema)
-		global.Wlog.Debug(vlog)
-		for k, _ := range sourceTrigger {
-			tmpM[k]++
-		}
-		for k, _ := range destTrigger {
-			tmpM[k]++
-		}
-		vlog = fmt.Sprintf("(%d) Start to compare whether the Trigger is consistent.", logThreadSeq)
-		global.Wlog.Debug(vlog)
-		for k, _ := range tmpM {
-			pods.TriggerName = strings.ReplaceAll(strings.Split(k, ".")[1], "\"", "")
-			definitionDiff := sourceTrigger[k] != destTrigger[k]
-			collationMappedOnly := false
-			if definitionDiff && stcls.isMariaDBToMySQL() {
-				mappedSource := mapMariaDBCollationInRoutineSQL(sourceTrigger[k])
-				if mappedSource == destTrigger[k] {
-					definitionDiff = false
-					collationMappedOnly = true
-					global.Wlog.Debug(fmt.Sprintf("(%d) Trigger %s definition matches after MariaDB collation mapping", logThreadSeq, k))
-				}
-			}
-			commentDiff := false
-			definerDiff := false
-			if stcls.shouldCompareTriggerMetadata() {
-				sourceComment := normalizeMetadataComment(sourceTriggerComments[k])
-				destComment := normalizeMetadataComment(destTriggerComments[k])
-				if sourceComment != destComment {
-					commentDiff = true
-					vlog = fmt.Sprintf("(%d) Trigger comment mismatch %s: source=%q, dest=%q", logThreadSeq, k, sourceComment, destComment)
-					global.Wlog.Warn(vlog)
-				}
-
-				sourceDefiner := strings.TrimSpace(sourceTriggerDefiners[k])
-				destDefiner := strings.TrimSpace(destTriggerDefiners[k])
-				if sourceDefiner != destDefiner {
-					definerDiff = true
-					vlog = fmt.Sprintf("(%d) Trigger definer mismatch %s: source=%q, dest=%q", logThreadSeq, k, sourceDefiner, destDefiner)
-					global.Wlog.Warn(vlog)
-				}
-			}
-
-			// MariaDB→MySQL：当 body 和其他属性均一致时，检查 charset 会话元数据的 collation 差异
-			metadataCollationDiff := false
-			if !definitionDiff && !commentDiff && !definerDiff && !collationMappedOnly && stcls.isMariaDBToMySQL() {
-				trName := strings.ReplaceAll(strings.Split(k, ".")[1], "\"", "")
-				srcResult, srcErr := showCreateTriggerSQLWithCharset(stcls.sourceDB, schema, trName)
-				dstResult, dstErr := showCreateTriggerSQLWithCharset(stcls.destDB, schema, trName)
-				if srcErr == nil && dstErr == nil {
-					if isCharsetMetadataCollationMapped(srcResult.CharacterSetClient, srcResult.CollationConnection, srcResult.DatabaseCollation,
-						dstResult.CharacterSetClient, dstResult.CollationConnection, dstResult.DatabaseCollation) {
-						// uca1400→0900 映射（仅 MariaDB 11.5+ 触发）
-						collationMappedOnly = true
-						global.Wlog.Debug(fmt.Sprintf("(%d) Trigger %s charset metadata collation-mapped: uca1400→0900 drift (src=%s/%s dst=%s/%s)", logThreadSeq, k, srcResult.CollationConnection, srcResult.DatabaseCollation, dstResult.CollationConnection, dstResult.DatabaseCollation))
-					} else if hasCharsetMetadataCollationDiff(srcResult.CharacterSetClient, srcResult.CollationConnection, srcResult.DatabaseCollation,
-						dstResult.CharacterSetClient, dstResult.CollationConnection, dstResult.DatabaseCollation) {
-						// 非可映射的 collation 差异（如 general_ci ↔ 0900_ai_ci），需生成 fix SQL
-						metadataCollationDiff = true
-						global.Wlog.Warn(fmt.Sprintf("(%d) Trigger %s charset metadata collation mismatch requiring fix SQL (src=%s/%s dst=%s/%s)", logThreadSeq, k, srcResult.CollationConnection, srcResult.DatabaseCollation, dstResult.CollationConnection, dstResult.DatabaseCollation))
-					}
-				}
-			}
-
-			if definitionDiff || commentDiff || definerDiff || metadataCollationDiff {
-				pods.DIFFS = "yes"
-				d = append(d, k)
-
-				// Rebuild full trigger DDL from INFORMATION_SCHEMA instead of relying
-				// on the body-only statement column returned by SHOW CREATE TRIGGER.
-				trName := strings.ReplaceAll(strings.Split(k, ".")[1], "\"", "")
-				trResult, showCreateErr := showCreateTriggerSQLWithCharset(stcls.sourceDB, schema, trName)
-				trSourceDef := trResult.CreateSQL
-				if showCreateErr != nil {
-					global.Wlog.Warn(fmt.Sprintf("(%d) Failed to rebuild source trigger DDL for %s.%s: %v", logThreadSeq, schema, trName, showCreateErr))
-					trSourceDef = sourceTrigger[k]
-				}
-				// 确定目标schema
-				destSchema := schema
-				if mappedSchema, exists := stcls.tableMappings[schema]; exists {
-					destSchema = mappedSchema
-				}
-				// MariaDB→MySQL：映射源端定义中的 MariaDB 特有 collation
-				if stcls.isMariaDBToMySQL() {
-					trSourceDef = mapMariaDBCollationInRoutineSQL(trSourceDef)
-				}
-				tsqls := mysql.GenerateTriggerFixSQL(schema, destSchema, trName, trSourceDef)
-				// 在 DROP/CREATE 语句前插入 charset session 变量设置
-				if showCreateErr == nil && trResult.CharacterSetClient != "" {
-					charsetSetStmts := buildTriggerCharsetSetStatements(trResult, stcls.isMariaDBToMySQL())
-					if len(charsetSetStmts) > 0 {
-						enriched := make([]string, 0, len(charsetSetStmts)+len(tsqls))
-						enriched = append(enriched, charsetSetStmts...)
-						enriched = append(enriched, tsqls...)
-						tsqls = enriched
-					}
-				}
-				// 每个 trigger 写入独立文件（trigger.schema.triggername.sql）
-				out := make([]string, 0, len(tsqls)+2)
-				out = append(out, "DELIMITER $$")
-				for _, stmt := range tsqls {
-					out = append(out, stmt+"\n$$")
-				}
-				out = append(out, "DELIMITER ;")
-				origSchema, origTable, origObjType := stcls.schema, stcls.table, stcls.fixFileObjectType
-				stcls.schema = schema
-				stcls.table = trName
-				stcls.fixFileObjectType = "trigger"
-				if werr := stcls.writeFixSql(out, logThreadSeq); werr != nil {
-					global.Wlog.Error(fmt.Sprintf("(%d) failed to write trigger fix SQL for %s.%s: %v", logThreadSeq, schema, trName, werr))
-				}
-				stcls.schema, stcls.table, stcls.fixFileObjectType = origSchema, origTable, origObjType
-			} else if collationMappedOnly {
-				pods.DIFFS = global.SkipDiffsCollationMapped
-				c = append(c, k)
-				global.Wlog.Debug(fmt.Sprintf("(%d) Trigger %s collation-mapped: only uca1400→0900 collation difference, no fix SQL generated", logThreadSeq, k))
-			} else {
-				pods.DIFFS = "no"
-				c = append(c, k)
-			}
-			vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment databases %s Trigger. normal databases message is {%s} num [%d] abnormal databases message is {%s} num [%d]", logThreadSeq, schema, c, len(c), d, len(d))
-			global.Wlog.Debug(vlog)
-			vlog = fmt.Sprintf("(%d) The source target segment databases %s Trigger data verification is completed", logThreadSeq, schema)
-			global.Wlog.Debug(vlog)
-			measuredDataPods = append(measuredDataPods, pods)
-		}
-	}
-	vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment table Trigger data. normal databases message is {%s} num [%d] abnormal databases message is {%s} num [%d]", logThreadSeq, c, len(c), d, len(d))
-	global.Wlog.Info(vlog)
-}
-
-/*
 校验存储过程
 */
 /*
@@ -7410,339 +6269,6 @@ func (stcls *schemaTable) Func(dtabS []string, logThreadSeq, logThreadSeq2 int64
 	return
 }
 
-// preloadOracleForeignKeys runs a single all_constraints/all_cons_columns JOIN
-// against Oracle to collect every FK definition across the given schemas. This
-// replaces a per-table query loop (21 tables × ~3s on Oracle 11g = ~60s) with
-// one batch query, and the result is served from memory in Foreign().
-//
-// The returned map is keyed by upper-cased schema/table/constraint, with values
-// formatted identically to Oracle/or_scheme_table_column.go:Foreign so that
-// canonicalization downstream sees an identical shape.
-func preloadOracleForeignKeys(db *sql.DB, schemas []string, logThreadSeq int64) map[string]map[string]map[string]string {
-	if db == nil || len(schemas) == 0 {
-		return nil
-	}
-	uniq := make(map[string]struct{}, len(schemas))
-	inList := make([]string, 0, len(schemas))
-	for _, s := range schemas {
-		up := strings.ToUpper(strings.TrimSpace(s))
-		if up == "" {
-			continue
-		}
-		if _, dup := uniq[up]; dup {
-			continue
-		}
-		uniq[up] = struct{}{}
-		inList = append(inList, "'"+strings.ReplaceAll(up, "'", "''")+"'")
-	}
-	if len(inList) == 0 {
-		return nil
-	}
-
-	// Oracle 元数据视图的 OWNER 列默认按 unquoted identifier 存储为大写，
-	// 上面已经用 strings.ToUpper 处理过 schema 名，这里直接等值匹配即可避免
-	// UPPER(fk.OWNER) 包裹索引列导致 all_constraints.OWNER 上的索引失效。
-	q := fmt.Sprintf(`SELECT fk.OWNER, fk.TABLE_NAME, fk.CONSTRAINT_NAME, fkcol.COLUMN_NAME, fkcol.POSITION, fk.R_OWNER, rk.TABLE_NAME AS REF_TABLE, rkcol.COLUMN_NAME AS REF_COLUMN, fk.DELETE_RULE FROM all_constraints fk JOIN all_cons_columns fkcol ON fk.OWNER=fkcol.OWNER AND fk.CONSTRAINT_NAME=fkcol.CONSTRAINT_NAME AND fk.TABLE_NAME=fkcol.TABLE_NAME JOIN all_constraints rk ON fk.R_OWNER=rk.OWNER AND fk.R_CONSTRAINT_NAME=rk.CONSTRAINT_NAME JOIN all_cons_columns rkcol ON rk.OWNER=rkcol.OWNER AND rk.CONSTRAINT_NAME=rkcol.CONSTRAINT_NAME AND rkcol.POSITION=fkcol.POSITION WHERE fk.CONSTRAINT_TYPE='R' AND fk.OWNER IN (%s) ORDER BY fk.OWNER, fk.TABLE_NAME, fk.CONSTRAINT_NAME, fkcol.POSITION`, strings.Join(inList, ","))
-
-	rows, err := db.Query(q)
-	if err != nil {
-		global.Wlog.Warnf("(%d) [Q_Foreign_Batch] Oracle batch FK preload failed, fallback to per-table: %v", logThreadSeq, err)
-		return nil
-	}
-	defer rows.Close()
-
-	type fkKey struct{ schema, table, name string }
-	type fkEntry struct {
-		refOwner, refTable, deleteRule string
-		fkCols, refCols                []string
-	}
-	entries := make(map[fkKey]*fkEntry)
-	var order []fkKey
-
-	for rows.Next() {
-		var owner, table, name, col, refOwner, refTable, refCol, deleteRule sql.NullString
-		var position sql.NullInt64
-		if err := rows.Scan(&owner, &table, &name, &col, &position, &refOwner, &refTable, &refCol, &deleteRule); err != nil {
-			global.Wlog.Warnf("(%d) [Q_Foreign_Batch] scan row failed: %v", logThreadSeq, err)
-			return nil
-		}
-		k := fkKey{strings.ToUpper(owner.String), strings.ToUpper(table.String), strings.ToUpper(name.String)}
-		e, ok := entries[k]
-		if !ok {
-			e = &fkEntry{
-				refOwner:   strings.ToUpper(refOwner.String),
-				refTable:   strings.ToUpper(refTable.String),
-				deleteRule: strings.ToUpper(deleteRule.String),
-			}
-			entries[k] = e
-			order = append(order, k)
-		}
-		e.fkCols = append(e.fkCols, strings.ToUpper(col.String))
-		e.refCols = append(e.refCols, strings.ToUpper(refCol.String))
-	}
-	if err := rows.Err(); err != nil {
-		global.Wlog.Warnf("(%d) [Q_Foreign_Batch] row iteration failed: %v", logThreadSeq, err)
-		return nil
-	}
-
-	out := make(map[string]map[string]map[string]string)
-	// Ensure every requested schema has an entry so downstream callers can
-	// distinguish "preloaded but empty" from "not preloaded" via presence.
-	for s := range uniq {
-		out[s] = make(map[string]map[string]string)
-	}
-	for _, k := range order {
-		e := entries[k]
-		fkParts := make([]string, len(e.fkCols))
-		for i, c := range e.fkCols {
-			fkParts[i] = "!" + c + "!"
-		}
-		refParts := make([]string, len(e.refCols))
-		for i, c := range e.refCols {
-			refParts[i] = "!" + c + "!"
-		}
-		def := fmt.Sprintf("CONSTRAINT !%s! FOREIGN KEY (%s) REFERENCES !%s!.!%s! (%s)",
-			k.name,
-			strings.Join(fkParts, ", "),
-			e.refOwner,
-			e.refTable,
-			strings.Join(refParts, ", "),
-		)
-		if e.deleteRule != "" && e.deleteRule != "NO ACTION" {
-			def += " ON DELETE " + e.deleteRule
-		}
-		if _, ok := out[k.schema]; !ok {
-			out[k.schema] = make(map[string]map[string]string)
-		}
-		if _, ok := out[k.schema][k.table]; !ok {
-			out[k.schema][k.table] = make(map[string]string)
-		}
-		out[k.schema][k.table][k.name] = def
-	}
-	global.Wlog.Debug(fmt.Sprintf("(%d) [Q_Foreign_Batch] Oracle batch FK preload done: schemas=%d, fks=%d", logThreadSeq, len(uniq), len(order)))
-	return out
-}
-
-// preloadOracleTableColumns batches per-table Q_table_columns lookups into one
-// dba_tab_columns/dba_col_comments scan across the given schemas. Callers can
-// then serve tableColumnName from memory instead of executing 21 separate
-// per-table queries (~100ms each on Oracle 11g).
-//
-// The returned nested map uses upper-cased schema/table keys. Each inner slice
-// matches the row shape produced by Oracle/or_scheme_table_column.go:
-// TableColumnName so downstream code sees an identical input.
-func preloadOracleTableColumns(db *sql.DB, schemas []string, logThreadSeq int64) map[string]map[string][]map[string]interface{} {
-	if db == nil || len(schemas) == 0 {
-		return nil
-	}
-	uniq := make(map[string]struct{}, len(schemas))
-	inList := make([]string, 0, len(schemas))
-	for _, s := range schemas {
-		up := strings.ToUpper(strings.TrimSpace(s))
-		if up == "" {
-			continue
-		}
-		if _, dup := uniq[up]; dup {
-			continue
-		}
-		uniq[up] = struct{}{}
-		inList = append(inList, "'"+strings.ReplaceAll(up, "'", "''")+"'")
-	}
-	if len(inList) == 0 {
-		return nil
-	}
-
-	// 使用与 Oracle/or_scheme_table_column.go:TableColumnName 完全一致的列裁剪
-	// 逻辑，加上 OWNER 作为分组键；按 (OWNER,TABLE_NAME,COLUMN_ID) 排序确保
-	// 与原单表查询相同的列顺序。
-	q := fmt.Sprintf(`SELECT tc.OWNER AS "schemaName", tc.TABLE_NAME AS "tableName", tc.COLUMN_NAME AS "columnName", `+
-		`DECODE(tc.DATA_TYPE, `+
-		`'NUMBER', NVL2(DATA_PRECISION, 'NUMBER(' || tc.DATA_PRECISION || ',' || tc.DATA_SCALE || ')', 'NUMBER'), `+
-		`'VARCHAR2', 'VARCHAR2(' || tc.DATA_LENGTH || ')', `+
-		`'CHAR', 'CHAR(' || tc.DATA_LENGTH || ')', `+
-		`'NCHAR', 'NCHAR(' || tc.CHAR_LENGTH || ')', `+
-		`'NVARCHAR2', 'NVARCHAR2(' || tc.CHAR_LENGTH || ')', `+
-		`'RAW', 'RAW(' || tc.DATA_LENGTH || ')', `+
-		`'FLOAT', NVL2(tc.DATA_PRECISION, 'FLOAT(' || tc.DATA_PRECISION || ')', 'FLOAT'), `+
-		`'TIMESTAMP', 'TIMESTAMP(' || NVL(tc.DATA_SCALE, 6) || ')', `+
-		`tc.DATA_TYPE) AS "columnType", `+
-		`tc.NULLABLE AS "isNull", `+
-		`TO_NCHAR(cc.COMMENTS) AS "columnComment", `+
-		`tc.DATA_DEFAULT AS "columnDefault" `+
-		`FROM dba_tab_columns tc `+
-		`JOIN dba_col_comments cc ON tc.OWNER=cc.OWNER AND tc.TABLE_NAME=cc.TABLE_NAME AND tc.COLUMN_NAME=cc.COLUMN_NAME `+
-		`WHERE tc.OWNER IN (%s) `+
-		`ORDER BY tc.OWNER, tc.TABLE_NAME, tc.COLUMN_ID`, strings.Join(inList, ","))
-
-	rows, err := db.Query(q)
-	if err != nil {
-		global.Wlog.Warnf("(%d) [Q_table_columns_Batch] Oracle batch column preload failed, fallback to per-table: %v", logThreadSeq, err)
-		return nil
-	}
-	defer rows.Close()
-
-	out := make(map[string]map[string][]map[string]interface{})
-	for s := range uniq {
-		out[s] = make(map[string][]map[string]interface{})
-	}
-	var total int
-	for rows.Next() {
-		var schemaName, tableName, columnName, columnType, isNull, columnComment, columnDefault sql.NullString
-		if err := rows.Scan(&schemaName, &tableName, &columnName, &columnType, &isNull, &columnComment, &columnDefault); err != nil {
-			global.Wlog.Warnf("(%d) [Q_table_columns_Batch] scan row failed: %v", logThreadSeq, err)
-			return nil
-		}
-		sch := strings.ToUpper(schemaName.String)
-		tbl := strings.ToUpper(tableName.String)
-		row := map[string]interface{}{
-			"columnName":    columnName.String,
-			"columnType":    columnType.String,
-			"isNull":        isNull.String,
-			"columnComment": columnComment.String,
-			"columnDefault": columnDefault.String,
-		}
-		if _, ok := out[sch]; !ok {
-			out[sch] = make(map[string][]map[string]interface{})
-		}
-		out[sch][tbl] = append(out[sch][tbl], row)
-		total++
-	}
-	if err := rows.Err(); err != nil {
-		global.Wlog.Warnf("(%d) [Q_table_columns_Batch] row iteration failed: %v", logThreadSeq, err)
-		return nil
-	}
-	global.Wlog.Debug(fmt.Sprintf("(%d) [Q_table_columns_Batch] Oracle batch column preload done: schemas=%d, rows=%d", logThreadSeq, len(uniq), total))
-	return out
-}
-
-// lookupOracleTableColumns returns the preloaded column rows for the given
-// schema/table, or (nil, false) if the cache does not cover this schema.
-// A schema entry with no table key means "preloaded but table empty"; in that
-// case an empty slice + true is returned so callers skip the per-table query.
-func lookupOracleTableColumns(cache map[string]map[string][]map[string]interface{}, schema, table string) ([]map[string]interface{}, bool) {
-	if cache == nil {
-		return nil, false
-	}
-	tabs, ok := cache[strings.ToUpper(schema)]
-	if !ok {
-		return nil, false
-	}
-	if rows, ok := tabs[strings.ToUpper(table)]; ok {
-		return rows, true
-	}
-	return []map[string]interface{}{}, true
-}
-
-// preloadOracleIndexRows batches the ALL_TAB_COLS/ALL_IND_COLUMNS/ALL_INDEXES/
-// ALL_CONSTRAINTS JOIN across multiple schemas into a single query. This
-// replaces per-table execution (21 tables × ~1s on Oracle 11g = ~21s) with one
-// schema-wide query served from memory.
-//
-// The returned map uses upper-cased schema/table keys. Each row matches the
-// column shape produced by Oracle/or_query_table_data.go:QueryTableIndexColumnInfo
-// (keys: columnName, columnType, columnKey, nonUnique, indexName, IndexSeq,
-// columnSeq), so IndexDisposF sees an identical input.
-func preloadOracleIndexRows(db *sql.DB, schemas []string, logThreadSeq int64) map[string]map[string][]map[string]interface{} {
-	if db == nil || len(schemas) == 0 {
-		return nil
-	}
-	uniq := make(map[string]struct{}, len(schemas))
-	inList := make([]string, 0, len(schemas))
-	for _, s := range schemas {
-		up := strings.ToUpper(strings.TrimSpace(s))
-		if up == "" {
-			continue
-		}
-		if _, dup := uniq[up]; dup {
-			continue
-		}
-		uniq[up] = struct{}{}
-		inList = append(inList, "'"+strings.ReplaceAll(up, "'", "''")+"'")
-	}
-	if len(inList) == 0 {
-		return nil
-	}
-
-	q := fmt.Sprintf(`SELECT c.OWNER AS "schemaName", c.TABLE_NAME AS "tableName", c.COLUMN_NAME AS "columnName", DECODE(c.DATA_TYPE, 'DATE', c.data_type, c.DATA_TYPE || '(' || c.data_LENGTH || ')') AS "columnType", DECODE(co.constraint_type, 'P', '1', '0') AS "columnKey", i.UNIQUENESS AS "nonUnique", ic.INDEX_NAME AS "indexName", ic.COLUMN_POSITION AS "IndexSeq", c.COLUMN_ID AS "columnSeq" FROM all_tab_cols c INNER JOIN all_ind_columns ic ON c.TABLE_NAME=ic.TABLE_NAME AND c.OWNER=ic.INDEX_OWNER AND c.COLUMN_NAME=ic.COLUMN_NAME INNER JOIN all_indexes i ON ic.INDEX_OWNER=i.OWNER AND ic.INDEX_NAME=i.INDEX_NAME AND ic.TABLE_NAME=i.TABLE_NAME LEFT JOIN all_constraints co ON co.owner=c.owner AND co.table_name=c.table_name AND co.index_name=i.index_name WHERE c.OWNER IN (%s) ORDER BY c.OWNER, c.TABLE_NAME, i.INDEX_NAME, ic.COLUMN_POSITION`, strings.Join(inList, ","))
-
-	rows, err := db.Query(q)
-	if err != nil {
-		global.Wlog.Warnf("(%d) [Q_Index_Statistics_Batch] Oracle batch index preload failed, fallback to per-table: %v", logThreadSeq, err)
-		return nil
-	}
-	defer rows.Close()
-
-	out := make(map[string]map[string][]map[string]interface{})
-	for s := range uniq {
-		out[s] = make(map[string][]map[string]interface{})
-	}
-	for rows.Next() {
-		var schemaName, tableName, columnName, columnType, columnKey, nonUnique, indexName sql.NullString
-		var indexSeq, columnSeq sql.NullInt64
-		if err := rows.Scan(&schemaName, &tableName, &columnName, &columnType, &columnKey, &nonUnique, &indexName, &indexSeq, &columnSeq); err != nil {
-			global.Wlog.Warnf("(%d) [Q_Index_Statistics_Batch] scan row failed: %v", logThreadSeq, err)
-			return nil
-		}
-		sch := strings.ToUpper(schemaName.String)
-		tbl := strings.ToUpper(tableName.String)
-		row := map[string]interface{}{
-			"columnName": columnName.String,
-			"columnType": columnType.String,
-			"columnKey":  columnKey.String,
-			"nonUnique":  nonUnique.String,
-			"indexName":  indexName.String,
-			"IndexSeq":   strconv.FormatInt(indexSeq.Int64, 10),
-			"columnSeq":  strconv.FormatInt(columnSeq.Int64, 10),
-		}
-		if _, ok := out[sch]; !ok {
-			out[sch] = make(map[string][]map[string]interface{})
-		}
-		out[sch][tbl] = append(out[sch][tbl], row)
-	}
-	if err := rows.Err(); err != nil {
-		global.Wlog.Warnf("(%d) [Q_Index_Statistics_Batch] row iteration failed: %v", logThreadSeq, err)
-		return nil
-	}
-	global.Wlog.Debug(fmt.Sprintf("(%d) [Q_Index_Statistics_Batch] Oracle batch index preload done: schemas=%d", logThreadSeq, len(uniq)))
-	return out
-}
-
-// lookupOracleIndexRows returns the preloaded index rows for (schema, table).
-// Returns (rows, true) when the schema was preloaded (even if the table has no
-// indexes, in which case rows is an empty slice). (nil, false) means the
-// caller must fall back to a live query.
-func lookupOracleIndexRows(cache map[string]map[string][]map[string]interface{}, schema, table string) ([]map[string]interface{}, bool) {
-	if cache == nil {
-		return nil, false
-	}
-	tabs, ok := cache[strings.ToUpper(schema)]
-	if !ok {
-		return nil, false
-	}
-	if rows, ok := tabs[strings.ToUpper(table)]; ok {
-		return rows, true
-	}
-	return []map[string]interface{}{}, true
-}
-
-// lookupForeignKeyCache returns the preloaded FK definitions for the given
-// schema/table, or nil if not present. Keys are case-insensitive.
-func lookupForeignKeyCache(cache map[string]map[string]map[string]string, schema, table string) (map[string]string, bool) {
-	if cache == nil {
-		return nil, false
-	}
-	tabs, ok := cache[strings.ToUpper(schema)]
-	if !ok {
-		return nil, false
-	}
-	fks, ok := tabs[strings.ToUpper(table)]
-	if !ok {
-		// Schema was preloaded but this table has no FKs — return empty map.
-		return map[string]string{}, true
-	}
-	return fks, true
-}
-
 func (stcls *schemaTable) Foreign(dtabS []string, logThreadSeq, logThreadSeq2 int64, isCalledFromStruct ...bool) {
 	var (
 		vlog                       string
@@ -7926,281 +6452,6 @@ func (stcls *schemaTable) Foreign(dtabS []string, logThreadSeq, logThreadSeq2 in
 	global.Wlog.Info(vlog)
 }
 
-// 校验分区
-func (stcls *schemaTable) Partitions(dtabS []string, logThreadSeq, logThreadSeq2 int64, isCalledFromStruct ...bool) {
-	var (
-		vlog                             string
-		err                              error
-		c, d                             []string
-		sourcePartitions, destPartitions map[string]string
-		pods                             = Pod{
-			Datafix:     "no",
-			CheckObject: "partitions",
-		}
-	)
-
-	// 如果是从 Struct 函数调用的，则将 CheckObject 设置为 "struct"
-	if len(isCalledFromStruct) > 0 && isCalledFromStruct[0] {
-		pods.CheckObject = "struct"
-	}
-	vlog = fmt.Sprintf("(%d) Start init check source and target DB partition table. to check it...", logThreadSeq)
-	global.Wlog.Info(vlog)
-	for _, i := range dtabS {
-		sourceSchema, sourceTable, destSchema, destTable := parseSourceAndDestTablePair(i, stcls.tableMappings)
-		stcls.schema = sourceSchema
-		stcls.table = sourceTable
-		stcls.destTable = destTable
-
-		// Oracle→MySQL: partition syntax differs drastically; only do existence comparison.
-		// First check whether either side actually has partitions. If neither does, treat
-		// as consistent (same as MySQL→MySQL behaviour) and skip without any advisory.
-		if stcls.isOracleToMySQL() {
-			srcParts, srcPartsErr := stcls.cachedPartitions(stcls.sourceDB, stcls.sourceDrive, sourceSchema, sourceTable, logThreadSeq2)
-			dstParts, dstPartsErr := stcls.cachedPartitions(stcls.destDB, stcls.destDrive, destSchema, destTable, logThreadSeq2)
-
-			if srcPartsErr != nil {
-				global.Wlog.Warnf("(%d) Oracle→MySQL: failed to query source partitions for %s.%s: %v", logThreadSeq, sourceSchema, sourceTable, srcPartsErr)
-			}
-			if dstPartsErr != nil {
-				global.Wlog.Warnf("(%d) Oracle→MySQL: failed to query dest partitions for %s.%s: %v", logThreadSeq, destSchema, destTable, dstPartsErr)
-			}
-
-			sourceTableKey := fmt.Sprintf("%s.%s", sourceSchema, sourceTable)
-			cleanTableKey := sourceTableKey
-			if strings.Contains(sourceTableKey, ":") {
-				cleanTableKey = strings.Split(sourceTableKey, ":")[0]
-			}
-
-			// If both sides have no partitions, treat as consistent — no advisory, no warn-only.
-			if len(srcParts) == 0 && len(dstParts) == 0 && srcPartsErr == nil && dstPartsErr == nil {
-				vlog = fmt.Sprintf("(%d) Oracle→MySQL table %s.%s: no partitions on either side, skipping partition check", logThreadSeq, sourceSchema, sourceTable)
-				global.Wlog.Debug(vlog)
-				if len(isCalledFromStruct) > 0 && isCalledFromStruct[0] {
-					if stcls.partitionDiffsMap == nil {
-						stcls.partitionDiffsMap = make(map[string]bool)
-					}
-					stcls.partitionDiffsMap[cleanTableKey] = false
-				}
-				continue
-			}
-
-			// At least one side has partitions OR a partition query failed:
-			// fall back to advisory warn-only and explicitly mark the failure
-			// in the advisory note so users know the comparison is indicative
-			// rather than authoritative.
-			pods.Schema = sourceSchema
-			pods.Table = sourceTable
-			pods.DIFFS = global.SkipDiffsWarnOnly
-			var advisoryNote string
-			if srcPartsErr != nil || dstPartsErr != nil {
-				advisoryNote = fmt.Sprintf("-- [Advisory] Oracle→MySQL partition query FAILED for table %s.%s (srcErr=%v, dstErr=%v); please verify partitions manually", sourceSchema, sourceTable, srcPartsErr, dstPartsErr)
-			} else {
-				advisoryNote = fmt.Sprintf("-- [Advisory] Oracle→MySQL partition comparison for table %s.%s is not supported in this version; please verify partitions manually", sourceSchema, sourceTable)
-			}
-			vlog = fmt.Sprintf("(%d) Skipping detailed partition comparison for Oracle→MySQL table %s.%s (advisory only)", logThreadSeq, sourceSchema, sourceTable)
-			global.Wlog.Info(vlog)
-			if stcls.datafix == "file" {
-				if err = stcls.writeAdvisoryFixSql([]string{advisoryNote}, logThreadSeq); err != nil {
-					global.Wlog.Errorf("(%d) Failed to write partition advisory for Oracle→MySQL table %s.%s: %v", logThreadSeq, sourceSchema, sourceTable, err)
-				}
-			} else {
-				global.Wlog.Warnf("(%d) Oracle→MySQL table %s.%s partition advisory skipped (datafix=%s); please verify manually", logThreadSeq, sourceSchema, sourceTable, stcls.datafix)
-			}
-			if len(isCalledFromStruct) > 0 && isCalledFromStruct[0] {
-				if stcls.partitionDiffsMap == nil {
-					stcls.partitionDiffsMap = make(map[string]bool)
-				}
-				if stcls.structWarnOnlyDiffsMap == nil {
-					stcls.structWarnOnlyDiffsMap = make(map[string]bool)
-				}
-				stcls.partitionDiffsMap[cleanTableKey] = false
-				stcls.structWarnOnlyDiffsMap[cleanTableKey] = true
-			}
-			if len(isCalledFromStruct) == 0 || !isCalledFromStruct[0] {
-				stcls.appendPod(pods)
-			}
-			continue
-		}
-
-		vlog = fmt.Sprintf("(%d) Start processing srcDSN {%s} table %s.%s partitions data. to dispos it...", logThreadSeq, stcls.sourceDrive, sourceSchema, sourceTable)
-		global.Wlog.Debug(vlog)
-		if sourcePartitions, err = stcls.cachedPartitions(stcls.sourceDB, stcls.sourceDrive, sourceSchema, sourceTable, logThreadSeq2); err != nil {
-			global.Wlog.Errorf("(%d) Failed to get source partitions for table %s.%s: %v", logThreadSeq, sourceSchema, sourceTable, err)
-			return
-		}
-
-		vlog = fmt.Sprintf("(%d) srcDSN {%s} table %s.%s partitions count: %d", logThreadSeq, stcls.sourceDrive, sourceSchema, sourceTable, len(sourcePartitions))
-		global.Wlog.Debug(vlog)
-
-		vlog = fmt.Sprintf("(%d) Start processing dstDSN {%s} table %s.%s partitions data. to dispos it...", logThreadSeq, stcls.destDrive, destSchema, destTable)
-		global.Wlog.Debug(vlog)
-		if destPartitions, err = stcls.cachedPartitions(stcls.destDB, stcls.destDrive, destSchema, destTable, logThreadSeq2); err != nil {
-			global.Wlog.Errorf("(%d) Failed to get dest partitions for table %s.%s: %v", logThreadSeq, destSchema, destTable, err)
-			return
-		}
-		vlog = fmt.Sprintf("(%d) Dest DB %s table %s.%s partitions count: %d", logThreadSeq, stcls.destDrive, destSchema, destTable, len(destPartitions))
-		global.Wlog.Debug(vlog)
-
-		pods.Schema = sourceSchema
-		pods.Table = sourceTable
-		if len(sourcePartitions) == 0 && len(destPartitions) == 0 {
-			vlog = fmt.Sprintf("(%d) The current original target data is empty, and the verification of this table %s.%s will be skipped", logThreadSeq, sourceSchema, sourceTable)
-			global.Wlog.Debug(vlog)
-			continue
-		}
-
-		// Mapped-table verification needs source and target keys separately.
-		sourceTableKey := fmt.Sprintf("%s.%s", sourceSchema, sourceTable)
-		destTableKey := fmt.Sprintf("%s.%s", destSchema, destTable)
-
-		// 1. 检查表级别的分区定义是否一致
-		pods.DIFFS = "no"
-
-		// 先比较完整的分区定义（包含分区类型、列和所有分区）
-		sourceFullDef, sourceHasDef := sourcePartitions[sourceTableKey]
-		destFullDef, destHasDef := destPartitions[destTableKey]
-
-		// 记录具体的分区名称用于详细比较
-		sourcePartitionNames := make([]string, 0)
-		destPartitionNames := make([]string, 0)
-
-		// 提取源端和目标端的分区名称
-		for k := range sourcePartitions {
-			if strings.HasPrefix(k, sourceTableKey+".") {
-				// 提取分区名称部分 (schema.table.partition -> partition)
-				parts := strings.Split(k, ".")
-				if len(parts) == 3 {
-					sourcePartitionNames = append(sourcePartitionNames, parts[2])
-				}
-			}
-		}
-
-		for k := range destPartitions {
-			if strings.HasPrefix(k, destTableKey+".") {
-				parts := strings.Split(k, ".")
-				if len(parts) == 3 {
-					destPartitionNames = append(destPartitionNames, parts[2])
-				}
-			}
-		}
-
-		vlog = fmt.Sprintf("(%d) Table %s.%s source partitions: %v, dest partitions: %v", logThreadSeq, sourceSchema, sourceTable, sourcePartitionNames, destPartitionNames)
-		global.Wlog.Debug(vlog)
-
-		sourceFullDefNormalized := normalizePartitionFullDefinition(sourceFullDef)
-		destFullDefNormalized := normalizePartitionFullDefinition(destFullDef)
-
-		// 直接比较完整的分区定义，但先做标识符和空白归一化，避免
-		// `customer_id` 与 customer_id 这类纯文本噪音被误判成结构差异。
-		if sourceFullDefNormalized != destFullDefNormalized {
-			pods.DIFFS = "yes"
-			vlog = fmt.Sprintf("(%d) Table %s.%s partition definitions mismatch", logThreadSeq, sourceSchema, sourceTable)
-			global.Wlog.Warn(vlog)
-			d = append(d, "Partition definitions mismatch")
-
-			// Only handle low-risk tail partition drift automatically.
-			execRepairSQLs, advisoryRepairSQLs, handled, reason := buildPartitionRepairSQLs(
-				sourceSchema,
-				sourceTable,
-				destSchema,
-				destTable,
-				sourcePartitions,
-				destPartitions,
-			)
-			if handled {
-				pods.DIFFS = classifyPartitionRepairDiffState(execRepairSQLs, advisoryRepairSQLs, handled)
-				if len(execRepairSQLs) > 0 {
-					vlog = fmt.Sprintf("(%d) Generated executable partition repair SQLs for table %s.%s: %v", logThreadSeq, sourceSchema, sourceTable, execRepairSQLs)
-					global.Wlog.Warn(vlog)
-					if err = stcls.writeFixSql(execRepairSQLs, logThreadSeq); err != nil {
-						global.Wlog.Errorf("(%d) Failed to write executable partition repair SQLs for table %s.%s: %v", logThreadSeq, sourceSchema, sourceTable, err)
-						return
-					}
-				}
-				if len(advisoryRepairSQLs) > 0 {
-					vlog = fmt.Sprintf("(%d) Generated advisory partition repair SQLs for table %s.%s: %v", logThreadSeq, sourceSchema, sourceTable, advisoryRepairSQLs)
-					global.Wlog.Warn(vlog)
-					if err = stcls.writeFixSql(advisoryRepairSQLs, logThreadSeq); err != nil {
-						global.Wlog.Errorf("(%d) Failed to write advisory partition repair SQLs for table %s.%s: %v", logThreadSeq, sourceSchema, sourceTable, err)
-						return
-					}
-				}
-				vlog = fmt.Sprintf("(%d) Partition mismatch for table %s.%s was classified as a supported repair shape: %s", logThreadSeq, sourceSchema, sourceTable, reason)
-				global.Wlog.Warn(vlog)
-			} else {
-				// Fall back to a generic note when the partition mismatch cannot be repaired safely.
-				cleanTable := sourceTable
-				if strings.Contains(cleanTable, ":") {
-					parts := strings.Split(cleanTable, ":")
-					cleanTable = parts[0]
-				}
-				fixSQLHint := fmt.Sprintf("-- [Note] The partitions for table %s.%s is inconsistent, please check manually", sourceSchema, cleanTable)
-				if err = stcls.writeFixSql([]string{fixSQLHint}, logThreadSeq); err != nil {
-					global.Wlog.Errorf("(%d) Failed to write partition manual-check hint for table %s.%s: %v", logThreadSeq, sourceSchema, sourceTable, err)
-					return
-				}
-				vlog = fmt.Sprintf("(%d) Partition mismatch for table %s.%s remains manual-review only: %s", logThreadSeq, sourceSchema, sourceTable, reason)
-				global.Wlog.Warn(vlog)
-			}
-		} else {
-			// Partition definitions can differ textually across versions or SHOW CREATE
-			// variants, so treat normalized-equal definitions as consistent.
-			vlog = fmt.Sprintf("(%d) Table %s.%s partition definitions are consistent after normalization", logThreadSeq, sourceSchema, sourceTable)
-			global.Wlog.Debug(vlog)
-			c = append(c, "All partitions consistent")
-			continue // 跳过后续的分区比较，因为定义已经完全一致
-			// 这里不再单独比较每个分区，因为已经通过完整分区定义进行了比较
-		}
-
-		// 记录分区定义的比较结果
-		if sourceHasDef && destHasDef {
-			vlog = fmt.Sprintf("(%d) Table %s.%s full partition definitions compared: source='%s', dest='%s'", logThreadSeq, sourceSchema, sourceTable, sourceFullDef, destFullDef)
-			global.Wlog.Debug(vlog)
-		}
-
-		vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment table %s.%s partitions. normal partitions: %v, abnormal partitions: %v", logThreadSeq, sourceSchema, sourceTable, c, d)
-		global.Wlog.Debug(vlog)
-
-		// 如果是从 Struct 函数调用的，则将结果存储在全局变量中
-		if len(isCalledFromStruct) > 0 && isCalledFromStruct[0] {
-			// 使用完整的schema.table作为键
-
-			// Keep partition diff state on the schemaTable instance so repeated
-			// checks do not reuse package-level mutable state.
-			if stcls.partitionDiffsMap == nil {
-				stcls.partitionDiffsMap = make(map[string]bool)
-			}
-			if stcls.structWarnOnlyDiffsMap == nil {
-				stcls.structWarnOnlyDiffsMap = make(map[string]bool)
-			}
-			if stcls.structCollationMappedMap == nil {
-				stcls.structCollationMappedMap = make(map[string]bool)
-			}
-
-			// 确保使用干净的表名格式（不含映射后缀）
-			cleanTableKey := sourceTableKey
-			if strings.Contains(sourceTableKey, ":") {
-				parts := strings.Split(sourceTableKey, ":")
-				cleanTableKey = parts[0]
-			}
-
-			stcls.partitionDiffsMap[cleanTableKey] = pods.DIFFS == "yes"
-			if pods.DIFFS == global.SkipDiffsWarnOnly {
-				stcls.structWarnOnlyDiffsMap[cleanTableKey] = true
-			}
-
-			vlog = fmt.Sprintf("(%d) Storing partition check result for table %s (cleaned to %s): %v",
-				logThreadSeq, sourceTableKey, cleanTableKey, stcls.partitionDiffsMap[cleanTableKey])
-			global.Wlog.Debug(vlog)
-		} else {
-			// 不是从 Struct 函数调用时，添加到 measuredDataPods
-			measuredDataPods = append(measuredDataPods, pods)
-		}
-	}
-	vlog = fmt.Sprintf("(%d) Complete the consistency check of the source target segment table partitions data. normal table count: [%d] abnormal table count: [%d]", logThreadSeq, len(c), len(d))
-	global.Wlog.Info(vlog)
-}
-
 func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int64, isCalledFromStruct ...bool) error {
 	var (
 		vlog  string
@@ -8328,9 +6579,9 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 				DestDevice:              stcls.destDrive,
 				IndexType:               indexType,
 				DatafixType:             stcls.datafix,
-				SourceSchema:            stcls.schema,                  // 添加源端schema
-				CaseSensitiveObjectName: stcls.caseSensitiveObjectName, // 传递是否区分对象名大小写
-				IndexVisibilityMap:      sourceVisibilityMap,           // 传递索引可见性信息
+				SourceSchema:            stcls.schema,                   // 添加源端schema
+				CaseSensitiveObjectName: stcls.caseSensitiveObjectName,  // 传递是否区分对象名大小写
+				IndexVisibilityMap:      sourceVisibilityMap,            // 传递索引可见性信息
 				DestFlavor:              stcls.destVersionInfo().Flavor, // 用于生成兼容目标端语法的 fix SQL
 			}
 
@@ -8411,142 +6662,142 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 			// 无论索引名称集合是否一致，都要对两端均存在的同名索引比较具体内容
 			// （名称集合不同时，同名但内容不同的索引会被上方分支跳过，需在此补充检查）
 			for k, sColumns := range smu {
-					if dColumns, exists := dmu[k]; exists {
-						semanticMismatch := false
-						canonicalKey := constraintNameKey(k)
-						indexSemanticMatch := false
-						constraintSemanticMatch := indexType == "mul"
-						if sourceIdx, ok := sourceCanonicalByName[canonicalKey]; ok {
-							if destIdx, ok := destCanonicalByName[canonicalKey]; ok {
-								indexDecision := schemacompat.DecideIndexCompatibility(sourceIdx, destIdx)
-								if indexDecision.IsMismatch() {
+				if dColumns, exists := dmu[k]; exists {
+					semanticMismatch := false
+					canonicalKey := constraintNameKey(k)
+					indexSemanticMatch := false
+					constraintSemanticMatch := indexType == "mul"
+					if sourceIdx, ok := sourceCanonicalByName[canonicalKey]; ok {
+						if destIdx, ok := destCanonicalByName[canonicalKey]; ok {
+							indexDecision := schemacompat.DecideIndexCompatibility(sourceIdx, destIdx)
+							if indexDecision.IsMismatch() {
+								semanticMismatch = true
+								vlog = fmt.Sprintf("(%d) %s Index %s semantic mismatch: reason=%s", logThreadSeq, event, k, indexDecision.Reason)
+								global.Wlog.Warn(vlog)
+							} else {
+								indexSemanticMatch = true
+							}
+						}
+					}
+					if indexType == "pri" || indexType == "uni" {
+						if sourceConstraint, ok := sourceCanonicalConstraints[canonicalKey]; ok {
+							if destConstraint, ok := destCanonicalConstraints[canonicalKey]; ok {
+								constraintDecision := schemacompat.DecideKeyConstraintCompatibility(sourceConstraint, destConstraint)
+								if constraintDecision.IsMismatch() {
 									semanticMismatch = true
-									vlog = fmt.Sprintf("(%d) %s Index %s semantic mismatch: reason=%s", logThreadSeq, event, k, indexDecision.Reason)
+									vlog = fmt.Sprintf("(%d) %s %s constraint %s semantic mismatch: reason=%s", logThreadSeq, event, strings.ToUpper(indexType), k, constraintDecision.Reason)
 									global.Wlog.Warn(vlog)
 								} else {
-									indexSemanticMatch = true
-								}
-							}
-						}
-						if indexType == "pri" || indexType == "uni" {
-							if sourceConstraint, ok := sourceCanonicalConstraints[canonicalKey]; ok {
-								if destConstraint, ok := destCanonicalConstraints[canonicalKey]; ok {
-									constraintDecision := schemacompat.DecideKeyConstraintCompatibility(sourceConstraint, destConstraint)
-									if constraintDecision.IsMismatch() {
-										semanticMismatch = true
-										vlog = fmt.Sprintf("(%d) %s %s constraint %s semantic mismatch: reason=%s", logThreadSeq, event, strings.ToUpper(indexType), k, constraintDecision.Reason)
-										global.Wlog.Warn(vlog)
-									} else {
-										constraintSemanticMatch = true
-									}
-								}
-							}
-						}
-						if indexSemanticMatch && constraintSemanticMatch && !semanticMismatch {
-							continue
-						}
-
-						sSortedColumns := sortColumns(sColumns)
-						dSortedColumns := sortColumns(dColumns)
-						if !semanticMismatch && indexColumnsOnlyDifferInCase(sSortedColumns, dSortedColumns) {
-							continue
-						}
-
-						// 比较同名索引的列及其顺序（包含序号信息的比较）
-						if semanticMismatch || a.CheckMd5(strings.Join(sColumns, ",")) != a.CheckMd5(strings.Join(dColumns, ",")) {
-							// 检查是否仅仅是列名大小写不同（当caseSensitiveObjectName=yes时）
-							columnsOnlyCaseDifferent := false
-							if stcls.caseSensitiveObjectName == "yes" && len(sColumns) == len(dColumns) {
-								columnsOnlyCaseDifferent = true
-								lowerSourceColumns := make(map[string]bool)
-								for _, col := range sColumns {
-									lowerSourceColumns[strings.ToLower(col)] = true
-								}
-								for _, col := range dColumns {
-									if !lowerSourceColumns[strings.ToLower(col)] {
-										columnsOnlyCaseDifferent = false
-										break
-									}
-								}
-							}
-
-							// 如果只是列名大小写不同且是主键，跳过重建主键
-							if columnsOnlyCaseDifferent && indexType == "pri" && !semanticMismatch {
-								continue
-							}
-
-							// 1. 先生成删除旧索引的SQL
-							// 根据映射规则确定目标端schema
-							destSchema := stcls.schema
-							if mappedSchema, exists := stcls.tableMappings[stcls.schema]; exists {
-								destSchema = mappedSchema
-							}
-
-							// 2. 纯列名（用于自增主键检测等需要原始列名的场景）
-							plainColumns := sSortedColumns
-
-							// 检查是否是主键且该列是自增列
-							isAutoIncrementPrimaryKey := false
-							if indexType == "pri" && len(plainColumns) == 1 {
-								// 构建键名：schema.table.column
-								key := fmt.Sprintf("%s.%s.%s", destSchema, stcls.table, plainColumns[0])
-								// 检查该列是否已经在添加列时设置了主键
-								if mysql.AutoIncrementColumnsWithPrimaryKey != nil && mysql.AutoIncrementColumnsWithPrimaryKey[key] {
-									isAutoIncrementPrimaryKey = true
-									vlog = fmt.Sprintf("(%d) %s Column %s is already set as PRIMARY KEY in ALTER TABLE ADD COLUMN statement, skipping index repair",
-										logThreadSeq, event, plainColumns[0])
-									global.Wlog.Debug(vlog)
-								}
-							}
-
-							// 3. 生成创建索引的SQL
-							// 根据映射规则确定目标端schema
-							destSchema = stcls.schema
-							if mappedSchema, exists := stcls.tableMappings[stcls.schema]; exists {
-								destSchema = mappedSchema
-							}
-
-							// 带引号且保留前缀长度的列 DDL 表达式，例如 `goods_name`(20)
-							quotedColumns := sortColumnsPreservingPrefix(sColumns)
-
-							// 获取索引可见性信息
-							// MariaDB 使用 IGNORED 关键字，MySQL 使用 INVISIBLE。
-							indexHiddenKeyword := "INVISIBLE"
-							if stcls.destVersionInfo().Flavor == global.DatabaseFlavorMariaDB {
-								indexHiddenKeyword = "IGNORED"
-							}
-							visibility := ""
-							if (indexType == "mul" || indexType == "uni") && sourceVisibilityMap != nil {
-								if vis, ok := sourceVisibilityMap[k]; ok && isInvisibleLikeIndexVisibility(vis) {
-									visibility = " " + indexHiddenKeyword
-								}
-							}
-
-							// 只有当不是自增列主键时才生成创建索引的SQL
-							if !isAutoIncrementPrimaryKey {
-								// 1. 先删除目标端已存在的同名索引（先删后建，避免重复索引报错）
-								if indexType == "pri" {
-									cc = append(cc, fmt.Sprintf("ALTER TABLE `%s`.`%s` DROP PRIMARY KEY;",
-										destSchema, stcls.table))
-								} else {
-									cc = append(cc, fmt.Sprintf("ALTER TABLE `%s`.`%s` DROP INDEX `%s`;",
-										destSchema, stcls.table, k))
-								}
-								// 2. 再新建符合源端定义的索引
-								if indexType == "pri" {
-									cc = append(cc, fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD PRIMARY KEY(%s);",
-										destSchema, stcls.table, strings.Join(quotedColumns, ", ")))
-								} else if indexType == "uni" {
-									cc = append(cc, fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD UNIQUE INDEX `%s`(%s)%s;",
-										destSchema, stcls.table, k, strings.Join(quotedColumns, ", "), visibility))
-								} else {
-									cc = append(cc, fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD INDEX `%s`(%s)%s;",
-										destSchema, stcls.table, k, strings.Join(quotedColumns, ", "), visibility))
+									constraintSemanticMatch = true
 								}
 							}
 						}
 					}
+					if indexSemanticMatch && constraintSemanticMatch && !semanticMismatch {
+						continue
+					}
+
+					sSortedColumns := sortColumns(sColumns)
+					dSortedColumns := sortColumns(dColumns)
+					if !semanticMismatch && indexColumnsOnlyDifferInCase(sSortedColumns, dSortedColumns) {
+						continue
+					}
+
+					// 比较同名索引的列及其顺序（包含序号信息的比较）
+					if semanticMismatch || a.CheckMd5(strings.Join(sColumns, ",")) != a.CheckMd5(strings.Join(dColumns, ",")) {
+						// 检查是否仅仅是列名大小写不同（当caseSensitiveObjectName=yes时）
+						columnsOnlyCaseDifferent := false
+						if stcls.caseSensitiveObjectName == "yes" && len(sColumns) == len(dColumns) {
+							columnsOnlyCaseDifferent = true
+							lowerSourceColumns := make(map[string]bool)
+							for _, col := range sColumns {
+								lowerSourceColumns[strings.ToLower(col)] = true
+							}
+							for _, col := range dColumns {
+								if !lowerSourceColumns[strings.ToLower(col)] {
+									columnsOnlyCaseDifferent = false
+									break
+								}
+							}
+						}
+
+						// 如果只是列名大小写不同且是主键，跳过重建主键
+						if columnsOnlyCaseDifferent && indexType == "pri" && !semanticMismatch {
+							continue
+						}
+
+						// 1. 先生成删除旧索引的SQL
+						// 根据映射规则确定目标端schema
+						destSchema := stcls.schema
+						if mappedSchema, exists := stcls.tableMappings[stcls.schema]; exists {
+							destSchema = mappedSchema
+						}
+
+						// 2. 纯列名（用于自增主键检测等需要原始列名的场景）
+						plainColumns := sSortedColumns
+
+						// 检查是否是主键且该列是自增列
+						isAutoIncrementPrimaryKey := false
+						if indexType == "pri" && len(plainColumns) == 1 {
+							// 构建键名：schema.table.column
+							key := fmt.Sprintf("%s.%s.%s", destSchema, stcls.table, plainColumns[0])
+							// 检查该列是否已经在添加列时设置了主键
+							if mysql.AutoIncrementColumnsWithPrimaryKey != nil && mysql.AutoIncrementColumnsWithPrimaryKey[key] {
+								isAutoIncrementPrimaryKey = true
+								vlog = fmt.Sprintf("(%d) %s Column %s is already set as PRIMARY KEY in ALTER TABLE ADD COLUMN statement, skipping index repair",
+									logThreadSeq, event, plainColumns[0])
+								global.Wlog.Debug(vlog)
+							}
+						}
+
+						// 3. 生成创建索引的SQL
+						// 根据映射规则确定目标端schema
+						destSchema = stcls.schema
+						if mappedSchema, exists := stcls.tableMappings[stcls.schema]; exists {
+							destSchema = mappedSchema
+						}
+
+						// 带引号且保留前缀长度的列 DDL 表达式，例如 `goods_name`(20)
+						quotedColumns := sortColumnsPreservingPrefix(sColumns)
+
+						// 获取索引可见性信息
+						// MariaDB 使用 IGNORED 关键字，MySQL 使用 INVISIBLE。
+						indexHiddenKeyword := "INVISIBLE"
+						if stcls.destVersionInfo().Flavor == global.DatabaseFlavorMariaDB {
+							indexHiddenKeyword = "IGNORED"
+						}
+						visibility := ""
+						if (indexType == "mul" || indexType == "uni") && sourceVisibilityMap != nil {
+							if vis, ok := sourceVisibilityMap[k]; ok && isInvisibleLikeIndexVisibility(vis) {
+								visibility = " " + indexHiddenKeyword
+							}
+						}
+
+						// 只有当不是自增列主键时才生成创建索引的SQL
+						if !isAutoIncrementPrimaryKey {
+							// 1. 先删除目标端已存在的同名索引（先删后建，避免重复索引报错）
+							if indexType == "pri" {
+								cc = append(cc, fmt.Sprintf("ALTER TABLE `%s`.`%s` DROP PRIMARY KEY;",
+									destSchema, stcls.table))
+							} else {
+								cc = append(cc, fmt.Sprintf("ALTER TABLE `%s`.`%s` DROP INDEX `%s`;",
+									destSchema, stcls.table, k))
+							}
+							// 2. 再新建符合源端定义的索引
+							if indexType == "pri" {
+								cc = append(cc, fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD PRIMARY KEY(%s);",
+									destSchema, stcls.table, strings.Join(quotedColumns, ", ")))
+							} else if indexType == "uni" {
+								cc = append(cc, fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD UNIQUE INDEX `%s`(%s)%s;",
+									destSchema, stcls.table, k, strings.Join(quotedColumns, ", "), visibility))
+							} else {
+								cc = append(cc, fmt.Sprintf("ALTER TABLE `%s`.`%s` ADD INDEX `%s`(%s)%s;",
+									destSchema, stcls.table, k, strings.Join(quotedColumns, ", "), visibility))
+							}
+						}
+					}
 				}
+			}
 			return cc
 		}
 	)
