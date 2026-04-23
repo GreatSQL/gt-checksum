@@ -425,6 +425,24 @@ type structModeState struct {
 	alterSlice                      []string
 }
 
+// charsetAdvisoryResult 承载 P7 8f 字符集/排序规则 advisory 阶段的输出结果。
+type charsetAdvisoryResult struct {
+	sqlS                            []string
+	constraintAdvisorySQLs          []string
+	columnAdvisorySuggestions       []schemacompat.ConstraintRepairSuggestion
+	columnRiskDifferent             bool
+	executableColumnCollationRepair bool
+	tableCharsetDifferent           bool
+	tableCollationDifferent         bool
+	tableCommentDifferent           bool
+	tableAutoIncrementRiskDifferent bool
+	tableRowFormatDifferent         bool
+	tableCollationRiskDifferent     bool
+	tableCollationMappedDifferent   bool
+	tableCheckRiskDifferent         bool
+	tableUnsupportedRiskDifferent   bool
+}
+
 // loadAndNormalizeColumns 处理 P5：查询源/目标列元数据，按大小写敏感策略归并，
 // 计算 add/delColumn 并为"仅大小写差异"的列对生成 CHANGE SQL（Oracle→MySQL 场景豁免）。
 func (stcls *schemaTable) loadAndNormalizeColumns(
@@ -1089,255 +1107,30 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 		// 8c+8d: 列差异调和（新增列 + 列修改）
 		stcls.reconcileColumnDiffs(sms, cm, sourceSchema, destSchema, logThreadSeq, event)
 
-		// 将 sms 中积累的状态还原为局部变量，供 8e–8h 使用
-		alterSlice := sms.alterSlice
-		columnAdvisorySuggestions := sms.columnAdvisorySuggestions
-		columnCollationRepairCandidates := sms.columnCollationRepairCandidates
-		columnRiskDifferent := sms.columnRiskDifferent
-		droppedAutoIncrementColumn := sms.droppedAutoIncrementColumn
-		sourceColumnDefinitions := sms.sourceColumnDefinitions
-
+		// 8e: 生成列级别的修复SQL
 		fixer := cm.dbf.DataAbnormalFix()
+		sqlS := fixer.FixAlterColumnSqlGenerate(sms.alterSlice, logThreadSeq)
 
-
-		// 先生成列级别的修复SQL
-		sqlS := fixer.FixAlterColumnSqlGenerate(alterSlice, logThreadSeq)
-		constraintAdvisorySQLs := make([]string, 0)
-		tableAdvisorySuggestions := make([]schemacompat.ConstraintRepairSuggestion, 0)
-		executableColumnCollationRepair := false
-		columnCollationRepairHandled := len(columnCollationRepairCandidates) == 0
-
-		tableCharsetDifferent := false
-		tableCollationDifferent := false
-		tableCommentDifferent := false
-		tableAutoIncrementRiskDifferent := false
-		tableRowFormatDifferent := false
-		tableCollationRiskDifferent := false
-		tableCollationMappedDifferent := false
-		tableCheckRiskDifferent := false
-		tableUnsupportedRiskDifferent := false
-
-		if stcls.isMySQLToMySQL() {
-			sourceMeta, errSourceMeta := queryMySQLTableLevelMetadata(stcls.sourceDB, sourceSchema, stcls.table)
-			if errSourceMeta != nil {
-				vlog = fmt.Sprintf("(%d) %s Failed to query source table metadata for %s.%s: %v", logThreadSeq, event, sourceSchema, stcls.table, errSourceMeta)
-				global.Wlog.Error(vlog)
-			} else {
-				destMeta, errDestMeta := queryMySQLTableLevelMetadata(stcls.destDB, destSchema, stcls.destTable)
-				if errDestMeta != nil {
-					vlog = fmt.Sprintf("(%d) %s Failed to query target table metadata for %s.%s: %v", logThreadSeq, event, destSchema, stcls.destTable, errDestMeta)
-					global.Wlog.Error(vlog)
-				} else {
-					sourceMeta.TableComment = normalizeMetadataComment(sourceMeta.TableComment)
-					destMeta.TableComment = normalizeMetadataComment(destMeta.TableComment)
-
-					unsupportedFeatures := schemacompat.DetectMariaDBUnsupportedTableFeatures(sourceMeta.CreateTableSQL, stcls.sourceVersionInfo(), stcls.destVersionInfo())
-					if len(unsupportedFeatures) > 0 {
-						tableUnsupportedRiskDifferent = true
-						vlog = fmt.Sprintf("(%d) %s MariaDB unsupported features detected for %s.%s -> %s.%s: %+v",
-							logThreadSeq, event, sourceSchema, stcls.table, destSchema, stcls.destTable, unsupportedFeatures)
-						global.Wlog.Warn(vlog)
-						constraintAdvisorySQLs = append(
-							constraintAdvisorySQLs,
-							buildConstraintAdvisoryLines(
-								fmt.Sprintf("%s.%s MariaDB unsupported features", destSchema, stcls.destTable),
-								schemacompat.BuildMariaDBUnsupportedFeatureSuggestions(destSchema, stcls.destTable, unsupportedFeatures),
-							)...,
-						)
-					}
-
-					// MariaDB LEFT JOIN information_schema.COLLATIONS 可能返回空的 TableCharset，
-					// 在比较前从 collation 名推断 charset，避免误判为 charset mismatch
-					if strings.TrimSpace(sourceMeta.TableCharset) == "" && strings.TrimSpace(sourceMeta.TableCollation) != "" {
-						inferred := schemacompat.InferCharsetFromCollation(sourceMeta.TableCollation)
-						if inferred != "" {
-							vlog = fmt.Sprintf("(%d) %s Source table charset was empty, inferred as %s from collation %s for %s.%s",
-								logThreadSeq, event, inferred, sourceMeta.TableCollation, sourceSchema, stcls.table)
-							global.Wlog.Warn(vlog)
-							sourceMeta.TableCharset = inferred
-						}
-					}
-
-					charsetDecision := schemacompat.DecideCharsetCompatibility(sourceMeta.TableCharset, destMeta.TableCharset)
-					if charsetDecision.IsMismatch() {
-						tableCharsetDifferent = true
-						vlog = fmt.Sprintf("(%d) %s Table charset mismatch: source=%s, dest=%s, reason=%s", logThreadSeq, event, sourceMeta.TableCharset, destMeta.TableCharset, charsetDecision.Reason)
-						global.Wlog.Warn(vlog)
-					} else if charsetDecision.State == schemacompat.CompatibilityNormalizedEqual {
-						vlog = fmt.Sprintf("(%d) %s Table charset normalized-equal: source=%s, dest=%s, reason=%s", logThreadSeq, event, sourceMeta.TableCharset, destMeta.TableCharset, charsetDecision.Reason)
-						global.Wlog.Debug(vlog)
-					}
-
-					// 检查是否所有列级 collation 差异都属于已知的 MariaDB→MySQL 等价映射
-					allColumnCollationMapped := len(columnCollationRepairCandidates) > 0 && len(alterSlice) == 0
-					if allColumnCollationMapped {
-						for _, c := range columnCollationRepairCandidates {
-							mapped, ok := schemacompat.MapMariaDBCollationToMySQL(c.SourceCollation)
-							if !ok || !strings.EqualFold(mapped, strings.TrimSpace(c.DestCollation)) {
-								allColumnCollationMapped = false
-								break
-							}
-						}
-					}
-
-					if allColumnCollationMapped {
-						// 所有列级 collation 差异都是已知的跨平台等价映射，无需生成修复 SQL
-						tableCollationMappedDifferent = true
-						columnCollationRepairHandled = true
-						vlog = fmt.Sprintf("(%d) %s All %d column collation differences are cross-platform mappings for %s.%s -> %s.%s, no fix SQL needed",
-							logThreadSeq, event, len(columnCollationRepairCandidates), sourceSchema, stcls.table, destSchema, stcls.destTable)
-						global.Wlog.Warn(vlog)
-					} else if repairSQLs, ok := stcls.buildColumnCollationRepairSQL(fixer, sourceMeta, destMeta, sourceColumnDefinitions, columnCollationRepairCandidates, logThreadSeq); ok {
-						executableColumnCollationRepair = true
-						columnCollationRepairHandled = true
-						vlog = fmt.Sprintf("(%d) %s Generated executable column collation repair SQL for %s.%s -> %s.%s: %v",
-							logThreadSeq, event, sourceSchema, stcls.table, destSchema, stcls.destTable, repairSQLs)
-						global.Wlog.Warn(vlog)
-						sqlS = append(sqlS, repairSQLs...)
-					} else if len(columnCollationRepairCandidates) > 0 {
-						columnRiskDifferent = true
-						columnCollationRepairHandled = true
-						columnAdvisorySuggestions = append(columnAdvisorySuggestions, buildColumnCollationAdvisorySuggestions(columnCollationRepairCandidates)...)
-					}
-
-					collationDecision := schemacompat.DecideCollationCompatibility(sourceMeta.TableCollation, destMeta.TableCollation)
-					// MariaDB→MySQL 跨平台场景：非 MariaDB 特有的 collation（如 utf8mb4_general_ci）在 MySQL 中合法存在，
-					// 排序行为不同于目标端，应视为真实差异而非默认 collation 漂移
-					if collationDecision.State == schemacompat.CompatibilityWarnOnly && stcls.isMariaDBToMySQL() {
-						if _, isMappable := schemacompat.MapMariaDBCollationToMySQL(sourceMeta.TableCollation); !isMappable {
-							collationDecision.State = schemacompat.CompatibilityUnsupported
-							collationDecision.Reason = fmt.Sprintf("cross-platform collation mismatch: source=%s is valid in MySQL but differs from target=%s",
-								sourceMeta.TableCollation, destMeta.TableCollation)
-							vlog = fmt.Sprintf("(%d) %s Reclassified table collation drift as hard mismatch for MariaDB→MySQL: source=%s, dest=%s",
-								logThreadSeq, event, sourceMeta.TableCollation, destMeta.TableCollation)
-							global.Wlog.Debug(vlog)
-						}
-					}
-					if collationDecision.State == schemacompat.CompatibilityWarnOnly {
-						// 检查是否为 MariaDB→MySQL 已知的 collation 等价映射（如 uca1400→0900）
-						mappedCollation, isMappable := schemacompat.MapMariaDBCollationToMySQL(sourceMeta.TableCollation)
-						if isMappable && strings.EqualFold(mappedCollation, strings.TrimSpace(destMeta.TableCollation)) {
-							// 已知的跨平台 collation 等价映射，标记为 collation-mapped，不生成任何 fix SQL
-							tableCollationMappedDifferent = true
-							vlog = fmt.Sprintf("(%d) %s Table collation-mapped: source=%s maps to target=%s, no fix SQL needed",
-								logThreadSeq, event, sourceMeta.TableCollation, destMeta.TableCollation)
-							global.Wlog.Warn(vlog)
-						} else if executableColumnCollationRepair || tableCharsetDifferent {
-							// 可执行的列级 collation 修复 SQL 或表级 charset 差异修复已包含 CONVERT TO CHARACTER SET，
-							// 跳过重复的表级 advisory 输出
-							vlog = fmt.Sprintf("(%d) %s Table collation drift already covered by executable column collation repair: source=%s, dest=%s", logThreadSeq, event, sourceMeta.TableCollation, destMeta.TableCollation)
-							global.Wlog.Debug(vlog)
-						} else {
-							tableCollationRiskDifferent = true
-							vlog = fmt.Sprintf("(%d) %s Table collation warning: source=%s, dest=%s, reason=%s", logThreadSeq, event, sourceMeta.TableCollation, destMeta.TableCollation, collationDecision.Reason)
-							global.Wlog.Warn(vlog)
-							tableAdvisorySuggestions = append(tableAdvisorySuggestions, schemacompat.ConstraintRepairSuggestion{
-								Kind:   "TABLE COLLATION",
-								Level:  schemacompat.ConstraintRepairLevelAdvisoryOnly,
-								Reason: collationDecision.Reason,
-								Statements: func() []string {
-									advisoryCollation := sourceMeta.TableCollation
-									if mapped, ok := schemacompat.MapMariaDBCollationToMySQL(advisoryCollation); ok {
-										advisoryCollation = mapped
-									}
-									return fixer.FixTableCharsetSqlGenerate(sourceMeta.TableCharset, advisoryCollation, logThreadSeq)
-								}(),
-							})
-						}
-					} else if collationDecision.IsMismatch() {
-						tableCollationDifferent = true
-						vlog = fmt.Sprintf("(%d) %s Table collation mismatch: source=%s, dest=%s, reason=%s", logThreadSeq, event, sourceMeta.TableCollation, destMeta.TableCollation, collationDecision.Reason)
-						global.Wlog.Warn(vlog)
-					} else if collationDecision.State == schemacompat.CompatibilityNormalizedEqual {
-						vlog = fmt.Sprintf("(%d) %s Table collation normalized-equal: source=%s, dest=%s, reason=%s", logThreadSeq, event, sourceMeta.TableCollation, destMeta.TableCollation, collationDecision.Reason)
-						global.Wlog.Debug(vlog)
-					}
-
-					if tableCharsetDifferent || tableCollationDifferent {
-						repairCollation := sourceMeta.TableCollation
-						if mapped, ok := schemacompat.MapMariaDBCollationToMySQL(repairCollation); ok {
-							repairCollation = mapped
-						}
-						sqlS = append(sqlS, fixer.FixTableCharsetSqlGenerate(sourceMeta.TableCharset, repairCollation, logThreadSeq)...)
-					}
-
-					rowFormatDecision := schemacompat.DecideTableRowFormatCompatibility(
-						schemacompat.CanonicalizeMySQLTableOptions(sourceMeta.RowFormat, sourceMeta.CreateOptions, sourceMeta.TableComment),
-						schemacompat.CanonicalizeMySQLTableOptions(destMeta.RowFormat, destMeta.CreateOptions, destMeta.TableComment),
-					)
-					if rowFormatDecision.IsMismatch() {
-						tableRowFormatDifferent = true
-						vlog = fmt.Sprintf("(%d) %s Table row format mismatch: source=%s, dest=%s, reason=%s",
-							logThreadSeq, event, sourceMeta.RowFormat, destMeta.RowFormat, rowFormatDecision.Reason)
-						global.Wlog.Warn(vlog)
-					} else if rowFormatDecision.State == schemacompat.CompatibilityNormalizedEqual {
-						vlog = fmt.Sprintf("(%d) %s Table row format normalized-equal: source=%s, dest=%s, reason=%s",
-							logThreadSeq, event, sourceMeta.RowFormat, destMeta.RowFormat, rowFormatDecision.Reason)
-						global.Wlog.Debug(vlog)
-					}
-
-					sourceCatalog := schemacompat.BuildSchemaFeatureCatalog(stcls.sourceVersionInfo())
-					destCatalog := schemacompat.BuildSchemaFeatureCatalog(stcls.destVersionInfo())
-					sourceChecks := schemacompat.ExtractCheckConstraintsFromCreateSQL(sourceMeta.CreateTableSQL)
-					sourceChecks = schemacompat.FilterPortableCheckConstraints(sourceChecks, stcls.sourceVersionInfo(), stcls.destVersionInfo(), sourceColumnDefinitions)
-					destChecks := schemacompat.ExtractCheckConstraintsFromCreateSQL(destMeta.CreateTableSQL)
-					checkDecision := schemacompat.DecideCheckConstraintCompatibility(sourceChecks, destChecks, sourceCatalog, destCatalog)
-					if checkDecision.IsMismatch() {
-						tableCheckRiskDifferent = true
-						vlog = fmt.Sprintf("(%d) %s Table CHECK constraint risk detected for %s.%s -> %s.%s: %s",
-							logThreadSeq, event, sourceSchema, stcls.table, destSchema, stcls.destTable, checkDecision.Reason)
-						global.Wlog.Warn(vlog)
-						checkSuggestions := schemacompat.BuildCheckConstraintRepairSuggestions(destSchema, stcls.destTable, sourceChecks, destChecks, checkDecision)
-						constraintAdvisorySQLs = append(
-							constraintAdvisorySQLs,
-							buildConstraintAdvisoryLines(fmt.Sprintf("%s.%s CHECK constraints", destSchema, stcls.destTable), checkSuggestions)...,
-						)
-					}
-
-					if advisorySuggestion, needsFix := buildMySQLTableAutoIncrementAdvisory(destSchema, stcls.destTable, sourceMeta.AutoIncrement, destMeta.AutoIncrement); needsFix && !droppedAutoIncrementColumn {
-						tableAutoIncrementRiskDifferent = true
-						vlog = fmt.Sprintf("(%d) %s Table AUTO_INCREMENT drift recorded as advisory-only: source=%v, dest=%v", logThreadSeq, event, nullInt64ForLog(sourceMeta.AutoIncrement), nullInt64ForLog(destMeta.AutoIncrement))
-						global.Wlog.Warn(vlog)
-						tableAdvisorySuggestions = append(tableAdvisorySuggestions, advisorySuggestion)
-					} else if needsFix && droppedAutoIncrementColumn {
-						vlog = fmt.Sprintf("(%d) %s Skip table AUTO_INCREMENT repair for %s.%s because the target auto-increment column is being dropped",
-							logThreadSeq, event, destSchema, stcls.table)
-						global.Wlog.Debug(vlog)
-					}
-
-					if sourceMeta.TableComment != destMeta.TableComment {
-						tableCommentDifferent = true
-						escapedComment := escapeMySQLCommentLiteral(sourceMeta.TableComment)
-						tableCommentSql := fmt.Sprintf("ALTER TABLE `%s`.`%s` COMMENT = '%s';", destSchema, stcls.destTable, escapedComment)
-						vlog = fmt.Sprintf("(%d) %s Table comment mismatch: source='%s', dest='%s', generating fix SQL", logThreadSeq, event, sourceMeta.TableComment, destMeta.TableComment)
-						global.Wlog.Warn(vlog)
-						sqlS = append(sqlS, tableCommentSql)
-					}
-				}
-			}
-		}
-
-		if len(tableAdvisorySuggestions) > 0 {
-			constraintAdvisorySQLs = append(
-				constraintAdvisorySQLs,
-				buildConstraintAdvisoryLines(fmt.Sprintf("%s.%s TABLE options", destSchema, stcls.destTable), tableAdvisorySuggestions)...,
-			)
-		}
-		if !columnCollationRepairHandled && len(columnCollationRepairCandidates) > 0 {
-			columnRiskDifferent = true
-			columnAdvisorySuggestions = append(columnAdvisorySuggestions, buildColumnCollationAdvisorySuggestions(columnCollationRepairCandidates)...)
-		}
-		if len(columnAdvisorySuggestions) > 0 {
-			constraintAdvisorySQLs = append(
-				constraintAdvisorySQLs,
-				buildConstraintAdvisoryLines(fmt.Sprintf("%s.%s COLUMN attributes", destSchema, stcls.destTable), columnAdvisorySuggestions)...,
-			)
-		}
+		// 8f: MySQL→MySQL 字符集/排序规则/表级属性 advisory 检查
+		result := stcls.buildCharsetAdvisory(sms, cm, fixer, sourceSchema, destSchema, logThreadSeq, event)
+		sqlS = append(sqlS, result.sqlS...)
+		constraintAdvisorySQLs := result.constraintAdvisorySQLs
+		columnRiskDifferent := result.columnRiskDifferent
+		executableColumnCollationRepair := result.executableColumnCollationRepair
+		tableCharsetDifferent := result.tableCharsetDifferent
+		tableCollationDifferent := result.tableCollationDifferent
+		tableCommentDifferent := result.tableCommentDifferent
+		tableAutoIncrementRiskDifferent := result.tableAutoIncrementRiskDifferent
+		tableRowFormatDifferent := result.tableRowFormatDifferent
+		tableCollationRiskDifferent := result.tableCollationRiskDifferent
+		tableCollationMappedDifferent := result.tableCollationMappedDifferent
+		tableCheckRiskDifferent := result.tableCheckRiskDifferent
+		tableUnsupportedRiskDifferent := result.tableUnsupportedRiskDifferent
 
 		hasWarnOnlyTableLevelDiff := columnRiskDifferent || tableAutoIncrementRiskDifferent || tableCollationRiskDifferent || tableCheckRiskDifferent || tableUnsupportedRiskDifferent
 		hasCollationMappedOnly := tableCollationMappedDifferent && !columnRiskDifferent && !tableAutoIncrementRiskDifferent && !tableCollationRiskDifferent && !tableCheckRiskDifferent && !tableUnsupportedRiskDifferent
 		hasHardTableLevelDiff := tableCharsetDifferent || tableCollationDifferent || tableCommentDifferent || tableRowFormatDifferent
-		if len(alterSlice) > 0 || hasHardTableLevelDiff || executableColumnCollationRepair {
+		if len(sms.alterSlice) > 0 || hasHardTableLevelDiff || executableColumnCollationRepair {
 			abnormalTableList = append(abnormalTableList, fmt.Sprintf("%s.%s", destSchema, stcls.table))
 		} else if hasWarnOnlyTableLevelDiff {
 			stcls.structWarnOnlyDiffsMap[fmt.Sprintf("%s.%s", sourceSchema, sourceTableName)] = true
@@ -1947,4 +1740,239 @@ func (stcls *schemaTable) reconcileColumnDiffs(
 				delete(cm.destColumnMap, v1)
 			}
 		}
+}
+
+// buildCharsetAdvisory 处理 P7 8f：MySQL→MySQL 场景下的字符集/排序规则/表级属性 advisory 检查。
+// 返回 charsetAdvisoryResult 包含生成的修复 SQL、advisory SQL 以及各类差异标志。
+func (stcls *schemaTable) buildCharsetAdvisory(
+	sms *structModeState, cm *columnMetaState, fixer dbExec.DataAbnormalFixInterface,
+	sourceSchema, destSchema string,
+	logThreadSeq int64, event string,
+) *charsetAdvisoryResult {
+	var vlog string
+	result := &charsetAdvisoryResult{
+		sqlS:                   make([]string, 0),
+		constraintAdvisorySQLs: make([]string, 0),
+	}
+
+	if !stcls.isMySQLToMySQL() {
+		return result
+	}
+
+	tableAdvisorySuggestions := make([]schemacompat.ConstraintRepairSuggestion, 0)
+	columnCollationRepairHandled := len(sms.columnCollationRepairCandidates) == 0
+
+	sourceMeta, errSourceMeta := queryMySQLTableLevelMetadata(stcls.sourceDB, sourceSchema, stcls.table)
+	if errSourceMeta != nil {
+		vlog = fmt.Sprintf("(%d) %s Failed to query source table metadata for %s.%s: %v", logThreadSeq, event, sourceSchema, stcls.table, errSourceMeta)
+		global.Wlog.Error(vlog)
+		return result
+	}
+
+	destMeta, errDestMeta := queryMySQLTableLevelMetadata(stcls.destDB, destSchema, stcls.destTable)
+	if errDestMeta != nil {
+		vlog = fmt.Sprintf("(%d) %s Failed to query target table metadata for %s.%s: %v", logThreadSeq, event, destSchema, stcls.destTable, errDestMeta)
+		global.Wlog.Error(vlog)
+		return result
+	}
+
+	sourceMeta.TableComment = normalizeMetadataComment(sourceMeta.TableComment)
+	destMeta.TableComment = normalizeMetadataComment(destMeta.TableComment)
+
+	// MariaDB 不支持特性检测
+	unsupportedFeatures := schemacompat.DetectMariaDBUnsupportedTableFeatures(sourceMeta.CreateTableSQL, stcls.sourceVersionInfo(), stcls.destVersionInfo())
+	if len(unsupportedFeatures) > 0 {
+		result.tableUnsupportedRiskDifferent = true
+		vlog = fmt.Sprintf("(%d) %s MariaDB unsupported features detected for %s.%s -> %s.%s: %+v",
+			logThreadSeq, event, sourceSchema, stcls.table, destSchema, stcls.destTable, unsupportedFeatures)
+		global.Wlog.Warn(vlog)
+		result.constraintAdvisorySQLs = append(
+			result.constraintAdvisorySQLs,
+			buildConstraintAdvisoryLines(
+				fmt.Sprintf("%s.%s MariaDB unsupported features", destSchema, stcls.destTable),
+				schemacompat.BuildMariaDBUnsupportedFeatureSuggestions(destSchema, stcls.destTable, unsupportedFeatures),
+			)...,
+		)
+	}
+
+	// MariaDB LEFT JOIN information_schema.COLLATIONS 可能返回空的 TableCharset，
+	// 在比较前从 collation 名推断 charset，避免误判为 charset mismatch
+	if strings.TrimSpace(sourceMeta.TableCharset) == "" && strings.TrimSpace(sourceMeta.TableCollation) != "" {
+		inferred := schemacompat.InferCharsetFromCollation(sourceMeta.TableCollation)
+		if inferred != "" {
+			vlog = fmt.Sprintf("(%d) %s Source table charset was empty, inferred as %s from collation %s for %s.%s",
+				logThreadSeq, event, inferred, sourceMeta.TableCollation, sourceSchema, stcls.table)
+			global.Wlog.Warn(vlog)
+			sourceMeta.TableCharset = inferred
+		}
+	}
+
+	charsetDecision := schemacompat.DecideCharsetCompatibility(sourceMeta.TableCharset, destMeta.TableCharset)
+	if charsetDecision.IsMismatch() {
+		result.tableCharsetDifferent = true
+		vlog = fmt.Sprintf("(%d) %s Table charset mismatch: source=%s, dest=%s, reason=%s", logThreadSeq, event, sourceMeta.TableCharset, destMeta.TableCharset, charsetDecision.Reason)
+		global.Wlog.Warn(vlog)
+	} else if charsetDecision.State == schemacompat.CompatibilityNormalizedEqual {
+		vlog = fmt.Sprintf("(%d) %s Table charset normalized-equal: source=%s, dest=%s, reason=%s", logThreadSeq, event, sourceMeta.TableCharset, destMeta.TableCharset, charsetDecision.Reason)
+		global.Wlog.Debug(vlog)
+	}
+
+	// 检查是否所有列级 collation 差异都属于已知的 MariaDB→MySQL 等价映射
+	allColumnCollationMapped := len(sms.columnCollationRepairCandidates) > 0 && len(sms.alterSlice) == 0
+	if allColumnCollationMapped {
+		for _, c := range sms.columnCollationRepairCandidates {
+			mapped, ok := schemacompat.MapMariaDBCollationToMySQL(c.SourceCollation)
+			if !ok || !strings.EqualFold(mapped, strings.TrimSpace(c.DestCollation)) {
+				allColumnCollationMapped = false
+				break
+			}
+		}
+	}
+
+	if allColumnCollationMapped {
+		// 所有列级 collation 差异都是已知的跨平台等价映射，无需生成修复 SQL
+		result.tableCollationMappedDifferent = true
+		columnCollationRepairHandled = true
+		vlog = fmt.Sprintf("(%d) %s All %d column collation differences are cross-platform mappings for %s.%s -> %s.%s, no fix SQL needed",
+			logThreadSeq, event, len(sms.columnCollationRepairCandidates), sourceSchema, stcls.table, destSchema, stcls.destTable)
+		global.Wlog.Warn(vlog)
+	} else if repairSQLs, ok := stcls.buildColumnCollationRepairSQL(fixer, sourceMeta, destMeta, sms.sourceColumnDefinitions, sms.columnCollationRepairCandidates, logThreadSeq); ok {
+		result.executableColumnCollationRepair = true
+		columnCollationRepairHandled = true
+		vlog = fmt.Sprintf("(%d) %s Generated executable column collation repair SQL for %s.%s -> %s.%s: %v",
+			logThreadSeq, event, sourceSchema, stcls.table, destSchema, stcls.destTable, repairSQLs)
+		global.Wlog.Warn(vlog)
+		result.sqlS = append(result.sqlS, repairSQLs...)
+	} else if len(sms.columnCollationRepairCandidates) > 0 {
+		result.columnRiskDifferent = true
+		columnCollationRepairHandled = true
+		result.columnAdvisorySuggestions = append(result.columnAdvisorySuggestions, buildColumnCollationAdvisorySuggestions(sms.columnCollationRepairCandidates)...)
+	}
+
+	collationDecision := schemacompat.DecideCollationCompatibility(sourceMeta.TableCollation, destMeta.TableCollation)
+	// MariaDB→MySQL 跨平台场景：非 MariaDB 特有的 collation（如 utf8mb4_general_ci）在 MySQL 中合法存在，
+	// 排序行为不同于目标端，应视为真实差异而非默认 collation 漂移
+	if collationDecision.State == schemacompat.CompatibilityWarnOnly && stcls.isMariaDBToMySQL() {
+		if _, isMappable := schemacompat.MapMariaDBCollationToMySQL(sourceMeta.TableCollation); !isMappable {
+			collationDecision.State = schemacompat.CompatibilityUnsupported
+			collationDecision.Reason = fmt.Sprintf("cross-platform collation mismatch: source=%s is valid in MySQL but differs from target=%s",
+				sourceMeta.TableCollation, destMeta.TableCollation)
+			vlog = fmt.Sprintf("(%d) %s Reclassified table collation drift as hard mismatch for MariaDB→MySQL: source=%s, dest=%s",
+				logThreadSeq, event, sourceMeta.TableCollation, destMeta.TableCollation)
+			global.Wlog.Debug(vlog)
+		}
+	}
+	if collationDecision.State == schemacompat.CompatibilityWarnOnly {
+		// 检查是否为 MariaDB→MySQL 已知的 collation 等价映射（如 uca1400→0900）
+		mappedCollation, isMappable := schemacompat.MapMariaDBCollationToMySQL(sourceMeta.TableCollation)
+		if isMappable && strings.EqualFold(mappedCollation, strings.TrimSpace(destMeta.TableCollation)) {
+			// 已知的跨平台 collation 等价映射，标记为 collation-mapped，不生成任何 fix SQL
+			result.tableCollationMappedDifferent = true
+			vlog = fmt.Sprintf("(%d) %s Table collation-mapped: source=%s maps to target=%s, no fix SQL needed",
+				logThreadSeq, event, sourceMeta.TableCollation, destMeta.TableCollation)
+			global.Wlog.Warn(vlog)
+		} else if result.executableColumnCollationRepair || result.tableCharsetDifferent {
+			// 可执行的列级 collation 修复 SQL 或表级 charset 差异修复已包含 CONVERT TO CHARACTER SET，
+			// 跳过重复的表级 advisory 输出
+			vlog = fmt.Sprintf("(%d) %s Table collation drift already covered by executable column collation repair: source=%s, dest=%s", logThreadSeq, event, sourceMeta.TableCollation, destMeta.TableCollation)
+			global.Wlog.Debug(vlog)
+		} else {
+			result.tableCollationRiskDifferent = true
+			vlog = fmt.Sprintf("(%d) %s Table collation warning: source=%s, dest=%s, reason=%s", logThreadSeq, event, sourceMeta.TableCollation, destMeta.TableCollation, collationDecision.Reason)
+			global.Wlog.Warn(vlog)
+			tableAdvisorySuggestions = append(tableAdvisorySuggestions, schemacompat.ConstraintRepairSuggestion{
+				Kind:   "TABLE COLLATION",
+				Level:  schemacompat.ConstraintRepairLevelAdvisoryOnly,
+				Reason: collationDecision.Reason,
+				Statements: func() []string {
+					advisoryCollation := sourceMeta.TableCollation
+					if mapped, ok := schemacompat.MapMariaDBCollationToMySQL(advisoryCollation); ok {
+						advisoryCollation = mapped
+					}
+					return fixer.FixTableCharsetSqlGenerate(sourceMeta.TableCharset, advisoryCollation, logThreadSeq)
+				}(),
+			})
+		}
+	} else if collationDecision.IsMismatch() {
+		result.tableCollationDifferent = true
+		vlog = fmt.Sprintf("(%d) %s Table collation mismatch: source=%s, dest=%s, reason=%s", logThreadSeq, event, sourceMeta.TableCollation, destMeta.TableCollation, collationDecision.Reason)
+		global.Wlog.Warn(vlog)
+	} else if collationDecision.State == schemacompat.CompatibilityNormalizedEqual {
+		vlog = fmt.Sprintf("(%d) %s Table collation normalized-equal: source=%s, dest=%s, reason=%s", logThreadSeq, event, sourceMeta.TableCollation, destMeta.TableCollation, collationDecision.Reason)
+		global.Wlog.Debug(vlog)
+	}
+
+	if result.tableCharsetDifferent || result.tableCollationDifferent {
+		repairCollation := sourceMeta.TableCollation
+		if mapped, ok := schemacompat.MapMariaDBCollationToMySQL(repairCollation); ok {
+			repairCollation = mapped
+		}
+		result.sqlS = append(result.sqlS, fixer.FixTableCharsetSqlGenerate(sourceMeta.TableCharset, repairCollation, logThreadSeq)...)
+	}
+
+	rowFormatDecision := schemacompat.DecideTableRowFormatCompatibility(
+		schemacompat.CanonicalizeMySQLTableOptions(sourceMeta.RowFormat, sourceMeta.CreateOptions, sourceMeta.TableComment),
+		schemacompat.CanonicalizeMySQLTableOptions(destMeta.RowFormat, destMeta.CreateOptions, destMeta.TableComment),
+	)
+	if rowFormatDecision.IsMismatch() {
+		result.tableRowFormatDifferent = true
+		vlog = fmt.Sprintf("(%d) %s Table row format mismatch: source=%s, dest=%s, reason=%s",
+			logThreadSeq, event, sourceMeta.RowFormat, destMeta.RowFormat, rowFormatDecision.Reason)
+		global.Wlog.Warn(vlog)
+	} else if rowFormatDecision.State == schemacompat.CompatibilityNormalizedEqual {
+		vlog = fmt.Sprintf("(%d) %s Table row format normalized-equal: source=%s, dest=%s, reason=%s",
+			logThreadSeq, event, sourceMeta.RowFormat, destMeta.RowFormat, rowFormatDecision.Reason)
+		global.Wlog.Debug(vlog)
+	}
+
+	sourceCatalog := schemacompat.BuildSchemaFeatureCatalog(stcls.sourceVersionInfo())
+	destCatalog := schemacompat.BuildSchemaFeatureCatalog(stcls.destVersionInfo())
+	sourceChecks := schemacompat.ExtractCheckConstraintsFromCreateSQL(sourceMeta.CreateTableSQL)
+	sourceChecks = schemacompat.FilterPortableCheckConstraints(sourceChecks, stcls.sourceVersionInfo(), stcls.destVersionInfo(), sms.sourceColumnDefinitions)
+	destChecks := schemacompat.ExtractCheckConstraintsFromCreateSQL(destMeta.CreateTableSQL)
+	checkDecision := schemacompat.DecideCheckConstraintCompatibility(sourceChecks, destChecks, sourceCatalog, destCatalog)
+	if checkDecision.IsMismatch() {
+		result.tableCheckRiskDifferent = true
+		vlog = fmt.Sprintf("(%d) %s Table CHECK constraint risk detected for %s.%s -> %s.%s: %s",
+			logThreadSeq, event, sourceSchema, stcls.table, destSchema, stcls.destTable, checkDecision.Reason)
+		global.Wlog.Warn(vlog)
+		checkSuggestions := schemacompat.BuildCheckConstraintRepairSuggestions(destSchema, stcls.destTable, sourceChecks, destChecks, checkDecision)
+		result.constraintAdvisorySQLs = append(
+			result.constraintAdvisorySQLs,
+			buildConstraintAdvisoryLines(fmt.Sprintf("%s.%s CHECK constraints", destSchema, stcls.destTable), checkSuggestions)...,
+		)
+	}
+
+	if advisorySuggestion, needsFix := buildMySQLTableAutoIncrementAdvisory(destSchema, stcls.destTable, sourceMeta.AutoIncrement, destMeta.AutoIncrement); needsFix && !sms.droppedAutoIncrementColumn {
+		result.tableAutoIncrementRiskDifferent = true
+		vlog = fmt.Sprintf("(%d) %s Table AUTO_INCREMENT drift recorded as advisory-only: source=%v, dest=%v", logThreadSeq, event, nullInt64ForLog(sourceMeta.AutoIncrement), nullInt64ForLog(destMeta.AutoIncrement))
+		global.Wlog.Warn(vlog)
+		tableAdvisorySuggestions = append(tableAdvisorySuggestions, advisorySuggestion)
+	} else if needsFix && sms.droppedAutoIncrementColumn {
+		vlog = fmt.Sprintf("(%d) %s Skip table AUTO_INCREMENT repair for %s.%s because the target auto-increment column is being dropped",
+			logThreadSeq, event, destSchema, stcls.table)
+		global.Wlog.Debug(vlog)
+	}
+
+	if sourceMeta.TableComment != destMeta.TableComment {
+		result.tableCommentDifferent = true
+		escapedComment := escapeMySQLCommentLiteral(sourceMeta.TableComment)
+		tableCommentSql := fmt.Sprintf("ALTER TABLE `%s`.`%s` COMMENT = '%s';", destSchema, stcls.destTable, escapedComment)
+		vlog = fmt.Sprintf("(%d) %s Table comment mismatch: source='%s', dest='%s', generating fix SQL", logThreadSeq, event, sourceMeta.TableComment, destMeta.TableComment)
+		global.Wlog.Warn(vlog)
+		result.sqlS = append(result.sqlS, tableCommentSql)
+	}
+
+	if len(tableAdvisorySuggestions) > 0 {
+		result.constraintAdvisorySQLs = append(
+			result.constraintAdvisorySQLs,
+			buildConstraintAdvisoryLines(fmt.Sprintf("%s.%s TABLE options", destSchema, stcls.destTable), tableAdvisorySuggestions)...,
+		)
+	}
+	if !columnCollationRepairHandled && len(sms.columnCollationRepairCandidates) > 0 {
+		result.columnRiskDifferent = true
+		result.columnAdvisorySuggestions = append(result.columnAdvisorySuggestions, buildColumnCollationAdvisorySuggestions(sms.columnCollationRepairCandidates)...)
+	}
+
+	return result
 }
