@@ -1114,50 +1114,19 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 		// 8f: MySQL→MySQL 字符集/排序规则/表级属性 advisory 检查
 		result := stcls.buildCharsetAdvisory(sms, cm, fixer, sourceSchema, destSchema, logThreadSeq, event)
 		sqlS = append(sqlS, result.sqlS...)
-		constraintAdvisorySQLs := result.constraintAdvisorySQLs
-		columnRiskDifferent := result.columnRiskDifferent
-		executableColumnCollationRepair := result.executableColumnCollationRepair
-		tableCharsetDifferent := result.tableCharsetDifferent
-		tableCollationDifferent := result.tableCollationDifferent
-		tableCommentDifferent := result.tableCommentDifferent
-		tableAutoIncrementRiskDifferent := result.tableAutoIncrementRiskDifferent
-		tableRowFormatDifferent := result.tableRowFormatDifferent
-		tableCollationRiskDifferent := result.tableCollationRiskDifferent
-		tableCollationMappedDifferent := result.tableCollationMappedDifferent
-		tableCheckRiskDifferent := result.tableCheckRiskDifferent
-		tableUnsupportedRiskDifferent := result.tableUnsupportedRiskDifferent
 
-		hasWarnOnlyTableLevelDiff := columnRiskDifferent || tableAutoIncrementRiskDifferent || tableCollationRiskDifferent || tableCheckRiskDifferent || tableUnsupportedRiskDifferent
-		hasCollationMappedOnly := tableCollationMappedDifferent && !columnRiskDifferent && !tableAutoIncrementRiskDifferent && !tableCollationRiskDifferent && !tableCheckRiskDifferent && !tableUnsupportedRiskDifferent
-		hasHardTableLevelDiff := tableCharsetDifferent || tableCollationDifferent || tableCommentDifferent || tableRowFormatDifferent
-		if len(sms.alterSlice) > 0 || hasHardTableLevelDiff || executableColumnCollationRepair {
-			abnormalTableList = append(abnormalTableList, fmt.Sprintf("%s.%s", destSchema, stcls.table))
-		} else if hasWarnOnlyTableLevelDiff {
-			stcls.structWarnOnlyDiffsMap[fmt.Sprintf("%s.%s", sourceSchema, sourceTableName)] = true
-			newCheckTableList = append(newCheckTableList, fmt.Sprintf("%s.%s", destSchema, stcls.table))
-		} else if hasCollationMappedOnly {
-			stcls.structCollationMappedMap[fmt.Sprintf("%s.%s", sourceSchema, sourceTableName)] = true
-			newCheckTableList = append(newCheckTableList, fmt.Sprintf("%s.%s", destSchema, stcls.table))
-		} else {
-			newCheckTableList = append(newCheckTableList, fmt.Sprintf("%s.%s", destSchema, stcls.table))
+		// 8g: 风险评估与 fix SQL 写入
+		eval := stcls.evaluateStructRiskAndWriteFixSQL(sms, result, sourceSchema, sourceTableName, destSchema, logThreadSeq, event)
+		if eval.abnormalKey != "" {
+			abnormalTableList = append(abnormalTableList, eval.abnormalKey)
+		}
+		if eval.newKey != "" {
+			newCheckTableList = append(newCheckTableList, eval.newKey)
 		}
 
-		vlog = fmt.Sprintf("(%d) %s Structure validation completed for %s.%s -> %s.%s", logThreadSeq, event, stcls.schema, stcls.table, destSchema, stcls.table)
-		global.Wlog.Debug(vlog)
-
-		// 如果sqlS不为空（表示没有应用过列级别修复），则应用它
-		if len(sqlS) > 0 {
-			tableKey := fmt.Sprintf("%s.%s", sourceSchema, sourceTableName)
-			stcls.rememberColumnRepairOperations(tableKey, sqlS)
-			vlog = fmt.Sprintf("(%d) %s Deferred column/table repair statements for %s.%s until index reconciliation: %v", logThreadSeq, event, destSchema, stcls.table, sqlS)
-			global.Wlog.Debug(vlog)
-		}
-		if len(constraintAdvisorySQLs) > 0 {
-			vlog = fmt.Sprintf("(%d) %s Writing advisory-only constraint repair suggestions for %s.%s", logThreadSeq, event, destSchema, stcls.destTable)
-			global.Wlog.Debug(vlog)
-			if err = stcls.writeAdvisoryFixSql(constraintAdvisorySQLs, logThreadSeq); err != nil {
-				return nil, nil, err
-			}
+		// 8h: Pod 记录登记与收尾
+		if err = stcls.finalizeStructPod(sqlS, result.constraintAdvisorySQLs, sourceSchema, sourceTableName, destSchema, logThreadSeq, event); err != nil {
+			return nil, nil, err
 		}
 	}
 	vlog = fmt.Sprintf("(%d) %s Table structure validation completed", logThreadSeq, event)
@@ -1975,4 +1944,81 @@ func (stcls *schemaTable) buildCharsetAdvisory(
 	}
 
 	return result
+}
+
+// structRiskEvaluation 承载 P7 8g 风险评估阶段的输出结果。
+type structRiskEvaluation struct {
+	abnormalKey string
+	newKey      string
+	shouldWriteAdvisory bool
+}
+
+// evaluateStructRiskAndWriteFixSQL 处理 P7 8g：根据 8f 输出的风险标志，
+// 评估表级差异的严重程度，决定将表归入 abnormalTableList（需修复）、
+// newCheckTableList（仅 advisory 或已通过），并登记 structWarnOnlyDiffsMap / structCollationMappedMap。
+func (stcls *schemaTable) evaluateStructRiskAndWriteFixSQL(
+	sms *structModeState,
+	result *charsetAdvisoryResult,
+	sourceSchema, sourceTableName, destSchema string,
+	logThreadSeq int64, event string,
+) structRiskEvaluation {
+	columnRiskDifferent := result.columnRiskDifferent
+	executableColumnCollationRepair := result.executableColumnCollationRepair
+	tableCharsetDifferent := result.tableCharsetDifferent
+	tableCollationDifferent := result.tableCollationDifferent
+	tableCommentDifferent := result.tableCommentDifferent
+	tableAutoIncrementRiskDifferent := result.tableAutoIncrementRiskDifferent
+	tableRowFormatDifferent := result.tableRowFormatDifferent
+	tableCollationRiskDifferent := result.tableCollationRiskDifferent
+	tableCollationMappedDifferent := result.tableCollationMappedDifferent
+	tableCheckRiskDifferent := result.tableCheckRiskDifferent
+	tableUnsupportedRiskDifferent := result.tableUnsupportedRiskDifferent
+
+	hasWarnOnlyTableLevelDiff := columnRiskDifferent || tableAutoIncrementRiskDifferent || tableCollationRiskDifferent || tableCheckRiskDifferent || tableUnsupportedRiskDifferent
+	hasCollationMappedOnly := tableCollationMappedDifferent && !columnRiskDifferent && !tableAutoIncrementRiskDifferent && !tableCollationRiskDifferent && !tableCheckRiskDifferent && !tableUnsupportedRiskDifferent
+	hasHardTableLevelDiff := tableCharsetDifferent || tableCollationDifferent || tableCommentDifferent || tableRowFormatDifferent
+
+	eval := structRiskEvaluation{}
+	if len(sms.alterSlice) > 0 || hasHardTableLevelDiff || executableColumnCollationRepair {
+		eval.abnormalKey = fmt.Sprintf("%s.%s", destSchema, stcls.table)
+	} else if hasWarnOnlyTableLevelDiff {
+		stcls.structWarnOnlyDiffsMap[fmt.Sprintf("%s.%s", sourceSchema, sourceTableName)] = true
+		eval.newKey = fmt.Sprintf("%s.%s", destSchema, stcls.table)
+	} else if hasCollationMappedOnly {
+		stcls.structCollationMappedMap[fmt.Sprintf("%s.%s", sourceSchema, sourceTableName)] = true
+		eval.newKey = fmt.Sprintf("%s.%s", destSchema, stcls.table)
+	} else {
+		eval.newKey = fmt.Sprintf("%s.%s", destSchema, stcls.table)
+	}
+
+	vlog := fmt.Sprintf("(%d) %s Structure validation completed for %s.%s -> %s.%s", logThreadSeq, event, stcls.schema, stcls.table, destSchema, stcls.table)
+	global.Wlog.Debug(vlog)
+
+	eval.shouldWriteAdvisory = len(result.constraintAdvisorySQLs) > 0
+	return eval
+}
+
+// finalizeStructPod 处理 P7 8h：将 8e 生成的 fix SQL 登记到 Pod（延迟至索引调和后执行），
+// 将 8f 生成的 advisory SQL 写入 advisory 文件。
+func (stcls *schemaTable) finalizeStructPod(
+	sqlS []string,
+	constraintAdvisorySQLs []string,
+	sourceSchema, sourceTableName, destSchema string,
+	logThreadSeq int64, event string,
+) error {
+	var vlog string
+	if len(sqlS) > 0 {
+		tableKey := fmt.Sprintf("%s.%s", sourceSchema, sourceTableName)
+		stcls.rememberColumnRepairOperations(tableKey, sqlS)
+		vlog = fmt.Sprintf("(%d) %s Deferred column/table repair statements for %s.%s until index reconciliation: %v", logThreadSeq, event, destSchema, stcls.table, sqlS)
+		global.Wlog.Debug(vlog)
+	}
+	if len(constraintAdvisorySQLs) > 0 {
+		vlog = fmt.Sprintf("(%d) %s Writing advisory-only constraint repair suggestions for %s.%s", logThreadSeq, event, destSchema, stcls.destTable)
+		global.Wlog.Debug(vlog)
+		if err := stcls.writeAdvisoryFixSql(constraintAdvisorySQLs, logThreadSeq); err != nil {
+			return err
+		}
+	}
+	return nil
 }
