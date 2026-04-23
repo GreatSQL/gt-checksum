@@ -70,11 +70,17 @@ REPAIR_DB="${ROOT_DIR}/repairDB"
 ORACLE_FIXTURE="${ROOT_DIR}/testcase/Oracle.sql"
 DST_FIXTURE="${ROOT_DIR}/testcase/MySQL-target.sql"
 
+# Step 0-C 场景段 fixture（--with-scenarios 启用）
+ORACLE_SCENARIO_FIXTURE="${ROOT_DIR}/testcase/Oracle-scenarios.sql"
+MYSQL_SCENARIO_FIXTURE="${ROOT_DIR}/testcase/MySQL-oracle-scenarios.sql"
+SCENARIO_SCHEMA="gt_checksum"
+
 SKIP_INIT=false
 SKIP_BUILD=false
 INIT_ORACLE=false
 DRY_RUN=false
 FINAL_REPAIR=false
+WITH_SCENARIOS=false
 FILTER_DST=""
 FILTER_MODE=""
 
@@ -103,6 +109,7 @@ parse_arguments() {
             --skip-build)      SKIP_BUILD=true ;;
             --dry-run)         DRY_RUN=true ;;
             --final-repair)    FINAL_REPAIR=true ;;
+            --with-scenarios)  WITH_SCENARIOS=true ;;
             --timeout=*)       CASE_TIMEOUT="${1#--timeout=}" ;;
             --max-rounds=*)    MAX_REPAIR_ROUNDS="${1#--max-rounds=}" ;;
             --artifacts-dir=*) ARTIFACTS_DIR="${1#--artifacts-dir=}" ;;
@@ -741,6 +748,137 @@ generate_report() {
 }
 
 # ============================================================
+# SECTION 11.5: Step 0-C 场景段（--with-scenarios）
+# ============================================================
+# 运行单个 Oracle→MySQL 场景用例。不走矩阵流程，直接用 SCENARIO_SCHEMA 下的
+# 单表比对，支持 expected_verdict: PASS / PASS-ADVISORY / NEEDS_REPAIR-EXPECTED。
+run_oracle_scenario_case() {
+    local case_id="$1" mode="$2" tables="$3" case_sensitive="$4" expected="$5"
+    local dst_label="$6" dst_port="$7"
+    local case_dir="${ARTIFACTS_DIR}/scenarios/${case_id}-${dst_label}"
+    mkdir -p "${case_dir}/fixsql"
+
+    # 用例间重置目标端场景库
+    mysql_exec "$dst_port" < "$MYSQL_SCENARIO_FIXTURE" \
+        > "${case_dir}/reinit.log" 2>&1 || true
+
+    cat > "${case_dir}/gt-checksum.conf" <<EOF
+srcDSN=${SRC_DSN}
+dstDSN=mysql|${DB_USER}:${DB_PASS}@tcp(${DB_HOST}:${dst_port})/information_schema?charset=utf8mb4
+tables=${tables}
+checkNoIndexTable=yes
+caseSensitiveObjectName=${case_sensitive}
+parallelThds=2
+chunkSize=1000
+queueSize=20
+checkObject=${mode}
+memoryLimit=3000
+datafix=file
+fixFileDir=${case_dir}/fixsql
+logFile=${case_dir}/gt-checksum.log
+logLevel=debug
+EOF
+
+    local out="${case_dir}/output.txt" ec=0
+    run_with_timeout "$CASE_TIMEOUT" \
+        "$GT_CHECKSUM" -c "${case_dir}/gt-checksum.conf" > "$out" 2>&1 || ec=$?
+
+    local diffs
+    diffs="$(parse_diffs_from_output "$out" "$mode")"
+    local eval_result
+    eval_result="$(evaluate_diffs "$diffs")"
+
+    local final="UNKNOWN"
+    if [[ $ec -eq 124 ]]; then
+        final="TIMEOUT"
+    elif [[ "$eval_result" == "PASS" ]]; then
+        final="PASS"
+    elif [[ "$eval_result" == "NO_OUTPUT" ]]; then
+        final=$([ $ec -ne 0 ] && echo "ERROR" || echo "PASS")
+    elif [[ "$eval_result" == "NEEDS_REPAIR" ]]; then
+        # 场景段不跑 repairDB；仅做"是否检出 Diffs"的断言
+        final="NEEDS_REPAIR"
+        # 若 fixsql 全为注释，视为 advisory-only
+        local nfx
+        nfx=$(find "${case_dir}/fixsql" -name "*.sql" -type f 2>/dev/null | wc -l | tr -d ' ')
+        if [[ "$nfx" -gt 0 ]]; then
+            local exec_lines
+            exec_lines=$(find "${case_dir}/fixsql" -name "*.sql" -type f -print0 2>/dev/null \
+                | xargs -0 grep -hv '^\s*--\|^\s*$' 2>/dev/null | wc -l | tr -d ' ')
+            [[ "$exec_lines" -eq 0 ]] && final="PASS-ADVISORY"
+        fi
+    fi
+
+    if [[ "$final" != "TIMEOUT" && "$final" != "ERROR" && "$final" != "$expected" ]]; then
+        log_error "  [${case_id}/${dst_label}] 预期=${expected} 实际=${final} diffs=${diffs:-—}"
+        final="UNEXPECTED"
+    fi
+
+    echo "scenario:${case_id}:${dst_label}|${final}|1|${diffs}" >> "${ARTIFACTS_DIR}/results.csv"
+    TOTAL=$((TOTAL + 1))
+    case "$final" in
+        PASS|PASS-ADVISORY|NEEDS_REPAIR)
+            PASSED=$((PASSED + 1))
+            log_info  "  [${case_id}/${dst_label}] ${final}" ;;
+        UNEXPECTED|FAIL)    FAILED=$((FAILED + 1));   log_error "  [${case_id}/${dst_label}] ${final}" ;;
+        ERROR)              ERRORS=$((ERRORS + 1));   log_error "  [${case_id}/${dst_label}] ERROR (exit=${ec})" ;;
+        TIMEOUT)            TIMEOUTS=$((TIMEOUTS + 1)); log_error "  [${case_id}/${dst_label}] TIMEOUT" ;;
+    esac
+}
+
+# 执行全部场景（在 --with-scenarios 开启时由 main 调用）
+run_oracle_scenario_suite() {
+    log_info "=================================================================="
+    log_info " 场景段（--with-scenarios）"
+    log_info "=================================================================="
+
+    # Oracle 场景源数据初始化（仅 --init-oracle 时）
+    if [[ "$INIT_ORACLE" == "true" ]]; then
+        log_info "  初始化 Oracle 场景源 (sqlplus)"
+        sqlplus -L -S "$(oracle_sqlplus_conn)" @"$ORACLE_SCENARIO_FIXTURE" \
+            >> "${ARTIFACTS_DIR}/init-oracle-scenarios.log" 2>&1 \
+            || log_warn "  Oracle 场景源初始化有警告（已忽略）"
+    else
+        log_info "  跳过 Oracle 场景源初始化（未指定 --init-oracle，假定已手动就绪）"
+    fi
+
+    # 针对每个目标 MySQL 实例跑一轮场景
+    for entry in "${TARGETS[@]}"; do
+        local dst_label dst_port
+        dst_label="$(get_label "$entry")"
+        dst_port="$(get_port  "$entry")"
+        label_in_filter "$dst_label" "$FILTER_DST" || continue
+
+        log_info ""
+        log_info "--- 场景目标: ${dst_label}:${dst_port} ---"
+
+        # TC-ORAST-01 类型映射
+        run_oracle_scenario_case "TC-ORAST-01-type-mapping" \
+            "struct" "${SCENARIO_SCHEMA}.sc_types" "yes" "PASS" "$dst_label" "$dst_port"
+
+        # TC-ORAST-02 大小写敏感
+        run_oracle_scenario_case "TC-ORAST-02-case-sensitive" \
+            "struct" "${SCENARIO_SCHEMA}.ScCase" "yes" "PASS" "$dst_label" "$dst_port"
+
+        # TC-ORAST-03 分区
+        run_oracle_scenario_case "TC-ORAST-03-partition" \
+            "struct" "${SCENARIO_SCHEMA}.sc_part" "yes" "PASS" "$dst_label" "$dst_port"
+
+        # TC-ORAST-04 大字段
+        run_oracle_scenario_case "TC-ORAST-04-largeobj" \
+            "struct" "${SCENARIO_SCHEMA}.sc_largeobj" "yes" "PASS" "$dst_label" "$dst_port"
+
+        # TC-ORAST-05 目标缺表（struct 期望生成 CREATE TABLE → NEEDS_REPAIR）
+        run_oracle_scenario_case "TC-ORAST-05-missing-table" \
+            "struct" "${SCENARIO_SCHEMA}.sc_missing" "yes" "NEEDS_REPAIR" "$dst_label" "$dst_port"
+
+        # TC-ORAST-06 data 硬不兼容（data 预检期望报 Diffs 或生成 advisory）
+        run_oracle_scenario_case "TC-ORAST-06-data-incompat" \
+            "data" "${SCENARIO_SCHEMA}.sc_incompat" "yes" "NEEDS_REPAIR" "$dst_label" "$dst_port"
+    done
+}
+
+# ============================================================
 # SECTION 12: 主流程
 # ============================================================
 main() {
@@ -812,6 +950,10 @@ main() {
 
     if [[ "$FINAL_REPAIR" == "true" ]]; then
         run_final_repair
+    fi
+
+    if [[ "$WITH_SCENARIOS" == "true" ]]; then
+        run_oracle_scenario_suite
     fi
 
     echo ""
