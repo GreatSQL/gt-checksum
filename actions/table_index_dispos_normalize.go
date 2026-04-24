@@ -88,7 +88,8 @@ func buildFloatComparisonScales(sourceCols, destCols []map[string]string) []int 
 	for i := 0; i < colCount; i++ {
 		scale := resolveFloatComparisonScale(sourceCols[i]["dataType"], destCols[i]["dataType"])
 		scales[i] = scale
-		if scale >= 0 {
+		// 包含 sentinel 值（如 floatSinglePrecisionSentinel = -3）也视为浮点列
+		if scale >= 0 || scale == floatSinglePrecisionSentinel {
 			hasFloatColumn = true
 		}
 	}
