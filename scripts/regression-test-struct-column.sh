@@ -138,8 +138,8 @@ build_binaries() {
     [[ "$SKIP_BUILD" == "true" ]] && { log_info "跳过编译"; return; }
     log_info "=== 编译阶段 ==="
     cd "$ROOT_DIR"
-    CGO_ENABLED=0 go build -tags nooracle -o gt-checksum gt-checksum.go
-    CGO_ENABLED=0 go build -o repairDB repairDB.go
+    CGO_ENABLED=0 go build -tags nooracle -o gt-checksum ./cmd/gt-checksum
+    CGO_ENABLED=0 go build -o repairDB ./cmd/repairDB
     chmod +x gt-checksum repairDB
     log_info "  编译完成"
 }

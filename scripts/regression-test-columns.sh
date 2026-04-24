@@ -191,10 +191,10 @@ build_binaries() {
     cd "$ROOT_DIR"
 
     log_info "  编译 gt-checksum (nooracle)..."
-    CGO_ENABLED=0 go build -tags nooracle -o gt-checksum gt-checksum.go
+    CGO_ENABLED=0 go build -tags nooracle -o gt-checksum ./cmd/gt-checksum
 
     log_info "  编译 repairDB..."
-    CGO_ENABLED=0 go build -o repairDB repairDB.go
+    CGO_ENABLED=0 go build -o repairDB ./cmd/repairDB
 
     chmod +x gt-checksum repairDB
     log_info "  编译完成"

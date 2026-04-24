@@ -290,12 +290,12 @@ build_binaries() {
     cd "$ROOT_DIR"
 
     log_info "  编译 gt-checksum ..."
-    if ! CGO_ENABLED=1 go build -o gt-checksum gt-checksum.go 2>&1 | tee -a "${ARTIFACTS_DIR}/build.log"; then
+    if ! CGO_ENABLED=1 go build -o gt-checksum ./cmd/gt-checksum 2>&1 | tee -a "${ARTIFACTS_DIR}/build.log"; then
         log_error "gt-checksum 编译失败，详见 ${ARTIFACTS_DIR}/build.log"; exit 1
     fi
 
     log_info "  编译 repairDB ..."
-    if ! CGO_ENABLED=1 go build -o repairDB repairDB.go 2>&1 | tee -a "${ARTIFACTS_DIR}/build.log"; then
+    if ! CGO_ENABLED=1 go build -o repairDB ./cmd/repairDB 2>&1 | tee -a "${ARTIFACTS_DIR}/build.log"; then
         log_error "repairDB 编译失败，详见 ${ARTIFACTS_DIR}/build.log"; exit 1
     fi
 
