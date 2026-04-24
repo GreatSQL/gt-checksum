@@ -813,14 +813,16 @@ $ source /etc/profile
 ```bash
 $ git clone https://gitee.com/GreatSQL/gt-checksum.git
 $ cd gt-checksum
-$ go build -o gt-checksum gt-checksum.go
-$ CGO_ENABLED=0 go build -o repairDB repairDB.go
+$ go build -o gt-checksum ./cmd/gt-checksum && \
+CGO_ENABLED=0 go build -o repairDB ./cmd/repairDB && \
+go build -o oracle_random_data_load ./cmd/oracle_random_data_load && \
+chmod +x gt-checksum repairDB oracle_random_data_load
 ```
 
 编译完成后，将编译好的二进制文件拷贝到系统PATH路径下，即可使用：
 ```bash
 $ chmod +x gt-checksum
-$ mv gt-checksum /usr/local/bin
+$ mv gt-checksum repairDB oracle_random_data_load /usr/local/bin
 ```
 
 ## repairDB自动修复工具使用说明
