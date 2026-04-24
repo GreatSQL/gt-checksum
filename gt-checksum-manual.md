@@ -859,7 +859,7 @@ repairDB 根据 SQL 文件的命名前缀自动识别对象类型，并按以下
 ```bash
 $ git clone https://gitee.com/GreatSQL/gt-checksum.git
 $ cd gt-checksum
-$ CGO_ENABLED=0 go build -o repairDB repairDB.go
+$ CGO_ENABLED=0 go build -o repairDB ./cmd/repairDB
 ```
 
 编译完成后，将编译好的二进制文件拷贝到系统PATH路径下，即可使用：
@@ -1010,7 +1010,7 @@ $ ./repairDB ./myfixsql
 ### 编译与运行
 
 ```bash
-go build -o oracle_random_data_load oracle_random_data_load.go
+go build -o oracle_random_data_load ./cmd/oracle_random_data_load
 ```
 
 ```bash
