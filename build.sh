@@ -13,7 +13,7 @@ export CXXFLAGS="-stdlib=libstdc++" CC=/usr/bin/gcc CXX=/usr/bin/g++
 
 vs=`cat ./inputArg/flagHelp.go| grep "app.Version"|awk -F "=" '{print $2}'|sed 's/\"//g'|sed 's/\/\/版本//g'|sed 's/ //g'`
 OracleDrive="instantclient_11_2"
-HASH="562a519"
+HASH="cb89955"
 
 # 自动适配CPU架构类型
 if [ ! -z "`which uname > /dev/null 2>&1`" ] ; then
@@ -37,9 +37,9 @@ fi
 export LD_LIBRARY_PATH=/tmp/${OracleDrive}:$LD_LIBRARY_PATH
 
 echo "3. Compiling gt-checksum"
-go build -o gt-checksum gt-checksum.go && \
-CGO_ENABLED=0 go build -o repairDB repairDB.go && \
-go build -o oracle_random_data_load oracle_random_data_load.go && \
+go build -o gt-checksum ./cmd/gt-checksum && \
+CGO_ENABLED=0 go build -o repairDB ./cmd/repairDB && \
+go build -o oracle_random_data_load ./cmd/oracle_random_data_load && \
 chmod +x gt-checksum repairDB oracle_random_data_load
 
 if [ $? -ne 0 ] ; then
