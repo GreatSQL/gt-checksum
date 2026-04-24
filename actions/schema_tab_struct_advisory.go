@@ -98,14 +98,11 @@ func buildConstraintAdvisoryLines(scope string, suggestions []schemacompat.Const
 		for _, stmt := range suggestion.Statements {
 			stmt = strings.TrimSpace(stmt)
 			if isManualReview {
-				// manual-review 级别：SQL 语句写为可执行形式，但必须加显著 banner
-				// 提醒用户在 `source` 修复脚本前先人工审核，避免意外执行。
-				if !strings.HasSuffix(stmt, ";") {
-					stmt += ";"
-				}
+				// manual-review 级别：SQL 语句必须以注释形式输出，避免用户误执行
+				// 添加显著标记以便检索和人工审核
 				lines = append(lines, "")
-				lines = append(lines, "-- !!! ACTION REQUIRED: manual review required before running the statement below !!!")
-				lines = append(lines, stmt)
+				lines = append(lines, "-- !!! MANUAL REVIEW REQUIRED: review carefully before execution !!!")
+				lines = append(lines, fmt.Sprintf("-- %s", stmt))
 				lines = append(lines, "-- !!! END manual-review block !!!")
 				lines = append(lines, "")
 			} else {
