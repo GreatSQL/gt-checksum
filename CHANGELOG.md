@@ -1,3 +1,7 @@
+## 3.0.0
+- [功能新增]: repairDB 工具新增预执行报告功能，执行修复前自动收集并展示修复 SQL 文件统计信息（文件数量、大小、语句类型分布、影响行数、预估 binlog 大小等），帮助用户在执行前评估修复影响范围。新增交互式确认机制，默认在执行修复前提示用户确认，可通过 `-f` 或 `--force` 参数跳过确认直接执行；新增 `--dry-run` 参数，仅展示统计报告而不执行实际修复操作。
+- [测试完善]: 新增 cmd/repairDB/utils_test.go 测试文件，覆盖 formatSize、formatNumber、identifyStatementType、collectFixSQLStatistics 等核心函数的单元测试。
+
 ## 2.0.1
 - [内部重构]: 项目结构调整 —— 按 Go 标准项目布局将三个主程序入口文件（gt-checksum.go、repairDB.go、oracle_random_data_load.go）迁移至 cmd/ 子目录，同步更新所有构建脚本、回归测试脚本、Dockerfile 及用户手册中的编译路径引用。
 - [内部重构]: 按职责拆分 `actions/schema_tab_struct_column.go` —— 原 1866 行文件拆分为 4 个独立文件：`_existence.go`（P1-P4 表存在性检查，322 行）、`_columns.go`（P5-P6 列元数据，556 行）、`_struct.go`（P7 struct 模式，968 行）及主文件（160 行）；P7 子阶段 8f/8g/8h 抽取为独立私有方法（buildCharsetAdvisory、evaluateStructRiskAndWriteFixSQL、finalizeStructPod），零行为变更。

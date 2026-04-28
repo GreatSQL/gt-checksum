@@ -13,16 +13,10 @@ MySQL DBA经常使用 **pt-table-checksum** 和 **pt-table-sync** 进行数据�
 
 因此，我们开发了 **gt-checksum** 工具，旨在支持更多业务场景并解决现有痛点。
 
-## v2.0.0 关键变化
+## v3.0.0 关键变化
 
-- **[功能新增]**: 支持Oracle→MySQL `data/struct` 模式，采用列类型映射方式实现宽松兼容，支持 `VARCHAR2`/`CHAR`/`NCHAR`/`NVARCHAR2`/`NUMBER`/`FLOAT`/`TIMESTAMP`/`DATE`/`CLOB`/`BLOB`/`RAW` 等。
-- **[功能新增]** 支持前缀索引、函数索引的检测与修复。
-- **[功能新增]** 支持MySQL→MySQL 场景下的生成列（STORED/VIRTUAL Generated Columns）的检测与修复。
-- **[功能优化]** 扩展生成列兼容性，支持 MariaDB 10.0（PERSISTENT/VIRTUAL 格式）与 MySQL 8.0（STORED GENERATED/VIRTUAL GENERATED）之间的等价识别，消除误报；生成列表达式比对支持大小写折叠和反引号差异的自动归一化。
-- **[性能优化]** Oracle 源端 `struct` 模式元数据采集改为按 schema 批量预加载（列、索引、外键、分区），取代逐表 N 次往返查询，测例场景下耗时从 ~60s 降至 ~2s；同步优化 `data` 模式耗时降低约一半。
-- **[问题修复]** 修复含需 DROP 的列（如 MySQL 8.4 隐式主键 my_row_id）时，列序号未同步压缩导致 collation 修复列在 ALTER TABLE 中重复出现的问题，修复 JSON 函数索引表达式中单引号被转义导致 DDL 语法报错。
-- **[问题修复]** 修复同名索引内容不同时漏检的问题，确保索引内容比对覆盖所有场景。
-- **[问题修复]** 修复 `checkObject=struct`/`trigger`/`routine` 模式下总耗时与杂项耗时输出为 0 的问题，耗时结算逻辑统一覆盖所有分支。
+- **[功能新增]** repairDB 工具新增预执行报告功能，执行前自动展示修复 SQL 统计信息（文件数量、影响行数、预估 binlog 大小等）。
+- **[功能新增]** repairDB 工具新增交互式确认机制和 `--dry-run` 参数，提升修复操作安全性。
 
 更多详细变化详见 [CHANGELOG](./CHANGELOG.md)。
 
