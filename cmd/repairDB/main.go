@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"flag"
 	"fmt"
@@ -19,6 +20,9 @@ import (
 
 	"database/sql"
 
+	"github.com/fatih/color"
+	"github.com/gosuri/uitable"
+
 	_ "github.com/go-sql-driver/mysql"
 )
 
@@ -29,6 +33,35 @@ type Config struct {
 	FixFileDir   string
 	LogFile      string
 	LogBin       bool // true = keep sql_log_bin ON (default); false = SET sql_log_bin=0 per connection
+}
+
+// FixSQLStatistics stores statistics about fix SQL files
+type FixSQLStatistics struct {
+	// Basic statistics
+	TotalFiles int
+	TotalSize  int64
+
+	// Classification statistics
+	DeleteFiles  int
+	TableFiles   int
+	ViewFiles    int
+	RoutineFiles int
+	TriggerFiles int
+	UnknownFiles int
+
+	// Data mode statistics
+	TableCount int
+	InsertRows int64
+	UpdateRows int64
+	DeleteRows int64
+
+	// Struct/routine/trigger mode statistics
+	DropCount   int
+	AlterCount  int
+	CreateCount int
+
+	// Binlog estimation
+	EstimatedBinlogSize int64
 }
 
 // Global variables
@@ -104,6 +137,371 @@ func parseConfig(confFile string) error {
 	}
 
 	return nil
+}
+
+// formatSize formats file size in human-readable format
+func formatSize(bytes int64) string {
+	const (
+		KB = 1024
+		MB = 1024 * KB
+		GB = 1024 * MB
+	)
+
+	switch {
+	case bytes >= GB:
+		return fmt.Sprintf("%.2f GB", float64(bytes)/float64(GB))
+	case bytes >= MB:
+		return fmt.Sprintf("%.2f MB", float64(bytes)/float64(MB))
+	case bytes >= KB:
+		return fmt.Sprintf("%.2f KB", float64(bytes)/float64(KB))
+	default:
+		return fmt.Sprintf("%d B", bytes)
+	}
+}
+
+// identifyStatementType identifies SQL statement type and estimates affected rows
+func identifyStatementType(stmt string) (stmtType string, affectedRows int64) {
+	// Remove leading SQL comments (lines starting with --)
+	// This handles cases where comments are bundled with the actual SQL statement
+	lines := strings.Split(stmt, "\n")
+	var cleanedLines []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		// Skip comment lines and empty lines
+		if !strings.HasPrefix(trimmed, "--") && trimmed != "" {
+			cleanedLines = append(cleanedLines, line)
+		}
+	}
+
+	// Rejoin non-comment lines
+	cleanedStmt := strings.Join(cleanedLines, "\n")
+
+	// Normalize statement: trim and convert to uppercase for matching
+	normalized := strings.TrimSpace(strings.ToUpper(cleanedStmt))
+	if normalized == "" {
+		return "UNKNOWN", 0
+	}
+
+	// Identify statement type
+	switch {
+	case strings.HasPrefix(normalized, "INSERT"):
+		// Count rows by counting "(" after VALUES
+		// Look for VALUES keyword first
+		valuesIdx := strings.Index(normalized, "VALUES")
+		if valuesIdx == -1 {
+			return "INSERT", 1
+		}
+		// Count opening parentheses after VALUES
+		afterValues := cleanedStmt[valuesIdx:]
+		rows := int64(strings.Count(afterValues, "("))
+		if rows == 0 {
+			rows = 1
+		}
+		return "INSERT", rows
+	case strings.HasPrefix(normalized, "UPDATE"):
+		return "UPDATE", 1
+	case strings.HasPrefix(normalized, "DELETE"):
+		return "DELETE", 1
+	case strings.HasPrefix(normalized, "DROP"):
+		return "DROP", 1
+	case strings.HasPrefix(normalized, "ALTER"):
+		return "ALTER", 1
+	case strings.HasPrefix(normalized, "CREATE"):
+		return "CREATE", 1
+	default:
+		return "UNKNOWN", 0
+	}
+}
+
+// collectFixSQLStatistics collects statistics about fix SQL files
+func collectFixSQLStatistics(fixFileDir string) (*FixSQLStatistics, error) {
+	stats := &FixSQLStatistics{}
+
+	// Traverse fixFileDir directory to find all .sql files
+	var sqlFiles []string
+	err := filepath.Walk(fixFileDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() && strings.HasSuffix(path, ".sql") {
+			sqlFiles = append(sqlFiles, path)
+			// Accumulate file size
+			stats.TotalSize += info.Size()
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to traverse directory: %v", err)
+	}
+
+	// Set total file count
+	stats.TotalFiles = len(sqlFiles)
+
+	// Track unique table names
+	tableSet := make(map[string]bool)
+
+	// Classify files by type and parse SQL statements
+	for _, file := range sqlFiles {
+		stage := detectObjectStage(file)
+		switch stage {
+		case "DELETE":
+			stats.DeleteFiles++
+		case "TABLE":
+			stats.TableFiles++
+		case "VIEW":
+			stats.ViewFiles++
+		case "ROUTINE":
+			stats.RoutineFiles++
+		case "TRIGGER":
+			stats.TriggerFiles++
+		default:
+			stats.UnknownFiles++
+		}
+
+		// Parse SQL statements for data mode files (table.* files)
+		if stage == "TABLE" || stage == "DELETE" {
+			content, err := os.ReadFile(file)
+			if err != nil {
+				continue // Skip files that cannot be read
+			}
+
+			// Split SQL statements
+			statements := splitSQLStatements(string(content))
+			for _, stmt := range statements {
+				stmtType, rows := identifyStatementType(stmt)
+				switch stmtType {
+				case "INSERT":
+					stats.InsertRows += rows
+				case "UPDATE":
+					stats.UpdateRows += rows
+				case "DELETE":
+					stats.DeleteRows += rows
+				case "DROP":
+					stats.DropCount++
+				case "ALTER":
+					stats.AlterCount++
+				case "CREATE":
+					stats.CreateCount++
+				}
+
+				// Extract table name for table count
+				if stmtType == "INSERT" || stmtType == "UPDATE" || stmtType == "DELETE" {
+					tableName := extractTableName(stmt)
+					if tableName != "" {
+						tableSet[tableName] = true
+					}
+				}
+			}
+		}
+
+		// Parse SQL statements for struct/routine/trigger mode files
+		if stage == "VIEW" || stage == "ROUTINE" || stage == "TRIGGER" {
+			content, err := os.ReadFile(file)
+			if err != nil {
+				continue
+			}
+
+			statements := splitSQLStatements(string(content))
+			for _, stmt := range statements {
+				stmtType, _ := identifyStatementType(stmt)
+				switch stmtType {
+				case "DROP":
+					stats.DropCount++
+				case "ALTER":
+					stats.AlterCount++
+				case "CREATE":
+					stats.CreateCount++
+				}
+			}
+		}
+	}
+
+	// Set table count
+	stats.TableCount = len(tableSet)
+
+	// Estimate binlog size
+	stats.EstimatedBinlogSize = estimateBinlogSize(stats.TotalSize, stats.DeleteRows, stats.InsertRows)
+
+	return stats, nil
+}
+
+// extractTableName extracts table name from SQL statement (simple implementation)
+func extractTableName(stmt string) string {
+	// Normalize statement for parsing
+	normalized := strings.TrimSpace(stmt)
+	upper := strings.ToUpper(normalized)
+
+	// Extract table name from INSERT/UPDATE/DELETE statements
+	var tableName string
+	if strings.HasPrefix(upper, "INSERT") {
+		// INSERT INTO table_name ...
+		parts := strings.Fields(normalized)
+		if len(parts) >= 3 && strings.ToUpper(parts[1]) == "INTO" {
+			tableName = parts[2]
+		}
+	} else if strings.HasPrefix(upper, "UPDATE") {
+		// UPDATE table_name SET ...
+		parts := strings.Fields(normalized)
+		if len(parts) >= 2 {
+			tableName = parts[1]
+		}
+	} else if strings.HasPrefix(upper, "DELETE") {
+		// DELETE FROM table_name ...
+		parts := strings.Fields(normalized)
+		if len(parts) >= 3 && strings.ToUpper(parts[1]) == "FROM" {
+			tableName = parts[2]
+		}
+	}
+
+	// Remove backticks
+	tableName = strings.Trim(tableName, "`")
+
+	// Remove parentheses and everything after (for cases like `table`(`col1`,`col2`))
+	if idx := strings.Index(tableName, "("); idx != -1 {
+		tableName = tableName[:idx]
+		// Remove trailing backticks again
+		tableName = strings.Trim(tableName, "`")
+	}
+
+	// Remove schema prefix (db.table -> table)
+	if idx := strings.Index(tableName, "."); idx != -1 {
+		tableName = tableName[idx+1:]
+		// Remove backticks again after schema removal
+		tableName = strings.Trim(tableName, "`")
+	}
+
+	// Convert to uppercase for consistency
+	return strings.ToUpper(tableName)
+}
+
+// estimateBinlogSize estimates binlog size based on SQL file size and operations
+func estimateBinlogSize(totalFileSize int64, deleteRows, insertRows int64) int64 {
+	// Base coefficient: binlog is approximately 1.3x of SQL file size
+	coefficient := 1.3
+
+	// If DELETE operations are more than INSERT, reduce coefficient
+	// (binlog only records primary keys for DELETE)
+	if deleteRows > insertRows {
+		coefficient = 1.1
+	}
+
+	return int64(float64(totalFileSize) * coefficient)
+}
+
+// printStatisticsReport prints statistics report with table format and colors
+func printStatisticsReport(stats *FixSQLStatistics) {
+	fmt.Println()
+	fmt.Println(color.CyanString("========== repairDB 预执行报告 =========="))
+
+	table := uitable.New()
+	table.MaxColWidth = 80
+	table.Wrap = true
+
+	// Add header
+	table.AddRow(color.YellowString("统计项"), color.YellowString("数值"))
+	table.AddRow("---", "---")
+
+	// Basic statistics
+	table.AddRow("修复 SQL 文件总数", color.GreenString("%d", stats.TotalFiles))
+	table.AddRow("文件总大小", color.GreenString("%s", formatSize(stats.TotalSize)))
+
+	// File classification
+	if stats.DeleteFiles > 0 {
+		table.AddRow("DELETE 文件数", color.RedString("%d", stats.DeleteFiles))
+	}
+	if stats.TableFiles > 0 {
+		table.AddRow("TABLE 文件数", color.GreenString("%d", stats.TableFiles))
+	}
+	if stats.ViewFiles > 0 {
+		table.AddRow("VIEW 文件数", color.BlueString("%d", stats.ViewFiles))
+	}
+	if stats.RoutineFiles > 0 {
+		table.AddRow("ROUTINE 文件数", color.BlueString("%d", stats.RoutineFiles))
+	}
+	if stats.TriggerFiles > 0 {
+		table.AddRow("TRIGGER 文件数", color.BlueString("%d", stats.TriggerFiles))
+	}
+	if stats.UnknownFiles > 0 {
+		table.AddRow("UNKNOWN 文件数", color.MagentaString("%d", stats.UnknownFiles))
+	}
+
+	table.AddRow("---", "---")
+
+	// Data mode statistics
+	if stats.TableCount > 0 {
+		table.AddRow("涉及表数量", color.CyanString("%d", stats.TableCount))
+	}
+	if stats.InsertRows > 0 {
+		table.AddRow("INSERT 行数", color.GreenString("%s", formatNumber(stats.InsertRows)))
+	}
+	if stats.UpdateRows > 0 {
+		table.AddRow("UPDATE 行数", color.YellowString("%s", formatNumber(stats.UpdateRows)))
+	}
+	if stats.DeleteRows > 0 {
+		table.AddRow("DELETE 行数", color.RedString("%s", formatNumber(stats.DeleteRows)))
+	}
+
+	// Struct/routine/trigger mode statistics
+	if stats.DropCount > 0 {
+		table.AddRow("DROP 对象数", color.RedString("%d", stats.DropCount))
+	}
+	if stats.AlterCount > 0 {
+		table.AddRow("ALTER 对象数", color.YellowString("%d", stats.AlterCount))
+	}
+	if stats.CreateCount > 0 {
+		table.AddRow("CREATE 对象数", color.GreenString("%d", stats.CreateCount))
+	}
+
+	// Binlog estimation
+	if stats.EstimatedBinlogSize > 0 {
+		table.AddRow("预估 binlog 大小", color.MagentaString("%s (预估)", formatSize(stats.EstimatedBinlogSize)))
+	}
+
+	fmt.Println(table)
+	fmt.Println(color.CyanString("=========================================="))
+	fmt.Println()
+}
+
+// formatNumber formats number with thousand separators
+func formatNumber(n int64) string {
+	str := strconv.FormatInt(n, 10)
+	if len(str) <= 3 {
+		return str
+	}
+
+	var result strings.Builder
+	for i, c := range str {
+		if i > 0 && (len(str)-i)%3 == 0 {
+			result.WriteRune(',')
+		}
+		result.WriteRune(c)
+	}
+	return result.String()
+}
+
+// promptUserConfirmation prompts user for confirmation to continue execution
+func promptUserConfirmation() (bool, error) {
+	reader := bufio.NewReader(os.Stdin)
+
+	for {
+		fmt.Print(color.YellowString("是否继续执行修复操作？(yes/no): "))
+		input, err := reader.ReadString('\n')
+		if err != nil {
+			return false, fmt.Errorf("读取用户输入失败: %v", err)
+		}
+
+		// Trim whitespace and convert to lowercase
+		input = strings.TrimSpace(strings.ToLower(input))
+
+		switch input {
+		case "yes", "y":
+			return true, nil
+		case "no", "n":
+			return false, nil
+		default:
+			fmt.Println(color.RedString("无效输入，请输入 yes 或 no"))
+		}
+	}
 }
 
 // Extract connection parameters from MySQL DSN
@@ -969,7 +1367,12 @@ func main() {
 func run() error {
 	// Parse command line arguments
 	confFile := flag.String("conf", "gc.conf", "Config file path")
+	force := flag.Bool("f", false, "Force execution without confirmation")
+	forceLong := flag.Bool("force", false, "Force execution without confirmation")
+	dryRun := flag.Bool("dry-run", false, "Dry run mode: show statistics only")
 	flag.Parse()
+
+	forceMode := *force || *forceLong
 
 	// Check if command line argument is provided for fixFileDir
 	var specifiedFixFileDir string
@@ -1077,6 +1480,37 @@ func run() error {
 		log.Printf("[WARN] %d file(s) could not be classified by type prefix and will execute last in UNKNOWN stage.\n", len(cf.Unknown))
 		log.Printf("[WARN] UNKNOWN file examples: %s\n", strings.Join(sample, ", "))
 	}
+
+	// ========== Safety Pre-check Logic ==========
+	// Collect statistics about fix SQL files
+	stats, err := collectFixSQLStatistics(config.FixFileDir)
+	if err != nil {
+		return fmt.Errorf("收集统计信息失败: %v", err)
+	}
+
+	// Print statistics report
+	printStatisticsReport(stats)
+
+	// Handle dry-run mode
+	if *dryRun {
+		log.Printf("Dry-run 模式，不执行修复操作\n")
+		return nil
+	}
+
+	// Handle interactive confirmation (unless force mode is enabled)
+	if !forceMode {
+		confirmed, err := promptUserConfirmation()
+		if err != nil {
+			return err
+		}
+		if !confirmed {
+			log.Printf("用户取消操作，退出\n")
+			return nil
+		}
+	}
+
+	log.Printf("开始执行修复操作...\n")
+	// ========== End of Safety Pre-check Logic ==========
 
 	// Start timing.
 	startTime := time.Now()
