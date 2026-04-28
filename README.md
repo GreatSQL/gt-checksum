@@ -13,16 +13,11 @@ MySQL DBA经常使用 **pt-table-checksum** 和 **pt-table-sync** 进行数据�
 
 因此，我们开发了 **gt-checksum** 工具，旨在支持更多业务场景并解决现有痛点。
 
-## v2.0.0 关键变化
+## v2.0.1 关键变化
 
-- **[功能新增]**: 支持Oracle→MySQL `data/struct` 模式，采用列类型映射方式实现宽松兼容，支持 `VARCHAR2`/`CHAR`/`NCHAR`/`NVARCHAR2`/`NUMBER`/`FLOAT`/`TIMESTAMP`/`DATE`/`CLOB`/`BLOB`/`RAW` 等。
-- **[功能新增]** 支持前缀索引、函数索引的检测与修复。
-- **[功能新增]** 支持MySQL→MySQL 场景下的生成列（STORED/VIRTUAL Generated Columns）的检测与修复。
-- **[功能优化]** 扩展生成列兼容性，支持 MariaDB 10.0（PERSISTENT/VIRTUAL 格式）与 MySQL 8.0（STORED GENERATED/VIRTUAL GENERATED）之间的等价识别，消除误报；生成列表达式比对支持大小写折叠和反引号差异的自动归一化。
-- **[性能优化]** Oracle 源端 `struct` 模式元数据采集改为按 schema 批量预加载（列、索引、外键、分区），取代逐表 N 次往返查询，测例场景下耗时从 ~60s 降至 ~2s；同步优化 `data` 模式耗时降低约一半。
-- **[问题修复]** 修复含需 DROP 的列（如 MySQL 8.4 隐式主键 my_row_id）时，列序号未同步压缩导致 collation 修复列在 ALTER TABLE 中重复出现的问题，修复 JSON 函数索引表达式中单引号被转义导致 DDL 语法报错。
-- **[问题修复]** 修复同名索引内容不同时漏检的问题，确保索引内容比对覆盖所有场景。
-- **[问题修复]** 修复 `checkObject=struct`/`trigger`/`routine` 模式下总耗时与杂项耗时输出为 0 的问题，耗时结算逻辑统一覆盖所有分支。
+- **项目结构优化**：按 Go 标准项目布局将主程序入口文件迁移至 `cmd/` 子目录，同步更新所有构建脚本、回归测试脚本及文档中的编译路径引用
+- **代码重构**：按职责拆分多个超大源文件（`actions/schema_tab_struct_column.go`、`actions/table_index_dispos.go`、`MySQL/my_data_fix_sql.go` 等），提升代码可维护性；全部为纯物理搬移，零 API 变更
+- **测试增强**：新增 `TableColumnNameCheck` 单元测试、`regression-test-struct-column.sh` 专项回归测试脚本，扩展 Oracle 回归测试场景段支持
 
 更多详细变化详见 [CHANGELOG](./CHANGELOG.md)。
 
