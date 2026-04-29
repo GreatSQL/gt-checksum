@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"sort"
+	"sync"
 	"testing"
 )
 
@@ -314,5 +315,33 @@ func TestPrepareStageFiles_TableShuffles(t *testing.T) {
 	}
 	if !shuffleDetected {
 		t.Error("TABLE stage: after 20 runs prepareStageFiles never produced a shuffled order")
+	}
+}
+
+// TestResultCollector_Concurrent verifies resultCollector is safe for concurrent use.
+func TestResultCollector_Concurrent(t *testing.T) {
+	collector := &resultCollector{}
+	const numGoroutines = 50
+	const resultsPerGoroutine = 100
+
+	var wg sync.WaitGroup
+	for g := 0; g < numGoroutines; g++ {
+		wg.Add(1)
+		go func(gid int) {
+			defer wg.Done()
+			for i := 0; i < resultsPerGoroutine; i++ {
+				collector.append(FileExecResult{
+					FilePath:   fmt.Sprintf("table.db.t%d.sql", gid),
+					InsertSuccess: int64(i),
+				})
+			}
+		}(g)
+	}
+	wg.Wait()
+
+	snapshot := collector.snapshot()
+	expected := numGoroutines * resultsPerGoroutine
+	if len(snapshot) != expected {
+		t.Errorf("snapshot length = %d, expected %d", len(snapshot), expected)
 	}
 }

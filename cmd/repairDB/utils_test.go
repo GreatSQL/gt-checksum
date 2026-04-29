@@ -242,3 +242,45 @@ func TestExtractTableName(t *testing.T) {
 	}
 }
 
+// TestExtractSchemaAndObject tests schema and object name extraction from file paths.
+func TestExtractSchemaAndObject(t *testing.T) {
+	tests := []struct {
+		filePath       string
+		expectedSchema string
+		expectedObject string
+	}{
+		// Standard table files
+		{"table.mydb.orders.sql", "mydb", "orders"},
+		{"view.appdb.v_orders.sql", "appdb", "v_orders"},
+		{"routine.db1.p_calc.sql", "db1", "p_calc"},
+		{"trigger.testdb.trg_audit.sql", "testdb", "trg_audit"},
+
+		// DELETE-pattern files
+		{"table.mydb.orders-DELETE-1.sql", "mydb", "orders"},
+		{"table.testdb.users-DELETE-5.sql", "testdb", "users"},
+
+		// Non-standard files (no recognized prefix)
+		{"manual.sql", "", "manual"},
+		{"some_random_file.sql", "", "some_random_file"},
+		{"db.table.sql", "db", "table"},
+
+		// Full path (should use basename)
+		{"/path/to/fixsql/table.mydb.orders.sql", "mydb", "orders"},
+		{"./fixsql/view.appdb.v_orders.sql", "appdb", "v_orders"},
+
+		// Edge cases
+		{"table..empty.sql", "", "empty"},
+		{"script.sql", "", "script"},
+	}
+
+	for _, tt := range tests {
+		schema, object := extractSchemaAndObject(tt.filePath)
+		if schema != tt.expectedSchema {
+			t.Errorf("extractSchemaAndObject(%q) schema = %q; expected %q", tt.filePath, schema, tt.expectedSchema)
+		}
+		if object != tt.expectedObject {
+			t.Errorf("extractSchemaAndObject(%q) object = %q; expected %q", tt.filePath, object, tt.expectedObject)
+		}
+	}
+}
+
