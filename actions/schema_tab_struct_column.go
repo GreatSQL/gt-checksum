@@ -124,6 +124,22 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 		// 8a: struct 上下文准备（SHOW CREATE TABLE / definitions）
 		sms := stcls.prepareStructModeState(sourceSchema, destSchema, cm.alterSlice, logThreadSeq, event)
 
+		// 兜底检查：即使 checkTableExistence 返回 destTableExists=true（information_schema 显示表存在），
+		// SHOW CREATE TABLE 仍可能失败（权限问题、表损坏等），此时 destColumnDefinitions 为空。
+		// 这种情况下应该生成 CREATE TABLE 而不是继续执行 ALTER TABLE 逻辑。
+		if len(sms.destColumnDefinitions) == 0 && len(sms.sourceColumnDefinitions) > 0 {
+			// 目标端表不存在，应该生成 CREATE TABLE 语句而不是 ALTER TABLE 语句
+			global.Wlog.Info(fmt.Sprintf("(%d) %s Target table %s.%s does not exist (SHOW CREATE TABLE failed), generating CREATE TABLE instead of ALTER TABLE", logThreadSeq, event, destSchema, stcls.destTable))
+			abnormalKey, err := stcls.handleTargetMissingTable(sourceSchema, sourceTableName, destSchema, stcls.destTable, mappedTableKey, event, logThreadSeq)
+			if err != nil {
+				return nil, nil, err
+			}
+			if abnormalKey != "" {
+				abnormalTableList = append(abnormalTableList, abnormalKey)
+			}
+			continue
+		}
+
 		vlog = fmt.Sprintf("(%d) %s Columns to remove from target %s.%s: %v", logThreadSeq, event, destSchema, stcls.table, cm.delColumn)
 		global.Wlog.Debug(vlog)
 		// 8b: 删除目标端多余列（AUTO_INCREMENT 守护）
