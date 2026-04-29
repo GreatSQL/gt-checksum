@@ -2,7 +2,7 @@
 [![](https://img.shields.io/badge/GreatSQL-论坛-brightgreen.svg)](https://greatsql.cn/forum.php)
 [![](https://img.shields.io/badge/GreatSQL-博客-brightgreen.svg)](https://greatsql.cn/home.php?mod=space&uid=10&do=blog&view=me&from=space)
 [![](https://img.shields.io/badge/License-Apache_v2.0-blue.svg)](https://gitee.com/GreatSQL/gt-checksum/blob/master/LICENSE)
-[![](https://img.shields.io/badge/release-2.0.0-blue.svg)](https://gitee.com/GreatSQL/gt-checksum/releases)
+[![](https://img.shields.io/badge/release-2.0.1-blue.svg)](https://gitee.com/GreatSQL/gt-checksum/releases)
 
 # gt-checksum
 **gt-checksum** 是GreatSQL社区开源的数据库校验及修复工具，支持 MySQL-family（MySQL/Percona/GreatSQL/MariaDB等）、Oracle 等主流数据库。
@@ -37,11 +37,11 @@ MySQL DBA经常使用 **pt-table-checksum** 和 **pt-table-sync** 进行数据�
 |---------|---------|------|---------|---------|------|------|
 | v1.2.x | v1.2.5 | EOL | 2023-03-06 | 2026-12-31 | End of support | 已终止支持，不再提供任何更新（含 Bug Fix / 安全更新）；如遇问题请升级至 v1.3.x |
 | v1.3.x | v1.3.0 | LTS | 2026-04-08 | 2028-04-08 | **活跃**（Bug Fix + Security） | 支持校验部分字段、VIEW、CSV导出功能 |
-| v2.0.x | v2.0.0 | LTS | 2026-04-22 | 2028-04-22 | **活跃**（Bug Fix + Security） | 支持Oracle→MySQL `struct`/`data` 模式，MySQL JSON数据类型、JSON多值索引、前缀索引、函数索引、虚拟列 |
+| v2.0.x | v2.0.1 | LTS | 2026-04-29 | 2028-04-22 | **活跃**（Bug Fix + Security） | 支持Oracle→MySQL `struct`/`data` 模式，MySQL JSON数据类型、JSON多值索引、前缀索引、函数索引、虚拟列 |
 
 > 说明：
 >
-> - 推荐生产环境使用 **v2.0.x** 或 **v1.3.0**（均为当前活跃 LTS）；
+> - 推荐生产环境使用 **v2.0** 或 **v1.3** 最新小版本（均为当前活跃 LTS）；
 > - v1.2.x 将于 2026-12-31 终止支持，建议在此日期前完成升级。
 > - v1.2.x 已进入 End of support：
 >     - 不再提供任何形式的版本更新；
