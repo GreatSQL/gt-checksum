@@ -1,30 +1,6 @@
 ## 3.0.0
 - [功能新增]: repairDB 工具新增预执行报告功能，执行修复前自动收集并展示修复 SQL 文件统计信息（文件数量、大小、语句类型分布、影响行数、预估 binlog 大小等），帮助用户在执行前评估修复影响范围。新增交互式确认机制，默认在执行修复前提示用户确认，可通过 `-f` 或 `--force` 参数跳过确认直接执行；新增 `--dry-run` 参数，仅展示统计报告而不执行实际修复操作。
+- [功能新增]: repairDB 工具新增 CSV 执行报告导出功能，执行完成后自动生成包含执行汇总和明细的 CSV 报告文件（UTF-8 BOM 编码，可直接用 Excel 打开），记录每个对象的 INSERT/DELETE/ALTER/CREATE/DROP 各操作成功与失败数、耗时及失败原因。新增 `resultFile` 配置参数和 `--result-file` CLI 参数，支持自定义 CSV 报告输出路径。
 - [测试完善]: 新增 cmd/repairDB/utils_test.go 测试文件，覆盖 formatSize、formatNumber、identifyStatementType、collectFixSQLStatistics 等核心函数的单元测试。
-
-## 2.0.1
-- [内部重构]: 项目结构调整 —— 按 Go 标准项目布局将三个主程序入口文件（gt-checksum.go、repairDB.go、oracle_random_data_load.go）迁移至 cmd/ 子目录，同步更新所有构建脚本、回归测试脚本、Dockerfile 及用户手册中的编译路径引用。
-- [内部重构]: 按职责拆分 `actions/schema_tab_struct_column.go` —— 原 1866 行文件拆分为 4 个独立文件：`_existence.go`（P1-P4 表存在性检查，322 行）、`_columns.go`（P5-P6 列元数据，556 行）、`_struct.go`（P7 struct 模式，968 行）及主文件（160 行）；P7 子阶段 8f/8g/8h 抽取为独立私有方法（buildCharsetAdvisory、evaluateStructRiskAndWriteFixSQL、finalizeStructPod），零行为变更。
-- [内部重构]: 大文件物理拆分 —— 在同包内按主题切分 `actions/schema_tab_struct.go`、`actions/table_index_dispos.go`、`MySQL/my_data_fix_sql.go` 三个超大源文件；`schema_tab_struct` 拆出 `_partition`/`_trigger`/`_foreignkey`/`_routine`/`_view`/`_charset`/`_advisory` 七个主题文件，`table_index_dispos` 拆出 `_chunk`/`_normalize`/`_writer`/`_query`/`_abnormal` 五个主题文件，`my_data_fix_sql` 拆出 `_insert`/`_delete`/`_alter`/`_update` 四个主题文件；测试文件同步按主题拆分。全部为纯物理搬移，零 API 变更、零调用方改动，全局 var/锁与入口分派保留在主文件以维持并发去重语义。
-- [内部重构]: 二次物理拆分 —— 进一步瘦身 4 个仍超 1300 行的源文件：`actions/schema_tab_struct.go`（5364→409 行）拆出 `_util`/`_filter`/`_foreign`/`_struct`/`_index`/`_column` 六个主题文件；`actions/table_index_dispos_abnormal.go`（1473→1102 行）拆出 `_fix`（DataFixDispos/detectFixSQLType）与 `_columns_mode`（writeColumnsModeAdvisory 及辅助）两个文件；`MySQL/my_query_table_data.go`（1614→806 行）拆出 `my_query_table_index_meta.go`/`my_query_table_group_choice.go`/`my_query_table_column_format.go` 三个文件；`MySQL/my_scheme_table_column.go`（1327→432 行）拆出 `my_scheme_trigger_routine.go`/`my_scheme_access_version.go`/`my_scheme_object_meta.go` 三个文件。仍为纯物理搬移，函数签名、导出性与调用方保持不变。
-- [测试完善]: 新增 `actions/schema_tab_struct_column_test.go` 单元测试，覆盖 TableColumnNameCheck 中 5 个纯函数的 18 个测试用例（isIgnorableGeneratedInvisibleColumn、hasAutoIncrementColumnAttribute、adjustDestColumnSeqAfterDrops、shouldDeferPartitionKeyColumnRepair、escapeMySQLCommentLiteral）。
-- [测试完善]: 新增 `scripts/regression-test-struct-column.sh` 专项回归测试脚本（431 行），场景驱动测试 TableColumnNameCheck 结构检查，覆盖 8 条用例（双端存在无差异、目标缺表建表、源缺表删表、列增删改、大小写差异、columnPlan 映射豁免等）。
-- [测试完善]: 扩展 `scripts/regression-test-oracle.sh` Oracle 回归测试支持场景段，新增 --with-scenarios 参数及 SECTION 11.5 场景段（142 行改动），新增 Oracle-scenarios.sql / MySQL-oracle-scenarios.sql fixture，聚合 4 条 Oracle→MySQL 场景用例。
-
-## 2.0.0
-- [性能优化]: Oracle 源端 `struct` 模式新增元数据批量预加载：列定义（`dba_tab_columns` + `dba_col_comments`）、索引（`all_tab_cols`/`all_ind_columns`/`all_indexes`/`all_constraints` 四表 JOIN）、外键（`all_constraints` + `all_cons_columns` JOIN）及分区表达式均改为按 schema 一次查询，逐表循环直接命中内存缓存；在测例场景下将元数据采集阶段耗时从 ~60s 降至 ~2s，同时避免 `UPPER(OWNER)` 导致索引失效。
-- [性能优化]: `data` 模式元数据采集阶段由串行改为并行，`SchemaTableAllCol`（列信息）与 `TableIndexColumn`（索引信息）两类查询通过 goroutine 同时执行；同时新增 schema 级 BASE TABLE 存在性缓存（`tableExistenceCache`）与分区状态缓存（`partitionedTableCache` / `partitionsCache`），避免 `TableColumnNameCheck` 对每张表重复发起 `COUNT(1)` 与 `DBMS_METADATA.GET_DDL` 探测。测例场景下 `data` 模式端到端耗时降低约一半。
-- [问题修复]: 修复 `checkObject=struct` / `trigger` / `routine` 模式下总耗时与杂项耗时输出为 0 的问题；原先仅 `data` 分支累加 `checksumTime`、`extraOpsTime` 并在分支内结算 `totalElapsedTime`，其他分支直接跳过；现将结算逻辑统一上移至 switch 之外，所有 checkObject 分支一致输出准确耗时。
-- [测试完善]: 新增 `actions/oracle_metadata_preload_test.go` 单元测试，覆盖 Oracle 源端表存在性缓存命中路径（`tableExistsByDrive` 短路）、大小写归一化、MySQL 目标端缓存复用等场景，防止元数据批量预加载回归。
-- [功能新增]: 支持前缀索引、函数索引、生成列/虚拟列（Generated Columns）的检测与修复。
-- [功能新增] 支持MySQL→MySQL 场景下的生成列（STORED/VIRTUAL GENERATED）的检测与修复。
-- [功能优化]: 扩展生成列兼容性检测，支持 MariaDB 10.0 特有格式：`PERSISTENT` 关键字（无 GENERATED 后缀）与 MySQL 8.0 `STORED GENERATED` 等价识别，`VIRTUAL` 同理；生成列表达式归一化新增大小写折叠和反引号剥离，消除 MariaDB 10.0（大写无反引号）与 MySQL 8.0（小写带反引号）格式之间的误判。
-- [测试完善]: 新增 `TestFilterPKColumnsAgainstSource_*`（3 个）、`TestBuildChunkRangeWhere_EmptyBoundsSkipped`（6 个子用例）、`TestFormatComparableColumnExpr_BitNormalization`、`TestIsBitColumnType`、`TestIsIntegerColumnType_OracleNumber`、`TestBuildNumericChunkWhereClauses_OracleNumberBit1` 等单元测试，覆盖 my_row_id 过滤、分片空边界跳过、BIT/NUMBER(p,0) 归一化与分片路径选择。
-- [测试完善]: 更新测例 `TestBuildFloatDeletePredicate_BareFloat`，覆盖 Oracle `BINARY_FLOAT` 与 MySQL 小写 `float` 的端到端归一化；更新 `TestNormalizeOracleColumnType`、`TestDecideOracleToMySQLTypeCompatibility` 测例，同步 `BINARY_FLOAT→double` 与裸 `NUMBER` 对整数类型降级为 WarnOnly 的新判定。
-- [测试完善]: 新增数个Oracle→MySQL多个回归测例，覆盖 Oracle 索引类型识别、`CHAR`/`NCHAR` 归一化、FLOAT 精度、其他完整类型映射等场景；新增 `scripts/regression-test-oracle.sh` 端到端回归脚本。
-- [测试完善]: `scripts/regression-test-oracle.sh` 在 data 模式用例执行前新增 struct 预修复环节（`run_struct_prepass`），先通过 struct 校验+repairDB 将目标端表结构收敛到与源端一致后再做数据比对，避免因列类型/缺列/索引差异引发的 data 误报；最多 `MAX_REPAIR_ROUNDS+1` 轮，无论收敛与否均继续后续 data 校验。
-- [测试完善]: 新增 MariaDB 10.0 生成列兼容性单元测试 9 个（`TestNormalizeMySQLColumnTypeMariaDB100Generated`、`TestDecideColumnDefinitionCompatibilityMariaDB100GeneratedExpression`），覆盖 PERSISTENT/VIRTUAL 关键字归一化、CAST/RTRIM/裸列引用等表达式跨版本等价性验证；testcase 生成列声明改为版本条件注释格式（`/*!50706 */`），提升测试用例跨版本兼容性。
-- [测试完善]: 新增 `TestBuildTargetColumnRepairPlanGeneratedColumn` 单元测试 8 个，覆盖 MySQL→MySQL STORED/VIRTUAL 列表达式完整性、关键字保留、MariaDB→MySQL PERSISTENT→STORED 转换、空 createDefinition 及非生成列安全性等场景；同步在 `testcase/MySQL-source.sql` 的 `indext` 表新增 `price_off_08`/`price_off_05` 生成列字段，补全回归测例。
-- [测试完善]: 新增前缀索引专项单元测试 11 个，覆盖全列/前缀差异、长度不同、多列复合等场景。
-- [问题修复]: 修复 DROP 列后 destColumnSeq 未同步压缩导致 collation 修复列重复出现在 ALTER TABLE 中的问题：当目标端含需 DROP 的列（如 MySQL 8.4 隐式主键 my_row_id）时，旧逻辑仅从 destColumnMap 移除该列而未更新列序号，导致剩余列位置全部偏移、触发"序号不匹配"，collation 修复候选列因此被重复追加至 ALTER TABLE；修复后在 DROP 处理块完成后调用 adjustDestColumnSeqAfterDrops() 压缩序号；修复 JSON 函数索引表达式中单引号被转义导致 DDL 语法报错；新增 4 个单元测试覆盖主场景及边界情况。
-- [问题修复]: 修复同名索引内容不同时漏检的问题；原来只在索引名称集合有差异时才对比同名索引的具体内容，现在无论名称集合是否一致都会进行内容比对，确保不遗漏。
+- [测试完善]: 新增 cmd/repairDB/csv_export_test.go 测试文件，覆盖 CSV BOM、汇总置顶、统一表头、ObjectType 列、行数统计、汇总值验证、DROP 列、目录创建、文件权限、逗号转义、空结果、路径解析等场景。
+- [测试完善]: 新增 TestExtractSchemaAndObject 和 TestResultCollector_Concurrent 单元测试。

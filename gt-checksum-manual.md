@@ -902,6 +902,7 @@ $ ./repairDB
 | `-f` / `--force` | 强制执行模式，跳过交互式确认直接执行修复操作 |
 | `--dry-run` | 预演模式，仅展示统计报告而不执行实际修复操作 |
 | `-conf` | 指定配置文件路径，默认为 `gc.conf` |
+| `--result-file` | 自定义 CSV 报告输出路径，默认为 `result/repairDB-result-<timestamp>.csv` |
 
 示例：
 
@@ -914,6 +915,9 @@ $ ./repairDB -f
 
 # 指定配置文件
 $ ./repairDB -conf ./my-config.conf
+
+# 自定义 CSV 报告输出路径
+$ ./repairDB --result-file /tmp/repair-report.csv
 ```
 
 ### 预执行报告
@@ -950,6 +954,60 @@ ALTER 对象数            12
 
 默认情况下，展示报告后会提示用户确认是否继续执行。使用 `-f` 或 `--force` 参数可跳过确认，使用 `--dry-run` 参数则仅展示报告而不执行修复。
 
+### CSV 执行报告
+
+从 v3.0.0 版本开始，**repairDB** 执行完成后会自动生成 CSV 格式的执行报告，默认保存在 `result/` 目录下，文件名格式为 `repairDB-result-<timestamp>.csv`。
+
+#### 报告格式
+
+CSV 报告采用统一格式，包含两个区域：
+
+**1. 执行汇总区（位于报告最前）**
+
+汇总区包含以下统计信息：
+- 总文件数、成功文件数、失败文件数
+- INSERT/DELETE/ALTER/CREATE/DROP 各操作的成功与失败数
+- 总耗时
+
+**2. 执行明细区**
+
+明细区包含每个 SQL 文件的详细执行结果，字段包括：
+- **Schema**：数据库名
+- **ObjectName**：对象名称（表名、视图名、存储过程名等）
+- **ObjectType**：对象类型（table/view/procedure/function/trigger/unknown）
+- **Stage**：执行阶段（DELETE/TABLE/VIEW/ROUTINE/TRIGGER/UNKNOWN）
+- **INSERT_OK/INSERT_FAIL**：INSERT 操作成功与失败数
+- **DELETE_OK/DELETE_FAIL**：DELETE 操作成功与失败数
+- **ALTER_OK/ALTER_FAIL**：ALTER 操作成功与失败数
+- **CREATE_OK/CREATE_FAIL**：CREATE 操作成功与失败数
+- **DROP_OK/DROP_FAIL**：DROP 操作成功与失败数
+- **Elapsed**：执行耗时
+- **ErrorReason**：执行失败原因（成功时为空）
+
+#### 文件编码
+
+CSV 文件使用 UTF-8 BOM 编码，可直接用 Excel 或 WPS 打开，无需手动转换编码。
+
+#### 自定义输出路径
+
+可通过以下两种方式自定义 CSV 报告的输出路径：
+
+1. **配置文件方式**：在 `gc.conf` 中设置 `resultFile` 参数
+   ```ini
+   resultFile=/tmp/repair-report.csv
+   ```
+
+2. **命令行参数方式**（优先级更高）：
+   ```bash
+   $ ./repairDB --result-file /tmp/repair-report.csv
+   ```
+
+#### 注意事项
+
+- CSV 报告写入失败仅输出 Warning 日志，不会阻断修复主流程
+- 如果指定的输出目录不存在，会自动创建
+- 文件权限为 0600（仅所有者可读写），确保安全性
+
 ### 配置文件参数说明
 
 **repairDB** 工具使用的配置文件与 **gt-checksum** 工具相同，主要关注以下几个参数：
@@ -960,6 +1018,7 @@ ALTER 对象数            12
 | parallelThds | int | 4 | 并行执行SQL文件的线程数 |
 | fixFileDir | string | fixsql | 存放修复SQL文件的目录 |
 | logbin | string | ON | 控制修复时是否写入 binlog；`OFF` 时每条连接执行 `SET sql_log_bin=0`，需要 SUPER 或 SESSION_VARIABLES_ADMIN 权限 |
+| resultFile | string | 空 | 自定义 CSV 报告输出路径；留空时自动使用默认路径格式 `result/repairDB-result-<timestamp>.csv`；命令行参数 `--result-file` 优先级高于此配置项 |
 
 ### 执行流程
 

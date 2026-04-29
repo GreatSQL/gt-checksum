@@ -2,7 +2,7 @@
 [![](https://img.shields.io/badge/GreatSQL-论坛-brightgreen.svg)](https://greatsql.cn/forum.php)
 [![](https://img.shields.io/badge/GreatSQL-博客-brightgreen.svg)](https://greatsql.cn/home.php?mod=space&uid=10&do=blog&view=me&from=space)
 [![](https://img.shields.io/badge/License-Apache_v2.0-blue.svg)](https://gitee.com/GreatSQL/gt-checksum/blob/master/LICENSE)
-[![](https://img.shields.io/badge/release-2.0.0-blue.svg)](https://gitee.com/GreatSQL/gt-checksum/releases)
+[![](https://img.shields.io/badge/release-3.0.0-blue.svg)](https://gitee.com/GreatSQL/gt-checksum/releases)
 
 # gt-checksum
 **gt-checksum** 是GreatSQL社区开源的数据库校验及修复工具，支持 MySQL-family（MySQL/Percona/GreatSQL/MariaDB等）、Oracle 等主流数据库。
@@ -17,6 +17,7 @@ MySQL DBA经常使用 **pt-table-checksum** 和 **pt-table-sync** 进行数据�
 
 - **[功能新增]** repairDB 工具新增预执行报告功能，执行前自动展示修复 SQL 统计信息（文件数量、影响行数、预估 binlog 大小等）。
 - **[功能新增]** repairDB 工具新增交互式确认机制和 `--dry-run` 参数，提升修复操作安全性。
+- **[功能新增]** repairDB 工具新增 CSV 执行报告导出功能，自动生成包含执行汇总和明细的报告文件。
 
 更多详细变化详见 [CHANGELOG](./CHANGELOG.md)。
 
@@ -36,11 +37,11 @@ MySQL DBA经常使用 **pt-table-checksum** 和 **pt-table-sync** 进行数据�
 |---------|---------|------|---------|---------|------|------|
 | v1.2.x | v1.2.5 | EOL | 2023-03-06 | 2026-12-31 | End of support | 已终止支持，不再提供任何更新（含 Bug Fix / 安全更新）；如遇问题请升级至 v1.3.x |
 | v1.3.x | v1.3.0 | LTS | 2026-04-08 | 2028-04-08 | **活跃**（Bug Fix + Security） | 支持校验部分字段、VIEW、CSV导出功能 |
-| v2.0.x | v2.0.0 | LTS | 2026-04-22 | 2028-04-22 | **活跃**（Bug Fix + Security） | 支持Oracle→MySQL `struct`/`data` 模式，MySQL JSON数据类型、JSON多值索引、前缀索引、函数索引、虚拟列 |
+| v2.0.x | v2.0.1 | LTS | 2026-04-29 | 2028-04-22 | **活跃**（Bug Fix + Security） | 支持Oracle→MySQL `struct`/`data` 模式，MySQL JSON数据类型、JSON多值索引、前缀索引、函数索引、虚拟列 |
 
 > 说明：
 >
-> - 推荐生产环境使用 **v2.0.x** 或 **v1.3.0**（均为当前活跃 LTS）；
+> - 推荐生产环境使用 **v2.0** 或 **v1.3** 最新小版本（均为当前活跃 LTS）；
 > - v1.2.x 将于 2026-12-31 终止支持，建议在此日期前完成升级。
 > - v1.2.x 已进入 End of support：
 >     - 不再提供任何形式的版本更新；
@@ -173,6 +174,33 @@ $ ./repairDB ./fixsql && cat ./repairDB.log
 这就表示完成修复，可以再次执行数据校验，确认数据一致性。
 
 **注意**：由于是并行执行数据修复工作，修复过程中可能产生事务死锁冲突。`repairDB` 在检测到 MySQL deadlock（Error 1213）时，会自动对当前失败的事务块（`BEGIN ... COMMIT`）执行重试，最多重试 3 次；而不会重试整个 SQL 文件，从而降低主键重复冲突风险。建议修复结束后检查 `repairDB.log`：若死锁在 3 次重试内已恢复，可直接再次执行校验；若仍有未恢复死锁或其他错误，再手动处理对应 SQL 文件。
+
+### repairDB CLI 参数
+
+| 参数 | 说明 |
+|---|---|
+| `-conf` | 配置文件路径（默认 `gc.conf`） |
+| `-f` / `--force` | 跳过交互式确认，直接执行修复 |
+| `--dry-run` | 仅展示预执行统计报告，不执行实际修复 |
+| `--result-file` | 自定义 CSV 报告输出路径（默认 `result/repairDB-result-<timestamp>.csv`） |
+
+### repairDB 配置文件参数
+
+| 参数 | 说明 | 示例 |
+|---|---|---|
+| `dstDSN` | 目标数据库连接串 | `mysql|user:pass@tcp(host:3306)/db` |
+| `parallelThds` | 并发执行线程数（默认 4） | `8` |
+| `fixFileDir` | 修复 SQL 文件目录（默认 `./fixsql`） | `/data/fixsql` |
+| `logbin` | sql_log_bin 开关（ON/OFF，默认 ON） | `OFF` |
+| `resultFile` | 自定义 CSV 报告输出路径 | `/tmp/repair-report.csv` |
+
+### CSV 执行报告
+
+执行完成后自动生成 CSV 报告，格式如下：
+- **执行汇总**（位于报告最前）：总文件数、成功/失败数、INSERT/DELETE/ALTER/CREATE/DROP 各操作成功与失败数、总耗时
+- **执行明细**：Schema、ObjectName、ObjectType（table/view/procedure/function/trigger）、INSERT/DELETE/ALTER/CREATE/DROP 各操作成功与失败数、耗时、执行失败原因
+
+CSV 文件带有 UTF-8 BOM，可直接用 Excel/WPS 打开。报告写入失败仅输出 Warning，不影响修复流程。
 
 ## oracle_random_data_load
 
