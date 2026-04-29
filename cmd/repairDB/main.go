@@ -32,7 +32,8 @@ type Config struct {
 	ParallelThds int
 	FixFileDir   string
 	LogFile      string
-	LogBin       bool // true = keep sql_log_bin ON (default); false = SET sql_log_bin=0 per connection
+	LogBin       bool   // true = keep sql_log_bin ON (default); false = SET sql_log_bin=0 per connection
+	ResultFile   string // custom output path for CSV report, empty = use default
 }
 
 // FixSQLStatistics stores statistics about fix SQL files
@@ -62,6 +63,107 @@ type FixSQLStatistics struct {
 
 	// Binlog estimation
 	EstimatedBinlogSize int64
+}
+
+// unitExecOutcome captures statement-level execution results for a single execution unit.
+type unitExecOutcome struct {
+	InsertSuccess int64
+	InsertFailure int64
+	DeleteSuccess int64
+	DeleteFailure int64
+	AlterSuccess  int64
+	AlterFailure  int64
+	CreateSuccess int64
+	CreateFailure int64
+	DropSuccess   int64
+	DropFailure   int64
+}
+
+func (o *unitExecOutcome) add(other unitExecOutcome) {
+	o.InsertSuccess += other.InsertSuccess
+	o.InsertFailure += other.InsertFailure
+	o.DeleteSuccess += other.DeleteSuccess
+	o.DeleteFailure += other.DeleteFailure
+	o.AlterSuccess += other.AlterSuccess
+	o.AlterFailure += other.AlterFailure
+	o.CreateSuccess += other.CreateSuccess
+	o.CreateFailure += other.CreateFailure
+	o.DropSuccess += other.DropSuccess
+	o.DropFailure += other.DropFailure
+}
+
+// FileExecResult contains the execution result of a single SQL file.
+type FileExecResult struct {
+	FilePath   string
+	Schema     string
+	ObjectName string
+	Stage      string // DELETE, TABLE, VIEW, ROUTINE, TRIGGER, UNKNOWN
+	ObjectType string // table, view, procedure, function, trigger, unknown
+
+	InsertSuccess int64
+	InsertFailure int64
+	DeleteSuccess int64
+	DeleteFailure int64
+	AlterSuccess  int64
+	AlterFailure  int64
+	CreateSuccess int64
+	CreateFailure int64
+	DropSuccess   int64
+	DropFailure   int64
+
+	Elapsed     time.Duration
+	ErrorReason string // empty = success
+}
+
+// mergeFromOutcome aggregates a unitExecOutcome into this file-level result.
+func (r *FileExecResult) mergeFromOutcome(o unitExecOutcome) {
+	r.InsertSuccess += o.InsertSuccess
+	r.InsertFailure += o.InsertFailure
+	r.DeleteSuccess += o.DeleteSuccess
+	r.DeleteFailure += o.DeleteFailure
+	r.AlterSuccess += o.AlterSuccess
+	r.AlterFailure += o.AlterFailure
+	r.CreateSuccess += o.CreateSuccess
+	r.CreateFailure += o.CreateFailure
+	r.DropSuccess += o.DropSuccess
+	r.DropFailure += o.DropFailure
+}
+
+// ExecSummary aggregates execution statistics across all files.
+type ExecSummary struct {
+	TotalFiles      int
+	SuccessFiles    int
+	FailureFiles    int
+	TotalInsertOk   int64
+	TotalInsertFail int64
+	TotalDeleteOk   int64
+	TotalDeleteFail int64
+	TotalAlterOk    int64
+	TotalAlterFail  int64
+	TotalCreateOk   int64
+	TotalCreateFail int64
+	TotalDropOk     int64
+	TotalDropFail   int64
+}
+
+// resultCollector provides thread-safe collection of FileExecResult.
+type resultCollector struct {
+	mu      sync.Mutex
+	results []FileExecResult
+}
+
+func (c *resultCollector) append(r FileExecResult) {
+	c.mu.Lock()
+	c.results = append(c.results, r)
+	c.mu.Unlock()
+}
+
+func (c *resultCollector) snapshot() []FileExecResult {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]FileExecResult, len(c.results))
+	copy(out, c.results)
+	return out
 }
 
 // Global variables
@@ -116,6 +218,8 @@ func parseConfig(confFile string) error {
 			default:
 				return fmt.Errorf("invalid value for logbin: %q (must be ON or OFF)", value)
 			}
+		case "resultFile":
+			config.ResultFile = value
 		}
 	}
 
@@ -514,25 +618,74 @@ func parseDSN(dsn string) string {
 	return parts[1]
 }
 
+// extractSchemaAndObject parses schema and object name from a repair SQL file path.
+// Examples:
+//
+//	table.db1.orders.sql           → schema=db1, object=orders
+//	table.db1.orders-DELETE-1.sql  → schema=db1, object=orders
+//	view.appdb.v_orders.sql        → schema=appdb, object=v_orders
+//	manual.sql                     → schema="", object=manual
+func extractSchemaAndObject(filePath string) (schema, object string) {
+	base := filepath.Base(filePath)
+	name := strings.TrimSuffix(base, ".sql")
+
+	// Strip -DELETE-N suffix for DELETE-pattern files
+	if deleteFileNameRegex.MatchString(base) {
+		dashIdx := strings.LastIndex(name, "-DELETE-")
+		if dashIdx != -1 {
+			name = name[:dashIdx]
+		}
+	}
+
+	parts := strings.SplitN(name, ".", 3)
+	if len(parts) == 3 && (parts[0] == "table" || parts[0] == "view" || parts[0] == "routine" || parts[0] == "trigger") {
+		return parts[1], parts[2]
+	}
+	if len(parts) == 2 {
+		return parts[0], parts[1]
+	}
+	return "", name
+}
+
 // Execute SQL file
-func executeSQLFile(db *sql.DB, sqlFile string) error {
+func executeSQLFile(db *sql.DB, sqlFile string) (FileExecResult, error) {
+	startTime := time.Now()
+	schema, obj := extractSchemaAndObject(sqlFile)
+	stage := detectObjectStage(sqlFile)
+
+	result := FileExecResult{
+		FilePath:   sqlFile,
+		Schema:     schema,
+		ObjectName: obj,
+		Stage:      stage,
+	}
+
 	// Read SQL file content
 	content, err := os.ReadFile(sqlFile)
 	if err != nil {
-		return fmt.Errorf("Failed to read SQL file: %v", err)
+		result.Elapsed = time.Since(startTime)
+		result.ErrorReason = fmt.Sprintf("Failed to read SQL file: %v", err)
+		return result, err
 	}
+
+	// Detect object type from stage and SQL content
+	result.ObjectType = detectObjectTypeFromContent(stage, string(content))
 
 	statements := splitSQLStatements(string(content))
 	units, err := buildSQLExecutionUnits(statements)
 	if err != nil {
-		return err
+		result.Elapsed = time.Since(startTime)
+		result.ErrorReason = err.Error()
+		return result, err
 	}
 
 	// Keep one connection for the whole file so session-level SET statements
 	// (for example UNIQUE_CHECKS/FOREIGN_KEY_CHECKS) apply to all subsequent SQL.
 	conn, err := db.Conn(context.Background())
 	if err != nil {
-		return fmt.Errorf("Failed to get database connection: %v", err)
+		result.Elapsed = time.Since(startTime)
+		result.ErrorReason = fmt.Sprintf("Failed to get database connection: %v", err)
+		return result, err
 	}
 	defer conn.Close()
 
@@ -543,17 +696,23 @@ func executeSQLFile(db *sql.DB, sqlFile string) error {
 		logBinVal = "0"
 	}
 	if _, err := conn.ExecContext(context.Background(), "SET sql_log_bin = "+logBinVal); err != nil {
-		return fmt.Errorf("Failed to SET sql_log_bin=%s: %v", logBinVal, err)
+		result.Elapsed = time.Since(startTime)
+		result.ErrorReason = fmt.Sprintf("Failed to SET sql_log_bin=%s: %v", logBinVal, err)
+		return result, err
 	}
 
 	for _, unit := range units {
-		err = executeUnitWithDeadlockRetry(conn, sqlFile, unit)
+		outcome, err := executeUnitWithDeadlockRetry(conn, sqlFile, unit)
+		result.mergeFromOutcome(outcome)
 		if err != nil {
-			return err
+			result.Elapsed = time.Since(startTime)
+			result.ErrorReason = err.Error()
+			return result, err
 		}
 	}
 
-	return nil
+	result.Elapsed = time.Since(startTime)
+	return result, nil
 }
 
 type sqlExecutionUnit struct {
@@ -615,8 +774,9 @@ func buildSQLExecutionUnits(statements []string) ([]sqlExecutionUnit, error) {
 	return units, nil
 }
 
-func executeUnitWithDeadlockRetry(conn *sql.Conn, sqlFile string, unit sqlExecutionUnit) error {
+func executeUnitWithDeadlockRetry(conn *sql.Conn, sqlFile string, unit sqlExecutionUnit) (unitExecOutcome, error) {
 	var lastErr error
+	var lastOutcome unitExecOutcome
 	for retryRound := 0; retryRound <= maxDeadlockRetries; retryRound++ {
 		if retryRound > 0 {
 			backoff := time.Duration(1<<uint(retryRound)) * time.Second
@@ -624,45 +784,54 @@ func executeUnitWithDeadlockRetry(conn *sql.Conn, sqlFile string, unit sqlExecut
 			time.Sleep(backoff)
 		}
 
-		err := executeUnit(conn, unit)
+		outcome, err := executeUnit(conn, unit)
 		if err == nil {
-			return nil
+			return outcome, nil
 		}
 		lastErr = err
+		lastOutcome = outcome
 
 		if !isDeadlockError(err) {
-			return err
+			return outcome, err
 		}
 
 		log.Printf("DEADLOCK detected in SQL file %s unit #%d (retry round %d): %v\n", sqlFile, unit.index, retryRound, err)
 	}
-	return fmt.Errorf("deadlock unresolved after %d retries in SQL file %s unit #%d: %v", maxDeadlockRetries, sqlFile, unit.index, lastErr)
+	return lastOutcome, fmt.Errorf("deadlock unresolved after %d retries in SQL file %s unit #%d: %v", maxDeadlockRetries, sqlFile, unit.index, lastErr)
 }
 
-func executeUnit(conn *sql.Conn, unit sqlExecutionUnit) error {
+func executeUnit(conn *sql.Conn, unit sqlExecutionUnit) (unitExecOutcome, error) {
+	var outcome unitExecOutcome
+
 	if unit.transactional {
 		tx, err := conn.BeginTx(context.Background(), nil)
 		if err != nil {
-			return fmt.Errorf("Failed to start transaction: %v", err)
+			return outcome, fmt.Errorf("Failed to start transaction: %v", err)
 		}
 
+		var txOutcome unitExecOutcome
 		for _, stmt := range unit.statements {
 			stmt = strings.TrimSpace(stmt)
 			if stmt == "" {
 				continue
 			}
 			stmt = normalizeMySQLDateFormatLiteralInSQLForExec(stmt)
-			_, err = tx.ExecContext(context.Background(), stmt)
-			if err != nil {
+			stmtType, _ := identifyStatementType(stmt)
+			result, execErr := tx.ExecContext(context.Background(), stmt)
+			if execErr != nil {
+				recordStmtFailure(&txOutcome, stmtType)
 				_ = tx.Rollback()
-				return fmt.Errorf("Failed to execute SQL statement: %v", err)
+				return outcome, fmt.Errorf("Failed to execute SQL statement in transaction (rolled back): %v", execErr)
 			}
+			recordStmtSuccess(&txOutcome, stmtType, result)
 		}
 
 		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("Failed to commit transaction: %v", err)
+			return outcome, fmt.Errorf("Failed to commit transaction: %v", err)
 		}
-		return nil
+		// Only merge tx outcome after successful commit; rollback discards all changes.
+		outcome.add(txOutcome)
+		return outcome, nil
 	}
 
 	for _, stmt := range unit.statements {
@@ -671,11 +840,51 @@ func executeUnit(conn *sql.Conn, unit sqlExecutionUnit) error {
 			continue
 		}
 		stmt = normalizeMySQLDateFormatLiteralInSQLForExec(stmt)
-		if _, err := conn.ExecContext(context.Background(), stmt); err != nil {
-			return fmt.Errorf("Failed to execute SQL statement: %v", err)
+		stmtType, _ := identifyStatementType(stmt)
+		result, execErr := conn.ExecContext(context.Background(), stmt)
+		if execErr != nil {
+			recordStmtFailure(&outcome, stmtType)
+			return outcome, fmt.Errorf("Failed to execute SQL statement: %v", execErr)
 		}
+		recordStmtSuccess(&outcome, stmtType, result)
 	}
-	return nil
+	return outcome, nil
+}
+
+func recordStmtSuccess(o *unitExecOutcome, stmtType string, result sql.Result) {
+	rows, err := result.RowsAffected()
+	if err != nil {
+		// Some statement types (e.g., DDL) may not support RowsAffected.
+		// For DML statements, use 1 as fallback; for DDL, the switch handles it.
+		rows = 1
+	}
+	switch stmtType {
+	case "INSERT":
+		o.InsertSuccess += rows
+	case "DELETE":
+		o.DeleteSuccess += rows
+	case "ALTER":
+		o.AlterSuccess++
+	case "CREATE":
+		o.CreateSuccess++
+	case "DROP":
+		o.DropSuccess++
+	}
+}
+
+func recordStmtFailure(o *unitExecOutcome, stmtType string) {
+	switch stmtType {
+	case "INSERT":
+		o.InsertFailure++
+	case "DELETE":
+		o.DeleteFailure++
+	case "ALTER":
+		o.AlterFailure++
+	case "CREATE":
+		o.CreateFailure++
+	case "DROP":
+		o.DropFailure++
+	}
 }
 
 func isBeginStatement(stmt string) bool {
@@ -1026,6 +1235,28 @@ func detectObjectStage(path string) string {
 	}
 }
 
+// detectObjectTypeFromContent returns the human-readable object type for a SQL file.
+// For ROUTINE stage files it inspects the SQL content to distinguish procedure vs function.
+func detectObjectTypeFromContent(stage, content string) string {
+	switch stage {
+	case "TABLE", "DELETE":
+		return "table"
+	case "VIEW":
+		return "view"
+	case "TRIGGER":
+		return "trigger"
+	case "ROUTINE":
+		upper := strings.ToUpper(content)
+		if strings.Contains(upper, "CREATE FUNCTION") ||
+			(strings.Contains(upper, "CREATE DEFINER") && strings.Contains(upper, " FUNCTION ")) {
+			return "function"
+		}
+		return "procedure"
+	default:
+		return "unknown"
+	}
+}
+
 // classifySQLFiles distributes SQL file paths into their respective execution stages.
 func classifySQLFiles(files []string) classifiedFiles {
 	var cf classifiedFiles
@@ -1303,11 +1534,12 @@ func openExecutionDB(dsn string) (*sql.DB, error) {
 // Concurrency is bounded by config.ParallelThds. All goroutines run to completion before
 // returning (wait-all-then-report); a failure in one file does not cancel others in the
 // same stage, but the returned error prevents subsequent stages from starting.
-func parallelExecuteSQLFiles(db *sql.DB, files []string, stageName string) error {
+func parallelExecuteSQLFiles(db *sql.DB, files []string, stageName string) ([]FileExecResult, error) {
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, config.ParallelThds)
 	errCh := make(chan error, len(files))
 	var executionSeq uint64
+	collector := &resultCollector{}
 
 	for _, sqlFile := range files {
 		file := sqlFile
@@ -1321,7 +1553,10 @@ func parallelExecuteSQLFiles(db *sql.DB, files []string, stageName string) error
 			seq := atomic.AddUint64(&executionSeq, 1)
 			log.Printf("[%s] execution sequence #%d: %s\n", stageName, seq, file)
 
-			err := executeSQLFile(db, file)
+			result, err := executeSQLFile(db, file)
+			if result.FilePath != "" {
+				collector.append(result)
+			}
 			if err != nil {
 				errCh <- fmt.Errorf("Failed to execute SQL file %s: %v", file, err)
 				log.Printf("Failed to execute SQL file %s: %v\n", file, err)
@@ -1347,10 +1582,30 @@ func parallelExecuteSQLFiles(db *sql.DB, files []string, stageName string) error
 			firstErr = err
 		}
 	}
+
+	results := collector.snapshot()
+	// Sort results: by stage order, then filepath for deterministic output
+	sort.SliceStable(results, func(i, j int) bool {
+		si, sj := stageIndex(results[i].Stage), stageIndex(results[j].Stage)
+		if si != sj {
+			return si < sj
+		}
+		return results[i].FilePath < results[j].FilePath
+	})
+
 	if errCount > 0 {
-		return fmt.Errorf("%s failed: %d file(s) execution error, first error: %v", stageName, errCount, firstErr)
+		return results, fmt.Errorf("%s failed: %d file(s) execution error, first error: %v", stageName, errCount, firstErr)
 	}
-	return nil
+	return results, nil
+}
+
+func stageIndex(stage string) int {
+	for i, s := range stageOrder {
+		if s == stage {
+			return i
+		}
+	}
+	return len(stageOrder)
 }
 
 func main() {
@@ -1370,6 +1625,7 @@ func run() error {
 	force := flag.Bool("f", false, "Force execution without confirmation")
 	forceLong := flag.Bool("force", false, "Force execution without confirmation")
 	dryRun := flag.Bool("dry-run", false, "Dry run mode: show statistics only")
+	resultFile := flag.String("result-file", "", "Custom output path for CSV report (default: result/repairDB-result-<timestamp>.csv)")
 	flag.Parse()
 
 	forceMode := *force || *forceLong
@@ -1524,6 +1780,8 @@ func run() error {
 	// (e.g. FOREIGN_KEY_CHECKS=0, UNIQUE_CHECKS=0) cannot leak into subsequent stages
 	// via pooled connections, because database/sql does not reset session state on conn.Close().
 	dsn := parseDSN(config.DstDSN)
+	var allResults []FileExecResult
+
 	for _, stage := range stages {
 		files := prepareStageFiles(stage)
 		logExecutionPlan(stage.Name, files, config.FixFileDir)
@@ -1531,11 +1789,18 @@ func run() error {
 
 		db, err := openExecutionDB(dsn)
 		if err != nil {
+			// Write CSV with results collected so far before returning error
+			if len(allResults) > 0 {
+				writeCSVIfPossible(allResults, time.Since(startTime), *resultFile)
+			}
 			return fmt.Errorf("[%s] failed to connect to database: %v", stage.Name, err)
 		}
-		stageErr := parallelExecuteSQLFiles(db, files, stage.Name)
+		stageResults, stageErr := parallelExecuteSQLFiles(db, files, stage.Name)
+		allResults = append(allResults, stageResults...)
 		db.Close()
 		if stageErr != nil {
+			// Write CSV with results collected so far (including failed stage) before returning error
+			writeCSVIfPossible(allResults, time.Since(startTime), *resultFile)
 			return fmt.Errorf("[%s] execution failed: %v", stage.Name, stageErr)
 		}
 
@@ -1544,6 +1809,9 @@ func run() error {
 
 	// Calculate total time
 	totalTime := time.Since(startTime)
+
+	// Write CSV report
+	writeCSVIfPossible(allResults, totalTime, *resultFile)
 
 	// Format total time to match the required format (e.g., 9m43.936s)
 	minutes := int(totalTime.Minutes())
@@ -1554,3 +1822,26 @@ func run() error {
 	log.Printf("repairDB executed successfully\n")
 	return nil
 }
+
+// writeCSVIfPossible writes the CSV report and logs a warning on failure.
+// It does not return an error because CSV writing is non-fatal.
+func writeCSVIfPossible(results []FileExecResult, totalTime time.Duration, cliResultFile string) {
+	if len(results) == 0 {
+		return
+	}
+	// Priority: CLI flag > config file > default
+	var resultPath string
+	if cliResultFile != "" {
+		resultPath = resolveRepairResultFilePath(cliResultFile)
+	} else if config.ResultFile != "" {
+		resultPath = resolveRepairResultFilePath(config.ResultFile)
+	} else {
+		resultPath = resolveRepairResultFilePath("")
+	}
+	if err := writeRepairCSVReport(results, totalTime, resultPath); err != nil {
+		log.Printf("[WARN] Failed to write CSV report: %v\n", err)
+	} else {
+		log.Printf("CSV report written to: %s\n", resultPath)
+	}
+}
+
