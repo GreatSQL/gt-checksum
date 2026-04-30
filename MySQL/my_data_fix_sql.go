@@ -23,10 +23,16 @@ var (
 	TablePrimaryKeyColumns map[string][]string
 	// 跟踪每个数据库连接当前使用的数据库，key格式：connectionPointer|schema
 	CurrentDatabaseCache map[string]string
+	// 缓存表是否有 NOT NULL 唯一索引，key格式：schema.table
+	TableHasNotNullUniqueIndex map[string]bool
+	// 缓存目标端是否启用 sql_generate_invisible_primary_key
+	sqlGenerateInvisiblePKEnabled *bool
 
 	// 互斥锁保护缓存map的并发访问
-	tablePrimaryKeyMutex sync.RWMutex
-	databaseCacheMutex   sync.RWMutex
+	tablePrimaryKeyMutex          sync.RWMutex
+	databaseCacheMutex            sync.RWMutex
+	tableNotNullUniqueIndexMutex  sync.RWMutex
+	sqlGenerateInvisiblePKMutex   sync.RWMutex
 )
 
 // mysqlQuoteIdent 对 MySQL 标识符加反引号，并对内部反引号做双写转义。
@@ -431,6 +437,7 @@ func init() {
 	DestTableHasPrimaryKey = make(map[string]bool)
 	TablePrimaryKeyColumns = make(map[string][]string)
 	CurrentDatabaseCache = make(map[string]string)
+	TableHasNotNullUniqueIndex = make(map[string]bool)
 }
 
 // 检查目标表是否存在主键并更新DestTableHasPrimaryKey映射
@@ -797,3 +804,298 @@ func writeFixSQLToFile(path string, sqls []string, logThreadSeq int64) error {
 	return nil
 }
 
+// CheckTableHasNotNullUniqueIndex 检查表是否有 NOT NULL 唯一索引
+// 返回 true 表示表有至少一个唯一索引，且该索引的所有列都是 NOT NULL
+func CheckTableHasNotNullUniqueIndex(db *sql.DB, schema, table string, logThreadSeq int64) (bool, error) {
+	key := fmt.Sprintf("%s.%s", schema, table)
+
+	// 如果已经检查过，直接返回结果（使用读锁）
+	tableNotNullUniqueIndexMutex.RLock()
+	if hasIndex, exists := TableHasNotNullUniqueIndex[key]; exists {
+		tableNotNullUniqueIndexMutex.RUnlock()
+		return hasIndex, nil
+	}
+	tableNotNullUniqueIndexMutex.RUnlock()
+
+	// 查询唯一索引及其列的 NULL 约束
+	// 使用 GROUP BY 按索引名分组，检查是否所有列都是 NOT NULL
+	query := `
+		SELECT s.INDEX_NAME,
+		       COUNT(*) as total_cols,
+		       SUM(CASE WHEN c.IS_NULLABLE = 'NO' THEN 1 ELSE 0 END) as not_null_cols
+		FROM INFORMATION_SCHEMA.STATISTICS s
+		JOIN INFORMATION_SCHEMA.COLUMNS c
+		  ON s.TABLE_SCHEMA = c.TABLE_SCHEMA
+		  AND s.TABLE_NAME = c.TABLE_NAME
+		  AND s.COLUMN_NAME = c.COLUMN_NAME
+		WHERE s.TABLE_SCHEMA = ?
+		  AND s.TABLE_NAME = ?
+		  AND s.NON_UNIQUE = 0
+		  AND s.INDEX_NAME != 'PRIMARY'
+		GROUP BY s.INDEX_NAME
+		HAVING total_cols = not_null_cols
+		LIMIT 1
+	`
+
+	var indexName string
+	var totalCols, notNullCols int
+	err := db.QueryRow(query, schema, table).Scan(&indexName, &totalCols, &notNullCols)
+
+	hasIndex := false
+	if err == nil {
+		// 找到至少一个唯一索引，且所有列都是 NOT NULL
+		hasIndex = true
+	} else if err != sql.ErrNoRows {
+		// 查询出错（非"无结果"错误）
+		vlog := fmt.Sprintf("(%d) Error checking NOT NULL unique index for %s.%s: %v", logThreadSeq, schema, table, err)
+		global.Wlog.Error(vlog)
+		return false, err
+	}
+	// sql.ErrNoRows 表示没有找到符合条件的唯一索引，hasIndex 保持为 false
+
+	// 更新缓存（使用写锁）
+	tableNotNullUniqueIndexMutex.Lock()
+	TableHasNotNullUniqueIndex[key] = hasIndex
+	tableNotNullUniqueIndexMutex.Unlock()
+
+	return hasIndex, nil
+}
+
+// CheckSqlGenerateInvisiblePrimaryKey 检查目标端是否启用 sql_generate_invisible_primary_key
+// 返回 true 表示目标端已启用该参数，会自动为无主键表生成 my_row_id 隐藏列
+func CheckSqlGenerateInvisiblePrimaryKey(db *sql.DB, logThreadSeq int64) (bool, error) {
+	// 如果已经检查过，直接返回结果（使用读锁）
+	sqlGenerateInvisiblePKMutex.RLock()
+	if sqlGenerateInvisiblePKEnabled != nil {
+		enabled := *sqlGenerateInvisiblePKEnabled
+		sqlGenerateInvisiblePKMutex.RUnlock()
+		return enabled, nil
+	}
+	sqlGenerateInvisiblePKMutex.RUnlock()
+
+	// 查询目标端的 sql_generate_invisible_primary_key 变量
+	query := "SHOW VARIABLES LIKE 'sql_generate_invisible_primary_key'"
+	var varName, varValue string
+	err := db.QueryRow(query).Scan(&varName, &varValue)
+
+	enabled := false
+	if err == nil {
+		// 变量存在，检查值是否为 1 或 ON
+		varValue = strings.ToUpper(strings.TrimSpace(varValue))
+		if varValue == "1" || varValue == "ON" {
+			enabled = true
+		}
+	} else if err != sql.ErrNoRows {
+		// 查询出错（非"无结果"错误）
+		vlog := fmt.Sprintf("(%d) Error checking sql_generate_invisible_primary_key: %v", logThreadSeq, err)
+		global.Wlog.Warn(vlog)
+		// 查询失败时假定未启用，不返回错误
+	}
+	// sql.ErrNoRows 或变量值为 0/OFF 表示未启用，enabled 保持为 false
+
+	// 更新缓存（使用写锁）
+	sqlGenerateInvisiblePKMutex.Lock()
+	sqlGenerateInvisiblePKEnabled = &enabled
+	sqlGenerateInvisiblePKMutex.Unlock()
+
+	return enabled, nil
+}
+
+// GenerateMyRowIDColumnDef 生成 my_row_id 列定义数组（符合列定义数组结构）
+// 返回 6 元素数组：[数据类型, 字符集, 排序规则, NULL约束, 默认值, 列注释]
+func GenerateMyRowIDColumnDef() []string {
+	return []string{
+		"bigint unsigned NOT NULL AUTO_INCREMENT /*!80023 INVISIBLE */", // [0] 数据类型
+		"null",  // [1] 字符集
+		"null",  // [2] 排序规则
+		"NO",    // [3] NULL 约束（NOT NULL）
+		"empty", // [4] 默认值
+		"",      // [5] 列注释
+	}
+}
+
+// ShouldAddMyRowID 综合判断是否需要为表添加 my_row_id 隐藏列
+// 返回 true 表示需要添加，false 表示不需要添加
+func ShouldAddMyRowID(db *sql.DB, schema, table, requirePK string, logThreadSeq int64) (bool, error) {
+	// 1. 检查 requirePK 是否为 ON
+	if strings.ToUpper(strings.TrimSpace(requirePK)) != "ON" {
+		return false, nil
+	}
+
+	// 2. 检查目标端是否已启用 sql_generate_invisible_primary_key
+	enabled, err := CheckSqlGenerateInvisiblePrimaryKey(db, logThreadSeq)
+	if err != nil {
+		// 查询失败时假定未启用，继续检查
+		vlog := fmt.Sprintf("(%d) Failed to check sql_generate_invisible_primary_key, assuming disabled: %v", logThreadSeq, err)
+		global.Wlog.Warn(vlog)
+	}
+	if enabled {
+		// 目标端已启用自动生成隐藏主键，无需手动添加
+		return false, nil
+	}
+
+	// 3. 检查表是否有主键
+	// 使用 CheckDestTableHasPrimaryKey 的逻辑，但需要适配为独立函数调用
+	key := fmt.Sprintf("%s.%s", schema, table)
+	tablePrimaryKeyMutex.RLock()
+	hasPK, exists := DestTableHasPrimaryKey[key]
+	tablePrimaryKeyMutex.RUnlock()
+
+	if !exists {
+		// 缓存中没有，需要查询
+		query := `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+		          WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND CONSTRAINT_NAME = 'PRIMARY'`
+		rows, err := db.Query(query, schema, table)
+		if err != nil {
+			vlog := fmt.Sprintf("(%d) Error checking primary key for %s.%s: %v", logThreadSeq, schema, table, err)
+			global.Wlog.Error(vlog)
+			return false, err
+		}
+		defer rows.Close()
+
+		hasPK = false
+		for rows.Next() {
+			var colName string
+			if err := rows.Scan(&colName); err != nil {
+				continue
+			}
+			hasPK = true
+			break
+		}
+
+		// 更新缓存
+		tablePrimaryKeyMutex.Lock()
+		DestTableHasPrimaryKey[key] = hasPK
+		tablePrimaryKeyMutex.Unlock()
+	}
+
+	if hasPK {
+		// 表有主键，无需添加 my_row_id
+		return false, nil
+	}
+
+	// 4. 检查表是否有 NOT NULL 唯一索引
+	hasNotNullUniqueIndex, err := CheckTableHasNotNullUniqueIndex(db, schema, table, logThreadSeq)
+	if err != nil {
+		return false, err
+	}
+	if hasNotNullUniqueIndex {
+		// 表有 NOT NULL 唯一索引，无需添加 my_row_id
+		return false, nil
+	}
+
+	// 5. 检查表是否已有 my_row_id 列
+	// 查询 INFORMATION_SCHEMA.COLUMNS 检查是否存在 my_row_id 列
+	query := `SELECT COLUMN_NAME, EXTRA FROM INFORMATION_SCHEMA.COLUMNS
+	          WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = 'my_row_id'`
+	var colName, extra string
+	err = db.QueryRow(query, schema, table).Scan(&colName, &extra)
+	if err == nil {
+		// 表已有 my_row_id 列，无需添加
+		return false, nil
+	} else if err != sql.ErrNoRows {
+		// 查询出错
+		vlog := fmt.Sprintf("(%d) Error checking my_row_id column for %s.%s: %v", logThreadSeq, schema, table, err)
+		global.Wlog.Error(vlog)
+		return false, err
+	}
+
+	// 所有条件都满足，需要添加 my_row_id
+	return true, nil
+}
+
+// IsValidMyRowIDColumn 检查目标端列是否为符合条件的 my_row_id 列
+// 检查条件：
+// 1. 列名必须是 my_row_id
+// 2. 数据类型必须是 int 或 bigint（不限定是否 unsigned）
+// 3. 不限定是否 AUTO_INCREMENT
+// 4. 必须声明是 PRIMARY KEY
+// 5. 必须声明是 INVISIBLE 属性
+// 6. 必须在第一列或最后一列（不能在中间位置）
+//
+// 参数：
+// - db: 数据库连接
+// - schema: 数据库名
+// - table: 表名
+// - columnName: 列名（规范化后的列名，用于匹配）
+// - columnSeq: 列在表中的位置（从 0 开始）
+// - totalColumns: 表的总列数
+// - requirePK: requirePK 参数值（ON|OFF）
+// - logThreadSeq: 日志线程序号
+//
+// 返回：
+// - bool: true 表示是符合条件的 my_row_id 列，false 表示不是
+// - error: 查询错误
+func IsValidMyRowIDColumn(db *sql.DB, schema, table, columnName string, columnSeq, totalColumns int, requirePK string, logThreadSeq int64) (bool, error) {
+	// 1. 检查 requirePK 是否为 ON
+	if strings.ToUpper(strings.TrimSpace(requirePK)) != "ON" {
+		return false, nil
+	}
+
+	// 2. 检查列名是否为 my_row_id（不区分大小写）
+	if strings.ToLower(strings.TrimSpace(columnName)) != "my_row_id" {
+		return false, nil
+	}
+
+	// 3. 检查列位置是否在第一列或最后一列
+	if columnSeq != 0 && columnSeq != totalColumns-1 {
+		vlog := fmt.Sprintf("(%d) Column %s in %s.%s is at position %d (not first or last), not a valid my_row_id", logThreadSeq, columnName, schema, table, columnSeq)
+		global.Wlog.Debug(vlog)
+		return false, nil
+	}
+
+	// 4. 查询列的详细信息
+	query := `
+		SELECT c.DATA_TYPE, c.EXTRA, k.CONSTRAINT_NAME
+		FROM INFORMATION_SCHEMA.COLUMNS c
+		LEFT JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE k
+		  ON c.TABLE_SCHEMA = k.TABLE_SCHEMA
+		  AND c.TABLE_NAME = k.TABLE_NAME
+		  AND c.COLUMN_NAME = k.COLUMN_NAME
+		  AND k.CONSTRAINT_NAME = 'PRIMARY'
+		WHERE c.TABLE_SCHEMA = ?
+		  AND c.TABLE_NAME = ?
+		  AND c.COLUMN_NAME = ?
+	`
+
+	var dataType, extra string
+	var constraintName sql.NullString
+	err := db.QueryRow(query, schema, table, columnName).Scan(&dataType, &extra, &constraintName)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			// 列不存在
+			return false, nil
+		}
+		vlog := fmt.Sprintf("(%d) Error checking my_row_id column details for %s.%s.%s: %v", logThreadSeq, schema, table, columnName, err)
+		global.Wlog.Error(vlog)
+		return false, err
+	}
+
+	// 5. 检查数据类型是否为 int 或 bigint
+	dataType = strings.ToLower(strings.TrimSpace(dataType))
+	if dataType != "int" && dataType != "bigint" {
+		vlog := fmt.Sprintf("(%d) Column %s in %s.%s has data type %s (not int or bigint), not a valid my_row_id", logThreadSeq, columnName, schema, table, dataType)
+		global.Wlog.Debug(vlog)
+		return false, nil
+	}
+
+	// 6. 检查是否为 PRIMARY KEY
+	if !constraintName.Valid || constraintName.String != "PRIMARY" {
+		vlog := fmt.Sprintf("(%d) Column %s in %s.%s is not a PRIMARY KEY, not a valid my_row_id", logThreadSeq, columnName, schema, table)
+		global.Wlog.Debug(vlog)
+		return false, nil
+	}
+
+	// 7. 检查是否为 INVISIBLE
+	extra = strings.ToUpper(strings.TrimSpace(extra))
+	if !strings.Contains(extra, "INVISIBLE") {
+		vlog := fmt.Sprintf("(%d) Column %s in %s.%s is not INVISIBLE (EXTRA=%s), not a valid my_row_id", logThreadSeq, columnName, schema, table, extra)
+		global.Wlog.Debug(vlog)
+		return false, nil
+	}
+
+	// 所有条件都满足，是符合条件的 my_row_id 列
+	vlog := fmt.Sprintf("(%d) Column %s in %s.%s is a valid my_row_id column (type=%s, PRIMARY KEY, INVISIBLE, position=%d/%d)", logThreadSeq, columnName, schema, table, dataType, columnSeq, totalColumns)
+	global.Wlog.Info(vlog)
+	return true, nil
+}
