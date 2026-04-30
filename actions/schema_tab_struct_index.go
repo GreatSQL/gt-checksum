@@ -429,6 +429,41 @@ func (stcls *schemaTable) Index(dtabS []string, logThreadSeq, logThreadSeq2 int6
 			// 如果索引名称不同，生成修复SQL
 			if a.CheckMd5(strings.Join(c, ",")) != a.CheckMd5(strings.Join(d, ",")) {
 				e, f := a.Arrcmp(c, d)
+
+				// 当 requirePK=ON 且索引类型为主键时，检查目标端主键是否为 my_row_id
+				// 如果是，则从待删除索引列表中移除（允许目标端保留 my_row_id 主键）
+				if indexType == "pri" && stcls.isMySQLToMySQL() && len(f) > 0 {
+					if strings.ToUpper(strings.TrimSpace(stcls.checkRules.RequirePK)) == "ON" {
+						// 检查目标端主键列是否为 my_row_id
+						for _, idxName := range f {
+							if cols, ok := dmu[idxName]; ok && len(cols) > 0 {
+								// 提取第一个列名（主键可能是单列或多列，这里只检查第一列）
+								firstCol := cols[0]
+								// 从 token 中提取列名（格式：columnName/*seq*/N/*type*/T/*prefix*/P）
+								colName := strings.TrimSpace(firstCol)
+								if seqIdx := strings.Index(firstCol, "/*seq*/"); seqIdx >= 0 {
+									colName = strings.TrimSpace(firstCol[:seqIdx])
+								}
+
+								// 如果主键列是 my_row_id，从待删除列表中移除
+								if strings.ToLower(strings.TrimSpace(colName)) == "my_row_id" {
+									vlog := fmt.Sprintf("(%d) %s Skipping DROP PRIMARY KEY for my_row_id in %s.%s (requirePK=ON)", logThreadSeq, event, destSchema, stcls.table)
+									global.Wlog.Info(vlog)
+									// 从 f 中移除该索引
+									var newF []string
+									for _, v := range f {
+										if v != idxName {
+											newF = append(newF, v)
+										}
+									}
+									f = newF
+									break
+								}
+							}
+						}
+					}
+				}
+
 				// 对于新增的索引，需要处理列顺序
 				newIndexMap := make(map[string][]string)
 				for _, idx := range e {

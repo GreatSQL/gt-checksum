@@ -280,6 +280,13 @@ func (stcls *schemaTable) handleTargetMissingTable(
 		return "", err
 	}
 
+	// 如果需要，注入 my_row_id 列定义
+	createTableSql, err = injectMyRowIDIntoCreateTable(createTableSql, stcls.destDB, destSchema, destTableName, stcls.checkRules.RequirePK, logThreadSeq)
+	if err != nil {
+		global.Wlog.Error(fmt.Sprintf("(%d) %s Error injecting my_row_id into CREATE TABLE for %s.%s: %v", logThreadSeq, event, destSchema, destTableName, err))
+		return "", err
+	}
+
 	if !strings.Contains(createTableSql, fmt.Sprintf("`%s`", destSchema)) {
 		global.Wlog.Warn(fmt.Sprintf("(%d) %s Warning: Generated CREATE TABLE statement may be missing target schema '%s': %s", logThreadSeq, event, destSchema, createTableSql))
 	}

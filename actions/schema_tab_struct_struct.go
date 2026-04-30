@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"gt-checksum/dbExec"
 	"gt-checksum/global"
+	mysql "gt-checksum/MySQL"
 	"gt-checksum/schemacompat"
+	"regexp"
 	"strings"
 	"sync"
 )
@@ -626,6 +628,56 @@ func generateCreateTableSql(sourceDB *sql.DB, sourceSchema string, destSchema st
 			createTableStmt = createTableStmt + ";"
 		}
 	}
+
+	return createTableStmt, nil
+}
+
+// injectMyRowIDIntoCreateTable 在 CREATE TABLE 语句中注入 my_row_id 列定义和 PRIMARY KEY 约束
+// 如果需要添加 my_row_id，则在最后一列后、PRIMARY KEY/UNIQUE KEY/KEY/ENGINE 之前插入列定义和主键约束
+func injectMyRowIDIntoCreateTable(createTableStmt string, destDB *sql.DB, destSchema, destTable, requirePK string, logThreadSeq int64) (string, error) {
+	// 导入 mysql 包的函数
+	shouldAdd, err := mysql.ShouldAddMyRowID(destDB, destSchema, destTable, requirePK, logThreadSeq)
+	if err != nil {
+		vlog := fmt.Sprintf("(%d) Error checking if should add my_row_id for %s.%s: %v", logThreadSeq, destSchema, destTable, err)
+		global.Wlog.Error(vlog)
+		return createTableStmt, err
+	}
+
+	if !shouldAdd {
+		// 不需要添加 my_row_id
+		return createTableStmt, nil
+	}
+
+	// 使用正则表达式在最后一列后插入 my_row_id 定义和 PRIMARY KEY 约束
+	// 匹配模式：最后一列定义后的位置（在 PRIMARY KEY/UNIQUE KEY/KEY/ENGINE 之前）
+	// 注意：需要处理多种情况：
+	// 1. ) ENGINE=...
+	// 2. , PRIMARY KEY (...)
+	// 3. , UNIQUE KEY ...
+	// 4. , KEY ...
+	pattern := regexp.MustCompile(`(,\s*` + "`" + `[^` + "`" + `]+` + "`" + `[^,)]+)\s*(\)\s*ENGINE|\)\s*$|,\s*PRIMARY\s+KEY|,\s*UNIQUE\s+KEY|,\s*KEY)`)
+
+	// 检查是否匹配
+	if !pattern.MatchString(createTableStmt) {
+		// 如果没有匹配，尝试简单的模式：在最后的 ) ENGINE 之前插入
+		simplePattern := regexp.MustCompile(`\)\s*(ENGINE|DEFAULT|AUTO_INCREMENT|COMMENT)`)
+		if simplePattern.MatchString(createTableStmt) {
+			replacement := ",\n  `my_row_id` bigint unsigned NOT NULL AUTO_INCREMENT /*!80023 INVISIBLE */,\n  PRIMARY KEY (`my_row_id`)\n) $1"
+			createTableStmt = simplePattern.ReplaceAllString(createTableStmt, replacement)
+		} else {
+			// 如果仍然没有匹配，记录警告并返回原始语句
+			vlog := fmt.Sprintf("(%d) Warning: Cannot inject my_row_id into CREATE TABLE for %s.%s: pattern not matched", logThreadSeq, destSchema, destTable)
+			global.Wlog.Warn(vlog)
+			return createTableStmt, nil
+		}
+	} else {
+		// 正常匹配，插入 my_row_id 和 PRIMARY KEY
+		replacement := "$1,\n  `my_row_id` bigint unsigned NOT NULL AUTO_INCREMENT /*!80023 INVISIBLE */,\n  PRIMARY KEY (`my_row_id`)$2"
+		createTableStmt = pattern.ReplaceAllString(createTableStmt, replacement)
+	}
+
+	vlog := fmt.Sprintf("(%d) Injected my_row_id column and PRIMARY KEY into CREATE TABLE for %s.%s", logThreadSeq, destSchema, destTable)
+	global.Wlog.Debug(vlog)
 
 	return createTableStmt, nil
 }

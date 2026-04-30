@@ -149,12 +149,47 @@ func (stcls *schemaTable) dropExcessColumns(
 	if len(cm.delColumn) == 0 {
 		return
 	}
+
+	// 计算目标表的总列数（用于判断 my_row_id 列位置）
+	totalColumns := len(cm.destColumnSlice)
+
 	var colsToDelete []string
 	for _, v1 := range cm.delColumn {
+		originalColName := cm.getDestOriginalColumnName(v1)
+
+		// 检查是否为符合条件的 my_row_id 列（仅在 MySQL→MySQL 场景下）
+		if stcls.isMySQLToMySQL() {
+			// 获取列在目标表中的位置
+			columnSeq := cm.destColumnSeq[v1]
+
+			// 调用 IsValidMyRowIDColumn 检查
+			isValidMyRowID, err := mysql.IsValidMyRowIDColumn(
+				stcls.destDB,
+				destSchema,
+				stcls.table,
+				originalColName,
+				columnSeq,
+				totalColumns,
+				stcls.checkRules.RequirePK,
+				logThreadSeq,
+			)
+			if err != nil {
+				vlog = fmt.Sprintf("(%d) %s Error checking if %s is valid my_row_id for %s.%s: %v", logThreadSeq, event, originalColName, destSchema, stcls.table, err)
+				global.Wlog.Warn(vlog)
+			} else if isValidMyRowID {
+				// 是符合条件的 my_row_id 列，跳过 DROP 操作
+				vlog = fmt.Sprintf("(%d) %s Skipping DROP for valid my_row_id column %s in %s.%s (requirePK=ON)", logThreadSeq, event, originalColName, destSchema, stcls.table)
+				global.Wlog.Info(vlog)
+
+				// 从 destColumnMap 中删除该列（标记为已处理）
+				delete(cm.destColumnMap, v1)
+				continue
+			}
+		}
+
 		if hasAutoIncrementColumnAttribute(cm.destColumnMap[v1]) {
 			sms.droppedAutoIncrementColumn = true
 		}
-		originalColName := cm.getDestOriginalColumnName(v1)
 		dropSql := cm.dbf.DataAbnormalFix().FixAlterColumnSqlDispos("drop", cm.destColumnMap[v1], 1, "", originalColName, logThreadSeq)
 		sms.alterSlice = append(sms.alterSlice, dropSql)
 		colsToDelete = append(colsToDelete, v1)
@@ -662,6 +697,32 @@ func (stcls *schemaTable) reconcileColumnDiffs(
 				delete(cm.destColumnMap, v1)
 			}
 		}
+
+	// 在处理完所有列差异后，检查是否需要添加 my_row_id
+	if stcls.isMySQLToMySQL() {
+		shouldAdd, err := mysql.ShouldAddMyRowID(stcls.destDB, destSchema, stcls.table, stcls.checkRules.RequirePK, logThreadSeq)
+		if err != nil {
+			vlog = fmt.Sprintf("(%d) %s Error checking if should add my_row_id for %s.%s: %v", logThreadSeq, event, destSchema, stcls.table, err)
+			global.Wlog.Error(vlog)
+		} else if shouldAdd {
+			// 需要添加 my_row_id 列
+			// 获取目标表的最后一列名
+			lastColumnName := ""
+			lastColumnSeq := len(cm.sourceColumnSlice) - 1
+			if lastColumnSeq >= 0 && lastColumnSeq < len(cm.sourceColumnSlice) {
+				lastColumnName = cm.sourceColumnSlice[lastColumnSeq]
+			}
+
+			// 生成 my_row_id 列定义数组
+			myRowIDDef := mysql.GenerateMyRowIDColumnDef()
+
+			// 调用 FixAlterColumnSqlDispos 生成 ALTER TABLE ADD COLUMN 语句
+			addSql := cm.dbf.DataAbnormalFix().FixAlterColumnSqlDispos("add", myRowIDDef, lastColumnSeq, lastColumnName, "my_row_id", logThreadSeq)
+			vlog = fmt.Sprintf("(%d) %s Adding my_row_id column to %s.%s: %v", logThreadSeq, event, destSchema, stcls.table, addSql)
+			global.Wlog.Info(vlog)
+			sms.alterSlice = append(sms.alterSlice, addSql)
+		}
+	}
 }
 
 func (stcls *schemaTable) buildCharsetAdvisory(
