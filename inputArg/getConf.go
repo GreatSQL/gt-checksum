@@ -378,6 +378,17 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 		rc.SecondaryL.RepairV.ExtraRowsSyncToSource = extraRowsSyncValue
 	}
 
+	// requirePK 参数：struct 模式下是否为无主键表添加 my_row_id 隐藏列
+	requirePKValue := strings.ToUpper(strings.TrimSpace(getLastConfigValue("requirePK")))
+	if requirePKValue == "" {
+		rc.SecondaryL.RulesV.RequirePK = "OFF"
+	} else if requirePKValue == "ON" || requirePKValue == "OFF" {
+		rc.SecondaryL.RulesV.RequirePK = requirePKValue
+	} else {
+		fmt.Println("Using default value 'OFF' for option requirePK")
+		rc.SecondaryL.RulesV.RequirePK = "OFF"
+	}
+
 	//Repair 获取相关参数
 	fixTrxNumValue := getLastConfigValue("fixTrxNum")
 	if fixTrxNumValue != "" {

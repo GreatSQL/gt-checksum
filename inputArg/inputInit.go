@@ -55,6 +55,11 @@ type RulesS struct {
 	ResultExport       string // OFF | csv
 	ResultFile         string // explicit output path; empty = auto-generate from RunID
 	TerminalResultMode string // all | abnormal
+	// RequirePK controls whether to add my_row_id hidden primary key for tables without PK.
+	// ON  = add my_row_id column for eligible tables (no PK, no NOT NULL unique index)
+	// OFF = do not add (default)
+	// Only valid when checkObject=struct.
+	RequirePK string // ON | OFF
 }
 
 type LogS struct {

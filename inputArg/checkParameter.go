@@ -322,6 +322,20 @@ func (rc *ConfigParameter) checkPar() {
 	vlog = fmt.Sprintf("(%d) [%s] ExtraRowsSyncToSource=%s", rc.LogThreadSeq, Event, rc.SecondaryL.RepairV.ExtraRowsSyncToSource)
 	global.Wlog.Debug(vlog)
 
+	// requirePK 参数校验：必须是 ON 或 OFF，仅在 checkObject=struct 时生效
+	rc.SecondaryL.RulesV.RequirePK = strings.ToUpper(strings.TrimSpace(rc.SecondaryL.RulesV.RequirePK))
+	if rc.SecondaryL.RulesV.RequirePK == "" {
+		rc.SecondaryL.RulesV.RequirePK = "OFF"
+	}
+	if rc.SecondaryL.RulesV.RequirePK != "ON" && rc.SecondaryL.RulesV.RequirePK != "OFF" {
+		fmt.Println(fmt.Sprintf("gt-checksum: requirePK must be ON or OFF. Check %s or set logLevel=debug for details", rc.SecondaryL.LogV.LogFile))
+		vlog = fmt.Sprintf("(%d) [%s] option \"requirePK\" must be ON or OFF.", rc.LogThreadSeq, Event)
+		global.Wlog.Error(vlog)
+		os.Exit(1)
+	}
+	vlog = fmt.Sprintf("(%d) [%s] RequirePK=%s", rc.LogThreadSeq, Event, rc.SecondaryL.RulesV.RequirePK)
+	global.Wlog.Debug(vlog)
+
 	vlog = fmt.Sprintf("(%d) [%s] start init check object values.", rc.LogThreadSeq, Event)
 	global.Wlog.Debug(vlog)
 	rc.SecondaryL.RulesV.CheckObject = strings.ToLower(rc.SecondaryL.RulesV.CheckObject)
