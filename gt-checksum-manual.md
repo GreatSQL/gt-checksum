@@ -521,6 +521,7 @@ SET character_set_client = DEFAULT;
 |---|---|---|---|
 | `mariaDBJSONTargetType` | `JSON` / `LONGTEXT` / `TEXT` | `JSON` | 控制 `MariaDB JSON` alias 在 `MariaDB -> MySQL 8.0/8.4` 结构迁移时的目标列类型。`JSON` 语义最接近；`LONGTEXT` 适合作为兼容性保底；`TEXT` 当前已实现但未纳入发布级实库基线。 |
 | `datafix` | `file` / `table` | `file` | `checkObject=struct` 场景建议固定为 `file`，先生成 fix SQL 供 DBA 审查，再使用 `repairDB` 回放。 |
+| `requirePK` | `ON` / `OFF` | `OFF` | 仅在 `checkObject=struct` 模式下生效。`ON` 时为无主键表自动添加 `my_row_id` 隐藏列（需同时满足：无主键、无 NOT NULL 唯一索引、目标端未启用 `sql_generate_invisible_primary_key`）。适用于 MySQL 单机实例迁移到 MGR 环境的场景。 |
 
 ### 推荐配置示例
 

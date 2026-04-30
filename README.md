@@ -18,6 +18,7 @@ MySQL DBA经常使用 **pt-table-checksum** 和 **pt-table-sync** 进行数据�
 - **[功能新增]** repairDB 工具新增预执行报告功能，执行前自动展示修复 SQL 统计信息（文件数量、影响行数、预估 binlog 大小等）。
 - **[功能新增]** repairDB 工具新增交互式确认机制和 `--dry-run` 参数，提升修复操作安全性。
 - **[功能新增]** repairDB 工具新增 CSV 执行报告导出功能，自动生成包含执行汇总和明细的报告文件。
+- **[功能新增]** 新增 `requirePK` 参数，支持在 struct 模式下为无主键表自动添加 my_row_id 隐藏列，用于 MySQL 单机实例迁移到 MGR 环境。
 
 更多详细变化详见 [CHANGELOG](./CHANGELOG.md)。
 
@@ -38,6 +39,7 @@ MySQL DBA经常使用 **pt-table-checksum** 和 **pt-table-sync** 进行数据�
 | v1.2.x | v1.2.5 | EOL | 2023-03-06 | 2026-12-31 | End of support | 已终止支持，不再提供任何更新（含 Bug Fix / 安全更新）；如遇问题请升级至 v1.3.x |
 | v1.3.x | v1.3.0 | LTS | 2026-04-08 | 2028-04-08 | **活跃**（Bug Fix + Security） | 支持校验部分字段、VIEW、CSV导出功能 |
 | v2.0.x | v2.0.1 | LTS | 2026-04-29 | 2028-04-22 | **活跃**（Bug Fix + Security） | 支持Oracle→MySQL `struct`/`data` 模式，MySQL JSON数据类型、JSON多值索引、前缀索引、函数索引、虚拟列 |
+| v3.0.x | v3.0.0 | LTS | - | - | **开发中** | repairDB 预执行报告与 CSV 导出、requirePK 参数支持 MGR 迁移场景 |
 
 > 说明：
 >
@@ -54,7 +56,7 @@ MySQL DBA经常使用 **pt-table-checksum** 和 **pt-table-sync** 进行数据�
 
 | 版本系列 | 目标版本 | 状态 | 方向 |
 |---------|---------|------|------|
-| v3.0.x | — | 规划中（需求收集中） | 支持更多Oracle→MySQL数据类型，MySQL 全文索引、空间索引等|
+| v4.0.x | — | 规划中（需求收集中） | [欢迎提交需求issue](https://gitee.com/GreatSQL/gt-checksum/issues) |
 
 ## 下载
 
