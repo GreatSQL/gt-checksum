@@ -541,8 +541,24 @@ func generateCreateTableSql(sourceDB *sql.DB, sourceSchema string, destSchema st
 	hasCharset := strings.Contains(strings.ToUpper(createTableStmt), "CHARACTER SET") || strings.Contains(strings.ToUpper(createTableStmt), "CHARSET")
 	hasCollation := strings.Contains(strings.ToUpper(createTableStmt), "COLLATE")
 
-	// 如果没有包含字符集和排序规则，添加它们
-	if !hasCharset && !hasCollation && tableCharset != "" && tableCollation != "" {
+	// 关键修复：即使 SHOW CREATE TABLE 只显示 CHARSET 而不显示 COLLATE（常见于 MySQL 5.6/5.7），
+	// 也必须显式添加 COLLATE，因为源端和目标端对同一 charset 的默认 collation 可能不同。
+	// 例如：MySQL 5.6/5.7 中 utf8mb4 默认为 utf8mb4_general_ci，而 MySQL 8.0 默认为 utf8mb4_0900_ai_ci。
+	// 如果不显式指定，目标端会使用其版本的默认 collation，导致需要二次修复。
+	needAddCharset := !hasCharset && tableCharset != ""
+	needAddCollation := !hasCollation && tableCollation != ""
+
+	if needAddCharset || needAddCollation {
+		// 构建要添加的字符集和排序规则子句
+		charsetCollationClause := ""
+		if needAddCharset && needAddCollation {
+			charsetCollationClause = fmt.Sprintf(" CHARACTER SET %s COLLATE %s", tableCharset, tableCollation)
+		} else if needAddCharset {
+			charsetCollationClause = fmt.Sprintf(" CHARACTER SET %s", tableCharset)
+		} else if needAddCollation {
+			charsetCollationClause = fmt.Sprintf(" COLLATE %s", tableCollation)
+		}
+
 		// 在语句末尾添加字符集和排序规则定义
 		// 通常CREATE TABLE语句以ENGINE=xxx结尾，我们需要在这之后添加字符集和排序规则
 		if strings.Contains(createTableStmt, "ENGINE=") {
@@ -553,22 +569,20 @@ func generateCreateTableSql(sourceDB *sql.DB, sourceSchema string, destSchema st
 				if endIndex != -1 {
 					// 在分号前添加字符集和排序规则定义
 					createTableStmt = parts[0] + "ENGINE=" + enginePart[:endIndex] +
-						fmt.Sprintf(" CHARACTER SET %s COLLATE %s", tableCharset, tableCollation) +
+						charsetCollationClause +
 						enginePart[endIndex:]
 				} else {
 					// 如果没有分号，直接在末尾添加
-					createTableStmt = createTableStmt +
-						fmt.Sprintf(" CHARACTER SET %s COLLATE %s", tableCharset, tableCollation)
+					createTableStmt = createTableStmt + charsetCollationClause
 				}
 			}
 		} else {
 			// 如果没有ENGINE=，直接在末尾添加（去掉最后的分号，然后再加上）
 			if strings.HasSuffix(createTableStmt, ";") {
 				createTableStmt = createTableStmt[:len(createTableStmt)-1] +
-					fmt.Sprintf(" CHARACTER SET %s COLLATE %s;", tableCharset, tableCollation)
+					charsetCollationClause + ";"
 			} else {
-				createTableStmt = createTableStmt +
-					fmt.Sprintf(" CHARACTER SET %s COLLATE %s;", tableCharset, tableCollation)
+				createTableStmt = createTableStmt + charsetCollationClause
 			}
 		}
 	}

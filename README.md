@@ -20,6 +20,7 @@ MySQL DBA经常使用 **pt-table-checksum** 和 **pt-table-sync** 进行数据�
 - **[功能新增]** repairDB 工具新增 CSV 执行报告导出功能，自动生成包含执行汇总和明细的报告文件。
 - **[功能新增]** repairDB 工具新增锁文件机制，防止重复执行修复操作，执行完成后自动生成 `.repairDB.lock` 文件。
 - **[功能新增]** 新增 `requirePK` 参数，支持在 struct 模式下为无主键表自动添加 my_row_id 隐藏列，用于 MySQL 单机实例迁移到 MGR 环境。
+- **[问题修复]** 修复跨版本 MySQL 场景下 CREATE TABLE DDL 缺少 COLLATE 导致二次修复的问题，现在会显式添加源端 COLLATION 定义。
 
 更多详细变化详见 [CHANGELOG](./CHANGELOG.md)。
 
@@ -40,7 +41,7 @@ MySQL DBA经常使用 **pt-table-checksum** 和 **pt-table-sync** 进行数据�
 | v1.2.x | v1.2.5 | EOL | 2023-03-06 | 2026-12-31 | End of support | 已终止支持，不再提供任何更新（含 Bug Fix / 安全更新）；如遇问题请升级至 v1.3.x |
 | v1.3.x | v1.3.0 | LTS | 2026-04-08 | 2028-04-08 | **活跃**（Bug Fix + Security） | 支持校验部分字段、VIEW、CSV导出功能 |
 | v2.0.x | v2.0.1 | LTS | 2026-04-29 | 2028-04-22 | **活跃**（Bug Fix + Security） | 支持Oracle→MySQL `struct`/`data` 模式，MySQL JSON数据类型、JSON多值索引、前缀索引、函数索引、虚拟列 |
-| v3.0.x | v3.0.0 | LTS | - | - | **开发中** | repairDB 预执行报告与 CSV 导出、requirePK 参数支持 MGR 迁移场景 |
+| v3.0.x | v3.0.0 | LTS | - | - | **开发中** | repairDB 预执行报告与 CSV 导出；requirePK 参数支持 MGR 迁移场景 |
 
 > 说明：
 >
