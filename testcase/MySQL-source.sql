@@ -324,6 +324,43 @@ CREATE TRIGGER tri_test
 END ||
 DELIMITER ;
 
+-- 测试目标端缺失两个表
+DROP TABLE IF EXISTS not_exists_t1;
+CREATE TABLE not_exists_t1(
+    `id` INT(11) NOT NULL AUTO_INCREMENT,
+    `tenantry_id` BIGINT(20) NOT NULL,
+    `code` VARCHAR(64) NOT NULL COMMENT 'col code',
+    `goods_name` VARCHAR(50) NOT NULL,
+    `props_name` VARCHAR(100) NOT NULL,
+    `price` DECIMAL(10,2) NOT NULL,
+    `price_url` VARCHAR(1000) NOT NULL,
+    `create_time` DATETIME NOT NULL,
+    `modify_time` DATETIME DEFAULT NULL,
+    `deleted` TINYINT(1) NOT NULL DEFAULT '0',
+    `商品描述` VARCHAR(200) DEFAULT NULL COMMENT '商品描述',
+    PRIMARY KEY (`id`),
+    KEY `idx 2` (`tenantry_id`,`code`),
+    KEY `idx_3` (`code`,`tenantry_id`),
+    KEY `idx_4` (goods_name(20)),
+    KEY `中文索引` (`商品描述`)
+) ENGINE=InnoDB;
+
+DROP TABLE IF EXISTS not_exists_t2;
+CREATE TABLE not_exists_t2(
+    `id` INT(11) UNSIGNED NOT NULL,
+    `tenantry_id` BIGINT(20) NOT NULL,
+    `code` VARCHAR(64) NOT NULL COMMENT 'col code',
+    `goods_name` VARCHAR(50) NOT NULL,
+    `props_name` VARCHAR(100) NOT NULL,
+    `price` DECIMAL(10,2) NOT NULL,
+    `price_url` VARCHAR(1000) NOT NULL,
+    `create_time` DATETIME NOT NULL,
+    `modify_time` DATETIME DEFAULT NULL,
+    `deleted` TINYINT(1) NOT NULL DEFAULT '0',
+    `商品描述` VARCHAR(200) DEFAULT NULL COMMENT '商品描述',
+    KEY `idx1` (`tenantry_id`,`code`)
+) ENGINE=InnoDB;
+
 -- 测试索引
 DROP TABLE IF EXISTS indext;
 CREATE TABLE indext(
