@@ -533,13 +533,38 @@ func generateCreateTableSql(sourceDB *sql.DB, sourceSchema string, destSchema st
 	if err != nil {
 		vlog = fmt.Sprintf("(%d) %s Error getting table properties for %s.%s: %v", logThreadSeq, event, sourceSchema, tableName, err)
 		global.Wlog.Error(vlog)
-		// 即使获取表属性失败，我们仍然可以继续使用原始的CREATE TABLE语句
-		return createTableStmt, nil
+		// 即使获取表属性失败，仍需要从 DDL 中提取 collation 信息并进行跨平台映射
+		// 这种情况常见于：源端表在测试环境中不存在，只在测例文件中定义
+		tableCollation, tableCharset = extractCollationFromDDL(createTableStmt)
+		if tableCollation == "" && tableCharset == "" {
+			// 如果无法提取，直接返回原始 DDL
+			return createTableStmt, nil
+		}
+		vlog = fmt.Sprintf("(%d) %s Extracted from DDL: charset=%s collation=%s", logThreadSeq, event, tableCharset, tableCollation)
+		global.Wlog.Debug(vlog)
 	}
 
 	// 检查CREATE TABLE语句是否已经包含字符集和排序规则定义
 	hasCharset := strings.Contains(strings.ToUpper(createTableStmt), "CHARACTER SET") || strings.Contains(strings.ToUpper(createTableStmt), "CHARSET")
 	hasCollation := strings.Contains(strings.ToUpper(createTableStmt), "COLLATE")
+
+	// 跨平台 collation 映射：如果源端 DDL 中已包含 COLLATE 子句，需要检查是否为 MariaDB UCA 14.0.0 collations
+	// 并替换为 MySQL 兼容的 collations（例如：utf8mb4_uca1400_ai_ci → utf8mb4_0900_ai_ci）
+	if hasCollation {
+		if mappedCollation, isMariaDBUCA1400 := schemacompat.MapMariaDBCollationToMySQL(tableCollation); isMariaDBUCA1400 {
+			vlog = fmt.Sprintf("(%d) %s Cross-platform collation mapping applied for existing COLLATE clause in %s.%s: source=%s mapped=%s",
+				logThreadSeq, event, destSchema, destTable, tableCollation, mappedCollation)
+			global.Wlog.Info(vlog)
+
+			// 使用正则表达式替换 DDL 中的 COLLATE 子句
+			// 匹配模式：COLLATE[=\s]+collation_name（支持 COLLATE=xxx 和 COLLATE xxx 两种格式）
+			collatePattern := regexp.MustCompile(`(?i)(COLLATE\s*=?\s*)` + regexp.QuoteMeta(tableCollation))
+			createTableStmt = collatePattern.ReplaceAllString(createTableStmt, "${1}"+mappedCollation)
+
+			// 更新 tableCollation 为映射后的值，以便后续日志输出正确
+			tableCollation = mappedCollation
+		}
+	}
 
 	// 关键修复：即使 SHOW CREATE TABLE 只显示 CHARSET 而不显示 COLLATE（常见于 MySQL 5.6/5.7），
 	// 也必须显式添加 COLLATE，因为源端和目标端对同一 charset 的默认 collation 可能不同。
@@ -549,14 +574,24 @@ func generateCreateTableSql(sourceDB *sql.DB, sourceSchema string, destSchema st
 	needAddCollation := !hasCollation && tableCollation != ""
 
 	if needAddCharset || needAddCollation {
+		// 跨平台 collation 映射：MariaDB UCA 14.0.0 → MySQL UCA 9.0.0
+		// 例如：MariaDB 12.3 的 utf8mb4_uca1400_ai_ci 在 MySQL 8.0/8.4 中不支持，需映射为 utf8mb4_0900_ai_ci
+		finalCollation := tableCollation
+		if mappedCollation, isMariaDBUCA1400 := schemacompat.MapMariaDBCollationToMySQL(tableCollation); isMariaDBUCA1400 {
+			vlog = fmt.Sprintf("(%d) %s Cross-platform collation mapping applied for %s.%s: source=%s mapped=%s",
+				logThreadSeq, event, destSchema, destTable, tableCollation, mappedCollation)
+			global.Wlog.Info(vlog)
+			finalCollation = mappedCollation
+		}
+
 		// 构建要添加的字符集和排序规则子句
 		charsetCollationClause := ""
 		if needAddCharset && needAddCollation {
-			charsetCollationClause = fmt.Sprintf(" CHARACTER SET %s COLLATE %s", tableCharset, tableCollation)
+			charsetCollationClause = fmt.Sprintf(" CHARACTER SET %s COLLATE %s", tableCharset, finalCollation)
 		} else if needAddCharset {
 			charsetCollationClause = fmt.Sprintf(" CHARACTER SET %s", tableCharset)
 		} else if needAddCollation {
-			charsetCollationClause = fmt.Sprintf(" COLLATE %s", tableCollation)
+			charsetCollationClause = fmt.Sprintf(" COLLATE %s", finalCollation)
 		}
 
 		// 在语句末尾添加字符集和排序规则定义
