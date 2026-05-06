@@ -171,6 +171,9 @@ var (
 	config Config
 )
 
+// Lock file name constant
+const lockFileName = ".repairDB.lock"
+
 var delimiterDirectivePattern = regexp.MustCompile(`(?i)^\s*DELIMITER\s+(.+?)\s*;?\s*$`)
 
 // Parse config file
@@ -1599,6 +1602,46 @@ func parallelExecuteSQLFiles(db *sql.DB, files []string, stageName string) ([]Fi
 	return results, nil
 }
 
+// checkLockFile checks if the lock file exists and returns an error if it does.
+// If the lock file exists and contains error information, it includes that in the error message.
+func checkLockFile(lockPath string) error {
+	if _, err := os.Stat(lockPath); err == nil {
+		// Lock file exists, read its content
+		content, readErr := os.ReadFile(lockPath)
+		if readErr != nil {
+			return fmt.Errorf("lock file exists at %s but failed to read: %v", lockPath, readErr)
+		}
+
+		if len(content) == 0 {
+			return fmt.Errorf("lock file exists at %s (previous execution completed successfully). Please remove it before running again", lockPath)
+		}
+
+		return fmt.Errorf("lock file exists at %s with error: %s. Please remove it before running again", lockPath, string(content))
+	} else if !os.IsNotExist(err) {
+		// Some other error occurred while checking the file
+		return fmt.Errorf("failed to check lock file at %s: %v", lockPath, err)
+	}
+
+	// Lock file does not exist, safe to proceed
+	return nil
+}
+
+// writeLockFile writes the lock file with the given error message.
+// If errMsg is empty, it creates an empty file (indicating success).
+// If errMsg is not empty, it writes the error message to the file.
+func writeLockFile(lockPath string, errMsg string) error {
+	var content []byte
+	if errMsg != "" {
+		content = []byte(errMsg)
+	}
+
+	if err := os.WriteFile(lockPath, content, 0644); err != nil {
+		return fmt.Errorf("failed to write lock file at %s: %v", lockPath, err)
+	}
+
+	return nil
+}
+
 func stageIndex(stage string) int {
 	for i, s := range stageOrder {
 		if s == stage {
@@ -1619,7 +1662,7 @@ func main() {
 // Using a dedicated run() function ensures deferred cleanup (logFile.Close) executes
 // correctly on both success and error paths, since os.Exit bypasses deferred calls.
 // Stage-level db.Close() is called explicitly (not via defer) inside the stage loop.
-func run() error {
+func run() (err error) {
 	// Parse command line arguments
 	confFile := flag.String("conf", "gc.conf", "Config file path")
 	force := flag.Bool("f", false, "Force execution without confirmation")
@@ -1655,6 +1698,38 @@ func run() error {
 		}
 	}
 
+	// Check if fixFileDir directory exists first
+	if _, err := os.Stat(config.FixFileDir); os.IsNotExist(err) {
+		return fmt.Errorf("fixFileDir directory does not exist: %s", config.FixFileDir)
+	}
+
+	// Check for lock file after confirming directory exists
+	lockPath := filepath.Join(config.FixFileDir, lockFileName)
+	if err := checkLockFile(lockPath); err != nil {
+		// Log to stderr since log file is not yet configured
+		fmt.Fprintf(os.Stderr, "WARNING: %v\n", err)
+		return fmt.Errorf("lock file check failed: %v", err)
+	}
+
+	// Defer lock file generation: write lock file on function exit
+	// If err is nil, write empty file (success); otherwise write error message
+	// Use fmt.Fprintf to ensure output even if log is not configured
+	defer func() {
+		var errMsg string
+		if err != nil {
+			errMsg = err.Error()
+			fmt.Fprintf(os.Stderr, "Execution failed, writing lock file with error: %s\n", errMsg)
+		} else {
+			fmt.Fprintf(os.Stderr, "Execution completed successfully, writing empty lock file\n")
+		}
+
+		if writeErr := writeLockFile(lockPath, errMsg); writeErr != nil {
+			// Output to stderr to ensure user sees the warning
+			fmt.Fprintf(os.Stderr, "CRITICAL WARNING: Failed to write lock file: %v\n", writeErr)
+			fmt.Fprintf(os.Stderr, "Lock mechanism may not work for next execution!\n")
+		}
+	}()
+
 	// Configure log file; use MultiWriter so all log.Printf calls reach both
 	// the log file and stdout without needing paired fmt.Printf duplicates.
 	logFile, err := os.OpenFile(config.LogFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
@@ -1675,11 +1750,6 @@ func run() error {
 	log.Printf("  FixFileDir: %s\n", config.FixFileDir)
 	log.Printf("  LogBin: %s\n", logBinStr)
 	log.Printf("  LogFile: %s\n", config.LogFile)
-
-	// Check if fixFileDir directory exists
-	if _, err := os.Stat(config.FixFileDir); os.IsNotExist(err) {
-		return fmt.Errorf("fixFileDir directory does not exist: %s", config.FixFileDir)
-	}
 
 	// Quick check if fixFileDir directory is empty
 	entries, err := os.ReadDir(config.FixFileDir)
