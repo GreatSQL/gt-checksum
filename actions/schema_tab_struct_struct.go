@@ -649,31 +649,33 @@ func injectMyRowIDIntoCreateTable(createTableStmt string, destDB *sql.DB, destSc
 	}
 
 	// 使用正则表达式在最后一列后插入 my_row_id 定义和 PRIMARY KEY 约束
-	// 匹配模式：最后一列定义后的位置（在 PRIMARY KEY/UNIQUE KEY/KEY/ENGINE 之前）
-	// 注意：需要处理多种情况：
-	// 1. ) ENGINE=...
-	// 2. , PRIMARY KEY (...)
-	// 3. , UNIQUE KEY ...
-	// 4. , KEY ...
-	pattern := regexp.MustCompile(`(,\s*` + "`" + `[^` + "`" + `]+` + "`" + `[^,)]+)\s*(\)\s*ENGINE|\)\s*$|,\s*PRIMARY\s+KEY|,\s*UNIQUE\s+KEY|,\s*KEY)`)
+	// 策略：直接找到插入位置的标记（索引定义或表选项），在其之前插入 my_row_id
+	// 这样可以避免匹配字段定义内容（字段类型可能包含括号，如 int(11)）
 
-	// 检查是否匹配
-	if !pattern.MatchString(createTableStmt) {
-		// 如果没有匹配，尝试简单的模式：在最后的 ) ENGINE 之前插入
-		simplePattern := regexp.MustCompile(`\)\s*(ENGINE|DEFAULT|AUTO_INCREMENT|COMMENT)`)
-		if simplePattern.MatchString(createTableStmt) {
-			replacement := ",\n  `my_row_id` bigint unsigned NOT NULL AUTO_INCREMENT /*!80023 INVISIBLE */,\n  PRIMARY KEY (`my_row_id`)\n) $1"
-			createTableStmt = simplePattern.ReplaceAllString(createTableStmt, replacement)
+	// 策略1：找到第一个索引定义的位置（, KEY 或 , PRIMARY KEY 或 , UNIQUE KEY）
+	keyPattern := regexp.MustCompile(`,\s*(KEY|PRIMARY\s+KEY|UNIQUE\s+KEY)\s+`)
+	keyLoc := keyPattern.FindStringIndex(createTableStmt)
+
+	if keyLoc != nil {
+		// 在第一个索引定义之前插入 my_row_id 和 PRIMARY KEY
+		before := createTableStmt[:keyLoc[0]]
+		after := createTableStmt[keyLoc[0]:]
+		createTableStmt = before + ",\n  `my_row_id` bigint unsigned NOT NULL AUTO_INCREMENT /*!80023 INVISIBLE */,\n  PRIMARY KEY (`my_row_id`)" + after
+	} else {
+		// 策略2：如果没有索引，在表选项（) ENGINE/DEFAULT/COMMENT）之前插入
+		tableOptPattern := regexp.MustCompile(`\)\s*(ENGINE|DEFAULT|AUTO_INCREMENT|COMMENT)`)
+		optLoc := tableOptPattern.FindStringSubmatchIndex(createTableStmt)
+		if optLoc != nil {
+			before := createTableStmt[:optLoc[0]]
+			keyword := createTableStmt[optLoc[2]:optLoc[3]]
+			after := createTableStmt[optLoc[3]:]
+			createTableStmt = before + ",\n  `my_row_id` bigint unsigned NOT NULL AUTO_INCREMENT /*!80023 INVISIBLE */,\n  PRIMARY KEY (`my_row_id`)\n) " + keyword + after
 		} else {
 			// 如果仍然没有匹配，记录警告并返回原始语句
 			vlog := fmt.Sprintf("(%d) Warning: Cannot inject my_row_id into CREATE TABLE for %s.%s: pattern not matched", logThreadSeq, destSchema, destTable)
 			global.Wlog.Warn(vlog)
 			return createTableStmt, nil
 		}
-	} else {
-		// 正常匹配，插入 my_row_id 和 PRIMARY KEY
-		replacement := "$1,\n  `my_row_id` bigint unsigned NOT NULL AUTO_INCREMENT /*!80023 INVISIBLE */,\n  PRIMARY KEY (`my_row_id`)$2"
-		createTableStmt = pattern.ReplaceAllString(createTableStmt, replacement)
 	}
 
 	vlog := fmt.Sprintf("(%d) Injected my_row_id column and PRIMARY KEY into CREATE TABLE for %s.%s", logThreadSeq, destSchema, destTable)
