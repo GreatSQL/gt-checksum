@@ -18,6 +18,7 @@ MySQL DBA经常使用 **pt-table-checksum** 和 **pt-table-sync** 进行数据�
 - **[功能新增]** repairDB 工具新增预执行报告功能，执行前自动展示修复 SQL 统计信息（文件数量、影响行数、预估 binlog 大小等）。
 - **[功能新增]** repairDB 工具新增交互式确认机制和 `--dry-run` 参数，提升修复操作安全性。
 - **[功能新增]** repairDB 工具新增 CSV 执行报告导出功能，自动生成包含执行汇总和明细的报告文件。
+- **[功能新增]** repairDB 工具新增锁文件机制，防止重复执行修复操作，执行完成后自动生成 `.repairDB.lock` 文件。
 - **[功能新增]** 新增 `requirePK` 参数，支持在 struct 模式下为无主键表自动添加 my_row_id 隐藏列，用于 MySQL 单机实例迁移到 MGR 环境。
 
 更多详细变化详见 [CHANGELOG](./CHANGELOG.md)。
