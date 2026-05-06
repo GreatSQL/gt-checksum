@@ -635,7 +635,23 @@ func generateCreateTableSql(sourceDB *sql.DB, sourceSchema string, destSchema st
 // injectMyRowIDIntoCreateTable 在 CREATE TABLE 语句中注入 my_row_id 列定义和 PRIMARY KEY 约束
 // 如果需要添加 my_row_id，则在最后一列后、PRIMARY KEY/UNIQUE KEY/KEY/ENGINE 之前插入列定义和主键约束
 func injectMyRowIDIntoCreateTable(createTableStmt string, destDB *sql.DB, destSchema, destTable, requirePK string, logThreadSeq int64) (string, error) {
-	// 导入 mysql 包的函数
+	// 1. 首先检查 requirePK 是否为 ON
+	if strings.ToUpper(strings.TrimSpace(requirePK)) != "ON" {
+		return createTableStmt, nil
+	}
+
+	// 2. 检查 CREATE TABLE 语句本身是否已包含 PRIMARY KEY 定义
+	// 在 create-ddl 场景下，目标端表不存在，应该检查源端 DDL（即 createTableStmt）
+	// 而不是查询目标端数据库
+	primaryKeyPattern := regexp.MustCompile(`(?i)\bPRIMARY\s+KEY\b`)
+	if primaryKeyPattern.MatchString(createTableStmt) {
+		// CREATE TABLE 语句已包含主键定义，无需注入 my_row_id
+		vlog := fmt.Sprintf("(%d) CREATE TABLE for %s.%s already has PRIMARY KEY, skipping my_row_id injection", logThreadSeq, destSchema, destTable)
+		global.Wlog.Debug(vlog)
+		return createTableStmt, nil
+	}
+
+	// 3. 调用 ShouldAddMyRowID 进行其他检查（sql_generate_invisible_primary_key、唯一索引等）
 	shouldAdd, err := mysql.ShouldAddMyRowID(destDB, destSchema, destTable, requirePK, logThreadSeq)
 	if err != nil {
 		vlog := fmt.Sprintf("(%d) Error checking if should add my_row_id for %s.%s: %v", logThreadSeq, destSchema, destTable, err)
