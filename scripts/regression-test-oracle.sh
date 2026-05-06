@@ -505,7 +505,7 @@ run_struct_prepass() {
         fi
 
         run_with_timeout "$CASE_TIMEOUT" \
-            "$REPAIR_DB" -conf "${prepass_dir}/repairDB.conf" \
+            "$REPAIR_DB" -f -conf "${prepass_dir}/repairDB.conf" \
             > "${prepass_dir}/round${round}-repair-output.txt" 2>&1 || \
             log_warn "  [${case_id}] struct 预修复 repairDB 非零退出 (round ${round})"
         log_info "  [${case_id}] struct 预修复 round ${round}: 修复完成 (fixsql=${fixsql_count} files)"
@@ -584,7 +584,7 @@ run_single_test_case() {
 
                 local repair_output="${case_dir}/round${round}-repair-output.txt"
                 run_with_timeout "$CASE_TIMEOUT" \
-                    "$REPAIR_DB" -conf "${case_dir}/repairDB.conf" \
+                    "$REPAIR_DB" -f -conf "${case_dir}/repairDB.conf" \
                     > "$repair_output" 2>&1 || {
                     log_warn "  [${case_id}] Round ${round}: repairDB 非零退出"
                 }
@@ -690,7 +690,7 @@ run_final_repair() {
                 fi
 
                 run_with_timeout "$CASE_TIMEOUT" \
-                    "$REPAIR_DB" -conf "${repair_dir}/repairDB.conf" \
+                    "$REPAIR_DB" -f -conf "${repair_dir}/repairDB.conf" \
                     > "${repair_dir}/round${round}-repair-output.txt" 2>&1 || {
                     log_warn "  ${mode}: repairDB 非零退出 (round ${round})"
                 }

@@ -296,7 +296,7 @@ run_struct_case() {
                     log_info "  [${case_id}] advisory-only fixsql → PASS-ADVISORY"; break
                 fi
                 run_with_timeout "$CASE_TIMEOUT" \
-                    "$REPAIR_DB" -conf "${case_dir}/repairDB.conf" \
+                    "$REPAIR_DB" -f -conf "${case_dir}/repairDB.conf" \
                     > "${case_dir}/round${round}-repair.txt" 2>&1 \
                     || log_warn "  [${case_id}] Round ${round}: repairDB 非零退出"
                 log_info "  [${case_id}] Round ${round}: 修复完成 (fixsql=${nfx})"
