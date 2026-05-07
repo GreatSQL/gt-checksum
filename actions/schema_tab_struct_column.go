@@ -145,11 +145,19 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 		// 8b: 删除目标端多余列（AUTO_INCREMENT 守护）
 		stcls.dropExcessColumns(sms, cm, logThreadSeq, event, destSchema)
 		// 8c+8d: 列差异调和（新增列 + 列修改）
-		stcls.reconcileColumnDiffs(sms, cm, sourceSchema, destSchema, logThreadSeq, event)
+		myRowIDRepositionSQLs := stcls.reconcileColumnDiffs(sms, cm, sourceSchema, destSchema, logThreadSeq, event)
 
 		// 8e: 生成列级别的修复SQL
 		fixer := cm.dbf.DataAbnormalFix()
 		sqlS := fixer.FixAlterColumnSqlGenerate(sms.alterSlice, logThreadSeq)
+
+		// 8e-1: 将 my_row_id 位置调整的独立 SQL 语句追加到 sqlS 中
+		// 这些语句必须在其他列修复操作之后执行，且不能与其他操作合并
+		if len(myRowIDRepositionSQLs) > 0 {
+			sqlS = append(sqlS, myRowIDRepositionSQLs...)
+			vlog = fmt.Sprintf("(%d) %s Appended %d independent my_row_id reposition SQL statements for %s.%s", logThreadSeq, event, len(myRowIDRepositionSQLs), destSchema, stcls.table)
+			global.Wlog.Debug(vlog)
+		}
 
 		// 8f: MySQL→MySQL 字符集/排序规则/表级属性 advisory 检查
 		result := stcls.buildCharsetAdvisory(sms, cm, fixer, sourceSchema, destSchema, logThreadSeq, event)

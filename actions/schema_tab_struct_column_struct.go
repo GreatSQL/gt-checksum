@@ -206,8 +206,26 @@ func (stcls *schemaTable) reconcileColumnDiffs(
 	sms *structModeState, cm *columnMetaState,
 	sourceSchema, destSchema string,
 	logThreadSeq int64, event string,
-) {
+) []string {
 	var vlog string
+
+	// 检查目标端是否存在 my_row_id 隐藏主键导致的列顺序偏移
+	// 当 requirePK=ON 且目标端有 my_row_id 时，所有普通列的顺序会偏移 +1
+	// 此时不应该生成 MODIFY COLUMN 来调整普通列位置，而是应该调整 my_row_id 位置
+	hasMyRowIDOffset := false
+	if stcls.isMySQLToMySQL() && strings.ToUpper(strings.TrimSpace(stcls.checkRules.RequirePK)) == "ON" {
+		// 检查目标端是否存在 my_row_id 列
+		if _, exists := cm.destColumnMap["my_row_id"]; exists {
+			// 检查源端是否不存在 my_row_id 列
+			if _, sourceHasMyRowID := cm.sourceColumnMap["my_row_id"]; !sourceHasMyRowID {
+				// 目标端有 my_row_id 但源端没有，说明存在列顺序偏移
+				hasMyRowIDOffset = true
+				vlog = fmt.Sprintf("(%d) Detected my_row_id offset: source has no my_row_id, dest has my_row_id, will skip position-only MODIFY statements for regular columns", logThreadSeq)
+				global.Wlog.Debug(vlog)
+			}
+		}
+	}
+
 	for k1, v1 := range cm.sourceColumnSlice {
 			lastcolumn := ""
 			var alterColumnData []string
@@ -557,11 +575,16 @@ func (stcls *schemaTable) reconcileColumnDiffs(
 					}
 				}
 
-				if !hasAutoIncrementPrimaryKeyAdd && cm.sourceColumnSeq[v1] != cm.destColumnSeq[v1] {
+				if !hasAutoIncrementPrimaryKeyAdd && !hasMyRowIDOffset && cm.sourceColumnSeq[v1] != cm.destColumnSeq[v1] {
 					tableAbnormalBool = true
 					vlog = fmt.Sprintf("(%d) %s Column %s sequence mismatch: source=%d, dest=%d",
 						logThreadSeq, event, repairColumnName, cm.sourceColumnSeq[v1], cm.destColumnSeq[v1])
 					global.Wlog.Warn(vlog)
+				} else if hasMyRowIDOffset && cm.sourceColumnSeq[v1] != cm.destColumnSeq[v1] {
+					// 如果是因为 my_row_id 导致的列顺序偏移，记录日志但不标记为异常
+					vlog = fmt.Sprintf("(%d) %s Column %s sequence mismatch caused by my_row_id offset (source=%d, dest=%d), will be fixed by repositioning my_row_id",
+						logThreadSeq, event, repairColumnName, cm.sourceColumnSeq[v1], cm.destColumnSeq[v1])
+					global.Wlog.Debug(vlog)
 				}
 				if tableAbnormalBool {
 					sourceOriginalColName := cm.getSourceOriginalColumnName(v1)
@@ -745,6 +768,27 @@ func (stcls *schemaTable) reconcileColumnDiffs(
 			}
 		}
 	}
+
+	// 检查是否需要调整 my_row_id 隐式主键的位置
+	// 当 requirePK=ON 且目标端存在 my_row_id 隐式主键时，如果需要调整其他列到 my_row_id 前面，
+	// 需要生成两条独立的 ALTER TABLE 语句：1) 先设置 VISIBLE 2) 调整位置并设置回 INVISIBLE
+	// 这两条语句不能与其他列修复操作合并，必须单独执行
+	var myRowIDRepositionSQLs []string
+	if stcls.isMySQLToMySQL() && strings.ToUpper(strings.TrimSpace(stcls.checkRules.RequirePK)) == "ON" {
+		repositionSQLs, err := stcls.checkAndGenerateMyRowIDRepositionSQL(
+			sms, cm, destSchema, logThreadSeq, event,
+		)
+		if err != nil {
+			vlog = fmt.Sprintf("(%d) %s Error checking my_row_id reposition for %s.%s: %v", logThreadSeq, event, destSchema, stcls.table, err)
+			global.Wlog.Error(vlog)
+		} else if len(repositionSQLs) > 0 {
+			myRowIDRepositionSQLs = repositionSQLs
+			vlog = fmt.Sprintf("(%d) %s Generated %d independent my_row_id reposition SQL statements for %s.%s", logThreadSeq, event, len(repositionSQLs), destSchema, stcls.table)
+			global.Wlog.Info(vlog)
+		}
+	}
+
+	return myRowIDRepositionSQLs
 }
 
 func (stcls *schemaTable) buildCharsetAdvisory(
