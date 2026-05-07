@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"gt-checksum/dbExec"
 	"gt-checksum/global"
+	mysql "gt-checksum/MySQL"
 	"gt-checksum/schemacompat"
 	"strings"
 )
@@ -247,6 +248,15 @@ func (stcls *schemaTable) loadAndNormalizeColumns(
 	cm.destPartitionExpressions = stcls.loadTablePartitionExpressions(stcls.destDB, stcls.destDrive, destSchema, destTableName, stcls.caseSensitiveObjectName, logThreadSeq2)
 	cm.partitionExpressions = append([]string{}, cm.sourcePartitionExpressions...)
 	cm.partitionExpressions = append(cm.partitionExpressions, cm.destPartitionExpressions...)
+
+	// 从分区表达式中提取分区列，用于分区表主键修复
+	if len(cm.destPartitionExpressions) > 0 {
+		partitionColumns := mysql.ExtractPartitionColumnsFromExpressions(cm.destPartitionExpressions)
+		if len(partitionColumns) > 0 {
+			// 将分区列信息直接设置到 DataAbnormalFixStruct 上
+			cm.dbf.PartitionColumns = partitionColumns
+		}
+	}
 
 	cm.columnNameCaseSensitive = shouldUseCaseSensitiveColumnMatching(
 		stcls.sourceDrive,

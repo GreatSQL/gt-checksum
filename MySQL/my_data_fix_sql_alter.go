@@ -4,8 +4,80 @@ import (
 	"fmt"
 	"gt-checksum/global"
 	"gt-checksum/schemacompat"
+	"regexp"
 	"strings"
 )
+
+// ExtractPartitionColumnsFromExpressions 从分区表达式中提取分区列名
+// 支持 RANGE、LIST、HASH 等分区方式
+// 例如：`name` -> [name], `id`, `name` -> [id, name]
+func ExtractPartitionColumnsFromExpressions(expressions []string) []string {
+	if len(expressions) == 0 {
+		return nil
+	}
+
+	columnSet := make(map[string]struct{})
+	// 匹配反引号或不含空格的列名
+	columnPattern := regexp.MustCompile("`([^`]+)`|\\b([a-zA-Z_][a-zA-Z0-9_]*)\\b")
+
+	for _, expr := range expressions {
+		if strings.TrimSpace(expr) == "" {
+			continue
+		}
+		matches := columnPattern.FindAllStringSubmatch(expr, -1)
+		for _, match := range matches {
+			var colName string
+			if match[1] != "" {
+				colName = match[1]
+			} else if match[2] != "" {
+				colName = match[2]
+			}
+			if colName != "" && !isReservedKeyword(colName) {
+				columnSet[strings.ToLower(colName)] = struct{}{}
+			}
+		}
+	}
+
+	if len(columnSet) == 0 {
+		return nil
+	}
+
+	columns := make([]string, 0, len(columnSet))
+	for col := range columnSet {
+		columns = append(columns, col)
+	}
+	return columns
+}
+
+// isReservedKeyword 检查是否是 MySQL 保留关键字
+func isReservedKeyword(word string) bool {
+	reserved := map[string]bool{
+		"year":      true,
+		"month":     true,
+		"day":       true,
+		"to_days":   true,
+		"dayofweek": true,
+		"weekday":   true,
+		"dayofyear": true,
+		"quarter":   true,
+		"week":      true,
+		"hour":      true,
+		"minute":    true,
+		"second":    true,
+		"abs":       true,
+		"mod":       true,
+		"and":       true,
+		"or":        true,
+		"not":       true,
+		"between":   true,
+		"in":        true,
+		"is":        true,
+		"null":      true,
+		"true":      true,
+		"false":     true,
+	}
+	return reserved[strings.ToLower(word)]
+}
 
 func (my *MysqlDataAbnormalFixStruct) FixAlterIndexSqlExec(e, f []string, si map[string][]string, sourceDrive string, logThreadSeq int64) []string {
 	var (
@@ -207,6 +279,15 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterColumnSqlDispos(alterType string, 
 	if needInlinePrimaryKey && strings.EqualFold(alterType, "modify") && shouldSkipInlinePrimaryKeyClause(my.Schema, my.Table, curryColumn) {
 		needInlinePrimaryKey = false
 	}
+
+	// 检查表是否有分区，如果有分区且需要添加主键，则不能内联 PRIMARY KEY
+	hasPartition := len(my.PartitionColumns) > 0
+	if needInlinePrimaryKey && hasPartition && strings.EqualFold(alterType, "add") {
+		// 对于分区表，不能在 ADD COLUMN 时内联 PRIMARY KEY
+		// 而是需要生成单独的 ADD PRIMARY KEY 语句
+		needInlinePrimaryKey = false
+	}
+
 	if needInlinePrimaryKey {
 		// 对于自增列，需要设置为主键
 		attributes = append(attributes, "PRIMARY KEY")
@@ -498,6 +579,31 @@ func (my *MysqlDataAbnormalFixStruct) filterRedundantDropPrimaryKeyOperations(co
 		filtered = append(filtered, op)
 	}
 	return filtered
+}
+
+// GeneratePartitionTablePrimaryKeySql 为分区表生成主键修复 SQL
+// 当表有分区且需要添加主键时，主键必须包含分区列
+func (my *MysqlDataAbnormalFixStruct) GeneratePartitionTablePrimaryKeySql(myRowIDColumn string, logThreadSeq int64) string {
+	if len(my.PartitionColumns) == 0 {
+		return ""
+	}
+
+	// 构建主键列列表：my_row_id 在第一个位置，然后是分区列
+	pkColumns := make([]string, 0, len(my.PartitionColumns)+1)
+	pkColumns = append(pkColumns, mysqlQuoteIdent(myRowIDColumn))
+
+	// 添加分区列
+	for _, col := range my.PartitionColumns {
+		pkColumns = append(pkColumns, mysqlQuoteIdent(col))
+	}
+
+	targetSchema := my.Schema
+	sql := fmt.Sprintf(" ADD PRIMARY KEY(%s)", strings.Join(pkColumns, ", "))
+	if global.Wlog != nil {
+		vlog := fmt.Sprintf("(%d) Generated partition table primary key SQL for %s.%s: %s", logThreadSeq, targetSchema, my.Table, sql)
+		global.Wlog.Debug(vlog)
+	}
+	return sql
 }
 
 // FixAlterIndexSqlGenerate 合并索引操作，生成单个ALTER TABLE语句

@@ -23,6 +23,7 @@ type DataAbnormalFixStruct struct {
 	CaseSensitiveObjectName string            // 是否区分对象名大小写
 	IndexVisibilityMap      map[string]string // 索引可见性信息
 	DestFlavor              global.DatabaseFlavor // 目标端数据库类型，用于生成兼容目标端语法的 fix SQL
+	PartitionColumns        []string          // 分区表的分区列，用于生成正确的主键定义
 }
 type DataAbnormalFixInterface interface {
 	FixInsertSqlExec(db *sql.DB, sourceDrive string, logThreadSeq int64) (string, error)
@@ -117,6 +118,7 @@ func (dafs DataAbnormalFixStruct) DataAbnormalFix() DataAbnormalFixInterface {
 			CaseSensitiveObjectName: dafs.CaseSensitiveObjectName, // 传递是否区分对象名大小写
 			IndexVisibilityMap:      dafs.IndexVisibilityMap,      // 传递索引可见性信息
 			DestFlavor:              dafs.DestFlavor,              // 传递目标端 Flavor 以生成兼容语法
+			PartitionColumns:        dafs.PartitionColumns,        // 传递分区列信息
 		}
 	}
 	if dafs.DestDevice == "godror" {

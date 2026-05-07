@@ -128,6 +128,7 @@ type MysqlDataAbnormalFixStruct struct {
 	IndexVisibilityMap      map[string]string // 索引可见性信息
 	ForeignKeyDefinitions   map[string]string // 外键DDL定义信息
 	DestFlavor              global.DatabaseFlavor // 目标端数据库类型，用于生成兼容目标端语法的 fix SQL
+	PartitionColumns        []string          // 分区列列表，用于分区表主键修复
 }
 
 type foreignKeyColumn struct {
