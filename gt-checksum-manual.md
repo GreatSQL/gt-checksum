@@ -1296,6 +1296,7 @@ result=PARTIAL_SUCCESS continue_on_error=true
 - 当存在触发器时，因为触发器的作用，可能导致在修复完一个表后，触发其他表被改变，从而看起来像是修复后仍不一致的情况。这种情况下，需要先临时删除触发器进行修复，完成后在重新创建触发器。
 
 - 当表校验结果仅存在partition定义不一致时，报告Diffs=yes，但生成的fixSQL中的SQL语句是被注释的，不会被repairDB执行，需要DBA手动调整修复，避免误操作导致数据丢失。在 Oracle→MySQL 场景下，分区比对行为有所不同：仅做存在性比对并输出 advisory 告警，不生成任何分区修复 SQL，原因是 Oracle 与 MySQL 的分区语法差异过大，不适合自动转换；DBA 需根据 advisory 输出手动在目标端重建分区定义。
+  - **v3.0.0 增强**：当为无主键分区表添加 `my_row_id` 时（`requirePK=ON`），程序会自动提取分区列并生成包含分区列的主键定义，确保修复 SQL 符合 MySQL 分区表主键约束（分区表主键必须包含分区列）。
 
 - 为了安全起见，当设置checkObject=data之外的其他值时，即便同时设置datafix=table，也不会直接在线完成修复，需要改成datafix=file，生成fix SQL后再由DBA手动完成。
 
