@@ -171,13 +171,30 @@ func alterTableMergeKey(tableExpr string) string {
 
 // mergeAlterTableStatements merges ALTER TABLE statements targeting the same table.
 // It supports non-contiguous ALTER statements and keeps non-ALTER SQL ordering intact.
+// Special handling: my_row_id VISIBLE/INVISIBLE operations are never merged with other operations.
 func mergeAlterTableStatements(sqls []string, logThreadSeq int64) []string {
 	if len(sqls) <= 1 {
 		return sqls
 	}
 
+	// 调试：打印所有传入的 SQL 语句
+	if global.Wlog != nil {
+		for i, stmt := range sqls {
+			global.Wlog.Debug(fmt.Sprintf("(%d) mergeAlterTableStatements input[%d]: %s", logThreadSeq, i, stmt))
+		}
+	}
+
 	buckets := make(map[string]*alterTableMergeBucket)
 	for idx, stmt := range sqls {
+		// 检查是否是 my_row_id 的 VISIBLE/INVISIBLE 操作
+		// 这些操作必须保持独立，不能与其他操作合并
+		if isMyRowIDVisibilityStatement(stmt) {
+			if global.Wlog != nil {
+				global.Wlog.Debug(fmt.Sprintf("(%d) Skipping merge for my_row_id VISIBLE/INVISIBLE statement: %s", logThreadSeq, stmt))
+			}
+			continue
+		}
+
 		tableExpr, clause, ok := parseAlterTableStatement(stmt)
 		if !ok {
 			continue
@@ -200,6 +217,12 @@ func mergeAlterTableStatements(sqls []string, logThreadSeq int64) []string {
 
 	merged := make([]string, 0, len(sqls))
 	for idx, stmt := range sqls {
+		// my_row_id 的 VISIBLE/INVISIBLE 操作保持独立
+		if isMyRowIDVisibilityStatement(stmt) {
+			merged = append(merged, stmt)
+			continue
+		}
+
 		tableExpr, _, ok := parseAlterTableStatement(stmt)
 		if !ok {
 			merged = append(merged, stmt)
@@ -223,4 +246,21 @@ func mergeAlterTableStatements(sqls []string, logThreadSeq int64) []string {
 		merged = append(merged, combined)
 	}
 	return merged
+}
+
+// isMyRowIDVisibilityStatement 检查 SQL 语句是否是 my_row_id 的 VISIBLE/INVISIBLE 操作
+func isMyRowIDVisibilityStatement(stmt string) bool {
+	upperStmt := strings.ToUpper(strings.TrimSpace(stmt))
+	// 检查是否包含 my_row_id 和 VISIBLE/INVISIBLE 关键字
+	if !strings.Contains(upperStmt, "MY_ROW_ID") {
+		return false
+	}
+	if !strings.Contains(upperStmt, "VISIBLE") && !strings.Contains(upperStmt, "INVISIBLE") {
+		return false
+	}
+	// 检查是否是 ALTER TABLE ... MODIFY COLUMN 操作
+	if !strings.Contains(upperStmt, "ALTER TABLE") || !strings.Contains(upperStmt, "MODIFY COLUMN") {
+		return false
+	}
+	return true
 }

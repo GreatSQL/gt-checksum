@@ -390,7 +390,8 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterColumnSqlGenerate(modifyColumn []s
 	return alterSql
 }
 
-// FixAlterColumnAndIndexSqlGenerate 合并列修复和索引修复操作，生成单个ALTER TABLE语句
+// FixAlterColumnAndIndexSqlGenerate 合并列修复和索引修复操作，生成ALTER TABLE语句
+// 特殊处理：my_row_id 的 VISIBLE/INVISIBLE 操作必须作为独立的 ALTER TABLE 语句输出，不能与其他操作合并
 func (my *MysqlDataAbnormalFixStruct) FixAlterColumnAndIndexSqlGenerate(columnOperations, indexOperations []string, logThreadSeq int64) []string {
 	var (
 		alterSql     []string
@@ -437,15 +438,27 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterColumnAndIndexSqlGenerate(columnOp
 	}
 	filteredIndexOperations = my.filterRedundantDropPrimaryKeyOperations(columnOperations, filteredIndexOperations)
 
-	// 合并所有操作
-	var allOperations []string
-	allOperations = append(allOperations, columnOperations...)
-	allOperations = append(allOperations, filteredIndexOperations...)
+	// 分离 my_row_id 的 VISIBLE/INVISIBLE 操作和其他操作
+	var myRowIDOperations []string
+	var regularOperations []string
 
-	if len(allOperations) > 0 {
+	for _, op := range columnOperations {
+		if isMyRowIDVisibilityOperation(op) {
+			myRowIDOperations = append(myRowIDOperations, op)
+		} else {
+			regularOperations = append(regularOperations, op)
+		}
+	}
+
+	// 合并常规操作（不包括 my_row_id 的 VISIBLE/INVISIBLE 操作）
+	var allRegularOperations []string
+	allRegularOperations = append(allRegularOperations, regularOperations...)
+	allRegularOperations = append(allRegularOperations, filteredIndexOperations...)
+
+	if len(allRegularOperations) > 0 {
 		// 提取操作内容（去除ALTER TABLE前缀和分号）
 		var operationContents []string
-		for _, op := range allOperations {
+		for _, op := range allRegularOperations {
 			content := normalizeAlterOperationContent(op)
 			if content != "" {
 				operationContents = append(operationContents, content)
@@ -453,17 +466,51 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterColumnAndIndexSqlGenerate(columnOp
 		}
 
 		if len(operationContents) > 0 {
-			// 生成单个ALTER TABLE语句，包含所有操作
+			// 生成单个ALTER TABLE语句，包含所有常规操作
 			alterSql = append(alterSql, fmt.Sprintf("ALTER TABLE %s.%s %s;", mysqlQuoteIdent(targetSchema), mysqlQuoteIdent(my.Table), strings.Join(operationContents, ", ")))
 
 			// 添加调试日志
-			vlog := fmt.Sprintf("(%d) Generated combined ALTER TABLE SQL for %s.%s: %d column operations, %d index operations",
-				logThreadSeq, targetSchema, my.Table, len(columnOperations), len(indexOperations))
+			vlog := fmt.Sprintf("(%d) Generated combined ALTER TABLE SQL for %s.%s: %d regular column operations, %d index operations",
+				logThreadSeq, targetSchema, my.Table, len(regularOperations), len(indexOperations))
 			global.Wlog.Debug(vlog)
 		}
 	}
 
+	// 将 my_row_id 的 VISIBLE/INVISIBLE 操作作为独立的 ALTER TABLE 语句追加
+	// 这些操作必须按顺序执行，不能与其他操作合并
+	if len(myRowIDOperations) > 0 {
+		for _, op := range myRowIDOperations {
+			// 如果操作已经是完整的 ALTER TABLE 语句，直接使用
+			if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(op)), "ALTER TABLE") {
+				alterSql = append(alterSql, op)
+			} else {
+				// 否则，构造完整的 ALTER TABLE 语句
+				alterSql = append(alterSql, fmt.Sprintf("ALTER TABLE %s.%s %s;", mysqlQuoteIdent(targetSchema), mysqlQuoteIdent(my.Table), strings.TrimSpace(op)))
+			}
+		}
+		vlog := fmt.Sprintf("(%d) Appended %d independent my_row_id VISIBLE/INVISIBLE operations for %s.%s",
+			logThreadSeq, len(myRowIDOperations), targetSchema, my.Table)
+		global.Wlog.Debug(vlog)
+	}
+
 	return alterSql
+}
+
+// isMyRowIDVisibilityOperation 检查操作是否是 my_row_id 的 VISIBLE/INVISIBLE 操作
+func isMyRowIDVisibilityOperation(op string) bool {
+	upperOp := strings.ToUpper(strings.TrimSpace(op))
+	// 检查是否包含 my_row_id 和 VISIBLE/INVISIBLE 关键字
+	if !strings.Contains(upperOp, "MY_ROW_ID") {
+		return false
+	}
+	if !strings.Contains(upperOp, "VISIBLE") && !strings.Contains(upperOp, "INVISIBLE") {
+		return false
+	}
+	// 检查是否是 MODIFY COLUMN 操作
+	if !strings.Contains(upperOp, "MODIFY COLUMN") {
+		return false
+	}
+	return true
 }
 
 func normalizeAlterOperationContent(op string) string {
