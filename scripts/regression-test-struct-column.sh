@@ -194,6 +194,8 @@ datafix=file
 fixFileDir=${case_dir}/fixsql
 logFile=${case_dir}/gt-checksum.log
 logLevel=debug
+logbin=ON
+requirePK=ON
 EOF
     [[ -n "$columns" ]] && echo "columns=${columns}" >> "${case_dir}/gt-checksum.conf"
     cat > "${case_dir}/repairDB.conf" <<EOF

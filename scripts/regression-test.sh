@@ -489,6 +489,8 @@ datafix=file
 fixFileDir=${case_dir}/fixsql
 logFile=${case_dir}/gt-checksum.log
 logLevel=debug
+logbin=ON
+requirePK=ON
 EOF
 }
 

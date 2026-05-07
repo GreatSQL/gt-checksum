@@ -285,6 +285,8 @@ datafix=file
 fixFileDir=${case_dir}/fixsql
 logFile=${case_dir}/gt-checksum.log
 logLevel=debug
+logbin=ON
+requirePK=ON
 extraRowsSyncToSource=${extra_rows_sync}
 EOF
     # columns 参数仅非空时追加，避免 columns="" 导致解析报错
@@ -314,6 +316,8 @@ datafix=file
 fixFileDir=${case_dir}/fixsql
 logFile=${case_dir}/gt-checksum.log
 logLevel=debug
+logbin=ON
+requirePK=ON
 EOF
     if [[ -n "$columns" ]]; then
         echo "columns=${columns}" >> "${case_dir}/gt-checksum.conf"
