@@ -469,10 +469,20 @@ func (stcls *schemaTable) reconcileColumnDiffs(
 					nullMismatch = sourceIsNull != destIsNull
 				}
 				if nullMismatch {
-					tableAbnormalBool = true
-					vlog = fmt.Sprintf("(%d) %s Column %s NULL constraint mismatch: source=%s, dest=%s",
-						logThreadSeq, event, repairColumnName, sourceIsNull, destIsNull)
-					global.Wlog.Warn(vlog)
+					// 检查字段是否是分区字段且目标端不允许 NULL
+					// 如果是分区字段且目标端不允许 NULL，则这是合理的约束，不应该生成修复 SQL
+					isPartitionKeyColumn := partitionExpressionsReferenceColumn(cm.partitionExpressions, sourceOriginalColName, destOriginalColName)
+					if isPartitionKeyColumn && destIsNull == "NO" {
+						// 分区字段且目标端不允许 NULL，这是合理的约束
+						vlog = fmt.Sprintf("(%d) %s Column %s NULL constraint mismatch is expected for partition key column: source=%s, dest=%s (no fix needed)",
+							logThreadSeq, event, repairColumnName, sourceIsNull, destIsNull)
+						global.Wlog.Info(vlog)
+					} else {
+						tableAbnormalBool = true
+						vlog = fmt.Sprintf("(%d) %s Column %s NULL constraint mismatch: source=%s, dest=%s",
+							logThreadSeq, event, repairColumnName, sourceIsNull, destIsNull)
+						global.Wlog.Warn(vlog)
+					}
 				}
 
 				// 比较默认值
@@ -721,6 +731,18 @@ func (stcls *schemaTable) reconcileColumnDiffs(
 			vlog = fmt.Sprintf("(%d) %s Adding my_row_id column to %s.%s: %v", logThreadSeq, event, destSchema, stcls.table, addSql)
 			global.Wlog.Info(vlog)
 			sms.alterSlice = append(sms.alterSlice, addSql)
+
+			// 如果表有分区，需要生成单独的 ADD PRIMARY KEY 语句
+			if mysqlFixer, ok := cm.dbf.DataAbnormalFix().(*mysql.MysqlDataAbnormalFixStruct); ok {
+				if len(mysqlFixer.PartitionColumns) > 0 {
+					pkSql := mysqlFixer.GeneratePartitionTablePrimaryKeySql("my_row_id", logThreadSeq)
+					if pkSql != "" {
+						vlog = fmt.Sprintf("(%d) %s Adding partition table primary key for %s.%s: %v", logThreadSeq, event, destSchema, stcls.table, pkSql)
+						global.Wlog.Info(vlog)
+						sms.alterSlice = append(sms.alterSlice, pkSql)
+					}
+				}
+			}
 		}
 	}
 }
