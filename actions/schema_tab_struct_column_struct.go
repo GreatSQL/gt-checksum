@@ -153,6 +153,16 @@ func (stcls *schemaTable) dropExcessColumns(
 	// 计算目标表的总列数（用于判断 my_row_id 列位置）
 	totalColumns := len(cm.destColumnSlice)
 
+	// 检查是否将要添加显式主键列（通过 ADD COLUMN ... PRIMARY KEY）
+	hasExplicitPrimaryKeyAddition := false
+	for _, alterSQL := range sms.alterSlice {
+		upperSQL := strings.ToUpper(alterSQL)
+		if strings.Contains(upperSQL, "ADD COLUMN") && strings.Contains(upperSQL, "PRIMARY KEY") {
+			hasExplicitPrimaryKeyAddition = true
+			break
+		}
+	}
+
 	var colsToDelete []string
 	for _, v1 := range cm.delColumn {
 		originalColName := cm.getDestOriginalColumnName(v1)
@@ -177,13 +187,20 @@ func (stcls *schemaTable) dropExcessColumns(
 				vlog = fmt.Sprintf("(%d) %s Error checking if %s is valid my_row_id for %s.%s: %v", logThreadSeq, event, originalColName, destSchema, stcls.table, err)
 				global.Wlog.Warn(vlog)
 			} else if isValidMyRowID {
-				// 是符合条件的 my_row_id 列，跳过 DROP 操作
-				vlog = fmt.Sprintf("(%d) %s Skipping DROP for valid my_row_id column %s in %s.%s (requirePK=ON)", logThreadSeq, event, originalColName, destSchema, stcls.table)
-				global.Wlog.Info(vlog)
+				// 如果将要添加显式主键，则不跳过删除 my_row_id，因为需要先删除隐式主键
+				if hasExplicitPrimaryKeyAddition {
+					vlog = fmt.Sprintf("(%d) %s Will DROP my_row_id column %s in %s.%s because explicit PRIMARY KEY will be added", logThreadSeq, event, originalColName, destSchema, stcls.table)
+					global.Wlog.Info(vlog)
+					// 继续执行删除操作，不跳过
+				} else {
+					// 是符合条件的 my_row_id 列，且不需要添加显式主键，跳过 DROP 操作
+					vlog = fmt.Sprintf("(%d) %s Skipping DROP for valid my_row_id column %s in %s.%s (requirePK=ON)", logThreadSeq, event, originalColName, destSchema, stcls.table)
+					global.Wlog.Info(vlog)
 
-				// 从 destColumnMap 中删除该列（标记为已处理）
-				delete(cm.destColumnMap, v1)
-				continue
+					// 从 destColumnMap 中删除该列（标记为已处理）
+					delete(cm.destColumnMap, v1)
+					continue
+				}
 			}
 		}
 

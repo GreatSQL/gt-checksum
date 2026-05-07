@@ -10,5 +10,6 @@
 - [测试完善]: 新增 `cmd/repairDB/csv_export_test.go` 测试文件，覆盖 CSV BOM、汇总置顶、统一表头、ObjectType 列、行数统计、汇总值验证、DROP 列、目录创建、文件权限、逗号转义、空结果、路径解析等场景。
 - [测试完善]: 新增 `cmd/repairDB/lock_test.go` 测试文件，覆盖锁文件机制的单元测试场景（锁文件不存在、空锁文件、包含错误信息的锁文件、写入成功锁文件、写入失败锁文件）。
 - [测试完善]: 新增 `TestExtractSchemaAndObject` 和 `TestResultCollector_Concurrent` 单元测试。
+- [问题修复]: 修复当表从无主键状态（已添加 my_row_id）转变为有显式主键状态时，my_row_id 删除与显式主键添加之间的操作冲突问题。现在会自动检测显式主键添加场景，在添加显式主键前先删除 my_row_id 列，避免 DROP PRIMARY KEY 和 DROP COLUMN 操作冲突。
 - [问题修复]: 修复分区表 NULL 约束检查逻辑，对分区字段的 NULL 约束差异不再生成修复 SQL，因为分区字段通常有隐式的 NOT NULL 约束。
 - [问题修复]: 修复跨版本 MySQL 场景（如 MySQL 5.6/5.7 → MySQL 8.0）下，CREATE TABLE DDL 生成时缺少显式 COLLATE 子句的问题。当源端 `SHOW CREATE TABLE` 只显示 CHARSET 而不显示 COLLATE 时（MySQL 5.6/5.7 常见行为），现在会从 `information_schema.TABLES` 查询源端实际 collation 并显式添加到生成的 DDL 中，避免目标端使用其版本默认 collation（如 MySQL 8.0 的 utf8mb4_0900_ai_ci）导致需要二次修复。影响 `checkObject=struct` 模式下所有跨版本场景。

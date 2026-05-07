@@ -436,7 +436,7 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterColumnAndIndexSqlGenerate(columnOp
 			filteredIndexOperations = append(filteredIndexOperations, op)
 		}
 	}
-	filteredIndexOperations = my.filterRedundantDropPrimaryKeyOperations(columnOperations, filteredIndexOperations)
+	columnOperations, filteredIndexOperations = my.filterRedundantDropPrimaryKeyOperations(columnOperations, filteredIndexOperations)
 
 	// 分离 my_row_id 的 VISIBLE/INVISIBLE 操作和其他操作
 	var myRowIDOperations []string
@@ -603,29 +603,75 @@ func normalizeInlinePrimaryKeyClause(definition string) string {
 	return strings.TrimSpace(normalized)
 }
 
-func (my *MysqlDataAbnormalFixStruct) filterRedundantDropPrimaryKeyOperations(columnOperations, indexOperations []string) []string {
+func (my *MysqlDataAbnormalFixStruct) filterRedundantDropPrimaryKeyOperations(columnOperations, indexOperations []string) ([]string, []string) {
 	droppedColumns := collectDroppedColumns(columnOperations)
-	if len(droppedColumns) == 0 {
-		return indexOperations
-	}
-
 	primaryKeyColumns := cachedPrimaryKeyColumns(my.Schema, my.Table)
-	if len(primaryKeyColumns) != 1 {
-		return indexOperations
-	}
-	if _, exists := droppedColumns[strings.ToUpper(primaryKeyColumns[0])]; !exists {
-		return indexOperations
+
+	// 检查是否将要添加显式主键列（通过 ADD COLUMN ... PRIMARY KEY）
+	hasExplicitPrimaryKeyAddition := false
+	for _, op := range columnOperations {
+		upperOp := strings.ToUpper(op)
+		if strings.Contains(upperOp, "ADD COLUMN") && strings.Contains(upperOp, "PRIMARY KEY") {
+			hasExplicitPrimaryKeyAddition = true
+			break
+		}
 	}
 
-	filtered := make([]string, 0, len(indexOperations))
-	for _, op := range indexOperations {
-		clause := normalizeAlterOperationContent(op)
-		if strings.EqualFold(strings.TrimSpace(clause), "DROP PRIMARY KEY") {
-			continue
+	// 如果将要添加显式主键，且当前主键是 my_row_id，则需要先删除 my_row_id 列
+	modifiedColumnOperations := columnOperations
+	if hasExplicitPrimaryKeyAddition && len(primaryKeyColumns) == 1 {
+		pkCol := strings.ToLower(strings.TrimSpace(primaryKeyColumns[0]))
+		if pkCol == "my_row_id" {
+			// 检查是否已经有删除 my_row_id 的操作
+			if _, exists := droppedColumns[strings.ToUpper(primaryKeyColumns[0])]; !exists {
+				// 在 columnOperations 开头插入 DROP COLUMN my_row_id 操作
+				dropMyRowIDOp := fmt.Sprintf(" DROP COLUMN `%s`", primaryKeyColumns[0])
+				modifiedColumnOperations = make([]string, 0, len(columnOperations)+1)
+				modifiedColumnOperations = append(modifiedColumnOperations, dropMyRowIDOp)
+				modifiedColumnOperations = append(modifiedColumnOperations, columnOperations...)
+
+				vlog := fmt.Sprintf("Inserted DROP COLUMN my_row_id before explicit PRIMARY KEY addition in %s.%s",
+					my.Schema, my.Table)
+				global.Wlog.Info(vlog)
+			}
 		}
-		filtered = append(filtered, op)
 	}
-	return filtered
+
+	// 如果已经删除了主键列，则过滤掉 DROP PRIMARY KEY 操作
+	if len(droppedColumns) > 0 && len(primaryKeyColumns) == 1 {
+		if _, exists := droppedColumns[strings.ToUpper(primaryKeyColumns[0])]; exists {
+			filtered := make([]string, 0, len(indexOperations))
+			for _, op := range indexOperations {
+				clause := normalizeAlterOperationContent(op)
+				if strings.EqualFold(strings.TrimSpace(clause), "DROP PRIMARY KEY") {
+					continue
+				}
+				filtered = append(filtered, op)
+			}
+			return modifiedColumnOperations, filtered
+		}
+	}
+
+	// 如果将要添加显式主键且当前主键是 my_row_id，也需要过滤掉 DROP PRIMARY KEY
+	if hasExplicitPrimaryKeyAddition && len(primaryKeyColumns) == 1 {
+		pkCol := strings.ToLower(strings.TrimSpace(primaryKeyColumns[0]))
+		if pkCol == "my_row_id" {
+			filtered := make([]string, 0, len(indexOperations))
+			for _, op := range indexOperations {
+				clause := normalizeAlterOperationContent(op)
+				if strings.EqualFold(strings.TrimSpace(clause), "DROP PRIMARY KEY") {
+					vlog := fmt.Sprintf("Filtered DROP PRIMARY KEY for my_row_id in %s.%s (explicit PK will be added)",
+						my.Schema, my.Table)
+					global.Wlog.Debug(vlog)
+					continue
+				}
+				filtered = append(filtered, op)
+			}
+			return modifiedColumnOperations, filtered
+		}
+	}
+
+	return modifiedColumnOperations, indexOperations
 }
 
 // GeneratePartitionTablePrimaryKeySql 为分区表生成主键修复 SQL

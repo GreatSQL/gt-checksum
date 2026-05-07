@@ -77,7 +77,19 @@ func (stcls *schemaTable) checkAndGenerateMyRowIDRepositionSQL(
 		return nil, nil
 	}
 
-	// 6. 检查是否有其他列需要调整到 my_row_id 前面
+	// 6. 检查是否将要添加显式主键列
+	// 如果 sms.alterSlice 中包含 ADD COLUMN ... PRIMARY KEY 语句，
+	// 说明将要添加显式主键，此时应该删除 my_row_id 而不是调整它
+	for _, alterSQL := range sms.alterSlice {
+		upperSQL := strings.ToUpper(alterSQL)
+		if strings.Contains(upperSQL, "ADD COLUMN") && strings.Contains(upperSQL, "PRIMARY KEY") {
+			vlog = fmt.Sprintf("(%d) %s Detected explicit PRIMARY KEY column addition in %s.%s, my_row_id should be dropped instead of repositioned", logThreadSeq, event, destSchema, stcls.table)
+			global.Wlog.Info(vlog)
+			return nil, nil
+		}
+	}
+
+	// 7. 检查是否有其他列需要调整到 my_row_id 前面
 	// 如果 sms.alterSlice 中包含 MODIFY COLUMN ... FIRST 或 MODIFY COLUMN ... AFTER 语句，
 	// 且这些语句会导致列位置在 my_row_id 之前，则需要调整 my_row_id 位置
 	hasColumnPositionChange := false
