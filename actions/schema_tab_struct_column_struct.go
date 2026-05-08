@@ -31,6 +31,7 @@ type charsetAdvisoryResult struct {
 	tableCharsetDifferent           bool
 	tableCollationDifferent         bool
 	tableCommentDifferent           bool
+	tableAutoIncrementDifferent     bool
 	tableAutoIncrementRiskDifferent bool
 	tableRowFormatDifferent         bool
 	tableCollationRiskDifferent     bool
@@ -1015,13 +1016,41 @@ func (stcls *schemaTable) buildCharsetAdvisory(
 		)
 	}
 
-	if advisorySuggestion, needsFix := buildMySQLTableAutoIncrementAdvisory(destSchema, stcls.destTable, sourceMeta.AutoIncrement, destMeta.AutoIncrement); needsFix && !sms.droppedAutoIncrementColumn {
-		result.tableAutoIncrementRiskDifferent = true
-		vlog = fmt.Sprintf("(%d) %s Table AUTO_INCREMENT drift recorded as advisory-only: source=%v, dest=%v", logThreadSeq, event, nullInt64ForLog(sourceMeta.AutoIncrement), nullInt64ForLog(destMeta.AutoIncrement))
+	// 检查是否应该跳过 AUTO_INCREMENT 检查
+	// 当 requirePK=ON 且目标端存在 my_row_id 隐式主键时，目标端会自动带有 AUTO_INCREMENT 属性
+	// 此时不应该检查 AUTO_INCREMENT 差异，因为这是由 my_row_id 引入的预期行为
+	shouldSkipAutoIncrementCheck := false
+	if stcls.isMySQLToMySQL() && strings.ToUpper(strings.TrimSpace(stcls.checkRules.RequirePK)) == "ON" {
+		// 检查目标端是否存在 my_row_id 列
+		myRowIDKey := "my_row_id"
+		if !cm.columnNameCaseSensitive {
+			myRowIDKey = strings.ToUpper(myRowIDKey)
+		}
+		if _, destHasMyRowID := cm.destColumnMap[myRowIDKey]; destHasMyRowID {
+			// 检查源端是否不存在 my_row_id 列
+			if _, sourceHasMyRowID := cm.sourceColumnMap[myRowIDKey]; !sourceHasMyRowID {
+				// 目标端有 my_row_id 但源端没有，说明 AUTO_INCREMENT 是由 my_row_id 引入的
+				shouldSkipAutoIncrementCheck = true
+				vlog = fmt.Sprintf("(%d) %s Skip AUTO_INCREMENT check for %s.%s because target has my_row_id implicit primary key (requirePK=ON)",
+					logThreadSeq, event, destSchema, stcls.table)
+				global.Wlog.Debug(vlog)
+			}
+		}
+	}
+
+	fixValue, needsFix := resolveMySQLTableAutoIncrementFixValue(sourceMeta.AutoIncrement, destMeta.AutoIncrement)
+	if needsFix && !sms.droppedAutoIncrementColumn && !shouldSkipAutoIncrementCheck {
+		result.tableAutoIncrementDifferent = true
+		autoIncrementSql := fmt.Sprintf("ALTER TABLE `%s`.`%s` AUTO_INCREMENT=%d;", destSchema, stcls.destTable, fixValue)
+		vlog = fmt.Sprintf("(%d) %s Table AUTO_INCREMENT mismatch: source=%v, dest=%v, generating fix SQL", logThreadSeq, event, nullInt64ForLog(sourceMeta.AutoIncrement), nullInt64ForLog(destMeta.AutoIncrement))
 		global.Wlog.Warn(vlog)
-		tableAdvisorySuggestions = append(tableAdvisorySuggestions, advisorySuggestion)
+		result.sqlS = append(result.sqlS, autoIncrementSql)
 	} else if needsFix && sms.droppedAutoIncrementColumn {
 		vlog = fmt.Sprintf("(%d) %s Skip table AUTO_INCREMENT repair for %s.%s because the target auto-increment column is being dropped",
+			logThreadSeq, event, destSchema, stcls.table)
+		global.Wlog.Debug(vlog)
+	} else if needsFix && shouldSkipAutoIncrementCheck {
+		vlog = fmt.Sprintf("(%d) %s Skip table AUTO_INCREMENT repair for %s.%s because target has my_row_id implicit primary key (requirePK=ON)",
 			logThreadSeq, event, destSchema, stcls.table)
 		global.Wlog.Debug(vlog)
 	}
@@ -1067,6 +1096,7 @@ func (stcls *schemaTable) evaluateStructRiskAndWriteFixSQL(
 	tableCharsetDifferent := result.tableCharsetDifferent
 	tableCollationDifferent := result.tableCollationDifferent
 	tableCommentDifferent := result.tableCommentDifferent
+	tableAutoIncrementDifferent := result.tableAutoIncrementDifferent
 	tableAutoIncrementRiskDifferent := result.tableAutoIncrementRiskDifferent
 	tableRowFormatDifferent := result.tableRowFormatDifferent
 	tableCollationRiskDifferent := result.tableCollationRiskDifferent
@@ -1076,7 +1106,7 @@ func (stcls *schemaTable) evaluateStructRiskAndWriteFixSQL(
 
 	hasWarnOnlyTableLevelDiff := columnRiskDifferent || tableAutoIncrementRiskDifferent || tableCollationRiskDifferent || tableCheckRiskDifferent || tableUnsupportedRiskDifferent
 	hasCollationMappedOnly := tableCollationMappedDifferent && !columnRiskDifferent && !tableAutoIncrementRiskDifferent && !tableCollationRiskDifferent && !tableCheckRiskDifferent && !tableUnsupportedRiskDifferent
-	hasHardTableLevelDiff := tableCharsetDifferent || tableCollationDifferent || tableCommentDifferent || tableRowFormatDifferent
+	hasHardTableLevelDiff := tableCharsetDifferent || tableCollationDifferent || tableCommentDifferent || tableRowFormatDifferent || tableAutoIncrementDifferent
 
 	eval := structRiskEvaluation{}
 	if len(sms.alterSlice) > 0 || hasHardTableLevelDiff || executableColumnCollationRepair || myRowIDRepositionSQLCount > 0 {
