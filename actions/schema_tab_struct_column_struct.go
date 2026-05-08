@@ -19,6 +19,7 @@ type structModeState struct {
 	destColumnDefinitions           map[string]string
 	droppedAutoIncrementColumn      bool
 	alterSlice                      []string
+	hasMyRowIDOffset                bool // 标记目标端存在 my_row_id 导致的列顺序偏移
 }
 
 type charsetAdvisoryResult struct {
@@ -197,8 +198,9 @@ func (stcls *schemaTable) dropExcessColumns(
 					vlog = fmt.Sprintf("(%d) %s Skipping DROP for valid my_row_id column %s in %s.%s (requirePK=ON)", logThreadSeq, event, originalColName, destSchema, stcls.table)
 					global.Wlog.Info(vlog)
 
-					// 从 destColumnMap 中删除该列（标记为已处理）
-					delete(cm.destColumnMap, v1)
+					// 注意：不要从 destColumnMap 中删除该列
+					// 保留 my_row_id 在 destColumnMap 中，以便后续 reconcileColumnDiffs 能够检测到列顺序偏移
+					// 并正确设置 hasMyRowIDOffset 标志，避免生成多余的列位置调整 SQL
 					continue
 				}
 			}
@@ -232,11 +234,17 @@ func (stcls *schemaTable) reconcileColumnDiffs(
 	hasMyRowIDOffset := false
 	if stcls.isMySQLToMySQL() && strings.ToUpper(strings.TrimSpace(stcls.checkRules.RequirePK)) == "ON" {
 		// 检查目标端是否存在 my_row_id 列
-		if _, exists := cm.destColumnMap["my_row_id"]; exists {
+		// 根据 columnNameCaseSensitive 标志使用正确的列名格式
+		myRowIDKey := "my_row_id"
+		if !cm.columnNameCaseSensitive {
+			myRowIDKey = strings.ToUpper(myRowIDKey)
+		}
+		if _, exists := cm.destColumnMap[myRowIDKey]; exists {
 			// 检查源端是否不存在 my_row_id 列
-			if _, sourceHasMyRowID := cm.sourceColumnMap["my_row_id"]; !sourceHasMyRowID {
+			if _, sourceHasMyRowID := cm.sourceColumnMap[myRowIDKey]; !sourceHasMyRowID {
 				// 目标端有 my_row_id 但源端没有，说明存在列顺序偏移
 				hasMyRowIDOffset = true
+				sms.hasMyRowIDOffset = true // 设置标志，传递给 generateMyRowIDRepositionSQL
 				vlog = fmt.Sprintf("(%d) Detected my_row_id offset: source has no my_row_id, dest has my_row_id, will skip position-only MODIFY statements for regular columns", logThreadSeq)
 				global.Wlog.Debug(vlog)
 			}
@@ -1051,6 +1059,7 @@ func (stcls *schemaTable) evaluateStructRiskAndWriteFixSQL(
 	sms *structModeState,
 	result *charsetAdvisoryResult,
 	sourceSchema, sourceTableName, destSchema string,
+	myRowIDRepositionSQLCount int,
 	logThreadSeq int64, event string,
 ) structRiskEvaluation {
 	columnRiskDifferent := result.columnRiskDifferent
@@ -1070,7 +1079,7 @@ func (stcls *schemaTable) evaluateStructRiskAndWriteFixSQL(
 	hasHardTableLevelDiff := tableCharsetDifferent || tableCollationDifferent || tableCommentDifferent || tableRowFormatDifferent
 
 	eval := structRiskEvaluation{}
-	if len(sms.alterSlice) > 0 || hasHardTableLevelDiff || executableColumnCollationRepair {
+	if len(sms.alterSlice) > 0 || hasHardTableLevelDiff || executableColumnCollationRepair || myRowIDRepositionSQLCount > 0 {
 		eval.abnormalKey = fmt.Sprintf("%s.%s", destSchema, stcls.table)
 	} else if hasWarnOnlyTableLevelDiff {
 		stcls.structWarnOnlyDiffsMap[fmt.Sprintf("%s.%s", sourceSchema, sourceTableName)] = true

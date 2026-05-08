@@ -164,7 +164,7 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 		sqlS = append(sqlS, result.sqlS...)
 
 		// 8g: 风险评估与 fix SQL 写入
-		eval := stcls.evaluateStructRiskAndWriteFixSQL(sms, result, sourceSchema, sourceTableName, destSchema, logThreadSeq, event)
+		eval := stcls.evaluateStructRiskAndWriteFixSQL(sms, result, sourceSchema, sourceTableName, destSchema, len(myRowIDRepositionSQLs), logThreadSeq, event)
 		if eval.abnormalKey != "" {
 			abnormalTableList = append(abnormalTableList, eval.abnormalKey)
 		}

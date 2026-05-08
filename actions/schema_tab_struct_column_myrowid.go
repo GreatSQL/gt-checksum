@@ -92,6 +92,8 @@ func (stcls *schemaTable) checkAndGenerateMyRowIDRepositionSQL(
 	// 7. 检查是否有其他列需要调整到 my_row_id 前面
 	// 如果 sms.alterSlice 中包含 MODIFY COLUMN ... FIRST 或 MODIFY COLUMN ... AFTER 语句，
 	// 且这些语句会导致列位置在 my_row_id 之前，则需要调整 my_row_id 位置
+	// 但是，如果 hasMyRowIDOffset=true，说明目标端存在 my_row_id 导致的列顺序偏移
+	// 此时即使没有其他列的位置调整 SQL，也需要检查 my_row_id 是否在正确位置
 	hasColumnPositionChange := false
 	for _, alterSQL := range sms.alterSlice {
 		upperSQL := strings.ToUpper(alterSQL)
@@ -101,8 +103,8 @@ func (stcls *schemaTable) checkAndGenerateMyRowIDRepositionSQL(
 		}
 	}
 
-	if !hasColumnPositionChange {
-		// 没有列位置调整，无需处理 my_row_id
+	if !hasColumnPositionChange && !sms.hasMyRowIDOffset {
+		// 没有列位置调整，且不存在 my_row_id 偏移，无需处理 my_row_id
 		vlog = fmt.Sprintf("(%d) %s No column position changes detected for %s.%s, no my_row_id reposition needed", logThreadSeq, event, destSchema, stcls.table)
 		global.Wlog.Debug(vlog)
 		return nil, nil
