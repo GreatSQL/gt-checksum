@@ -438,13 +438,16 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterColumnAndIndexSqlGenerate(columnOp
 	}
 	columnOperations, filteredIndexOperations = my.filterRedundantDropPrimaryKeyOperations(columnOperations, filteredIndexOperations)
 
-	// 分离 my_row_id 的 VISIBLE/INVISIBLE 操作和其他操作
+	// 分离 my_row_id 的 VISIBLE/INVISIBLE 操作、AUTO_INCREMENT 操作和其他操作
 	var myRowIDOperations []string
+	var autoIncrementOperations []string
 	var regularOperations []string
 
 	for _, op := range columnOperations {
 		if isMyRowIDVisibilityOperation(op) {
 			myRowIDOperations = append(myRowIDOperations, op)
+		} else if isAutoIncrementOnlyOperation(op) {
+			autoIncrementOperations = append(autoIncrementOperations, op)
 		} else {
 			regularOperations = append(regularOperations, op)
 		}
@@ -493,6 +496,23 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterColumnAndIndexSqlGenerate(columnOp
 		global.Wlog.Debug(vlog)
 	}
 
+	// 将 AUTO_INCREMENT 操作作为独立的 ALTER TABLE 语句追加
+	// 这些操作必须独立执行，不能与其他操作合并（MySQL 限制）
+	if len(autoIncrementOperations) > 0 {
+		for _, op := range autoIncrementOperations {
+			// 如果操作已经是完整的 ALTER TABLE 语句，直接使用
+			if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(op)), "ALTER TABLE") {
+				alterSql = append(alterSql, op)
+			} else {
+				// 否则，构造完整的 ALTER TABLE 语句
+				alterSql = append(alterSql, fmt.Sprintf("ALTER TABLE %s.%s %s;", mysqlQuoteIdent(targetSchema), mysqlQuoteIdent(my.Table), strings.TrimSpace(op)))
+			}
+		}
+		vlog := fmt.Sprintf("(%d) Appended %d independent AUTO_INCREMENT operations for %s.%s",
+			logThreadSeq, len(autoIncrementOperations), targetSchema, my.Table)
+		global.Wlog.Debug(vlog)
+	}
+
 	return alterSql
 }
 
@@ -509,6 +529,37 @@ func isMyRowIDVisibilityOperation(op string) bool {
 	// 检查是否是 MODIFY COLUMN 操作
 	if !strings.Contains(upperOp, "MODIFY COLUMN") {
 		return false
+	}
+	return true
+}
+
+// isAutoIncrementOnlyOperation 检查操作是否是纯 AUTO_INCREMENT 操作
+func isAutoIncrementOnlyOperation(op string) bool {
+	upperOp := strings.ToUpper(strings.TrimSpace(op))
+	// 检查是否是 ALTER TABLE ... AUTO_INCREMENT=N 格式
+	if !strings.Contains(upperOp, "ALTER TABLE") {
+		return false
+	}
+	if !strings.Contains(upperOp, "AUTO_INCREMENT=") {
+		return false
+	}
+	// 检查是否只包含 AUTO_INCREMENT 操作（没有其他操作如 ADD/DROP/MODIFY COLUMN 等）
+	// 通过检查是否包含逗号来判断是否有多个操作
+	if strings.Contains(upperOp, ",") {
+		return false
+	}
+	// 检查是否包含其他 ALTER TABLE 操作关键字
+	otherOperations := []string{
+		"ADD COLUMN", "DROP COLUMN", "MODIFY COLUMN", "CHANGE COLUMN",
+		"ADD INDEX", "DROP INDEX", "ADD KEY", "DROP KEY",
+		"ADD PRIMARY KEY", "DROP PRIMARY KEY",
+		"ADD CONSTRAINT", "DROP CONSTRAINT",
+		"CONVERT TO CHARACTER SET", "COLLATE",
+	}
+	for _, opKeyword := range otherOperations {
+		if strings.Contains(upperOp, opKeyword) {
+			return false
+		}
 	}
 	return true
 }

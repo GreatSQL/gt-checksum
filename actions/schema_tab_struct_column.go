@@ -163,6 +163,14 @@ func (stcls *schemaTable) TableColumnNameCheck(checkTableList []string, logThrea
 		result := stcls.buildCharsetAdvisory(sms, cm, fixer, sourceSchema, destSchema, logThreadSeq, event)
 		sqlS = append(sqlS, result.sqlS...)
 
+		// 8f-1: 将独立的 AUTO_INCREMENT 修复 SQL 追加到 sqlS 末尾
+		// 这条 SQL 必须在主 ALTER TABLE 之后单独执行，不能被合并
+		if result.autoIncrementSQL != "" {
+			sqlS = append(sqlS, result.autoIncrementSQL)
+			vlog = fmt.Sprintf("(%d) %s Appended independent AUTO_INCREMENT fix SQL for %s.%s", logThreadSeq, event, destSchema, stcls.table)
+			global.Wlog.Debug(vlog)
+		}
+
 		// 8g: 风险评估与 fix SQL 写入
 		eval := stcls.evaluateStructRiskAndWriteFixSQL(sms, result, sourceSchema, sourceTableName, destSchema, len(myRowIDRepositionSQLs), logThreadSeq, event)
 		if eval.abnormalKey != "" {

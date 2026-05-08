@@ -18,12 +18,14 @@ type structModeState struct {
 	sourceColumnDefinitions         map[string]string
 	destColumnDefinitions           map[string]string
 	droppedAutoIncrementColumn      bool
+	addedAutoIncrementColumn        bool
 	alterSlice                      []string
 	hasMyRowIDOffset                bool // 标记目标端存在 my_row_id 导致的列顺序偏移
 }
 
 type charsetAdvisoryResult struct {
 	sqlS                            []string
+	autoIncrementSQL                string // 独立的 AUTO_INCREMENT 修复 SQL，必须在主 ALTER TABLE 之后单独执行
 	constraintAdvisorySQLs          []string
 	columnAdvisorySuggestions       []schemacompat.ConstraintRepairSuggestion
 	columnRiskDifferent             bool
@@ -753,6 +755,14 @@ func (stcls *schemaTable) reconcileColumnDiffs(
 				vlog = fmt.Sprintf("(%d) %s Missing column %s in %s.%s - ADD: %v", logThreadSeq, event, originalColName, destSchema, stcls.table, addSql)
 				global.Wlog.Warn(vlog)
 				sms.alterSlice = append(sms.alterSlice, addSql)
+
+				// 检测新添加的列是否具有 AUTO_INCREMENT 属性
+				if hasAutoIncrementColumnAttribute(repairAttrs) {
+					sms.addedAutoIncrementColumn = true
+					vlog = fmt.Sprintf("(%d) %s Detected AUTO_INCREMENT attribute in added column %s for %s.%s", logThreadSeq, event, originalColName, destSchema, stcls.table)
+					global.Wlog.Debug(vlog)
+				}
+
 				delete(cm.destColumnMap, v1)
 			}
 		}
@@ -1030,10 +1040,17 @@ func (stcls *schemaTable) buildCharsetAdvisory(
 			// 检查源端是否不存在 my_row_id 列
 			if _, sourceHasMyRowID := cm.sourceColumnMap[myRowIDKey]; !sourceHasMyRowID {
 				// 目标端有 my_row_id 但源端没有，说明 AUTO_INCREMENT 是由 my_row_id 引入的
-				shouldSkipAutoIncrementCheck = true
-				vlog = fmt.Sprintf("(%d) %s Skip AUTO_INCREMENT check for %s.%s because target has my_row_id implicit primary key (requirePK=ON)",
-					logThreadSeq, event, destSchema, stcls.table)
-				global.Wlog.Debug(vlog)
+				// 但是，如果即将添加显式自增主键（隐式转显式场景），则不应该跳过 AUTO_INCREMENT 检查
+				if !sms.addedAutoIncrementColumn {
+					shouldSkipAutoIncrementCheck = true
+					vlog = fmt.Sprintf("(%d) %s Skip AUTO_INCREMENT check for %s.%s because target has my_row_id implicit primary key (requirePK=ON)",
+						logThreadSeq, event, destSchema, stcls.table)
+					global.Wlog.Debug(vlog)
+				} else {
+					vlog = fmt.Sprintf("(%d) %s Will check AUTO_INCREMENT for %s.%s despite my_row_id presence because explicit auto-increment column is being added (implicit to explicit PK)",
+						logThreadSeq, event, destSchema, stcls.table)
+					global.Wlog.Debug(vlog)
+				}
 			}
 		}
 	}
@@ -1041,14 +1058,22 @@ func (stcls *schemaTable) buildCharsetAdvisory(
 	fixValue, needsFix := resolveMySQLTableAutoIncrementFixValue(sourceMeta.AutoIncrement, destMeta.AutoIncrement)
 	if needsFix && !sms.droppedAutoIncrementColumn && !shouldSkipAutoIncrementCheck {
 		result.tableAutoIncrementDifferent = true
-		autoIncrementSql := fmt.Sprintf("ALTER TABLE `%s`.`%s` AUTO_INCREMENT=%d;", destSchema, stcls.destTable, fixValue)
-		vlog = fmt.Sprintf("(%d) %s Table AUTO_INCREMENT mismatch: source=%v, dest=%v, generating fix SQL", logThreadSeq, event, nullInt64ForLog(sourceMeta.AutoIncrement), nullInt64ForLog(destMeta.AutoIncrement))
+		// 将 AUTO_INCREMENT 修复 SQL 存储在独立字段中，不能与主 ALTER TABLE 合并
+		result.autoIncrementSQL = fmt.Sprintf("ALTER TABLE `%s`.`%s` AUTO_INCREMENT=%d;", destSchema, stcls.destTable, fixValue)
+		vlog = fmt.Sprintf("(%d) %s Table AUTO_INCREMENT mismatch: source=%v, dest=%v, generating independent fix SQL", logThreadSeq, event, nullInt64ForLog(sourceMeta.AutoIncrement), nullInt64ForLog(destMeta.AutoIncrement))
 		global.Wlog.Warn(vlog)
-		result.sqlS = append(result.sqlS, autoIncrementSql)
-	} else if needsFix && sms.droppedAutoIncrementColumn {
-		vlog = fmt.Sprintf("(%d) %s Skip table AUTO_INCREMENT repair for %s.%s because the target auto-increment column is being dropped",
+	} else if needsFix && sms.droppedAutoIncrementColumn && !sms.addedAutoIncrementColumn {
+		// 只有当"删除了自增列 且 没有添加新自增列"时才跳过 AUTO_INCREMENT 修复
+		vlog = fmt.Sprintf("(%d) %s Skip table AUTO_INCREMENT repair for %s.%s because the target auto-increment column is being dropped and no new auto-increment column is added",
 			logThreadSeq, event, destSchema, stcls.table)
 		global.Wlog.Debug(vlog)
+	} else if needsFix && sms.droppedAutoIncrementColumn && sms.addedAutoIncrementColumn {
+		// 隐式主键转显式主键场景：删除了旧自增列，添加了新自增列，需要修复 AUTO_INCREMENT 值
+		result.tableAutoIncrementDifferent = true
+		// 将 AUTO_INCREMENT 修复 SQL 存储在独立字段中，不能与主 ALTER TABLE 合并
+		result.autoIncrementSQL = fmt.Sprintf("ALTER TABLE `%s`.`%s` AUTO_INCREMENT=%d;", destSchema, stcls.destTable, fixValue)
+		vlog = fmt.Sprintf("(%d) %s Table AUTO_INCREMENT mismatch (implicit to explicit PK): source=%v, dest=%v, generating independent fix SQL", logThreadSeq, event, nullInt64ForLog(sourceMeta.AutoIncrement), nullInt64ForLog(destMeta.AutoIncrement))
+		global.Wlog.Warn(vlog)
 	} else if needsFix && shouldSkipAutoIncrementCheck {
 		vlog = fmt.Sprintf("(%d) %s Skip table AUTO_INCREMENT repair for %s.%s because target has my_row_id implicit primary key (requirePK=ON)",
 			logThreadSeq, event, destSchema, stcls.table)

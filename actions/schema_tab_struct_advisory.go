@@ -171,7 +171,7 @@ func alterTableMergeKey(tableExpr string) string {
 
 // mergeAlterTableStatements merges ALTER TABLE statements targeting the same table.
 // It supports non-contiguous ALTER statements and keeps non-ALTER SQL ordering intact.
-// Special handling: my_row_id VISIBLE/INVISIBLE operations are never merged with other operations.
+// Special handling: my_row_id VISIBLE/INVISIBLE operations and AUTO_INCREMENT-only operations are never merged with other operations.
 func mergeAlterTableStatements(sqls []string, logThreadSeq int64) []string {
 	if len(sqls) <= 1 {
 		return sqls
@@ -191,6 +191,15 @@ func mergeAlterTableStatements(sqls []string, logThreadSeq int64) []string {
 		if isMyRowIDVisibilityStatement(stmt) {
 			if global.Wlog != nil {
 				global.Wlog.Debug(fmt.Sprintf("(%d) Skipping merge for my_row_id VISIBLE/INVISIBLE statement: %s", logThreadSeq, stmt))
+			}
+			continue
+		}
+
+		// 检查是否是 AUTO_INCREMENT 修复操作
+		// 这些操作必须保持独立，不能与其他操作合并
+		if isAutoIncrementOnlyStatement(stmt) {
+			if global.Wlog != nil {
+				global.Wlog.Debug(fmt.Sprintf("(%d) Skipping merge for AUTO_INCREMENT-only statement: %s", logThreadSeq, stmt))
 			}
 			continue
 		}
@@ -219,6 +228,12 @@ func mergeAlterTableStatements(sqls []string, logThreadSeq int64) []string {
 	for idx, stmt := range sqls {
 		// my_row_id 的 VISIBLE/INVISIBLE 操作保持独立
 		if isMyRowIDVisibilityStatement(stmt) {
+			merged = append(merged, stmt)
+			continue
+		}
+
+		// AUTO_INCREMENT 修复操作保持独立
+		if isAutoIncrementOnlyStatement(stmt) {
 			merged = append(merged, stmt)
 			continue
 		}
@@ -261,6 +276,38 @@ func isMyRowIDVisibilityStatement(stmt string) bool {
 	// 检查是否是 ALTER TABLE ... MODIFY COLUMN 操作
 	if !strings.Contains(upperStmt, "ALTER TABLE") || !strings.Contains(upperStmt, "MODIFY COLUMN") {
 		return false
+	}
+	return true
+}
+
+// isAutoIncrementOnlyStatement 检查 SQL 语句是否是仅修改 AUTO_INCREMENT 值的操作
+// 这类操作必须作为独立的 ALTER TABLE 语句执行，不能与其他操作合并
+func isAutoIncrementOnlyStatement(stmt string) bool {
+	upperStmt := strings.ToUpper(strings.TrimSpace(stmt))
+	// 检查是否是 ALTER TABLE ... AUTO_INCREMENT=N; 格式
+	if !strings.Contains(upperStmt, "ALTER TABLE") {
+		return false
+	}
+	if !strings.Contains(upperStmt, "AUTO_INCREMENT=") {
+		return false
+	}
+	// 检查是否只包含 AUTO_INCREMENT 操作（没有其他操作如 ADD/DROP/MODIFY COLUMN 等）
+	// 通过检查是否包含逗号来判断是否有多个操作
+	if strings.Contains(upperStmt, ",") {
+		return false
+	}
+	// 检查是否包含其他 ALTER TABLE 操作关键字
+	otherOperations := []string{
+		"ADD COLUMN", "DROP COLUMN", "MODIFY COLUMN", "CHANGE COLUMN",
+		"ADD INDEX", "DROP INDEX", "ADD KEY", "DROP KEY",
+		"ADD PRIMARY KEY", "DROP PRIMARY KEY",
+		"ADD CONSTRAINT", "DROP CONSTRAINT",
+		"CONVERT TO CHARACTER SET", "COLLATE",
+	}
+	for _, op := range otherOperations {
+		if strings.Contains(upperStmt, op) {
+			return false
+		}
 	}
 	return true
 }
