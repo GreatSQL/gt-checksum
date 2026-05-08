@@ -99,7 +99,7 @@ CREATE TABLE `articles` (
   UNIQUE KEY `uk_doc_code` (`doc_code`),
   FULLTEXT KEY `ft_content` (`full_content`),
   FULLTEXT KEY `ft_title_desc` (`title`, `author_desc`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='全文索引迁移测试表';
+) ENGINE=InnoDB COMMENT='全文索引迁移测试表';
 
 INSERT INTO `articles` (`doc_code`, `title`, `author_desc`, `full_content`) VALUES 
 ('DOC-0000000000000001', 'MySQL 8.0 Migration Guide', 'DBA Expert', 'This document explains how to upgrade from MySQL 5.6 to 8.0.'),
