@@ -69,11 +69,23 @@ func canUseTableCharsetConvertForColumnCollationDrift(sourceMeta, destMeta mysql
 		}
 	}
 
+	// 优化判断逻辑：当所有字段的 COLLATION 差异都是由表级 COLLATION 差异引起时
+	// （即字段都继承各自表级的 COLLATION），只需修改表级定义即可
+	sourceTableCollation := strings.TrimSpace(sourceMeta.TableCollation)
+	destTableCollation := strings.TrimSpace(destMeta.TableCollation)
+
 	for _, candidate := range candidates {
 		if !strings.EqualFold(strings.TrimSpace(candidate.SourceCharset), strings.TrimSpace(sourceMeta.TableCharset)) {
 			return false
 		}
-		if !strings.EqualFold(strings.TrimSpace(candidate.SourceCollation), strings.TrimSpace(sourceMeta.TableCollation)) {
+		// 检查目标端字段 COLLATION 是否与目标端表级 COLLATION 一致
+		// 如果一致，说明字段是继承表级 COLLATION，可以通过修改表级定义来修复
+		if !strings.EqualFold(strings.TrimSpace(candidate.DestCollation), destTableCollation) {
+			return false
+		}
+		// 如果源端表级 COLLATION 已显式定义，则要求源端字段 COLLATION 也与之一致
+		// 如果源端表级 COLLATION 未显式定义（为空），则跳过此检查（字段继承隐式默认值）
+		if sourceTableCollation != "" && !strings.EqualFold(strings.TrimSpace(candidate.SourceCollation), sourceTableCollation) {
 			return false
 		}
 	}

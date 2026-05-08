@@ -1123,7 +1123,7 @@ func decideCollationCompatibility(sourceRaw, targetRaw, sourceNormalized, target
 	}
 	if IsUTF8MB4DefaultCollationDrift(sourceNormalized, targetNormalized) {
 		return CompatibilityDecision{
-			State:  CompatibilityUnsupported,
+			State:  CompatibilityWarnOnly,
 			Reason: fmt.Sprintf("utf8mb4 default collation drift detected between legacy and MySQL 8.x defaults: source=%s target=%s", sourceNormalized, targetNormalized),
 			Source: sourceRaw,
 			Target: targetRaw,

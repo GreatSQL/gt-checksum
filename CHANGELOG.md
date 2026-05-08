@@ -3,11 +3,13 @@
 - [功能新增]: repairDB 工具新增预执行报告功能，执行修复前自动收集并展示修复 SQL 文件统计信息（文件数量、大小、语句类型分布、影响行数、预估 binlog 大小等），帮助用户在执行前评估修复影响范围。新增交互式确认机制，默认在执行修复前提示用户确认，可通过 `-f` 或 `--force` 参数跳过确认直接执行；新增 `--dry-run` 参数，仅展示统计报告而不执行实际修复操作。
 - [功能新增]: repairDB 工具新增 CSV 执行报告导出功能，执行完成后自动生成包含执行汇总和明细的 CSV 报告文件（UTF-8 BOM 编码，可直接用 Excel 打开），记录每个对象的 `INSERT/DELETE/ALTER/CREATE/DROP` 各操作成功与失败数、耗时及失败原因。新增 `resultFile` 配置参数和 `--result-file` CLI 参数，支持自定义 CSV 报告输出路径。
 - [功能新增]: repairDB 工具新增锁文件机制，执行完成后在工作目录下自动生成 `.repairDB.lock` 隐藏文件（成功时为空文件，失败时包含错误信息）。程序启动时检查锁文件是否存在，若存在则发出告警并退出，防止重复执行。用户需手动删除锁文件后才能再次执行 repairDB。
+- [功能优化]: 优化跨版本场景下表级 COLLATE 修复逻辑，当所有字段的 COLLATION 差异都是由表级 COLLATION 差异引起时（字段继承表级 COLLATION），只需修改表级定义即可，避免逐列修改。
 - [功能优化]: 优化 my_row_id 位置调整逻辑，在生成位置调整 SQL 前先分析待执行的 ADD COLUMN 语句，确定实际的最后一列位置，避免在仅存在列新增操作时生成不必要的 my_row_id 位置调整 SQL，提升 struct 模式修复准确性。
 - [功能优化]: 优化 my_row_id 位置调整逻辑，防止在仅存在 my_row_id 列顺序偏移时生成多余的列位置调整 SQL，提升 struct 模式修复准确性。
 - [功能优化]: 增强分区表主键修复能力，当为无主键分区表添加 `my_row_id` 时，自动提取分区列并生成包含分区列的主键定义，确保修复 SQL 符合 MySQL 分区表主键约束（分区表主键必须包含分区列）。
-- [测试完善]: 新增 `TestDecideCollationCompatibility_UTF8MB4DefaultDrift` 单元测试（schemacompat/canonical_collation_test.go:7-50），覆盖 MySQL 5.6/5.7 到 8.0 的 utf8mb4 默认 collation 漂移场景，验证兼容性判断逻辑的准确性。
-- [测试完善]: 新增 `TestGetLastColumnAfterAdditions` 单元测试（actions/schema_tab_struct_column_myrowid_test.go:187），覆盖 ADD COLUMN AFTER、ADD COLUMN FIRST、ADD COLUMN 无位置子句、多列顺序添加、中间插入列等场景，验证 my_row_id 位置调整逻辑的准确性。
+- [测试完善]: 新增 `TestCanUseTableCharsetConvertForColumnCollationDrift_CrossVersion` 和 `TestCanUseTableCharsetConvertForColumnCollationDrift_ExplicitColumnCollation` 单元测试，覆盖跨版本场景和显式字段 COLLATION 场景。
+- [测试完善]: 新增 `TestDecideCollationCompatibility_UTF8MB4DefaultDrift` 单元测试，覆盖 MySQL 5.6/5.7 到 8.0 的 utf8mb4 默认 collation 漂移场景，验证兼容性判断逻辑的准确性。
+- [测试完善]: 新增 `TestGetLastColumnAfterAdditions` 单元测试，覆盖 ADD COLUMN AFTER、ADD COLUMN FIRST、ADD COLUMN 无位置子句、多列顺序添加、中间插入列等场景，验证 my_row_id 位置调整逻辑的准确性。
 - [测试完善]: 新增分区表主键修复相关的单元测试（`TestExtractPartitionColumnsFromExpressions`、`TestGeneratePartitionTablePrimaryKeySql` 等），覆盖单个分区列、多个分区列、分区表达式解析等场景。
 - [测试完善]: 新增 `actions/schema_tab_struct_myrowid_test.go` 测试文件，覆盖 `my_row_id` 相关功能的单元测试场景
 - [测试完善]: 新增 `cmd/repairDB/utils_test.go` 测试文件，覆盖 `formatSize/formatNumber/identifyStatementType/collectFixSQLStatistics` 等核心函数的单元测试。
@@ -15,8 +17,8 @@
 - [测试完善]: 新增 `cmd/repairDB/lock_test.go` 测试文件，覆盖锁文件机制的单元测试场景（锁文件不存在、空锁文件、包含错误信息的锁文件、写入成功锁文件、写入失败锁文件）。
 - [测试完善]: 新增 `TestExtractSchemaAndObject` 和 `TestResultCollector_Concurrent` 单元测试。
 - [问题修复]: 修复 requirePK=ON 场景下 AUTO_INCREMENT 差异检查逻辑，当目标端存在 my_row_id 隐式主键（源端无此列）时自动跳过 AUTO_INCREMENT 检查，避免误报；同时将 AUTO_INCREMENT 差异从仅告警（advisory-only）升级为生成实际修复 SQL。
-- [问题修复]: 修复 ALTER TABLE 语句中包含逗号分隔的多个 DROP COLUMN 操作时，列名解析不完整的问题（MySQL/my_data_fix_sql_alter.go:558-594），现在会正确提取所有被删除的列名，避免 my_row_id 位置调整逻辑误判。
-- [问题修复]: 修复跨版本 MySQL 场景（MySQL 5.6/5.7 → MySQL 8.0）下 utf8mb4 默认 collation 漂移（utf8mb4_general_ci → utf8mb4_0900_ai_ci）被误判为 WarnOnly 的问题（schemacompat/canonical.go:1126），现在会正确标记为 CompatibilityUnsupported 并生成修复 SQL，避免二次修复。
+- [问题修复]: 修复 ALTER TABLE 语句中包含逗号分隔的多个 DROP COLUMN 操作时，列名解析不完整的问题，现在会正确提取所有被删除的列名，避免 my_row_id 位置调整逻辑误判。
+- [问题修复]: 修复跨版本 MySQL 场景（MySQL 5.6/5.7 → MySQL 8.0）下 utf8mb4 默认 collation 漂移（utf8mb4_general_ci → utf8mb4_0900_ai_ci）被误判为 WarnOnly 的问题，现在会正确标记为 CompatibilityUnsupported 并生成修复 SQL，避免二次修复。
 - [问题修复]: 修复当表从无主键状态（已添加 my_row_id）转变为有显式主键状态时，my_row_id 删除与显式主键添加之间的操作冲突问题。现在会自动检测显式主键添加场景，在添加显式主键前先删除 my_row_id 列，避免 DROP PRIMARY KEY 和 DROP COLUMN 操作冲突。
 - [问题修复]: 修复分区表 NULL 约束检查逻辑，对分区字段的 NULL 约束差异不再生成修复 SQL，因为分区字段通常有隐式的 NOT NULL 约束。
 - [问题修复]: 修复跨版本 MySQL 场景（如 MySQL 5.6/5.7 → MySQL 8.0）下，CREATE TABLE DDL 生成时缺少显式 COLLATE 子句的问题。当源端 `SHOW CREATE TABLE` 只显示 CHARSET 而不显示 COLLATE 时（MySQL 5.6/5.7 常见行为），现在会从 `information_schema.TABLES` 查询源端实际 collation 并显式添加到生成的 DDL 中，避免目标端使用其版本默认 collation（如 MySQL 8.0 的 utf8mb4_0900_ai_ci）导致需要二次修复。影响 `checkObject=struct` 模式下所有跨版本场景。
