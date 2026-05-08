@@ -4,6 +4,52 @@ import (
 	"testing"
 )
 
+// TestDecideCollationCompatibility_UTF8MB4DefaultDrift 测试 MySQL 5.6/5.7 到 8.0 的 utf8mb4 默认 collation 漂移
+// 修复后应返回 CompatibilityUnsupported 而不是 CompatibilityWarnOnly
+func TestDecideCollationCompatibility_UTF8MB4DefaultDrift(t *testing.T) {
+	tests := []struct {
+		name          string
+		source        string
+		target        string
+		expectedState CompatibilityState
+	}{
+		{
+			name:          "MySQL 5.6/5.7 to 8.0: utf8mb4_general_ci -> utf8mb4_0900_ai_ci",
+			source:        "utf8mb4_general_ci",
+			target:        "utf8mb4_0900_ai_ci",
+			expectedState: CompatibilityUnsupported,
+		},
+		{
+			name:          "MySQL 8.0 to 5.6/5.7: utf8mb4_0900_ai_ci -> utf8mb4_general_ci",
+			source:        "utf8mb4_0900_ai_ci",
+			target:        "utf8mb4_general_ci",
+			expectedState: CompatibilityUnsupported,
+		},
+		{
+			name:          "Same collation: utf8mb4_general_ci -> utf8mb4_general_ci",
+			source:        "utf8mb4_general_ci",
+			target:        "utf8mb4_general_ci",
+			expectedState: CompatibilityEqual,
+		},
+		{
+			name:          "Same collation: utf8mb4_0900_ai_ci -> utf8mb4_0900_ai_ci",
+			source:        "utf8mb4_0900_ai_ci",
+			target:        "utf8mb4_0900_ai_ci",
+			expectedState: CompatibilityEqual,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			decision := DecideCollationCompatibility(tt.source, tt.target)
+			if decision.State != tt.expectedState {
+				t.Errorf("DecideCollationCompatibility(%q, %q) state = %v, want %v (reason: %s)",
+					tt.source, tt.target, decision.State, tt.expectedState, decision.Reason)
+			}
+		})
+	}
+}
+
 // TestMapMariaDBCollationToMySQL 测试 MariaDB UCA 14.0.0 collation 到 MySQL UCA 9.0.0 的映射
 func TestMapMariaDBCollationToMySQL(t *testing.T) {
 	tests := []struct {
