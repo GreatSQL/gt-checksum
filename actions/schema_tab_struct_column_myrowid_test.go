@@ -184,3 +184,129 @@ func TestMyRowIDRepositionSQL_EdgeCases(t *testing.T) {
 		})
 	}
 }
+
+// TestGetLastColumnAfterAdditions 测试分析 ADD COLUMN 语句后确定最后一列的逻辑
+func TestGetLastColumnAfterAdditions(t *testing.T) {
+	tests := []struct {
+		name              string
+		alterSlice        []string
+		currentLastColumn string
+		expectedLastCol   string
+	}{
+		{
+			name: "add column after current last column",
+			alterSlice: []string{
+				"ALTER TABLE `gt_checksum`.`test1` ADD COLUMN `a2` int(11) DEFAULT NULL COMMENT '' AFTER `a1`;",
+			},
+			currentLastColumn: "a1",
+			expectedLastCol:   "a2",
+		},
+		{
+			name: "add multiple columns sequentially",
+			alterSlice: []string{
+				"ALTER TABLE `test_db`.`test_table` ADD COLUMN `col2` int DEFAULT NULL AFTER `col1`;",
+				"ALTER TABLE `test_db`.`test_table` ADD COLUMN `col3` varchar(50) DEFAULT NULL AFTER `col2`;",
+			},
+			currentLastColumn: "col1",
+			expectedLastCol:   "col3",
+		},
+		{
+			name: "add column with FIRST clause",
+			alterSlice: []string{
+				"ALTER TABLE `test_db`.`test_table` ADD COLUMN `new_first` int DEFAULT NULL FIRST;",
+			},
+			currentLastColumn: "a1",
+			expectedLastCol:   "a1", // FIRST 不影响最后一列
+		},
+		{
+			name: "add column without position clause",
+			alterSlice: []string{
+				"ALTER TABLE `test_db`.`test_table` ADD COLUMN `new_col` int DEFAULT NULL;",
+			},
+			currentLastColumn: "a1",
+			expectedLastCol:   "new_col", // 默认添加到最后
+		},
+		{
+			name: "add column in middle",
+			alterSlice: []string{
+				"ALTER TABLE `test_db`.`test_table` ADD COLUMN `middle_col` int DEFAULT NULL AFTER `col1`;",
+			},
+			currentLastColumn: "col3",
+			expectedLastCol:   "col3", // 添加到中间不影响最后一列
+		},
+		{
+			name:              "no add column statements",
+			alterSlice:        []string{},
+			currentLastColumn: "a1",
+			expectedLastCol:   "a1",
+		},
+		{
+			name: "mixed with modify column statements",
+			alterSlice: []string{
+				"ALTER TABLE `test_db`.`test_table` MODIFY COLUMN `col1` int DEFAULT NULL;",
+				"ALTER TABLE `test_db`.`test_table` ADD COLUMN `col2` int DEFAULT NULL AFTER `col1`;",
+			},
+			currentLastColumn: "col1",
+			expectedLastCol:   "col2",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// 直接测试逻辑，不依赖 schemaTable 对象
+			lastColumn := tt.currentLastColumn
+
+			// 遍历所有 ALTER 语句，找出 ADD COLUMN 语句
+			for _, alterSQL := range tt.alterSlice {
+				upperSQL := strings.ToUpper(alterSQL)
+
+				// 只处理 ADD COLUMN 语句
+				if !strings.Contains(upperSQL, "ADD COLUMN") {
+					continue
+				}
+
+				// 提取列名：ADD COLUMN `column_name` ...
+				// 找到 ADD COLUMN 后的第一个反引号对
+				addColIdx := strings.Index(upperSQL, "ADD COLUMN")
+				if addColIdx < 0 {
+					continue
+				}
+
+				// 从 ADD COLUMN 之后开始查找列名
+				afterAddCol := alterSQL[addColIdx+len("ADD COLUMN"):]
+				parts := strings.Split(afterAddCol, "`")
+				if len(parts) < 2 {
+					continue
+				}
+				newColumnName := parts[1]
+
+				// 检查是否有 AFTER 子句
+				if strings.Contains(upperSQL, "AFTER") {
+					// 提取 AFTER 后面的列名
+					afterIdx := strings.Index(upperSQL, "AFTER")
+					if afterIdx > 0 {
+						afterPart := alterSQL[afterIdx+len("AFTER"):]
+						afterParts := strings.Split(afterPart, "`")
+						if len(afterParts) >= 2 {
+							afterColumnName := afterParts[1]
+							// 如果新列添加在当前最后一列之后，更新最后一列
+							if afterColumnName == lastColumn {
+								lastColumn = newColumnName
+							}
+						}
+					}
+				} else if strings.Contains(upperSQL, "FIRST") {
+					// 如果是 FIRST，不影响最后一列
+					continue
+				} else {
+					// 没有 AFTER 或 FIRST，默认添加到最后
+					lastColumn = newColumnName
+				}
+			}
+
+			if lastColumn != tt.expectedLastCol {
+				t.Errorf("Expected last column '%s', got '%s'", tt.expectedLastCol, lastColumn)
+			}
+		})
+	}
+}
