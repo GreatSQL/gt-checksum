@@ -112,15 +112,23 @@ func (stcls *schemaTable) checkAndGenerateMyRowIDRepositionSQL(
 
 	// 7. 生成 my_row_id 位置调整 SQL
 	// 获取目标表的最后一列名（排除 my_row_id 本身）
-	lastColumnName, err := stcls.getDestTableLastColumnExcludingMyRowID(destSchema, logThreadSeq)
+	currentLastColumnName, err := stcls.getDestTableLastColumnExcludingMyRowID(destSchema, logThreadSeq)
 	if err != nil {
 		return nil, err
 	}
-	if lastColumnName == "" {
+	if currentLastColumnName == "" {
 		// 表中只有 my_row_id 一列，无需调整
 		vlog = fmt.Sprintf("(%d) %s Table %s.%s has only my_row_id column, no reposition needed", logThreadSeq, event, destSchema, stcls.table)
 		global.Wlog.Debug(vlog)
 		return nil, nil
+	}
+
+	// 分析 sms.alterSlice 中的 ADD COLUMN 语句，确定实际的最后一列
+	// 如果有新增列，需要将 my_row_id 调整到新增列之后
+	lastColumnName := stcls.getLastColumnAfterAdditions(sms.alterSlice, currentLastColumnName, logThreadSeq)
+	if lastColumnName == "" {
+		// 没有找到有效的最后一列，使用当前的最后一列
+		lastColumnName = currentLastColumnName
 	}
 
 	// 8. 生成两条独立的 ALTER TABLE 语句
@@ -198,4 +206,64 @@ func (stcls *schemaTable) getDestTableLastColumnExcludingMyRowID(destSchema stri
 		return "", err
 	}
 	return columnName, nil
+}
+
+// getLastColumnAfterAdditions 分析 alterSlice 中的 ADD COLUMN 语句，
+// 确定在执行所有 ADD COLUMN 后的实际最后一列
+// 返回值：最后一列名，如果没有新增列则返回空字符串
+func (stcls *schemaTable) getLastColumnAfterAdditions(alterSlice []string, currentLastColumn string, logThreadSeq int64) string {
+	var vlog string
+	lastColumn := currentLastColumn
+
+	// 遍历所有 ALTER 语句，找出 ADD COLUMN 语句
+	for _, alterSQL := range alterSlice {
+		upperSQL := strings.ToUpper(alterSQL)
+
+		// 只处理 ADD COLUMN 语句
+		if !strings.Contains(upperSQL, "ADD COLUMN") {
+			continue
+		}
+
+		// 提取列名：ADD COLUMN `column_name` ...
+		// 使用反引号分割，第二个元素是列名
+		parts := strings.Split(alterSQL, "`")
+		if len(parts) < 2 {
+			continue
+		}
+		newColumnName := parts[1]
+
+		// 检查是否有 AFTER 子句
+		if strings.Contains(upperSQL, "AFTER") {
+			// 提取 AFTER 后面的列名
+			afterIdx := strings.Index(upperSQL, "AFTER")
+			if afterIdx > 0 {
+				afterPart := alterSQL[afterIdx:]
+				afterParts := strings.Split(afterPart, "`")
+				if len(afterParts) >= 2 {
+					afterColumnName := afterParts[1]
+					// 如果新列添加在当前最后一列之后，更新最后一列
+					if afterColumnName == lastColumn {
+						lastColumn = newColumnName
+						vlog = fmt.Sprintf("(%d) Detected ADD COLUMN `%s` AFTER `%s`, updating last column to `%s`", logThreadSeq, newColumnName, afterColumnName, lastColumn)
+						global.Wlog.Debug(vlog)
+					}
+				}
+			}
+		} else if strings.Contains(upperSQL, "FIRST") {
+			// 如果是 FIRST，不影响最后一列
+			continue
+		} else {
+			// 没有 AFTER 或 FIRST，默认添加到最后
+			lastColumn = newColumnName
+			vlog = fmt.Sprintf("(%d) Detected ADD COLUMN `%s` without position clause, updating last column to `%s`", logThreadSeq, newColumnName, lastColumn)
+			global.Wlog.Debug(vlog)
+		}
+	}
+
+	if lastColumn != currentLastColumn {
+		vlog = fmt.Sprintf("(%d) After analyzing ADD COLUMN statements, last column changed from `%s` to `%s`", logThreadSeq, currentLastColumn, lastColumn)
+		global.Wlog.Info(vlog)
+	}
+
+	return lastColumn
 }
