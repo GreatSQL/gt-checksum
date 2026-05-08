@@ -555,11 +555,45 @@ func extractDroppedColumnNameFromAlterClause(op string) string {
 func collectDroppedColumns(columnOperations []string) map[string]struct{} {
 	droppedColumns := make(map[string]struct{})
 	for _, op := range columnOperations {
-		columnName := extractDroppedColumnNameFromAlterClause(op)
-		if strings.TrimSpace(columnName) == "" {
+		// 规范化操作内容，提取 ALTER TABLE 后的操作部分
+		clause := normalizeAlterOperationContent(op)
+		if clause == "" {
 			continue
 		}
-		droppedColumns[strings.ToUpper(columnName)] = struct{}{}
+
+		// 按逗号分割多个操作（如 "DROP COLUMN f9, DROP COLUMN my_row_id, DROP PRIMARY KEY, ..."）
+		operations := strings.Split(clause, ",")
+		for _, singleOp := range operations {
+			singleOp = strings.TrimSpace(singleOp)
+			if !strings.HasPrefix(strings.ToUpper(singleOp), "DROP COLUMN") {
+				continue
+			}
+
+			// 提取列名
+			rest := strings.TrimSpace(singleOp[len("DROP COLUMN"):])
+			if rest == "" {
+				continue
+			}
+
+			var columnName string
+			if strings.HasPrefix(rest, "`") {
+				end := strings.Index(rest[1:], "`")
+				if end == -1 {
+					continue
+				}
+				columnName = rest[1 : end+1]
+			} else {
+				parts := strings.Fields(rest)
+				if len(parts) == 0 {
+					continue
+				}
+				columnName = strings.Trim(parts[0], "`")
+			}
+
+			if strings.TrimSpace(columnName) != "" {
+				droppedColumns[strings.ToUpper(columnName)] = struct{}{}
+			}
+		}
 	}
 	return droppedColumns
 }
