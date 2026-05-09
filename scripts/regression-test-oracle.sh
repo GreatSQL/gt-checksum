@@ -373,7 +373,13 @@ generate_test_matrix() {
 # SECTION 8: 配置文件生成
 # ============================================================
 generate_gt_checksum_config() {
-    local dst_port="$1" mode="$2" case_dir="$3"
+    local dst_port="$1" mode="$2" case_dir="$3" dst_label="$4"
+
+    # requirePK 逻辑：只有目标端是 mysql80 或 mysql84 时才启用
+    local require_pk="OFF"
+    if [[ "$dst_label" == "mysql80" || "$dst_label" == "mysql84" ]]; then
+        require_pk="ON"
+    fi
 
     cat > "${case_dir}/gt-checksum.conf" <<EOF
 srcDSN=${SRC_DSN}
@@ -391,7 +397,7 @@ fixFileDir=${case_dir}/fixsql
 logFile=${case_dir}/gt-checksum.log
 logLevel=debug
 logbin=ON
-requirePK=ON
+requirePK=${require_pk}
 EOF
 }
 
@@ -462,11 +468,11 @@ evaluate_diffs() {
 # 避免因结构差异（列类型 / 缺失列 / 索引缺失）导致 data 校验误报。
 # 无论收敛成功与否都返回 0，继续后续 data 校验（记录警告由调用方感知）。
 run_struct_prepass() {
-    local dst_port="$1" case_dir="$2" case_id="$3"
+    local dst_port="$1" case_dir="$2" case_id="$3" dst_label="$4"
     local prepass_dir="${case_dir}/struct-prepass"
     mkdir -p "${prepass_dir}/fixsql"
 
-    generate_gt_checksum_config "$dst_port" "struct" "$prepass_dir"
+    generate_gt_checksum_config "$dst_port" "struct" "$prepass_dir" "$dst_label"
     generate_repairdb_config "$dst_port" "$prepass_dir"
 
     log_info "  [${case_id}] struct 预修复开始"
@@ -525,10 +531,10 @@ run_single_test_case() {
 
     # data 模式：先跑 struct 预修复，使目标表结构收敛后再做 data 校验
     if [[ "$mode" == "data" ]]; then
-        run_struct_prepass "$dst_port" "$case_dir" "$case_id"
+        run_struct_prepass "$dst_port" "$case_dir" "$case_id" "$dst_label"
     fi
 
-    generate_gt_checksum_config "$dst_port" "$mode" "$case_dir"
+    generate_gt_checksum_config "$dst_port" "$mode" "$case_dir" "$dst_label"
     generate_repairdb_config "$dst_port" "$case_dir"
 
     local round=0 final_verdict="UNKNOWN" diffs_summary=""
@@ -640,7 +646,7 @@ run_final_repair() {
             local repair_dir="${ARTIFACTS_DIR}/final-repair/${SRC_LABEL}-to-${dst_label}-${mode}"
             mkdir -p "${repair_dir}/fixsql"
 
-            generate_gt_checksum_config "$dst_port" "$mode" "$repair_dir"
+            generate_gt_checksum_config "$dst_port" "$mode" "$repair_dir" "$dst_label"
             generate_repairdb_config "$dst_port" "$repair_dir"
 
             local round=0
@@ -764,6 +770,12 @@ run_oracle_scenario_case() {
     mysql_exec "$dst_port" < "$MYSQL_SCENARIO_FIXTURE" \
         > "${case_dir}/reinit.log" 2>&1 || true
 
+    # requirePK 逻辑：只有目标端是 mysql80 或 mysql84 时才启用
+    local require_pk="OFF"
+    if [[ "$dst_label" == "mysql80" || "$dst_label" == "mysql84" ]]; then
+        require_pk="ON"
+    fi
+
     cat > "${case_dir}/gt-checksum.conf" <<EOF
 srcDSN=${SRC_DSN}
 dstDSN=mysql|${DB_USER}:${DB_PASS}@tcp(${DB_HOST}:${dst_port})/information_schema?charset=utf8mb4
@@ -780,7 +792,7 @@ fixFileDir=${case_dir}/fixsql
 logFile=${case_dir}/gt-checksum.log
 logLevel=debug
 logbin=ON
-requirePK=ON
+requirePK=${require_pk}
 EOF
 
     local out="${case_dir}/output.txt" ec=0

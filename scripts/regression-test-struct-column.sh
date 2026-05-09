@@ -179,6 +179,13 @@ reinit_all() {
 # ============================================================
 generate_config() {
     local case_dir="$1" mode="$2" tables="$3" case_sensitive="$4" columns="${5:-}"
+
+    # requirePK 逻辑：只校验部分列的场景（有 columns 参数）不启用 requirePK
+    local require_pk="ON"
+    if [[ -n "$columns" ]]; then
+        require_pk="OFF"
+    fi
+
     cat > "${case_dir}/gt-checksum.conf" <<EOF
 srcDSN=mysql|${DB_USER}:${DB_PASS}@tcp(${DB_HOST}:${SRC_PORT})/information_schema?charset=utf8mb4
 dstDSN=mysql|${DB_USER}:${DB_PASS}@tcp(${DB_HOST}:${DST_PORT})/information_schema?charset=utf8mb4
@@ -195,7 +202,7 @@ fixFileDir=${case_dir}/fixsql
 logFile=${case_dir}/gt-checksum.log
 logLevel=debug
 logbin=ON
-requirePK=ON
+requirePK=${require_pk}
 EOF
     [[ -n "$columns" ]] && echo "columns=${columns}" >> "${case_dir}/gt-checksum.conf"
     cat > "${case_dir}/repairDB.conf" <<EOF

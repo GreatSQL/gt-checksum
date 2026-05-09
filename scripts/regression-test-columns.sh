@@ -270,6 +270,12 @@ generate_checksum_config() {
     local extra_rows_sync="${6:-OFF}"
     local check_no_index="${7:-no}"
 
+    # requirePK 逻辑：只校验部分列的场景（有 columns 参数）不启用 requirePK
+    local require_pk="ON"
+    if [[ -n "$columns" ]]; then
+        require_pk="OFF"
+    fi
+
     cat > "${case_dir}/gt-checksum.conf" <<EOF
 srcDSN=mysql|${DB_USER}:${DB_PASS}@tcp(${DB_HOST}:${src_port})/information_schema?charset=utf8mb4
 dstDSN=mysql|${DB_USER}:${DB_PASS}@tcp(${DB_HOST}:${dst_port})/information_schema?charset=utf8mb4
@@ -286,7 +292,7 @@ fixFileDir=${case_dir}/fixsql
 logFile=${case_dir}/gt-checksum.log
 logLevel=debug
 logbin=ON
-requirePK=ON
+requirePK=${require_pk}
 extraRowsSyncToSource=${extra_rows_sync}
 EOF
     # columns 参数仅非空时追加，避免 columns="" 导致解析报错
@@ -300,6 +306,12 @@ generate_oracle_error_config() {
     local dst_port="$1"
     local case_dir="$2"
     local columns="$3"
+
+    # requirePK 逻辑：只校验部分列的场景（有 columns 参数）不启用 requirePK
+    local require_pk="ON"
+    if [[ -n "$columns" ]]; then
+        require_pk="OFF"
+    fi
 
     cat > "${case_dir}/gt-checksum.conf" <<EOF
 srcDSN=oracle|gt_checksum/gt_checksum@127.0.0.1:1521/orcl
@@ -317,7 +329,7 @@ fixFileDir=${case_dir}/fixsql
 logFile=${case_dir}/gt-checksum.log
 logLevel=debug
 logbin=ON
-requirePK=ON
+requirePK=${require_pk}
 EOF
     if [[ -n "$columns" ]]; then
         echo "columns=${columns}" >> "${case_dir}/gt-checksum.conf"

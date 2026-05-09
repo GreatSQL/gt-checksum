@@ -472,7 +472,13 @@ generate_test_matrix() {
 # SECTION 8: 配置文件生成
 # ============================================================
 generate_gt_checksum_config() {
-    local src_port="$1" dst_port="$2" mode="$3" case_dir="$4"
+    local src_port="$1" dst_port="$2" mode="$3" case_dir="$4" dst_label="$5"
+
+    # requirePK 逻辑：只有目标端是 mysql80 或 mysql84 时才启用
+    local require_pk="OFF"
+    if [[ "$dst_label" == "mysql80" || "$dst_label" == "mysql84" ]]; then
+        require_pk="ON"
+    fi
 
     cat > "${case_dir}/gt-checksum.conf" <<EOF
 srcDSN=mysql|${DB_USER}:${DB_PASS}@tcp(${DB_HOST}:${src_port})/information_schema?charset=utf8mb4
@@ -490,7 +496,7 @@ fixFileDir=${case_dir}/fixsql
 logFile=${case_dir}/gt-checksum.log
 logLevel=debug
 logbin=ON
-requirePK=ON
+requirePK=${require_pk}
 EOF
 }
 
@@ -664,7 +670,7 @@ run_single_test_case() {
     fi
 
     # 生成配置
-    generate_gt_checksum_config "$src_port" "$dst_port" "$mode" "$case_dir"
+    generate_gt_checksum_config "$src_port" "$dst_port" "$mode" "$case_dir" "$dst_label"
     generate_repairdb_config "$dst_port" "$case_dir"
 
     local round=0
@@ -813,7 +819,7 @@ run_final_repair() {
             mkdir -p "${repair_dir}/fixsql"
 
             # 生成配置
-            generate_gt_checksum_config "$src_port" "$dst_port" "$mode" "$repair_dir"
+            generate_gt_checksum_config "$src_port" "$dst_port" "$mode" "$repair_dir" "$dst_label"
             generate_repairdb_config "$dst_port" "$repair_dir"
 
             local round=0
