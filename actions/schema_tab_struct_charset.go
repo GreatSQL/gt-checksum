@@ -2,11 +2,13 @@ package actions
 
 import (
 	"database/sql"
+	"fmt"
 	"regexp"
 	"sort"
 	"strings"
 
 	"gt-checksum/dbExec"
+	"gt-checksum/global"
 	"gt-checksum/schemacompat"
 )
 
@@ -60,36 +62,51 @@ func canUseTableCharsetConvertForColumnCollationDrift(sourceMeta, destMeta mysql
 		return false
 	}
 
-	for _, definition := range sourceColumnDefinitions {
-		if !isCharacterColumnDefinition(definition) {
-			continue
-		}
-		if hasExplicitColumnCharsetOrCollation(definition) {
-			return false
-		}
-	}
-
 	// 优化判断逻辑：当所有字段的 COLLATION 差异都是由表级 COLLATION 差异引起时
 	// （即字段都继承各自表级的 COLLATION），只需修改表级定义即可
 	sourceTableCollation := strings.TrimSpace(sourceMeta.TableCollation)
 	destTableCollation := strings.TrimSpace(destMeta.TableCollation)
 
-	for _, candidate := range candidates {
-		if !strings.EqualFold(strings.TrimSpace(candidate.SourceCharset), strings.TrimSpace(sourceMeta.TableCharset)) {
+	// 关键优化：MySQL 的 ALTER TABLE ... CONVERT TO CHARACTER SET ... COLLATE ... 会正确处理
+	// 所有字符类型字段，包括显式定义了 CHARSET/COLLATE 的字段。
+	// 只要所有字段的 CHARSET/COLLATE 都与表级定义一致（无论是隐式继承还是显式定义），
+	// 使用表级 CONVERT TO 都能正确修复。
+	//
+	// 判断逻辑：
+	// 1. 所有 candidates 中的字段，其 SourceCharset 必须与表级 TableCharset 一致
+	// 2. 所有 candidates 中的字段，其 SourceCollation 必须与表级 TableCollation 一致（或表级为空）
+	// 3. 所有 candidates 中的字段，其 DestCollation 必须与目标端表级 TableCollation 一致
+	//
+	// 这样可以确保：
+	// - 字段隐式继承表级定义的场景：可以使用表级修复
+	// - 字段显式定义但与表级一致的场景：可以使用表级修复
+	// - 字段显式定义且与表级不一致的场景：不能使用表级修复（会在后续检查中被拒绝）
+
+	// 检查所有 candidates 是否都满足表级修复的条件
+	for i, candidate := range candidates {
+		// 字段 CHARSET 必须与表级 CHARSET 一致
+		if !strings.EqualFold(strings.TrimSpace(candidate.SourceCharset), sourceCharset) {
+			global.Wlog.Debug(fmt.Sprintf("canUseTableCharsetConvertForColumnCollationDrift: candidate[%d] %s SourceCharset=%s != tableCharset=%s, rejecting table-level repair",
+				i, candidate.ColumnName, candidate.SourceCharset, sourceCharset))
 			return false
 		}
 		// 检查目标端字段 COLLATION 是否与目标端表级 COLLATION 一致
 		// 如果一致，说明字段是继承表级 COLLATION，可以通过修改表级定义来修复
 		if !strings.EqualFold(strings.TrimSpace(candidate.DestCollation), destTableCollation) {
+			global.Wlog.Debug(fmt.Sprintf("canUseTableCharsetConvertForColumnCollationDrift: candidate[%d] %s DestCollation=%s != destTableCollation=%s, rejecting table-level repair",
+				i, candidate.ColumnName, candidate.DestCollation, destTableCollation))
 			return false
 		}
 		// 如果源端表级 COLLATION 已显式定义，则要求源端字段 COLLATION 也与之一致
 		// 如果源端表级 COLLATION 未显式定义（为空），则跳过此检查（字段继承隐式默认值）
 		if sourceTableCollation != "" && !strings.EqualFold(strings.TrimSpace(candidate.SourceCollation), sourceTableCollation) {
+			global.Wlog.Debug(fmt.Sprintf("canUseTableCharsetConvertForColumnCollationDrift: candidate[%d] %s SourceCollation=%s != sourceTableCollation=%s, rejecting table-level repair",
+				i, candidate.ColumnName, candidate.SourceCollation, sourceTableCollation))
 			return false
 		}
 	}
 
+	global.Wlog.Debug(fmt.Sprintf("canUseTableCharsetConvertForColumnCollationDrift: all %d candidates match table-level charset/collation, using table-level CONVERT TO", len(candidates)))
 	return true
 }
 
@@ -118,10 +135,25 @@ func (stcls *schemaTable) buildColumnCollationRepairSQL(
 	}
 
 	if canUseTableCharsetConvertForColumnCollationDrift(sourceMeta, destMeta, sourceColumnDefinitions, candidates) {
+		// 检查是否为 MariaDB→MySQL 的等价映射场景（如 utf8mb4_uca1400_ai_ci → utf8mb4_0900_ai_ci）
+		// 如果是，则不生成修复 SQL，让上层逻辑标记为 collation-mapped
+		sourceCollation := strings.TrimSpace(sourceMeta.TableCollation)
+		destCollation := strings.TrimSpace(destMeta.TableCollation)
+		if sourceCollation != "" && destCollation != "" {
+			if mappedCollation, ok := schemacompat.MapMariaDBCollationToMySQL(sourceCollation); ok {
+				if strings.EqualFold(mappedCollation, destCollation) {
+					// 源端 collation 映射后与目标端一致，属于等价映射，不生成修复 SQL
+					global.Wlog.Debug(fmt.Sprintf("(%d) buildColumnCollationRepairSQL: source collation %s maps to target %s, skipping repair SQL generation (collation-mapped)",
+						logThreadSeq, sourceCollation, destCollation))
+					return nil, false
+				}
+			}
+		}
+
 		// 使用 CONVERT TO CHARACTER SET 修复列级 collation 漂移时，必须始终显式指定
 		// source collation，否则在跨版本场景（如 MySQL 5.6 → 8.0）下，目标端会使用
 		// 其自身默认 collation（utf8mb4_0900_ai_ci），而非源端期望的 collation。
-		collation := strings.TrimSpace(sourceMeta.TableCollation)
+		collation := sourceCollation
 		// MariaDB UCA 14.0.0 collation 在 MySQL 上不存在，映射为 UCA 9.0.0 等价物
 		if collation != "" {
 			if mapped, ok := schemacompat.MapMariaDBCollationToMySQL(collation); ok {

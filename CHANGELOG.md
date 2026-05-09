@@ -3,10 +3,12 @@
 - [功能新增]: repairDB 工具新增预执行报告功能，执行修复前自动收集并展示修复 SQL 文件统计信息（文件数量、大小、语句类型分布、影响行数、预估 binlog 大小等），帮助用户在执行前评估修复影响范围。新增交互式确认机制，默认在执行修复前提示用户确认，可通过 `-f` 或 `--force` 参数跳过确认直接执行；新增 `--dry-run` 参数，仅展示统计报告而不执行实际修复操作。
 - [功能新增]: repairDB 工具新增 CSV 执行报告导出功能，执行完成后自动生成包含执行汇总和明细的 CSV 报告文件（UTF-8 BOM 编码，可直接用 Excel 打开），记录每个对象的 `INSERT/DELETE/ALTER/CREATE/DROP` 各操作成功与失败数、耗时及失败原因。新增 `resultFile` 配置参数和 `--result-file` CLI 参数，支持自定义 CSV 报告输出路径。
 - [功能新增]: repairDB 工具新增锁文件机制，执行完成后在工作目录下自动生成 `.repairDB.lock` 隐藏文件（成功时为空文件，失败时包含错误信息）。程序启动时检查锁文件是否存在，若存在则发出告警并退出，防止重复执行。用户需手动删除锁文件后才能再次执行 repairDB。
+- [功能优化]: 优化 ALTER TABLE 语句合并逻辑，当同一表同时存在 MODIFY COLUMN（仅修改 COLLATE）和 CONVERT TO CHARACTER SET 子句时，自动过滤冗余的 MODIFY COLUMN 子句，只保留 CONVERT TO 子句，简化修复 SQL 并提升执行效率。
 - [功能优化]: 优化跨版本场景下表级 COLLATE 修复逻辑，当所有字段的 COLLATION 差异都是由表级 COLLATION 差异引起时（字段继承表级 COLLATION），只需修改表级定义即可，避免逐列修改。
 - [功能优化]: 优化 my_row_id 位置调整逻辑，在生成位置调整 SQL 前先分析待执行的 ADD COLUMN 语句，确定实际的最后一列位置，避免在仅存在列新增操作时生成不必要的 my_row_id 位置调整 SQL，提升 struct 模式修复准确性。
 - [功能优化]: 优化 my_row_id 位置调整逻辑，防止在仅存在 my_row_id 列顺序偏移时生成多余的列位置调整 SQL，提升 struct 模式修复准确性。
 - [功能优化]: 增强分区表主键修复能力，当为无主键分区表添加 `my_row_id` 时，自动提取分区列并生成包含分区列的主键定义，确保修复 SQL 符合 MySQL 分区表主键约束（分区表主键必须包含分区列）。
+- [测试完善]: 新增 `TestMergeAlterTableStatements_ConvertToWithModifyColumn` 单元测试，覆盖 CONVERT TO 与 MODIFY COLUMN 子句合并优化场景。
 - [测试完善]: 新增 `TestCanUseTableCharsetConvertForColumnCollationDrift_CrossVersion` 和 `TestCanUseTableCharsetConvertForColumnCollationDrift_ExplicitColumnCollation` 单元测试，覆盖跨版本场景和显式字段 COLLATION 场景。
 - [测试完善]: 新增 `TestDecideCollationCompatibility_UTF8MB4DefaultDrift` 单元测试，覆盖 MySQL 5.6/5.7 到 8.0 的 utf8mb4 默认 collation 漂移场景，验证兼容性判断逻辑的准确性。
 - [测试完善]: 新增 `TestGetLastColumnAfterAdditions` 单元测试，覆盖 ADD COLUMN AFTER、ADD COLUMN FIRST、ADD COLUMN 无位置子句、多列顺序添加、中间插入列等场景，验证 my_row_id 位置调整逻辑的准确性。

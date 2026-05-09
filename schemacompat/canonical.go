@@ -1121,9 +1121,23 @@ func decideCollationCompatibility(sourceRaw, targetRaw, sourceNormalized, target
 	if sourceNormalized == targetNormalized {
 		return decideNormalizedStringCompatibility("collation", sourceRaw, targetRaw, sourceNormalized, targetNormalized)
 	}
-	if IsUTF8MB4DefaultCollationDrift(sourceNormalized, targetNormalized) {
+
+	// Check if this is a MariaDB→MySQL cross-platform collation mapping (e.g., utf8mb4_uca1400_ai_ci → utf8mb4_0900_ai_ci)
+	// These are semantically equivalent and should be marked as collation-mapped, not requiring fix SQL
+	if IsMariaDBToMySQLCollationMapping(sourceNormalized, targetNormalized) {
 		return CompatibilityDecision{
 			State:  CompatibilityWarnOnly,
+			Reason: fmt.Sprintf("MariaDB UCA 14.0.0 to MySQL UCA 9.0.0 equivalent collation mapping: source=%s target=%s", sourceNormalized, targetNormalized),
+			Source: sourceRaw,
+			Target: targetRaw,
+		}
+	}
+
+	// Check if this is a MySQL internal version upgrade collation drift (e.g., utf8mb4_general_ci → utf8mb4_0900_ai_ci)
+	// These have different sorting behavior and require fix SQL
+	if IsUTF8MB4DefaultCollationDrift(sourceNormalized, targetNormalized) {
+		return CompatibilityDecision{
+			State:  CompatibilityUnsupported,
 			Reason: fmt.Sprintf("utf8mb4 default collation drift detected between legacy and MySQL 8.x defaults: source=%s target=%s", sourceNormalized, targetNormalized),
 			Source: sourceRaw,
 			Target: targetRaw,
@@ -1149,6 +1163,22 @@ func IsUTF8MB4DefaultCollationDrift(sourceNormalized, targetNormalized string) b
 
 	// Dynamic check: MariaDB UCA 14.0.0 ↔ MySQL UCA 9.0.0 with matching sensitivity.
 	// Covers MariaDB 11.2+/12.x default utf8mb4_uca1400_ai_ci and all sensitivity variants.
+	srcMapped, srcIsUCA1400 := MapMariaDBCollationToMySQL(sourceNormalized)
+	if srcIsUCA1400 && srcMapped == targetNormalized {
+		return true
+	}
+	dstMapped, dstIsUCA1400 := MapMariaDBCollationToMySQL(targetNormalized)
+	if dstIsUCA1400 && dstMapped == sourceNormalized {
+		return true
+	}
+	return false
+}
+
+// IsMariaDBToMySQLCollationMapping checks if the collation difference is a known
+// MariaDB UCA 14.0.0 → MySQL UCA 9.0.0 equivalent mapping (e.g., utf8mb4_uca1400_ai_ci
+// → utf8mb4_0900_ai_ci). These are semantically equivalent collations that should be
+// marked as collation-mapped rather than requiring fix SQL.
+func IsMariaDBToMySQLCollationMapping(sourceNormalized, targetNormalized string) bool {
 	srcMapped, srcIsUCA1400 := MapMariaDBCollationToMySQL(sourceNormalized)
 	if srcIsUCA1400 && srcMapped == targetNormalized {
 		return true

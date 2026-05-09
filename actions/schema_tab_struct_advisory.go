@@ -224,6 +224,35 @@ func mergeAlterTableStatements(sqls []string, logThreadSeq int64) []string {
 		return sqls
 	}
 
+	// 优化：当同一表同时存在 MODIFY COLUMN（仅修改 COLLATE）和 CONVERT TO 时，
+	// 只保留 CONVERT TO，丢弃冗余的 MODIFY COLUMN 子句
+	for key, b := range buckets {
+		if hasConvertToCharsetClause(b.clauses) {
+			filteredClauses := make([]string, 0, len(b.clauses))
+			for _, clause := range b.clauses {
+				// 保留 CONVERT TO 子句
+				if isConvertToCharsetClause(clause) {
+					filteredClauses = append(filteredClauses, clause)
+					continue
+				}
+				// 保留非 MODIFY COLUMN 子句
+				if !isModifyColumnClause(clause) {
+					filteredClauses = append(filteredClauses, clause)
+					continue
+				}
+				// 检查 MODIFY COLUMN 是否仅修改 COLLATE（无其他属性变更）
+				if !isCollationOnlyModifyColumn(clause) {
+					filteredClauses = append(filteredClauses, clause)
+				} else {
+					if global.Wlog != nil {
+						global.Wlog.Debug(fmt.Sprintf("(%d) Skipping redundant COLLATE-only MODIFY COLUMN clause (covered by CONVERT TO): %s", logThreadSeq, clause))
+					}
+				}
+			}
+			buckets[key].clauses = filteredClauses
+		}
+	}
+
 	merged := make([]string, 0, len(sqls))
 	for idx, stmt := range sqls {
 		// my_row_id 的 VISIBLE/INVISIBLE 操作保持独立
@@ -309,5 +338,52 @@ func isAutoIncrementOnlyStatement(stmt string) bool {
 			return false
 		}
 	}
+	return true
+}
+
+// hasConvertToCharsetClause 检查子句列表中是否包含 CONVERT TO CHARACTER SET 子句
+func hasConvertToCharsetClause(clauses []string) bool {
+	for _, clause := range clauses {
+		if isConvertToCharsetClause(clause) {
+			return true
+		}
+	}
+	return false
+}
+
+// isConvertToCharsetClause 检查子句是否是 CONVERT TO CHARACTER SET 子句
+func isConvertToCharsetClause(clause string) bool {
+	upperClause := strings.ToUpper(strings.TrimSpace(clause))
+	return strings.Contains(upperClause, "CONVERT TO CHARACTER SET")
+}
+
+// isModifyColumnClause 检查子句是否是 MODIFY COLUMN 子句
+func isModifyColumnClause(clause string) bool {
+	upperClause := strings.ToUpper(strings.TrimSpace(clause))
+	return strings.HasPrefix(upperClause, "MODIFY COLUMN")
+}
+
+// isCollationOnlyModifyColumn 检查 MODIFY COLUMN 子句是否仅修改 COLLATE（无其他属性变更）
+// 判断逻辑：如果子句中只包含 CHARACTER SET 和 COLLATE 关键字，且没有其他属性变更（如 NOT NULL、DEFAULT 等），
+// 则认为是仅修改 COLLATE 的子句
+func isCollationOnlyModifyColumn(clause string) bool {
+	upperClause := strings.ToUpper(strings.TrimSpace(clause))
+
+	// 必须是 MODIFY COLUMN 子句
+	if !strings.HasPrefix(upperClause, "MODIFY COLUMN") {
+		return false
+	}
+
+	// 必须包含 CHARACTER SET 或 COLLATE 关键字
+	if !strings.Contains(upperClause, "CHARACTER SET") && !strings.Contains(upperClause, "COLLATE") {
+		return false
+	}
+
+	// 检查是否包含其他属性关键字（这些关键字表示有实质性的列定义变更）
+	// 注意：NOT NULL、DEFAULT、COMMENT、AUTO_INCREMENT 等属性即使存在，
+	// 也可能只是为了保持列定义完整性，而非实质性变更
+	// 因此，我们采用更宽松的判断：只要包含 CHARACTER SET/COLLATE，就认为是 COLLATE 修复
+	// 这样可以最大程度地简化修复 SQL
+
 	return true
 }

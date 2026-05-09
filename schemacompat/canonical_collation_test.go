@@ -50,6 +50,52 @@ func TestDecideCollationCompatibility_UTF8MB4DefaultDrift(t *testing.T) {
 	}
 }
 
+// TestDecideCollationCompatibility_MariaDBToMySQL 测试 MariaDB→MySQL 跨平台 collation 映射场景
+// 修复后应返回 CompatibilityWarnOnly，标记为 collation-mapped，不生成修复 SQL
+func TestDecideCollationCompatibility_MariaDBToMySQL(t *testing.T) {
+	tests := []struct {
+		name          string
+		source        string
+		target        string
+		expectedState CompatibilityState
+	}{
+		{
+			name:          "MariaDB 12.3 to MySQL 8.0: utf8mb4_uca1400_ai_ci -> utf8mb4_0900_ai_ci",
+			source:        "utf8mb4_uca1400_ai_ci",
+			target:        "utf8mb4_0900_ai_ci",
+			expectedState: CompatibilityWarnOnly,
+		},
+		{
+			name:          "MySQL 8.0 to MariaDB 12.3: utf8mb4_0900_ai_ci -> utf8mb4_uca1400_ai_ci",
+			source:        "utf8mb4_0900_ai_ci",
+			target:        "utf8mb4_uca1400_ai_ci",
+			expectedState: CompatibilityWarnOnly,
+		},
+		{
+			name:          "MariaDB to MySQL with locale variant: utf8mb4_uca1400_swedish_ai_ci -> utf8mb4_0900_ai_ci",
+			source:        "utf8mb4_uca1400_swedish_ai_ci",
+			target:        "utf8mb4_0900_ai_ci",
+			expectedState: CompatibilityWarnOnly,
+		},
+		{
+			name:          "MariaDB to MySQL as_ci: utf8mb4_uca1400_as_ci -> utf8mb4_0900_as_ci",
+			source:        "utf8mb4_uca1400_as_ci",
+			target:        "utf8mb4_0900_as_ci",
+			expectedState: CompatibilityWarnOnly,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			decision := DecideCollationCompatibility(tt.source, tt.target)
+			if decision.State != tt.expectedState {
+				t.Errorf("DecideCollationCompatibility(%q, %q) state = %v, want %v (reason: %s)",
+					tt.source, tt.target, decision.State, tt.expectedState, decision.Reason)
+			}
+		})
+	}
+}
+
 // TestMapMariaDBCollationToMySQL 测试 MariaDB UCA 14.0.0 collation 到 MySQL UCA 9.0.0 的映射
 func TestMapMariaDBCollationToMySQL(t *testing.T) {
 	tests := []struct {

@@ -985,7 +985,9 @@ func (stcls *schemaTable) buildCharsetAdvisory(
 		global.Wlog.Debug(vlog)
 	}
 
-	if result.tableCharsetDifferent || result.tableCollationDifferent {
+	// 只有在没有生成可执行的列级 collation 修复 SQL 时，才生成表级 CONVERT TO SQL
+	// 避免重复生成修复 SQL（列级修复可能已经包含了表级 CONVERT TO）
+	if (result.tableCharsetDifferent || result.tableCollationDifferent) && !result.executableColumnCollationRepair {
 		repairCollation := sourceMeta.TableCollation
 		if mapped, ok := schemacompat.MapMariaDBCollationToMySQL(repairCollation); ok {
 			repairCollation = mapped
