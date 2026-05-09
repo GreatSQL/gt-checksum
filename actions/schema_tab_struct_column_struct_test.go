@@ -13,12 +13,12 @@ import (
 // 预期行为：应该生成独立的 AUTO_INCREMENT 修复 SQL
 func TestAutoIncrementFixForImplicitToExplicitPK(t *testing.T) {
 	// 模拟源端表元数据（有显式自增主键 id，AUTO_INCREMENT=4）
-	sourceMeta := &tableMeta{
+	sourceMeta := &mysqlTableLevelMetadata{
 		AutoIncrement: sql.NullInt64{Int64: 4, Valid: true},
 	}
 
 	// 模拟目标端表元数据（有隐式自增主键 my_row_id，AUTO_INCREMENT=3）
-	destMeta := &tableMeta{
+	destMeta := &mysqlTableLevelMetadata{
 		AutoIncrement: sql.NullInt64{Int64: 3, Valid: true},
 	}
 
