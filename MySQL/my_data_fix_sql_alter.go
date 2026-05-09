@@ -230,7 +230,8 @@ func (my *MysqlDataAbnormalFixStruct) FixAlterColumnSqlDispos(alterType string, 
 			columnDataType[0] = strings.ReplaceAll(columnDataType[0], "  ", " ")
 		}
 	}
-	columnDataType[0] = stripDeprecatedZeroFillAttr(columnDataType[0])
+	// 注释掉 stripDeprecatedZeroFillAttr 调用，保留 zerofill 属性以生成正确的修复 SQL
+	// columnDataType[0] = stripDeprecatedZeroFillAttr(columnDataType[0])
 	columnDataType[0] = schemacompat.StripMySQLMetadataOnlyExtraTokens(columnDataType[0])
 	columnDataType[0] = normalizeMySQLKeywordFunctionsInDefinition(columnDataType[0])
 

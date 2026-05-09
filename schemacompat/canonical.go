@@ -66,6 +66,7 @@ type CanonicalColumn struct {
 	Comment             string
 	Visibility          ColumnVisibility
 	AutoIncrement       bool
+	HasZeroFill         bool
 }
 
 type CanonicalIndex struct {
@@ -251,7 +252,7 @@ func StripMySQLMetadataOnlyExtraTokens(value string) string {
 	return s
 }
 
-func normalizeMySQLColumnType(raw string) (string, string, ColumnVisibility, bool, string) {
+func normalizeMySQLColumnType(raw string) (string, string, ColumnVisibility, bool, string, bool) {
 	s := strings.ToLower(StripMySQLMetadataOnlyExtraTokens(raw))
 	visibility := ColumnVisibilityVisible
 	autoIncrement := false
@@ -329,7 +330,7 @@ func normalizeMySQLColumnType(raw string) (string, string, ColumnVisibility, boo
 	}
 	s = normalizeWhitespace(s)
 
-	return s, compressionAttr, visibility, autoIncrement, generatedKind
+	return s, compressionAttr, visibility, autoIncrement, generatedKind, hasZeroFill
 }
 
 func CanonicalizeMySQLColumn(name string, attrs []string, _ global.MySQLVersionInfo) CanonicalColumn {
@@ -341,7 +342,7 @@ func CanonicalizeMySQLColumn(name string, attrs []string, _ global.MySQLVersionI
 	}
 
 	rawType := normalizeNullish(getAttr(0))
-	normalizedType, compressionAttr, visibility, autoIncrement, generatedKind := normalizeMySQLColumnType(rawType)
+	normalizedType, compressionAttr, visibility, autoIncrement, generatedKind, hasZeroFill := normalizeMySQLColumnType(rawType)
 
 	return CanonicalColumn{
 		Name:                name,
@@ -358,6 +359,7 @@ func CanonicalizeMySQLColumn(name string, attrs []string, _ global.MySQLVersionI
 		Comment:             normalizeNullish(getAttr(5)),
 		Visibility:          visibility,
 		AutoIncrement:       autoIncrement,
+		HasZeroFill:         hasZeroFill,
 	}
 }
 
@@ -406,6 +408,14 @@ func DecideColumnDefinitionCompatibility(source, target CanonicalColumn) Compati
 		return CompatibilityDecision{
 			State:  CompatibilityWarnOnly,
 			Reason: fmt.Sprintf("column compression attribute differs: source=%s target=%s", source.CompressionAttr, target.CompressionAttr),
+			Source: source.RawType,
+			Target: target.RawType,
+		}
+	}
+	if source.HasZeroFill != target.HasZeroFill {
+		return CompatibilityDecision{
+			State:  CompatibilityUnsupported,
+			Reason: fmt.Sprintf("zerofill attribute differs: source=%t target=%t", source.HasZeroFill, target.HasZeroFill),
 			Source: source.RawType,
 			Target: target.RawType,
 		}

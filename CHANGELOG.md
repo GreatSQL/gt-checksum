@@ -8,12 +8,14 @@
 - [功能优化]: 优化 my_row_id 位置调整逻辑，在生成位置调整 SQL 前先分析待执行的 ADD COLUMN 语句，确定实际的最后一列位置，避免在仅存在列新增操作时生成不必要的 my_row_id 位置调整 SQL，提升 struct 模式修复准确性。
 - [功能优化]: 优化 my_row_id 位置调整逻辑，防止在仅存在 my_row_id 列顺序偏移时生成多余的列位置调整 SQL，提升 struct 模式修复准确性。
 - [功能优化]: 增强分区表主键修复能力，当为无主键分区表添加 `my_row_id` 时，自动提取分区列并生成包含分区列的主键定义，确保修复 SQL 符合 MySQL 分区表主键约束（分区表主键必须包含分区列）。
+- [问题修复]: 修复 zerofill 属性被错误剥离导致字段定义差异检测不准确的问题，现在会正确保留 zerofill 属性并在源端与目标端 zerofill 属性不一致时生成修复 SQL。
 - [问题修复]: 修复当目标端缺少中间字段时，后续字段因 ADD COLUMN 自动调整序列号而生成多余 MODIFY COLUMN 语句的问题。现在会智能识别序列号偏移是否由前面的 ADD COLUMN 操作导致，避免生成不必要的列位置调整 SQL。
 - [问题修复]: 修复 ALTER TABLE 语句中包含逗号分隔的多个 DROP COLUMN 操作时，列名解析不完整的问题，现在会正确提取所有被删除的列名，避免 my_row_id 位置调整逻辑误判。
 - [问题修复]: 修复跨版本 MySQL 场景（MySQL 5.6/5.7 → MySQL 8.0）下 utf8mb4 默认 collation 漂移（utf8mb4_general_ci → utf8mb4_0900_ai_ci）被误判为 WarnOnly 的问题，现在会正确标记为 CompatibilityUnsupported 并生成修复 SQL，避免二次修复。
 - [问题修复]: 修复当表从无主键状态（已添加 my_row_id）转变为有显式主键状态时，my_row_id 删除与显式主键添加之间的操作冲突问题。现在会自动检测显式主键添加场景，在添加显式主键前先删除 my_row_id 列，避免 DROP PRIMARY KEY 和 DROP COLUMN 操作冲突。
 - [问题修复]: 修复分区表 NULL 约束检查逻辑，对分区字段的 NULL 约束差异不再生成修复 SQL，因为分区字段通常有隐式的 NOT NULL 约束。
 - [问题修复]: 修复跨版本 MySQL 场景（如 MySQL 5.6/5.7 → MySQL 8.0）下，CREATE TABLE DDL 生成时缺少显式 COLLATE 子句的问题。当源端 `SHOW CREATE TABLE` 只显示 CHARSET 而不显示 COLLATE 时（MySQL 5.6/5.7 常见行为），现在会从 `information_schema.TABLES` 查询源端实际 collation 并显式添加到生成的 DDL 中，避免目标端使用其版本默认 collation（如 MySQL 8.0 的 utf8mb4_0900_ai_ci）导致需要二次修复。影响 `checkObject=struct` 模式下所有跨版本场景。
+- [测试完善]: 新增 `TestZeroFillAttributeDetection` 单元测试，覆盖 zerofill 属性检测场景（相同列匹配、不同列不匹配、zerofill 属性交换等场景）。
 - [测试完善]: 新增 `TestReconcileColumnDiffs_NoExtraModifyWhenAddColumnFixesSequence` 单元测试，验证当目标端缺少中间字段时，后续字段序列号偏移识别逻辑的准确性。
 - [测试完善]: 新增 `TestMergeAlterTableStatements_ConvertToWithModifyColumn` 单元测试，覆盖 CONVERT TO 与 MODIFY COLUMN 子句合并优化场景。
 - [测试完善]: 新增 `TestCanUseTableCharsetConvertForColumnCollationDrift_CrossVersion` 和 `TestCanUseTableCharsetConvertForColumnCollationDrift_ExplicitColumnCollation` 单元测试，覆盖跨版本场景和显式字段 COLLATION 场景。
