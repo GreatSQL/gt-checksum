@@ -15,12 +15,15 @@ MySQL DBA经常使用 **pt-table-checksum** 和 **pt-table-sync** 进行数据�
 
 ## v3.0.0 关键变化
 
+- **[功能新增]** 新增 `requirePK` 参数，支持在 struct 模式下为无主键表自动添加 `my_row_id` 不可见自增聚集索引列，主要用于 MySQL 单机实例迁移到 MGR 环境。
 - **[功能新增]** repairDB 工具新增预执行报告功能，执行前自动展示修复 SQL 统计信息（文件数量、影响行数、预估 binlog 大小等）。
 - **[功能新增]** repairDB 工具新增交互式确认机制和 `--dry-run` 参数，提升修复操作安全性。
 - **[功能新增]** repairDB 工具新增 CSV 执行报告导出功能，自动生成包含执行汇总和明细的报告文件。
 - **[功能新增]** repairDB 工具新增锁文件机制，防止重复执行修复操作，执行完成后自动生成 `.repairDB.lock` 文件。
-- **[功能新增]** 新增 `requirePK` 参数，支持在 struct 模式下为无主键表自动添加 my_row_id 隐藏列，用于 MySQL 单机实例迁移到 MGR 环境。
-- **[问题修复]** 修复跨版本 MySQL 场景下 CREATE TABLE DDL 缺少 COLLATE 导致二次修复的问题，现在会显式添加源端 COLLATION 定义。
+- **[功能优化]** 增强分区表主键修复能力，为无主键分区表添加 `my_row_id` 时自动提取分区列并生成包含分区列的主键定义，确保符合 MySQL 分区表主键约束。
+- **[功能优化]** 优化跨版本场景下表级 COLLATE 修复逻辑，当所有字段的 COLLATION 差异都是由表级 COLLATION 差异引起时，只需修改表级定义，避免逐列修改。
+- **[问题修复]** 修复跨版本 MySQL 场景下 `CREATE TABLE` 缺少 COLLATE 导致二次修复的问题，现在会显式添加源端 COLLATION 定义。
+- **[问题修复]** 修复分区表 NULL 约束检查逻辑，对分区字段的 NULL 约束差异不再生成修复 SQL（分区字段通常有隐式的 NOT NULL 约束）。
 
 更多详细变化详见 [CHANGELOG](./CHANGELOG.md)。
 

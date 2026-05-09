@@ -254,13 +254,33 @@ func (stcls *schemaTable) reconcileColumnDiffs(
 		}
 	}
 
+	// 在循环开始前，先记录哪些源端字段在目标端不存在（需要 ADD COLUMN）
+	// 因为在循环中会删除 destColumnMap 的元素，所以需要提前记录
+	missingColumnsInDest := make(map[int]bool) // key 是源端字段的索引
+	for i, colName := range cm.sourceColumnSlice {
+		if _, exists := cm.destColumnMap[colName]; !exists {
+			missingColumnsInDest[i] = true
+		}
+	}
+
 	for k1, v1 := range cm.sourceColumnSlice {
 			lastcolumn := ""
 			var alterColumnData []string
 			if k1 == 0 {
 				lastcolumn = cm.sourceColumnSlice[k1]
 			} else {
+				// 向前查找第一个在目标端存在的字段作为 lastcolumn
+				// 避免当前字段之前有缺失字段时，生成多余的 MODIFY 语句
 				lastcolumn = cm.sourceColumnSlice[k1-1]
+				for i := k1 - 1; i >= 0; i-- {
+					candidateCol := cm.sourceColumnSlice[i]
+					// 注意：destColumnMap 的键是大写的，需要转换后再查找
+					candidateColUpper := strings.ToUpper(candidateCol)
+					if _, existsInDest := cm.destColumnMap[candidateColUpper]; existsInDest {
+						lastcolumn = candidateCol
+						break
+					}
+				}
 			}
 			// 始终使用src作为修复规则
 			alterColumnData = cm.sourceColumnMap[v1]
@@ -603,7 +623,34 @@ func (stcls *schemaTable) reconcileColumnDiffs(
 					}
 				}
 
+				// 检查序列号不匹配是否由前面的 ADD COLUMN 操作导致
+				// 如果当前字段之前有缺失的字段（已生成 ADD COLUMN），则后续字段的序列号会自然偏移
+				// 此时不应该生成 MODIFY COLUMN 语句
+				sequenceMismatchCausedByAddColumn := false
 				if !hasAutoIncrementPrimaryKeyAdd && !hasMyRowIDOffset && cm.sourceColumnSeq[v1] != cm.destColumnSeq[v1] {
+					// 统计当前字段之前有多少个 ADD COLUMN 操作
+					// 使用预先记录的 missingColumnsInDest，避免因循环中删除 destColumnMap 元素导致的误判
+					addColumnCountBeforeCurrent := 0
+					for i := 0; i < k1; i++ {
+						if missingColumnsInDest[i] {
+							addColumnCountBeforeCurrent++
+						}
+					}
+
+					// 如果序列号差异正好等于前面缺失字段的数量，说明序列号不匹配是由 ADD COLUMN 导致的
+					expectedDestSeq := cm.sourceColumnSeq[v1] - addColumnCountBeforeCurrent
+					vlog = fmt.Sprintf("(%d) %s Column %s sequence check: source=%d, dest=%d, addColumnCountBefore=%d, expected=%d",
+						logThreadSeq, event, repairColumnName, cm.sourceColumnSeq[v1], cm.destColumnSeq[v1], addColumnCountBeforeCurrent, expectedDestSeq)
+					global.Wlog.Debug(vlog)
+					if expectedDestSeq == cm.destColumnSeq[v1] && addColumnCountBeforeCurrent > 0 {
+						sequenceMismatchCausedByAddColumn = true
+						vlog = fmt.Sprintf("(%d) %s Column %s sequence mismatch caused by %d ADD COLUMN operations before it (source=%d, dest=%d, expected=%d), will be auto-fixed by ADD COLUMN",
+							logThreadSeq, event, repairColumnName, addColumnCountBeforeCurrent, cm.sourceColumnSeq[v1], cm.destColumnSeq[v1], expectedDestSeq)
+						global.Wlog.Debug(vlog)
+					}
+				}
+
+				if !hasAutoIncrementPrimaryKeyAdd && !hasMyRowIDOffset && !sequenceMismatchCausedByAddColumn && cm.sourceColumnSeq[v1] != cm.destColumnSeq[v1] {
 					tableAbnormalBool = true
 					vlog = fmt.Sprintf("(%d) %s Column %s sequence mismatch: source=%d, dest=%d",
 						logThreadSeq, event, repairColumnName, cm.sourceColumnSeq[v1], cm.destColumnSeq[v1])

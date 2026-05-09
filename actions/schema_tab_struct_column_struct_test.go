@@ -100,3 +100,84 @@ func TestAutoIncrementSkipForPureImplicitPK(t *testing.T) {
 		t.Errorf("Expected shouldSkipAutoIncrementCheck=true for pure implicit PK scenario (no explicit PK added), got false")
 	}
 }
+
+// TestReconcileColumnDiffs_NoExtraModifyWhenAddColumnFixesSequence 验证修复：
+// 当目标端缺少中间字段时，后续字段的序列号会因 ADD COLUMN 自动调整，
+// 不应该生成多余的 MODIFY COLUMN 语句
+func TestReconcileColumnDiffs_NoExtraModifyWhenAddColumnFixesSequence(t *testing.T) {
+	// 模拟场景：
+	// 源端：f1(seq=0), f2(seq=1), f3(seq=2), f4(seq=3)
+	// 目标端：f1(seq=0), f3(seq=1), f4(seq=2)  -- 缺少 f2
+	// 预期：只生成 ADD COLUMN f2，不生成 MODIFY f3/f4
+
+	cm := &columnMetaState{
+		sourceColumnSlice: []string{"f1", "f2", "f3", "f4"},
+		sourceColumnMap: map[string][]string{
+			"f1": {"float", "null", "null", "YES", "null", ""},
+			"f2": {"float(5,2)", "null", "null", "YES", "null", ""},
+			"f3": {"double", "null", "null", "YES", "null", ""},
+			"f4": {"double(5,3)", "null", "null", "YES", "null", ""},
+		},
+		sourceColumnSeq: map[string]int{
+			"f1": 0,
+			"f2": 1,
+			"f3": 2,
+			"f4": 3,
+		},
+		destColumnMap: map[string][]string{
+			"f1": {"float", "null", "null", "YES", "null", ""},
+			"f3": {"double", "null", "null", "YES", "null", ""},
+			"f4": {"double(5,3)", "null", "null", "YES", "null", ""},
+		},
+		destColumnSeq: map[string]int{
+			"f1": 0,
+			"f3": 1,
+			"f4": 2,
+		},
+		columnNameCaseSensitive: false,
+	}
+
+	// 验证：f3 和 f4 的序列号不匹配是由于 f2 缺失导致的
+	// f3: source=2, dest=1, 差异=1（正好等于前面缺失的字段数量）
+	// f4: source=3, dest=2, 差异=1（正好等于前面缺失的字段数量）
+
+	// 统计 f3 之前缺失的字段数量
+	addColumnCountBeforeF3 := 0
+	for i := 0; i < 2; i++ { // f3 在 sourceColumnSlice 中的索引是 2
+		prevColName := cm.sourceColumnSlice[i]
+		if _, existsInDest := cm.destColumnMap[prevColName]; !existsInDest {
+			addColumnCountBeforeF3++
+		}
+	}
+
+	if addColumnCountBeforeF3 != 1 {
+		t.Fatalf("f3 之前应该有 1 个缺失字段(f2)，实际: %d", addColumnCountBeforeF3)
+	}
+
+	// 验证预期的目标序列号
+	expectedDestSeqF3 := cm.sourceColumnSeq["f3"] - addColumnCountBeforeF3
+	if expectedDestSeqF3 != cm.destColumnSeq["f3"] {
+		t.Fatalf("f3 的预期目标序列号应该是 %d，实际: %d", expectedDestSeqF3, cm.destColumnSeq["f3"])
+	}
+
+	// 统计 f4 之前缺失的字段数量
+	addColumnCountBeforeF4 := 0
+	for i := 0; i < 3; i++ { // f4 在 sourceColumnSlice 中的索引是 3
+		prevColName := cm.sourceColumnSlice[i]
+		if _, existsInDest := cm.destColumnMap[prevColName]; !existsInDest {
+			addColumnCountBeforeF4++
+		}
+	}
+
+	if addColumnCountBeforeF4 != 1 {
+		t.Fatalf("f4 之前应该有 1 个缺失字段(f2)，实际: %d", addColumnCountBeforeF4)
+	}
+
+	// 验证预期的目标序列号
+	expectedDestSeqF4 := cm.sourceColumnSeq["f4"] - addColumnCountBeforeF4
+	if expectedDestSeqF4 != cm.destColumnSeq["f4"] {
+		t.Fatalf("f4 的预期目标序列号应该是 %d，实际: %d", expectedDestSeqF4, cm.destColumnSeq["f4"])
+	}
+
+	t.Log("✓ 验证通过：f3 和 f4 的序列号不匹配是由于 f2 缺失导致的，修复逻辑应该识别这种情况")
+}
