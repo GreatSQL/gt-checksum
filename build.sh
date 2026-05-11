@@ -13,7 +13,7 @@ export CXXFLAGS="-stdlib=libstdc++" CC=/usr/bin/gcc CXX=/usr/bin/g++
 
 vs=`cat ./inputArg/flagHelp.go| grep "app.Version"|awk -F "=" '{print $2}'|sed 's/\"//g'|sed 's/\/\/版本//g'|sed 's/ //g'`
 OracleDrive="instantclient_11_2"
-HASH="a1d5e24"
+HASH="b0dfc35"
 
 # 自动适配CPU架构类型
 if [ ! -z "`which uname > /dev/null 2>&1`" ] ; then
@@ -57,4 +57,4 @@ echo "5. The gt-checksum binary package is: gt-checksum-${vs}-${HASH}-linux-${ar
 mv gt-checksum-${vs}-${HASH}-linux-${arch}.tar.xz v${vs} && \
 mv gt-checksum-${vs}-${HASH}-linux-${arch}-minimal.tar.xz v${vs} && \
 ls -la v${vs} && \
-rm -fr gt-checksum-${vs}-${HASH}-linux-${arch}
+rm -fr gt-checksum-${vs}-${HASH}-linux-${arch} gt-checksum repairDB oracle_random_data_load
