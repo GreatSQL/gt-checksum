@@ -22,6 +22,7 @@ MySQL DBA经常使用 **pt-table-checksum** 和 **pt-table-sync** 进行数据�
 - **[功能新增]** repairDB 工具新增锁文件机制，防止重复执行修复操作，执行完成后自动生成 `.repairDB.lock` 文件。
 - **[功能优化]** 增强分区表主键修复能力，为无主键分区表添加 `my_row_id` 时自动提取分区列并生成包含分区列的主键定义，确保符合 MySQL 分区表主键约束。
 - **[功能优化]** 优化跨版本场景下表级 COLLATE 修复逻辑，当所有字段的 COLLATION 差异都是由表级 COLLATION 差异引起时，只需修改表级定义，避免逐列修改。
+- **[问题修复]** 修复 SPATIAL KEY 索引 `SUB_PART` 被误用为 DDL 前缀长度的问题，避免生成部分索引触发 Error 1089。
 - **[问题修复]** 修复 zerofill 属性被错误剥离导致字段定义差异检测不准确的问题。
 - **[问题修复]** 修复跨版本 MySQL 场景下 `CREATE TABLE` 缺少 COLLATE 导致二次修复的问题，现在会显式添加源端 COLLATION 定义。
 - **[问题修复]** 修复分区表 NULL 约束检查逻辑，对分区字段的 NULL 约束差异不再生成修复 SQL（分区字段通常有隐式的 NOT NULL 约束）。

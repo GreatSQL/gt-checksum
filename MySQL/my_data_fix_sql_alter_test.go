@@ -121,3 +121,26 @@ func TestIsAutoIncrementOnlyOperation(t *testing.T) {
 		})
 	}
 }
+
+// TestIsSpatialColumnType 验证空间类型识别函数覆盖所有 MySQL 空间类型。
+// 回归测试：fix-sp-idx — SPATIAL KEY 修复 SQL 不应携带前缀长度。
+func TestIsSpatialColumnType(t *testing.T) {
+	spatialTypes := []string{
+		"point", "Point", "POINT",
+		"geometry", "linestring", "polygon",
+		"multipoint", "multilinestring", "multipolygon",
+		"geometrycollection", "geomcollection",
+	}
+	for _, ct := range spatialTypes {
+		if !isSpatialColumnType(ct) {
+			t.Errorf("isSpatialColumnType(%q) = false, want true", ct)
+		}
+	}
+
+	nonSpatialTypes := []string{"varchar(100)", "int", "text", "blob", "json", "char(10)"}
+	for _, ct := range nonSpatialTypes {
+		if isSpatialColumnType(ct) {
+			t.Errorf("isSpatialColumnType(%q) = true, want false", ct)
+		}
+	}
+}

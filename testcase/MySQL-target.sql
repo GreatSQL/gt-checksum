@@ -87,6 +87,21 @@ CREATE TABLE testbin(
 ALTER TABLE testbin ADD INDEX idx_testbin_1(f1);
 INSERT INTO testbin(f1,f2,f3,f4,f5,f6,f7) VALUES('a','abc','abcd.1234','01010101','0x9023123123','hello gt-checksum','hello gt-checksum');
 
+-- 测试SPATIAL KEY
+/*!80003 DROP TABLE IF EXISTS testbin */;
+/*!80003 CREATE TABLE `testspatial` (
+  `id` INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  `poi_name` VARCHAR(100) NOT NULL,
+  -- 声明为 POINT 类型，必须 NOT NULL，且指定 SRID 4326
+  `location` POINT NOT NULL SRID 4326,
+  -- 创建空间索引
+  SPATIAL INDEX `sp_idx_1` (`location`)
+) ENGINE=InnoDB */ ;
+
+/*!80003 INSERT INTO `testspatial` (`poi_name`, `location`) VALUES ('上海人民广场', ST_GeomFromText('POINT(31.2304 121.4737)', 4326)),
+('北京天安门', ST_GeomFromText('POINT(39.9087 116.3975)', 4326)), ('杭州西湖', ST_GeomFromText('POINT(30.2458 120.1493)', 4326)),
+('广州塔', ST_GeomFromText('POINT(23.1065 113.3245)', 4326)) */;
+
 -- 测试全文索引
 DROP TABLE IF EXISTS `articles`;
 CREATE TABLE `articles` (

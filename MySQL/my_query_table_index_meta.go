@@ -199,6 +199,11 @@ func (my *QueryTable) IndexDisposF(queryData []map[string]interface{}, logThread
 				}
 			}
 		}
+		// SPATIAL 索引（point/geometry 等空间类型）的 SUB_PART 是 MySQL 内部实现值（固定为 32），
+		// 不能用于 DDL 前缀长度，否则生成 location(32) 会触发 Error 1089。
+		if isSpatialColumnType(columnType) {
+			subPartVal = 0
+		}
 		subPartStr := strconv.Itoa(subPartVal)
 
 		// 初始化map
@@ -364,4 +369,16 @@ func (my *QueryTable) TmpTableIndexColumnRowsCount(db *sql.DB, logThreadSeq int6
 	global.Wlog.Debug(logMsg)
 	defer dispos.SqlRows.Close()
 	return tmpTableCount, nil
+}
+
+// isSpatialColumnType 判断列类型是否为空间类型。
+// MySQL 对 SPATIAL KEY 的 SUB_PART 固定返回 32（内部实现值），不能用于 DDL 前缀长度。
+func isSpatialColumnType(columnType string) bool {
+	switch strings.ToLower(strings.TrimSpace(columnType)) {
+	case "point", "geometry", "linestring", "polygon",
+		"multipoint", "multilinestring", "multipolygon",
+		"geometrycollection", "geomcollection":
+		return true
+	}
+	return false
 }
