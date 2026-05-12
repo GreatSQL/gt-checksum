@@ -121,7 +121,7 @@ ALTER TABLE testbin ADD INDEX idx_testbin_1(f1);
 INSERT INTO testbin(f1,f2,f3,f4,f5,f6,f7) VALUES('a','abc','abcd.1234','01010101','0x9023123123','hello gt-checksum','hello gt-checksum');
 
 -- 测试SPATIAL KEY
-/*!80003 DROP TABLE IF EXISTS testbin */;
+/*!80003 DROP TABLE IF EXISTS testspatial */;
 /*!80003 CREATE TABLE `testspatial` (
   `id` INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
   `poi_name` VARCHAR(100) NOT NULL,
