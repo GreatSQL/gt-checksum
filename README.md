@@ -2,7 +2,7 @@
 [![](https://img.shields.io/badge/GreatSQL-论坛-brightgreen.svg)](https://greatsql.cn/forum.php)
 [![](https://img.shields.io/badge/GreatSQL-博客-brightgreen.svg)](https://greatsql.cn/home.php?mod=space&uid=10&do=blog&view=me&from=space)
 [![](https://img.shields.io/badge/License-Apache_v2.0-blue.svg)](https://gitee.com/GreatSQL/gt-checksum/blob/master/LICENSE)
-[![](https://img.shields.io/badge/release-3.0.0-blue.svg)](https://gitee.com/GreatSQL/gt-checksum/releases)
+[![](https://img.shields.io/badge/release-4.0.0-blue.svg)](https://gitee.com/GreatSQL/gt-checksum/releases)
 
 # gt-checksum
 **gt-checksum** 是GreatSQL社区开源的数据库校验及修复工具，支持 MySQL-family（MySQL/Percona/GreatSQL/MariaDB等）、Oracle 等主流数据库。
@@ -13,7 +13,7 @@ MySQL DBA经常使用 **pt-table-checksum** 和 **pt-table-sync** 进行数据�
 
 因此，我们开发了 **gt-checksum** 工具，旨在支持更多业务场景并解决现有痛点。
 
-## v3.0.0 关键变化
+## v4.0.0 关键变化
 
 - **[功能新增]** 新增 `requirePK` 参数，支持在 struct 模式下为无主键表自动添加 `my_row_id` 不可见自增聚集索引列，主要用于 MySQL 单机实例迁移到 MGR 环境。
 - **[功能新增]** repairDB 工具新增预执行报告功能，执行前自动展示修复 SQL 统计信息（文件数量、影响行数、预估 binlog 大小等）。
@@ -97,7 +97,7 @@ gt-checksum is reading configuration files
 
 ```bash
 $  gt-checksum -v
-gt-checksum version 3.0.0
+gt-checksum version 4.0.0
 ```
 
 - 查看使用帮助
