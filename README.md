@@ -39,7 +39,7 @@ MySQL DBA经常使用 **pt-table-checksum** 和 **pt-table-sync** 进行数据�
 7. **MariaDB迁移到MySQL 8.0/8.4**：在 `MariaDB 10.x+ -> MySQL 8.0/8.4` 的迁移场景中，当前支持全部四种 `checkObject` 模式（`data`/`struct`/`routine`/`trigger`）的校验与修复。
 8. **MariaDB实例间升级校验**：在 `MariaDB -> MariaDB` 的同序列或升级迁移场景中，当前支持 `data`、`struct`、`routine`、`trigger` 四种模式；支持升级方向，不支持 downgrade。
 
-## 版本支持状态
+## 版本策略
 
 gt-checksum 采用**滚动发布**策略，官方仅维护最新发布版本。
 
@@ -58,9 +58,14 @@ gt-checksum 采用**滚动发布**策略，官方仅维护最新发布版本。
 
 ## Roadmap
 
-| 版本系列 | 目标版本 | 状态 | 方向 |
-|---------|---------|------|------|
-| v4.0.x | — | 规划中（需求收集中） | [欢迎提交需求issue](https://gitee.com/GreatSQL/gt-checksum/issues) |
+1. 支持修复回滚；
+2. 支持自定义数据类型映射；
+3. 支持全量+增量校验；
+4. 支持修复时临时中断后继续执行；
+5. 支持 SSL 连接；
+6. 其他。
+
+[更多产品建议和需求欢迎提交 issue](https://gitee.com/GreatSQL/gt-checksum/issues)。
 
 ## 下载
 
@@ -92,7 +97,7 @@ gt-checksum is reading configuration files
 
 ```bash
 $  gt-checksum -v
-gt-checksum version 1.3.0
+gt-checksum version 3.0.0
 ```
 
 - 查看使用帮助
