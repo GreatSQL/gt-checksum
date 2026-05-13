@@ -1,4 +1,4 @@
-package main
+package inputArg
 
 import (
 	"crypto/tls"
@@ -10,93 +10,13 @@ import (
 	"github.com/go-sql-driver/mysql"
 )
 
-// Global variables
-var (
-	config Config
-)
-
-// parseConfig parses the configuration file
-func parseConfig(confFile string) error {
-	content, err := os.ReadFile(confFile)
-	if err != nil {
-		return fmt.Errorf("Failed to read config file: %v", err)
-	}
-
-	logbinSet := false
-	lines := strings.Split(string(content), "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, ";") || line == "" {
-			continue
-		}
-
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) != 2 {
-			continue
-		}
-
-		key := strings.TrimSpace(parts[0])
-		value := strings.TrimSpace(parts[1])
-
-		switch key {
-		case "dstDSN":
-			config.DstDSN = value
-		case "parallelThds":
-			fmt.Sscanf(value, "%d", &config.ParallelThds)
-		case "fixFileDir":
-			config.FixFileDir = value
-		case "logbin":
-			logbinSet = true
-			switch strings.ToUpper(value) {
-			case "OFF":
-				config.LogBin = false
-			case "ON":
-				config.LogBin = true
-			default:
-				return fmt.Errorf("invalid value for logbin: %q (must be ON or OFF)", value)
-			}
-		case "resultFile":
-			config.ResultFile = value
-		case "dstSslCa":
-			config.SslCa = value
-		case "dstSslCert":
-			config.SslCert = value
-		case "dstSslKey":
-			config.SslKey = value
-		case "dstSslMode":
-			config.SslMode = strings.ToUpper(strings.TrimSpace(value))
-		}
-	}
-
-	if config.ParallelThds <= 0 {
-		config.ParallelThds = 4
-	}
-	if config.FixFileDir == "" {
-		config.FixFileDir = "./fixsql"
-	}
-	if !logbinSet {
-		config.LogBin = true // default: keep sql_log_bin ON
-	}
-	config.LogFile = "repairDB.log"
-
-	if config.DstDSN == "" {
-		return fmt.Errorf("Missing dstDSN parameter in config file")
-	}
-
-	return nil
-}
-
-// parseDSN extracts the raw DSN from the "mysql|..." prefixed format
-func parseDSN(dsn string) string {
-	parts := strings.Split(dsn, "|")
-	if len(parts) != 2 {
-		return dsn
-	}
-	return parts[1]
-}
-
-// setupSSLConfig configures TLS for repairDB and returns the tls parameter value for DSN
-func setupSSLConfig(caFile, certFile, keyFile, mode string) (string, error) {
+// setupSSLConfig 配置 TLS 并返回 DSN 中使用的 tls 参数值
+// caFile: CA 证书 PEM 文件路径
+// certFile: 客户端证书 PEM 文件路径
+// keyFile: 客户端密钥 PEM 文件路径
+// mode: SSL 模式 (DISABLED, PREFERRED, REQUIRED, VERIFY_CA, VERIFY_IDENTITY)
+// tlsKey: 注册到 mysql 驱动的 TLS 配置名称
+func setupSSLConfig(caFile, certFile, keyFile, mode, tlsKey string) (string, error) {
 	mode = strings.ToUpper(strings.TrimSpace(mode))
 
 	// SSL 模式白名单校验
@@ -108,44 +28,44 @@ func setupSSLConfig(caFile, certFile, keyFile, mode string) (string, error) {
 		return "", fmt.Errorf("invalid SSL mode: %q (must be DISABLED, PREFERRED, REQUIRED, VERIFY_CA, or VERIFY_IDENTITY)", mode)
 	}
 
-	// DISABLED mode
+	// DISABLED 模式：禁用 SSL
 	if mode == "DISABLED" {
 		return "false", nil
 	}
 
-	// PREFERRED mode without certificates
+	// PREFERRED 模式：优先使用 SSL，无证书时使用 preferred
 	if mode == "PREFERRED" && caFile == "" && certFile == "" && keyFile == "" {
 		return "preferred", nil
 	}
 
-	// REQUIRED mode without certificates
+	// REQUIRED 模式：必须 SSL，但不验证证书
 	if mode == "REQUIRED" && caFile == "" && certFile == "" && keyFile == "" {
-		// InsecureSkipVerify=true is the design intent for REQUIRED: encryption only, no cert verification
+		// InsecureSkipVerify=true 是 REQUIRED 模式的设计意图：只要求加密，不验证证书
 		tlsCfg := &tls.Config{
 			InsecureSkipVerify: true,
 		}
-		if err := mysql.RegisterTLSConfig("repairDB-dst", tlsCfg); err != nil {
+		if err := mysql.RegisterTLSConfig(tlsKey, tlsCfg); err != nil {
 			return "", fmt.Errorf("failed to register TLS config: %v", err)
 		}
-		return "repairDB-dst", nil
+		return tlsKey, nil
 	}
 
-	// VERIFY_CA or VERIFY_IDENTITY mode
+	// VERIFY_CA 或 VERIFY_IDENTITY 模式：需要加载证书
 	if caFile == "" {
-		return "", fmt.Errorf("SSL mode %s requires CA certificate file (dstSslCa)", mode)
+		return "", fmt.Errorf("SSL mode %s requires CA certificate file (sslCa)", mode)
 	}
 
-	// Validate client cert/key pairing
+	// 验证客户端证书配对：只提供其中一个时报错
 	if (certFile != "" && keyFile == "") || (certFile == "" && keyFile != "") {
 		return "", fmt.Errorf("both sslCert and sslKey must be provided together (got cert=%q, key=%q)", certFile, keyFile)
 	}
 
-	// Verify file existence
+	// 验证文件存在性
 	if _, err := os.Stat(caFile); os.IsNotExist(err) {
 		return "", fmt.Errorf("CA certificate file not found: %s", caFile)
 	}
 
-	// Load CA certificate
+	// 加载 CA 证书
 	caCert, err := os.ReadFile(caFile)
 	if err != nil {
 		return "", fmt.Errorf("failed to read CA certificate file %s: %v", caFile, err)
@@ -155,14 +75,14 @@ func setupSSLConfig(caFile, certFile, keyFile, mode string) (string, error) {
 		return "", fmt.Errorf("failed to append CA certificate from %s", caFile)
 	}
 
-	// Build TLS config
+	// 构建 TLS 配置
 	tlsCfg := &tls.Config{
 		RootCAs: rootCertPool,
 	}
 
-	// VERIFY_CA mode: verify certificate chain only, skip hostname verification
-	// go-sql-driver/mysql auto-sets ServerName from DSN, causing Go to verify hostname by default
-	// Use InsecureSkipVerify=true + VerifyPeerCertificate callback for chain-only verification
+	// VERIFY_CA 模式：仅验证证书链，不验证主机名
+	// go-sql-driver/mysql 会自动设置 ServerName，导致 Go 默认行为同时验证证书链和主机名
+	// 通过 InsecureSkipVerify=true + VerifyPeerCertificate 回调实现仅验证证书链
 	if mode == "VERIFY_CA" {
 		tlsCfg.InsecureSkipVerify = true
 		tlsCfg.VerifyPeerCertificate = func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
@@ -174,6 +94,7 @@ func setupSSLConfig(caFile, certFile, keyFile, mode string) (string, error) {
 				}
 				certs[i] = cert
 			}
+			// 验证证书链
 			intermediates := x509.NewCertPool()
 			for _, cert := range certs[1:] {
 				intermediates.AddCert(cert)
@@ -188,7 +109,7 @@ func setupSSLConfig(caFile, certFile, keyFile, mode string) (string, error) {
 		}
 	}
 
-	// Load client certificate if provided
+	// 如果提供了客户端证书，加载它
 	if certFile != "" && keyFile != "" {
 		if _, err := os.Stat(certFile); os.IsNotExist(err) {
 			return "", fmt.Errorf("client certificate file not found: %s", certFile)
@@ -203,24 +124,28 @@ func setupSSLConfig(caFile, certFile, keyFile, mode string) (string, error) {
 		tlsCfg.Certificates = []tls.Certificate{clientCert}
 	}
 
-	// VERIFY_IDENTITY mode: verify cert chain + hostname
-	// go-sql-driver/mysql auto-sets ServerName, Go default TLS behavior handles both
+	// VERIFY_IDENTITY 模式：验证证书链和服务端身份（主机名）
+	// go-sql-driver/mysql 自动设置 ServerName，Go 默认 TLS 行为会同时验证证书链和主机名
+	// 不需要额外配置
 
-	// Register TLS config
-	if err := mysql.RegisterTLSConfig("repairDB-dst", tlsCfg); err != nil {
+	// 注册 TLS 配置
+	if err := mysql.RegisterTLSConfig(tlsKey, tlsCfg); err != nil {
 		return "", fmt.Errorf("failed to register TLS config: %v", err)
 	}
 
-	return "repairDB-dst", nil
+	return tlsKey, nil
 }
 
-// appendTLSToDSN appends TLS parameter to DSN string
+// appendTLSToDSN 将 TLS 参数追加到 DSN 字符串中
+// dsn: 原始 DSN 字符串
+// tlsValue: TLS 参数值 (false, preferred, 或自定义配置名)
 func appendTLSToDSN(dsn, tlsValue string) string {
+	// 如果 tlsValue 为空或 false，不修改 DSN
 	if tlsValue == "" || tlsValue == "false" {
 		return dsn
 	}
 
-	// Check if DSN already has an independent tls= parameter in query string
+	// 检查查询参数中是否存在独立的 tls= 参数
 	hasTLSParam := false
 	if strings.Contains(dsn, "?") {
 		queryPart := dsn[strings.Index(dsn, "?")+1:]
@@ -233,9 +158,11 @@ func appendTLSToDSN(dsn, tlsValue string) string {
 	}
 
 	if hasTLSParam {
+		// 替换现有的 tls 参数
 		parts := strings.SplitN(dsn, "?", 2)
 		base := parts[0]
 		query := parts[1]
+		// 重新构建查询字符串，替换 tls 参数
 		params := strings.Split(query, "&")
 		var newParams []string
 		for _, param := range params {
@@ -247,6 +174,7 @@ func appendTLSToDSN(dsn, tlsValue string) string {
 		return fmt.Sprintf("%s?%s", base, strings.Join(newParams, "&"))
 	}
 
+	// 追加 tls 参数
 	if strings.Contains(dsn, "?") {
 		return fmt.Sprintf("%s&tls=%s", dsn, tlsValue)
 	}

@@ -168,7 +168,22 @@ func run() (err error) {
 
 	startTime := time.Now()
 
+	// SSL configuration
 	dsn := parseDSN(config.DstDSN)
+	hasSSL := config.SslMode != "" || config.SslCa != "" || config.SslCert != "" || config.SslKey != ""
+	if hasSSL {
+		sslMode := config.SslMode
+		if sslMode == "" {
+			sslMode = "PREFERRED"
+		}
+		tlsValue, err := setupSSLConfig(config.SslCa, config.SslCert, config.SslKey, sslMode)
+		if err != nil {
+			return fmt.Errorf("SSL configuration error: %v", err)
+		}
+		dsn = appendTLSToDSN(dsn, tlsValue)
+		log.Printf("SSL mode: %s\n", sslMode)
+	}
+
 	var allResults []FileExecResult
 
 	for _, stage := range stages {

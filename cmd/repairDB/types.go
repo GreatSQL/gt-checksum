@@ -13,6 +13,11 @@ type Config struct {
 	LogFile      string
 	LogBin       bool   // true = keep sql_log_bin ON (default); false = SET sql_log_bin=0 per connection
 	ResultFile   string // custom output path for CSV report, empty = use default
+	// SSL fields
+	SslCa   string
+	SslCert string
+	SslKey  string
+	SslMode string
 }
 
 // FixSQLStatistics stores statistics about fix SQL files

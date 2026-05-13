@@ -20,6 +20,17 @@ type FirstLevel struct {
 	Logs   *ini.Section
 	Repair *ini.Section
 }
+type SSLConfigS struct {
+	SrcSslCa   string
+	SrcSslCert string
+	SrcSslKey  string
+	SrcSslMode string
+	DstSslCa   string
+	DstSslCert string
+	DstSslKey  string
+	DstSslMode string
+}
+
 type DSNsS struct {
 	SrcDSN    string
 	DstDSN    string
@@ -27,6 +38,7 @@ type DSNsS struct {
 	SrcJdbc   string
 	DestDrive string
 	DestJdbc  string
+	SSL       SSLConfigS
 }
 type SchemaS struct {
 	Tables                  string

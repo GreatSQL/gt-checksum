@@ -107,6 +107,52 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 		rc.SecondaryL.DsnsV.DestJdbc = rc.SecondaryL.DsnsV.DstDSN
 	}
 
+	// SSL 参数读取
+	srcSslCa := getLastConfigValue("srcSslCa")
+	srcSslCert := getLastConfigValue("srcSslCert")
+	srcSslKey := getLastConfigValue("srcSslKey")
+	srcSslMode := strings.ToUpper(strings.TrimSpace(getLastConfigValue("srcSslMode")))
+	dstSslCa := getLastConfigValue("dstSslCa")
+	dstSslCert := getLastConfigValue("dstSslCert")
+	dstSslKey := getLastConfigValue("dstSslKey")
+	dstSslMode := strings.ToUpper(strings.TrimSpace(getLastConfigValue("dstSslMode")))
+
+	// 存储 SSL 配置到结构体
+	rc.SecondaryL.DsnsV.SSL.SrcSslCa = srcSslCa
+	rc.SecondaryL.DsnsV.SSL.SrcSslCert = srcSslCert
+	rc.SecondaryL.DsnsV.SSL.SrcSslKey = srcSslKey
+	rc.SecondaryL.DsnsV.SSL.SrcSslMode = srcSslMode
+	rc.SecondaryL.DsnsV.SSL.DstSslCa = dstSslCa
+	rc.SecondaryL.DsnsV.SSL.DstSslCert = dstSslCert
+	rc.SecondaryL.DsnsV.SSL.DstSslKey = dstSslKey
+	rc.SecondaryL.DsnsV.SSL.DstSslMode = dstSslMode
+
+	// 检查是否有任何源端 SSL 配置
+	hasSrcSSL := srcSslCa != "" || srcSslCert != "" || srcSslKey != "" || srcSslMode != ""
+	if hasSrcSSL && rc.SecondaryL.DsnsV.SrcDrive == "mysql" {
+		if srcSslMode == "" {
+			srcSslMode = "PREFERRED"
+		}
+		tlsValue, err := setupSSLConfig(srcSslCa, srcSslCert, srcSslKey, srcSslMode, "gt-checksum-src")
+		if err != nil {
+			rc.getErr("Source SSL configuration error", err)
+		}
+		rc.SecondaryL.DsnsV.SrcJdbc = appendTLSToDSN(rc.SecondaryL.DsnsV.SrcJdbc, tlsValue)
+	}
+
+	// 检查是否有任何目标端 SSL 配置
+	hasDstSSL := dstSslCa != "" || dstSslCert != "" || dstSslKey != "" || dstSslMode != ""
+	if hasDstSSL && rc.SecondaryL.DsnsV.DestDrive == "mysql" {
+		if dstSslMode == "" {
+			dstSslMode = "PREFERRED"
+		}
+		tlsValue, err := setupSSLConfig(dstSslCa, dstSslCert, dstSslKey, dstSslMode, "gt-checksum-dst")
+		if err != nil {
+			rc.getErr("Destination SSL configuration error", err)
+		}
+		rc.SecondaryL.DsnsV.DestJdbc = appendTLSToDSN(rc.SecondaryL.DsnsV.DestJdbc, tlsValue)
+	}
+
 	//校验库表设置
 	tablesValue := getLastConfigValue("tables")
 	if tablesValue != "" {
