@@ -188,7 +188,7 @@ func mapOracleIntegerPrecision(p int) string {
 		return "mediumint"
 	case p <= 9:
 		return "int"
-	case p <= 18:
+	case p <= 19:
 		return "bigint"
 	default:
 		return fmt.Sprintf("decimal(%d,0)", p)
@@ -396,6 +396,9 @@ func areOracleToMySQLTypesEquivalent(srcNormalized, dstNormalized string) bool {
 		{"decimal", "decimal(10,0)"},
 		// datetime precision
 		{"datetime", "datetime(0)"},
+		// BIT(1) ↔ TINYINT(1) — Oracle NUMBER(1) maps to tinyint(1),
+		// but some MySQL targets use BIT(1) for boolean columns
+		{"tinyint(1)", "bit(1)"},
 	}
 
 	for _, eq := range equivalences {
@@ -417,7 +420,7 @@ func areOracleToMySQLTypesEquivalent(srcNormalized, dstNormalized string) bool {
 
 // stripMySQLIntDisplayWidth removes display width from MySQL integer types for comparison.
 func stripMySQLIntDisplayWidth(t string) string {
-	intTypes := []string{"tinyint", "smallint", "mediumint", "int", "integer", "bigint"}
+	intTypes := []string{"tinyint", "smallint", "mediumint", "int", "integer", "bigint", "bit"}
 	lower := strings.ToLower(t)
 	for _, it := range intTypes {
 		if strings.HasPrefix(lower, it+"(") {

@@ -34,7 +34,7 @@ func TestNormalizeOracleColumnType(t *testing.T) {
 		{"NUMBER(9,0)", "int"},
 		{"NUMBER(10,0)", "bigint"},
 		{"NUMBER(18,0)", "bigint"},
-		{"NUMBER(19,0)", "decimal(19,0)"},
+		{"NUMBER(19,0)", "bigint"},
 		{"NUMBER(38,0)", "decimal(38,0)"},
 
 		// NUMBER(p) without scale
