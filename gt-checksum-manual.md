@@ -523,6 +523,57 @@ SET character_set_client = DEFAULT;
 | `datafix` | `file` / `table` | `file` | `checkObject=struct` 场景建议固定为 `file`，先生成 fix SQL 供 DBA 审查，再使用 `repairDB` 回放。 |
 | `requirePK` | `ON` / `OFF` | `OFF` | 仅在 `checkObject=struct` 模式下生效。`ON` 时为无主键表自动添加 `my_row_id` 隐藏列（需同时满足：无主键、无 NOT NULL 唯一索引、目标端未启用 `sql_generate_invisible_primary_key`）。适用于 MySQL 单机实例迁移到 MGR 环境的场景。 |
 
+### SSL 连接参数
+
+v4.0.0 新增 SSL 加密连接支持，源端和目标端可独立配置。所有 SSL 参数均为可选，未配置时行为与之前版本完全一致（向后兼容）。
+
+| 参数名 | 可选值 | 默认值 | 说明 |
+|---|---|---|---|
+| `srcSslCa` | 文件路径 | 空 | 源端 CA 证书文件路径 |
+| `srcSslCert` | 文件路径 | 空 | 源端客户端证书文件路径 |
+| `srcSslKey` | 文件路径 | 空 | 源端客户端密钥文件路径 |
+| `srcSslMode` | `DISABLED` / `PREFERRED` / `REQUIRED` / `VERIFY_CA` / `VERIFY_IDENTITY` | `PREFERRED` | 源端 SSL 模式 |
+| `dstSslCa` | 文件路径 | 空 | 目标端 CA 证书文件路径 |
+| `dstSslCert` | 文件路径 | 空 | 目标端客户端证书文件路径 |
+| `dstSslKey` | 文件路径 | 空 | 目标端客户端密钥文件路径 |
+| `dstSslMode` | `DISABLED` / `PREFERRED` / `REQUIRED` / `VERIFY_CA` / `VERIFY_IDENTITY` | `PREFERRED` | 目标端 SSL 模式 |
+
+**SSL 模式说明**：
+
+| 模式 | 说明 |
+|---|---|
+| `DISABLED` | 禁用 SSL，不加密连接 |
+| `PREFERRED` | 优先使用 SSL，服务端不支持时回退到非加密连接（默认值） |
+| `REQUIRED` | 必须使用 SSL 加密，但不验证证书 |
+| `VERIFY_CA` | 验证 CA 证书链，需要设置 `sslCa` 参数 |
+| `VERIFY_IDENTITY` | 验证 CA 证书和服务端身份（主机名），需要设置 `sslCa` 参数 |
+
+**使用示例**：
+
+最小配置（仅要求加密，不验证证书）：
+```ini
+srcSslMode = REQUIRED
+dstSslMode = REQUIRED
+```
+
+完整配置（验证证书）：
+```ini
+srcSslCa = /path/to/ca.pem
+srcSslCert = /path/to/client-cert.pem
+srcSslKey = /path/to/client-key.pem
+srcSslMode = VERIFY_CA
+dstSslCa = /path/to/ca.pem
+dstSslCert = /path/to/client-cert.pem
+dstSslKey = /path/to/client-key.pem
+dstSslMode = VERIFY_CA
+```
+
+**注意事项**：
+1. SSL 参数仅对 MySQL-family 数据源生效，Oracle 数据源不支持此配置
+2. 设置 `VERIFY_CA` 或 `VERIFY_IDENTITY` 模式时，必须提供 `sslCa` 参数
+3. 使用客户端证书认证时，`sslCert` 和 `sslKey` 必须同时配置
+4. 所有证书文件必须存在且可读，否则启动时报错
+
 ### 推荐配置示例
 
 以下示例表示执行 `MySQL 5.7 -> MySQL 8.0` 的数据校验，并要求两端统一使用 `utf8mb4`：
@@ -1020,6 +1071,10 @@ CSV 文件使用 UTF-8 BOM 编码，可直接用 Excel 或 WPS 打开，无需�
 | fixFileDir | string | fixsql | 存放修复SQL文件的目录 |
 | logbin | string | ON | 控制修复时是否写入 binlog；`OFF` 时每条连接执行 `SET sql_log_bin=0`，需要 SUPER 或 SESSION_VARIABLES_ADMIN 权限 |
 | resultFile | string | 空 | 自定义 CSV 报告输出路径；留空时自动使用默认路径格式 `result/repairDB-result-<timestamp>.csv`；命令行参数 `--result-file` 优先级高于此配置项 |
+| dstSslCa | string | 空 | 目标端 CA 证书文件路径（v4.0.0 新增） |
+| dstSslCert | string | 空 | 目标端客户端证书文件路径（v4.0.0 新增） |
+| dstSslKey | string | 空 | 目标端客户端密钥文件路径（v4.0.0 新增） |
+| dstSslMode | string | PREFERRED | 目标端 SSL 模式：`DISABLED`/`PREFERRED`/`REQUIRED`/`VERIFY_CA`/`VERIFY_IDENTITY`（v4.0.0 新增） |
 
 ### 执行流程
 
