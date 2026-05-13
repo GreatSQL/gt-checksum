@@ -16,6 +16,7 @@ MySQL DBA经常使用 **pt-table-checksum** 和 **pt-table-sync** 进行数据�
 ## v4.0.0 关键变化
 
 - **[功能新增]** 新增 SSL 加密连接支持，源端和目标端可独立配置 SSL 参数，支持五种模式（`DISABLED/PREFERRED/REQUIRED/VERIFY_CA/VERIFY_IDENTITY`）。
+- **[问题修复]** 修复 Oracle NUMBER(19,0) 类型映射精度阈值，并新增 tinyint(1) ↔ bit(1) 类型等价映射。
 
 更多详细变化详见 [CHANGELOG](./CHANGELOG.md)。
 

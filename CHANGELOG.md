@@ -3,3 +3,4 @@
 - [功能新增]: repairDB 工具新增目标端 SSL 连接配置支持（dstSslCa/dstSslCert/dstSslKey/dstSslMode）。
 - [功能优化]: refactor(repairDB): 拆分 main.go 为多文件模块化结构（config/executor/lock/plan/sql_parser/stage/stats/types）。
 - [功能优化]: refactor(oracle_random_data_load): 拆分 main.go 为多文件模块化结构（config/generator/schema/types/util/worker）。
+- [问题修复]: 修复 Oracle NUMBER(19,0) 类型映射精度阈值（从 18 调整为 19），并新增 tinyint(1) ↔ bit(1) 类型等价映射。
