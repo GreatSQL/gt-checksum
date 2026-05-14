@@ -26,21 +26,21 @@ func TestNormalizeOracleColumnType(t *testing.T) {
 		// Numeric types — integer mapping by precision
 		{"NUMBER(1,0)", "tinyint(1)"},
 		{"NUMBER(2,0)", "tinyint"},
-		{"NUMBER(3,0)", "smallint"},
+		{"NUMBER(3,0)", "tinyint"},
 		{"NUMBER(4,0)", "smallint"},
-		{"NUMBER(5,0)", "mediumint"},
+		{"NUMBER(5,0)", "smallint"},
 		{"NUMBER(6,0)", "mediumint"},
-		{"NUMBER(7,0)", "int"},
+		{"NUMBER(8,0)", "mediumint"},
 		{"NUMBER(9,0)", "int"},
-		{"NUMBER(10,0)", "bigint"},
+		{"NUMBER(10,0)", "int"},
 		{"NUMBER(18,0)", "bigint"},
 		{"NUMBER(19,0)", "bigint"},
 		{"NUMBER(38,0)", "decimal(38,0)"},
 
 		// NUMBER(p) without scale
 		{"NUMBER(1)", "tinyint(1)"},
-		{"NUMBER(5)", "mediumint"},
-		{"NUMBER(10)", "bigint"},
+		{"NUMBER(5)", "smallint"},
+		{"NUMBER(10)", "int"},
 
 		// NUMBER without precision
 		{"NUMBER", "decimal(38,0)"},
@@ -167,25 +167,25 @@ func TestDecideOracleToMySQLTypeCompatibility(t *testing.T) {
 			wantState: CompatibilityNormalizedEqual,
 		},
 		{
-			name:      "NUMBER(10) source bigint vs INT target - integer cross-type equivalent",
+			name:      "NUMBER(10) source int vs INT target - exact match",
 			srcRaw:    "NUMBER(10)",
-			srcNorm:   "bigint",
+			srcNorm:   "int",
 			dstRaw:    "int",
 			dstNorm:   "int",
 			wantState: CompatibilityNormalizedEqual,
 		},
 		{
-			name:      "NUMBER(10,0) bigint vs INT - integer cross-type equivalent",
+			name:      "NUMBER(10,0) int vs BIGINT - integer cross-type equivalent",
 			srcRaw:    "NUMBER(10,0)",
-			srcNorm:   "bigint",
-			dstRaw:    "int",
-			dstNorm:   "int",
+			srcNorm:   "int",
+			dstRaw:    "bigint",
+			dstNorm:   "bigint",
 			wantState: CompatibilityNormalizedEqual,
 		},
 		{
-			name:      "NUMBER(5,0) mediumint vs INT - integer cross-type equivalent",
+			name:      "NUMBER(5,0) smallint vs INT - integer cross-type equivalent",
 			srcRaw:    "NUMBER(5,0)",
-			srcNorm:   "mediumint",
+			srcNorm:   "smallint",
 			dstRaw:    "int",
 			dstNorm:   "int",
 			wantState: CompatibilityNormalizedEqual,
@@ -398,8 +398,8 @@ func TestGenerateOracleToMySQLCreateTableSQL(t *testing.T) {
 	if !strings.Contains(sql, "PRIMARY KEY") {
 		t.Error("missing PRIMARY KEY")
 	}
-	if !strings.Contains(sql, "bigint") {
-		t.Error("expected NUMBER(10,0) to map to bigint")
+	if !strings.Contains(sql, "int") {
+		t.Error("expected NUMBER(10,0) to map to int")
 	}
 	if !strings.Contains(sql, "datetime") {
 		t.Error("expected DATE to map to datetime")

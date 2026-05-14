@@ -175,18 +175,25 @@ func NormalizeOracleColumnType(oracleType string) string {
 }
 
 // mapOracleIntegerPrecision maps NUMBER(p,0) to the appropriate MySQL integer type.
+// Boundaries are based on MySQL integer type ranges:
+//
+//	tinyint:   -128 to 127                          (3 digits)
+//	smallint:  -32768 to 32767                       (5 digits)
+//	mediumint: -8388608 to 8388607                   (8 digits)
+//	int:       -2147483648 to 2147483647             (10 digits)
+//	bigint:    -9223372036854775808 to 9223372036854775807 (19 digits)
 func mapOracleIntegerPrecision(p int) string {
 	switch {
-	case p <= 2:
+	case p <= 3:
 		if p == 1 {
 			return "tinyint(1)"
 		}
 		return "tinyint"
-	case p <= 4:
+	case p <= 5:
 		return "smallint"
-	case p <= 6:
+	case p <= 8:
 		return "mediumint"
-	case p <= 9:
+	case p <= 10:
 		return "int"
 	case p <= 19:
 		return "bigint"
