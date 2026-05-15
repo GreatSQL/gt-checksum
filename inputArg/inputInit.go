@@ -91,6 +91,11 @@ type RepairS struct {
 	// OFF = advisory-only (default)
 	// Only valid when the columns parameter is set.
 	ExtraRowsSyncToSource string
+	// GenRollSQL controls rollback SQL generation: ON/OFF/comma-separated table list (supports % wildcard).
+	// Default: OFF
+	GenRollSQL    string
+	MaxRollRowNum int    // skip rollback SQL when per-table diff rows exceed this; default 10000
+	RollFileDir   string // directory for rollback SQL files; default "rollsql"
 }
 type SecondaryLevel struct {
 	DsnsV   DSNsS

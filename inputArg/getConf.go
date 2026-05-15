@@ -557,6 +557,58 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 			os.Exit(1)
 		}
 	}
+
+	// genRollSQL / maxRollRowNum / rollFileDir
+	genRollSQLValue := getLastConfigValue("genRollSQL")
+	if genRollSQLValue != "" {
+		trimmed := strings.TrimSpace(genRollSQLValue)
+		upper := strings.ToUpper(trimmed)
+		if upper == "ON" || upper == "OFF" {
+			rc.SecondaryL.RepairV.GenRollSQL = upper
+		} else {
+			// 自定义表名列表保留原始大小写，避免 path.Match 大小写敏感匹配失败
+			rc.SecondaryL.RepairV.GenRollSQL = trimmed
+		}
+	} else {
+		rc.SecondaryL.RepairV.GenRollSQL = "OFF"
+	}
+
+	maxRollRowNumValue := getLastConfigValue("maxRollRowNum")
+	if maxRollRowNumValue != "" {
+		if v, err := strconv.Atoi(maxRollRowNumValue); err == nil && v > 0 {
+			rc.SecondaryL.RepairV.MaxRollRowNum = v
+		} else {
+			rc.SecondaryL.RepairV.MaxRollRowNum = 10000
+		}
+	} else {
+		rc.SecondaryL.RepairV.MaxRollRowNum = 10000
+	}
+
+	if rc.SecondaryL.RepairV.Datafix == "file" && rc.SecondaryL.RepairV.GenRollSQL != "OFF" {
+		rollFileDirValue := getLastConfigValue("rollFileDir")
+		if rollFileDirValue != "" {
+			rc.SecondaryL.RepairV.RollFileDir = rollFileDirValue
+		} else {
+			rc.SecondaryL.RepairV.RollFileDir = "rollsql"
+			fmt.Printf("Using default value '%s' for option rollFileDir\n", rc.SecondaryL.RepairV.RollFileDir)
+		}
+
+		if _, err := os.Stat(rc.SecondaryL.RepairV.RollFileDir); err == nil {
+			files, err := os.ReadDir(rc.SecondaryL.RepairV.RollFileDir)
+			if err == nil && len(files) > 0 {
+				fmt.Printf("Error: Directory '%s' already exists and is not empty\n", rc.SecondaryL.RepairV.RollFileDir)
+				os.Exit(1)
+			}
+		} else if os.IsNotExist(err) {
+			if err := os.MkdirAll(rc.SecondaryL.RepairV.RollFileDir, 0755); err != nil {
+				fmt.Printf("Error: Failed to create directory '%s': %v\n", rc.SecondaryL.RepairV.RollFileDir, err)
+				os.Exit(1)
+			}
+		} else {
+			fmt.Printf("Error: Failed to check directory '%s': %v\n", rc.SecondaryL.RepairV.RollFileDir, err)
+			os.Exit(1)
+		}
+	}
 }
 
 /*
