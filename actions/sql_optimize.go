@@ -3,6 +3,7 @@ package actions
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -256,6 +257,48 @@ func OptimizeInsertSqls(sqls []string, maxSqlSize int, fixTrxNum int) []string {
 	}
 
 	return optimizedSqls
+}
+
+// mergeDuplicateDeleteLimits 合并相同 WHERE 条件的多条 "DELETE ... LIMIT N;" 语句，
+// 将重复语句的 LIMIT 值累加为一条语句。用于无主键/唯一键表的回滚 DELETE 场景：
+// 源端有 N 条相同值的行需要回滚删除时，应生成 LIMIT N 而非 N 条 LIMIT 1。
+func mergeDuplicateDeleteLimits(sqls []string) []string {
+	if len(sqls) <= 1 {
+		return sqls
+	}
+
+	// 匹配 DELETE ... WHERE ... LIMIT N; 格式
+	limitPat := regexp.MustCompile(`(?i)^(DELETE\s+FROM\s+.+?\s+WHERE\s+.+?)\s+LIMIT\s+(\d+);$`)
+
+	var orderedBases []string
+	limitSums := make(map[string]int)
+	var nonLimitSqls []string
+
+	for _, sql := range sqls {
+		sqlTrim := strings.TrimSpace(sql)
+		m := limitPat.FindStringSubmatch(sqlTrim)
+		if len(m) != 3 {
+			nonLimitSqls = append(nonLimitSqls, sql)
+			continue
+		}
+		base := m[1]
+		n, err := strconv.Atoi(m[2])
+		if err != nil || n <= 0 {
+			nonLimitSqls = append(nonLimitSqls, sql)
+			continue
+		}
+		if _, exists := limitSums[base]; !exists {
+			orderedBases = append(orderedBases, base)
+		}
+		limitSums[base] += n
+	}
+
+	result := make([]string, 0, len(orderedBases)+len(nonLimitSqls))
+	for _, base := range orderedBases {
+		result = append(result, fmt.Sprintf("%s LIMIT %d;", base, limitSums[base]))
+	}
+	result = append(result, nonLimitSqls...)
+	return result
 }
 
 // parseInsertStatement 解析 INSERT 语句，提取 schema、table、columns 和 values

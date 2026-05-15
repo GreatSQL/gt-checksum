@@ -3,6 +3,7 @@ package actions
 import (
 	"fmt"
 	"gt-checksum/global"
+	"os"
 	"strings"
 	"sync"
 )
@@ -202,5 +203,137 @@ func detectFixSQLType(sql string) string {
 	if strings.HasPrefix(sqlTrim, "UPDATE") {
 		return "UPDATE"
 	}
+	if strings.HasPrefix(sqlTrim, "TRUNCATE") {
+		return "TRUNCATE"
+	}
 	return ""
+}
+
+// RollbackDispos consumes rollback SQL from rollCC and writes them to rollback SQL files.
+// It mirrors DataFixDispos but targets sp.rollSqlDir.
+// TRUNCATE statements are written directly to a dedicated file; INSERT/DELETE use rolling writers.
+func (sp *SchedulePlan) RollbackDispos(rollCC chanString, logThreadSeq int64) {
+	vlog := fmt.Sprintf("(%d) Writing rollback SQL for %s.%s", logThreadSeq, sp.schema, sp.table)
+	global.Wlog.Info(vlog)
+
+	maxFileSizeBytes := int64(sp.fixTrxSize) * 1024 * 1024
+	if maxFileSizeBytes <= 0 {
+		maxFileSizeBytes = 4 * 1024 * 1024
+	}
+	maxStmtPerFile := sp.fixTrxNum
+	if maxStmtPerFile <= 0 {
+		maxStmtPerFile = 1000
+	}
+	stageBatchStmt := maxStmtPerFile
+	stageBatchBytes := maxFileSizeBytes
+	if stageBatchBytes > 32*1024*1024 {
+		stageBatchBytes = 32 * 1024 * 1024
+	}
+
+	// 判断是否有主键或唯一索引，决定是否可以合并 DELETE 语句
+	isUniqueKey := strings.HasPrefix(sp.indexColumnType, "pri_") || strings.HasPrefix(sp.indexColumnType, "uni_")
+
+	// INSERT writer: rollback for DELETE fix (i.e. re-insert deleted rows)
+	insertWriter := sp.newRollbackSQLRollingWriter("INSERT", maxStmtPerFile, maxFileSizeBytes, logThreadSeq)
+	// DELETE writer: rollback for INSERT fix (i.e. delete inserted rows)
+	deleteWriter := sp.newRollbackSQLRollingWriter("DELETE", maxStmtPerFile, maxFileSizeBytes, logThreadSeq)
+	defer insertWriter.close()
+	defer deleteWriter.close()
+
+	// 批量收集和优化回滚 SQL
+	deleteBatch := make([]string, 0, stageBatchStmt)
+	insertBatch := make([]string, 0, stageBatchStmt)
+	var deleteBatchBytes, insertBatchBytes int64
+
+	processDeleteBatch := func(batch []string) error {
+		toProcess := batch
+		if !isUniqueKey {
+			// 无主键/唯一键表：合并相同 WHERE 条件的 DELETE LIMIT 语句，累加 LIMIT 值
+			toProcess = mergeDuplicateDeleteLimits(batch)
+		}
+		optimized := optimizeSqlStatements(toProcess, sp.fixTrxNum, isUniqueKey, sp.deleteSqlSize, sp.insertSqlSize)
+		if len(optimized) == 0 {
+			return nil
+		}
+		return deleteWriter.write(optimized)
+	}
+
+	processInsertBatch := func(batch []string) error {
+		optimized := optimizeSqlStatements(batch, sp.fixTrxNum, false, sp.deleteSqlSize, sp.insertSqlSize)
+		if len(optimized) == 0 {
+			return nil
+		}
+		return insertWriter.write(optimized)
+	}
+
+	flushDelete := func() {
+		if len(deleteBatch) == 0 {
+			return
+		}
+		if err := processDeleteBatch(deleteBatch); err != nil {
+			sp.getErr(fmt.Sprintf("Failed writing rollback DELETE for %s.%s", sp.schema, sp.table), err)
+		}
+		deleteBatch = deleteBatch[:0]
+		deleteBatchBytes = 0
+	}
+
+	flushInsert := func() {
+		if len(insertBatch) == 0 {
+			return
+		}
+		if err := processInsertBatch(insertBatch); err != nil {
+			sp.getErr(fmt.Sprintf("Failed writing rollback INSERT for %s.%s", sp.schema, sp.table), err)
+		}
+		insertBatch = insertBatch[:0]
+		insertBatchBytes = 0
+	}
+
+	var deleteCount, insertCount, truncateCount int
+
+	for v := range rollCC {
+		sqlType := detectFixSQLType(v)
+		sqlBytes := int64(len(v) + 1)
+		switch sqlType {
+		case "TRUNCATE":
+			// Write TRUNCATE to a dedicated file (one-shot, not rolling)
+			truncatePath := fmt.Sprintf("%s/table.%s.%s.rollback-TRUNCATE-1.sql",
+				sp.rollSqlDir,
+				fixFileNameEncode(func() string {
+					if sp.destSchema != "" {
+						return sp.destSchema
+					}
+					return sp.schema
+				}()),
+				fixFileNameEncode(sp.getDestTableName()))
+			f, err := os.OpenFile(truncatePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+			if err != nil {
+				sp.getErr(fmt.Sprintf("Failed to open rollback TRUNCATE file for %s.%s", sp.schema, sp.table), err)
+				continue
+			}
+			fmt.Fprintln(f, v)
+			f.Close()
+			truncateCount++
+		case "INSERT":
+			if len(insertBatch) > 0 && (len(insertBatch) >= stageBatchStmt || insertBatchBytes+sqlBytes > stageBatchBytes) {
+				flushInsert()
+			}
+			insertBatch = append(insertBatch, v)
+			insertBatchBytes += sqlBytes
+			insertCount++
+		case "DELETE":
+			if len(deleteBatch) > 0 && (len(deleteBatch) >= stageBatchStmt || deleteBatchBytes+sqlBytes > stageBatchBytes) {
+				flushDelete()
+			}
+			deleteBatch = append(deleteBatch, v)
+			deleteBatchBytes += sqlBytes
+			deleteCount++
+		}
+	}
+	flushDelete()
+	flushInsert()
+
+	if deleteCount > 0 || insertCount > 0 || truncateCount > 0 {
+		global.Wlog.Infof("(%d) Rollback SQL written for %s.%s: DELETE=%d, INSERT=%d, TRUNCATE=%d",
+			logThreadSeq, sp.schema, sp.table, deleteCount, insertCount, truncateCount)
+	}
 }

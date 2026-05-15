@@ -318,3 +318,28 @@ func processBatch(sqls []string, datafixType string, sfile *os.File, ddrive stri
 	global.Wlog.Debugf("DEBUG_BATCH_WRITE_%d: Wrote %d SQL statements to file, DELETE=%d, INSERT=%d\n",
 		logThreadSeq, len(finalSqls), len(sqls), len(finalSqls))
 }
+
+// newRollbackSQLRollingWriter creates a rolling writer for rollback SQL files.
+// sqlType is "INSERT" (rollback for DELETE fix) or "DELETE" (rollback for INSERT fix).
+// File naming: rollsql/table.schema.table.rollback-TYPE-seq.sql
+func (sp *SchedulePlan) newRollbackSQLRollingWriter(sqlType string, maxStmtPerFile int, maxFileSizeBytes int64, logThreadSeq int64) *sqlRollingWriter {
+	pathFunc := func(fileSeq int) (string, bool) {
+		fixSchema := sp.destSchema
+		if fixSchema == "" {
+			fixSchema = sp.schema
+		}
+		fixTable := sp.getDestTableName()
+		return fmt.Sprintf("%s/table.%s.%s.rollback-%s-%d.sql",
+			sp.rollSqlDir, fixFileNameEncode(fixSchema), fixFileNameEncode(fixTable), sqlType, fileSeq), false
+	}
+	return &sqlRollingWriter{
+		datafixType: sp.datafixType,
+		ddrive:      sp.ddrive,
+		djdbc:       sp.djdbc,
+		logThread:   logThreadSeq,
+		fixTrxNum:   sp.fixTrxNum,
+		maxStmt:     maxStmtPerFile,
+		maxBytes:    maxFileSizeBytes,
+		pathFunc:    pathFunc,
+	}
+}
