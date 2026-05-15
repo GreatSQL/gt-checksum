@@ -212,6 +212,11 @@ func escapeSQLString(str string) string {
 	return result.String()
 }
 
+// EscapeSQLString is the exported wrapper of escapeSQLString for use by the actions package.
+func EscapeSQLString(str string) string {
+	return escapeSQLString(str)
+}
+
 var mysqlDateTimePrefixPattern = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(\.\d{1,6})?`)
 var mysqlDateLiteralPattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 var mysqlTimeLiteralPattern = regexp.MustCompile(`^\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?$`)
@@ -357,6 +362,12 @@ func formatMySQLInsertLiteral(value, dataType string) string {
 		return fmt.Sprintf("0x%X", []byte(value))
 	}
 	return fmt.Sprintf("'%s'", escapeSQLString(value))
+}
+
+// FormatMySQLInsertLiteral is the exported wrapper of formatMySQLInsertLiteral
+// for use by the actions package (rollback SQL generation).
+func FormatMySQLInsertLiteral(value, dataType string) string {
+	return formatMySQLInsertLiteral(value, dataType)
 }
 
 func lookupColumnDataType(colData []map[string]string, columnName string) string {
