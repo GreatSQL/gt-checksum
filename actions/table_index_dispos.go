@@ -245,7 +245,7 @@ func (sp SchedulePlan) getDestTableName() string {
 /*
 处理有索引表的数据校验
 */
-func (sp SchedulePlan) doIndexDataCheck() {
+func (sp *SchedulePlan) doIndexDataCheck() {
 	queueDepth := sp.mqQueueDepth
 	if queueDepth > sp.concurrency*2 {
 		queueDepth = sp.concurrency * 2
@@ -404,8 +404,23 @@ func (sp SchedulePlan) doIndexDataCheck() {
 	go sp.queryTableSqlSeparate(sqlWhere, sourceSelectSql, destSelectSql, tableColumn, scheduleCount, logThreadSeq)
 	go sp.queryTableDataSeparate(sourceSelectSql, destSelectSql, diffQueryData, tableColumn, scheduleCount, logThreadSeq)
 
+	// 必须在 AbnormalDataDispos goroutine 启动之前设置 rollCC，
+	// 否则 goroutine 内部读取 sp.rollCC 时可能看到 nil（竞态）。
+	var rollDone chan struct{}
+	if matchRollSQLTarget(sp.genRollSQL, sp.schema, sp.table) && sp.datafixType == "file" {
+		rollCC := make(chanString, queueDepth)
+		sp.rollCC = rollCC
+		rollDone = make(chan struct{})
+		go func() {
+			sp.RollbackDispos(rollCC, logThreadSeq)
+			close(rollDone)
+		}()
+	}
 	go sp.AbnormalDataDispos(diffQueryData, fixSQL, logThreadSeq)
 	sp.DataFixDispos(fixSQL, logThreadSeq)
+	if rollDone != nil {
+		<-rollDone
+	}
 }
 
 // 辅助函数：计算绝对值

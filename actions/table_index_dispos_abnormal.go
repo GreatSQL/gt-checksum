@@ -47,6 +47,11 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 					vlog = fmt.Sprintf("(%d) Completed difference processing and repair statements for %s.%s", logThreadSeq, sp.schema, sp.table)
 					global.Wlog.Info(vlog)
 					close(cc)
+					// 关闭回滚 SQL channel，让 RollbackDispos goroutine 正常退出
+					if sp.rollCC != nil {
+						close(sp.rollCC)
+						sp.rollCC = nil
+					}
 					return
 				}
 			} else {
@@ -516,6 +521,16 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 												sp.getErr(fmt.Sprintf("dest: checksum table %s.%s generate UPDATE sql error (columns-mode).", c1.Schema, c1.Table), err)
 											} else if sqlstr != "" {
 												cc <- sqlstr
+												// 为 UPDATE fix 生成回滚：DELETE 新行 + INSERT 旧行
+												if sp.rollCC != nil {
+													oldDstRow := delByPK[pkKey]
+													if rbDel := rollbackRowToDelete(destSchema, destTable, srcRow, filteredSrcCols, sp.columnName); rbDel != "" {
+														sendRollback(sp.rollCC, rbDel)
+													}
+													if rbIns := rollbackRowToInsert(destSchema, destTable, oldDstRow, filteredDstCols); rbIns != "" {
+														sendRollback(sp.rollCC, rbIns)
+													}
+												}
 											}
 										}
 									} else {
@@ -546,6 +561,12 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 												sp.getErr(fmt.Sprintf("dest: checksum table %s.%s generate DELETE sql error (columns-mode target-only).", c1.Schema, c1.Table), err)
 											} else if sqlstr != "" {
 												cc <- sqlstr
+												// 为 columns-mode target-only DELETE 生成回滚 INSERT
+												if sp.rollCC != nil {
+													if rbSql := rollbackRowToInsert(destSchema, destTable, dstRow, filteredDstCols); rbSql != "" {
+														sendRollback(sp.rollCC, rbSql)
+													}
+												}
 											}
 										} else {
 											// 不生成 DELETE，但仍标记为差异，确保 Diffs=yes
@@ -616,6 +637,13 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 												if err != nil {
 													sp.getErr(fmt.Sprintf("\ndest: checksum table %s.%s generate DELETE sql error.", c1.Schema, c1.Table), err)
 													continue
+												}
+
+												// 为 DELETE fix 生成回滚 INSERT
+												if sp.rollCC != nil {
+													if rbSql := rollbackRowToInsert(destSchema, destTable, i, dbf.ColData); rbSql != "" {
+														sendRollback(sp.rollCC, rbSql)
+													}
 												}
 
 												// 提取WHERE条件中的值
@@ -770,6 +798,13 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 														continue
 													}
 
+													// 为 DELETE fix 生成回滚 INSERT
+													if sp.rollCC != nil {
+														if rbSql := rollbackRowToInsert(destSchema, destTable, i, dbf.ColData); rbSql != "" {
+															sendRollback(sp.rollCC, rbSql)
+														}
+													}
+
 													// 提取WHERE条件中的主键值，用于去重
 													var primaryKey string
 													if strings.Contains(sqlstr, "WHERE") {
@@ -843,6 +878,15 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 													continue
 												}
 
+												// 为 mul 类型 DELETE 生成回滚 INSERT（每行一条）
+												if sp.rollCC != nil {
+													if rbSql := rollbackRowToInsert(destSchema, destTable, rowData, dbf.ColData); rbSql != "" {
+														for j := 0; j < count; j++ {
+															sendRollback(sp.rollCC, rbSql)
+														}
+													}
+												}
+
 												// 修改SQL语句，将LIMIT 1改为LIMIT count
 												if strings.Contains(sqlstr, "LIMIT 1") {
 													sqlstr = strings.Replace(sqlstr, "LIMIT 1", fmt.Sprintf("LIMIT %d", count), 1)
@@ -865,6 +909,13 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 											if err != nil {
 												sp.getErr(fmt.Sprintf("\ndest: checksum table %s.%s generate DELETE sql error.", c1.Schema, c1.Table), err)
 												continue
+											}
+
+											// 为 DELETE fix 生成回滚 INSERT
+											if sp.rollCC != nil {
+												if rbSql := rollbackRowToInsert(destSchema, destTable, i, dbf.ColData); rbSql != "" {
+													sendRollback(sp.rollCC, rbSql)
+												}
 											}
 
 											// 提取WHERE条件中的主键值，用于去重
@@ -1042,6 +1093,12 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 											}
 
 											cc <- sqlstr
+											// 为 INSERT fix 生成回滚 DELETE
+											if sp.rollCC != nil {
+												if rbSql := rollbackInsertToDelete(sqlstr, destSchema, destTable, dbf.IndexColumn); rbSql != "" {
+													sendRollback(sp.rollCC, rbSql)
+												}
+											}
 											totalInsertCount++
 										}
 									}

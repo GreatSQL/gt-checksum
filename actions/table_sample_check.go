@@ -368,7 +368,21 @@ func (sp *SchedulePlan) DoSampleDataCheck() {
 
 		go sp.queryTableDataSeparate(selectSql, make(chanMap), diffQueryData, tableColumn, scheduleCount, logThreadSeq)
 		go sp.AbnormalDataDispos(diffQueryData, fixSQL, logThreadSeq)
+		// 若需要生成回滚 SQL，创建 rollCC channel 并启动 RollbackDispos goroutine
+		var rollDone chan struct{}
+		if matchRollSQLTarget(sp.genRollSQL, sp.schema, sp.table) && sp.datafixType == "file" {
+			rollCC := make(chanString, queueDepth)
+			sp.rollCC = rollCC
+			rollDone = make(chan struct{})
+			go func() {
+				sp.RollbackDispos(rollCC, logThreadSeq)
+				close(rollDone)
+			}()
+		}
 		sp.DataFixDispos(fixSQL, logThreadSeq)
+		if rollDone != nil {
+			<-rollDone
+		}
 		fmt.Println()
 		global.Wlog.Info(fmt.Sprintf("Table %s checksum completed", displayTableName))
 		vlog = fmt.Sprintf("(%d) Check table %s The total number of rows at the source and target end has been checked.", logThreadSeq, displayTableName)
