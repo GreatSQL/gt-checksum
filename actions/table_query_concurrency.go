@@ -61,6 +61,14 @@ type SchedulePlan struct {
 	// sourceOnlyAdvisory 在 columns 模式下收集 source-only 行的 PK，用于生成 advisory 提示文件。
 	// 非 columns 模式时为 nil。
 	sourceOnlyAdvisory *columnsModeSourceOnlyAdvisory
+
+	// rollback SQL 相关字段
+	genRollSQL       string     // ON/OFF/自定义表名列表
+	maxRollRowNum    int        // 单表差异行数超过此值时跳过回滚 SQL 生成
+	rollSqlDir       string     // 回滚 SQL 文件目录
+	rollCC           chanString // 回滚 SQL channel，nil 表示不生成
+	rollRowCountMap  sync.Map   // key: "schema.table", value: int64（跨 chunk 累计差异行数）
+	rollTruncateOnce sync.Map   // key: "schema.table"，确保 TRUNCATE 只写一次
 }
 
 // columnsModeSourceOnlyAdvisory 记录 columns 模式下差异行的统计信息，
@@ -454,6 +462,9 @@ func CheckTableQuerySchedule(sdb, ddb *global.Pool, tableIndexColumnMap map[stri
 		djdbc:                   m.SecondaryL.DsnsV.DestJdbc,
 		tableMappings:           tableMappings,
 		extraRowsSyncToSource:   m.SecondaryL.RepairV.ExtraRowsSyncToSource,
+		genRollSQL:              m.SecondaryL.RepairV.GenRollSQL,
+		maxRollRowNum:           m.SecondaryL.RepairV.MaxRollRowNum,
+		rollSqlDir:              m.SecondaryL.RepairV.RollFileDir,
 	}
 
 	// columns 模式：将列计划展开为源/目标两侧的列列表注入 SchedulePlan。

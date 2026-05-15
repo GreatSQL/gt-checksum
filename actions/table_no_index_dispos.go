@@ -233,10 +233,16 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 			select {
 			case v, ok := <-tmpAnDateMap:
 				if !ok {
-					if len(noIndexD) == 0 {
-						close(sqlStrExec)
-						return
+					// 等待所有并发槽完成后再关闭 channel，避免提前关闭导致 goroutine 读到已关闭的 channel
+					for len(noIndexD) > 0 {
+						// 让出 CPU，等待并发 goroutine 完成
 					}
+					close(sqlStrExec)
+					if sp.rollCC != nil {
+						close(sp.rollCC)
+						sp.rollCC = nil
+					}
+					return
 				} else {
 					// 不要在循环外声明rowData和sqlType变量，避免变量覆盖
 					// 处理删除记录
@@ -289,6 +295,13 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 							if sqlstr != "" {
 								// 不要使用去重逻辑，因为可能有多个相同的SQL语句对应不同的行数据
 								sqlStrExec <- sqlstr
+								// rollback SQL: DELETE fix 的反向操作是 INSERT（重新插入被删除的行）
+								if sp.rollCC != nil {
+									rollSql, rollErr := dbf.DataAbnormalFix().FixInsertSqlExec(ddb, sp.ddrive, logThreadSeq)
+									if rollErr == nil && rollSql != "" {
+										sp.rollCC <- rollSql
+									}
+								}
 							}
 							sp.ddbPool.Put(ddb, logThreadSeq)
 							displayTableName = sp.getDisplayTableName()
@@ -347,6 +360,17 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 							if sqlstr != "" {
 								// 不要使用去重逻辑，因为可能有多个相同的SQL语句对应不同的行数据
 								sqlStrExec <- sqlstr
+								// rollback SQL: INSERT fix 的反向操作是 DELETE（删除被插入的行）
+								// 但如果目标端为空，已经生成了 TRUNCATE 回滚 SQL，不再生成逐行 DELETE
+								if sp.rollCC != nil {
+									tableKey := sp.schema + "." + sp.table
+									if _, loaded := sp.rollTruncateOnce.Load(tableKey); !loaded {
+										rollSql, rollErr := dbf.DataAbnormalFix().FixDeleteSqlExec(ddb, sp.ddrive, logThreadSeq)
+										if rollErr == nil && rollSql != "" {
+											sp.rollCC <- rollSql
+										}
+									}
+								}
 							}
 							sp.ddbPool.Put(ddb, logThreadSeq)
 							displayTableName = sp.getDisplayTableName()
@@ -547,6 +571,27 @@ func (sp *SchedulePlan) QueryDataCheckSum(stt, dtt string, md5chan chan<- map[st
 		displayTableName := sp.getDisplayTableName()
 		vlog = fmt.Sprintf("(%d) MD5 checksum mismatch in round %d for table without index %s", logThreadSeq, chunkSeq, displayTableName)
 		global.Wlog.Debug(vlog)
+
+		// rollback SQL：检查目标端是否为空，如果为空则生成 TRUNCATE 回滚（每表只写一次）
+		// 与有索引表逻辑保持一致（table_index_dispos_abnormal.go:364-369）
+		if sp.rollCC != nil && matchRollSQLTarget(sp.genRollSQL, sp.schema, sp.table) {
+			destRows := strings.Split(dtt, "/*go actions rowData*/")
+			isTargetEmpty := true
+			for _, row := range destRows {
+				if row != "" {
+					isTargetEmpty = false
+					break
+				}
+			}
+			if isTargetEmpty {
+				tableKey := sp.schema + "." + sp.table
+				if _, loaded := sp.rollTruncateOnce.LoadOrStore(tableKey, true); !loaded {
+					sp.rollCC <- fmt.Sprintf("TRUNCATE TABLE `%s`.`%s`;", sp.schema, sp.table)
+					global.Wlog.Debugf("(%d) Generated TRUNCATE rollback SQL for empty target table %s.%s", logThreadSeq, sp.schema, sp.table)
+				}
+			}
+		}
+
 		// 注意：Arrcmp函数的第一个参数是源端数据，第二个参数是目标端数据
 		// added是源端有但目标端没有的数据，需要插入到目标端
 		// deleted是目标端有但源端没有的数据，需要从目标端删除
@@ -666,6 +711,17 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 	uniqMD5C := sp.AbDataMd5Unique(md5Chan, logThreadSeq)
 	//Read files based on deduplicated data to find differences
 	dataFixC := sp.noIndexTableAbdataRead(uniqMD5C, logThreadSeq)
+	// 必须在 DataFixSql 之前设置 rollCC，否则 DataFixSql goroutine 处理数据时 sp.rollCC 为 nil
+	var rollDone chan struct{}
+	if matchRollSQLTarget(sp.genRollSQL, sp.schema, sp.table) && sp.datafixType == "file" {
+		rollCC := make(chanString, sp.mqQueueDepth)
+		sp.rollCC = rollCC
+		rollDone = make(chan struct{})
+		go func() {
+			sp.RollbackDispos(rollCC, int64(logThreadSeq))
+			close(rollDone)
+		}()
+	}
 	sqlStrExec := sp.DataFixSql(dataFixC, &pods, logThreadSeq)
 
 	FileOper := FileOperate{File: sp.file, BufSize: 1024 * 4 * 1024, fileName: sp.TmpFileName}
@@ -717,6 +773,9 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 	}
 	sp.bar.Finish()
 	sp.FixSqlExec(sqlStrExec, int64(logThreadSeq))
+	if rollDone != nil {
+		<-rollDone
+	}
 	//Output verification result information
 	// 重新查询精确行数
 	sourceExactCount, sourceCountExact := sp.getExactRowCount(sp.sdbPool, sp.schema, sp.table, logThreadSeq)
