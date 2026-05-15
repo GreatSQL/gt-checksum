@@ -15,7 +15,9 @@ MySQL DBA经常使用 **pt-table-checksum** 和 **pt-table-sync** 进行数据�
 
 ## v4.0.0 关键变化
 
+- **[功能新增]** 新增反向回滚SQL生成能力，通过 `genRollSQL/maxRollRowNum/rollFileDir`  等参数控制，支持为修复SQL自动生成对应的回滚语句，便于修复出错时快速回退。
 - **[功能新增]** 新增 SSL 加密连接支持，源端和目标端可独立配置 SSL 参数，支持五种模式（`DISABLED/PREFERRED/REQUIRED/VERIFY_CA/VERIFY_IDENTITY`）。
+- **[功能优化]** 优化无主键表的 DELETE 修复逻辑，简化 LIMIT 处理，避免 NULL 值导致的语句生成错误。
 - **[问题修复]** 修复 Oracle NUMBER(19,0) 类型映射精度阈值，并新增 tinyint(1) ↔ bit(1) 类型等价映射。
 
 更多详细变化详见 [CHANGELOG](./CHANGELOG.md)。

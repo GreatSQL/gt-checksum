@@ -369,9 +369,9 @@ bash scripts/regression-test-columns.sh \
 **测试产物**
 
 脚本运行结束后，产物保存在 `test-artifacts/columns-<日期时间>/` 目录下，包含：
-- `results.csv`：所有测例的 ID、verdict、轮次、Diffs 摘要
-- `report.txt`：格式化汇总报告
-- `cases/<case_id>/`：各用例的配置文件、每轮输出、日志快照及 fixsql 文件
+- `results.csv`：所有测例的 ID、verdict、轮次、Diffs 摘要。
+- `report.txt`：格式化汇总报告。
+- `cases/<case_id>/`：各用例的配置文件、每轮输出、日志快照及 fixsql 文件。
 
 ### `checkObject=struct` 的支持边界
 
@@ -569,10 +569,48 @@ dstSslMode = VERIFY_CA
 ```
 
 **注意事项**：
-1. SSL 参数仅对 MySQL-family 数据源生效，Oracle 数据源不支持此配置
-2. 设置 `VERIFY_CA` 或 `VERIFY_IDENTITY` 模式时，必须提供 `sslCa` 参数
-3. 使用客户端证书认证时，`sslCert` 和 `sslKey` 必须同时配置
-4. 所有证书文件必须存在且可读，否则启动时报错
+1. SSL 参数仅对 MySQL-family 数据源生效，Oracle 数据源不支持此配置。
+2. 设置 `VERIFY_CA` 或 `VERIFY_IDENTITY` 模式时，必须提供 `sslCa` 参数。
+3. 使用客户端证书认证时，`sslCert` 和 `sslKey` 必须同时配置。
+4. 所有证书文件必须存在且可读，否则启动时报错。
+
+### 回滚SQL参数
+
+v4.0.0 新增反向回滚SQL生成功能。当 `datafix=file` 且 `checkObject=data` 时，可在生成修复SQL的同时，自动生成对应的反向回滚SQL，便于修复操作出错时快速回退。
+
+| 参数名 | 可选值 | 默认值 | 说明 |
+|---|---|---|---|
+| `genRollSQL` | `ON` / `OFF` / 自定义表名 | `OFF` | 是否生成反向回滚SQL。`ON`：对所有表生成；`OFF`：不生成（默认）；自定义：指定目标端表名（支持逗号分隔多个，支持 `%` 通配符），例如 `genRollSQL="gt_checksum.test1, gt_checksum.test%"` |
+| `maxRollRowNum` | 正整数 | `10000` | 单表待修复行数超过该值时不生成回滚SQL，避免大表回滚文件过大。特殊情况：目标端表为空时，始终生成 `TRUNCATE TABLE` 回滚SQL（忽略本参数） |
+| `rollFileDir` | 目录路径 | `rollsql` | 回滚SQL文件存储目录，仅在 `datafix=file` 且 `genRollSQL` 非 `OFF` 时生效 |
+
+**回滚SQL生成规则**：
+
+| 修复SQL类型 | 对应的回滚SQL | 说明 |
+|---|---|---|
+| `INSERT`（源端有、目标端无） | `DELETE` | 删除被插入的行 |
+| `DELETE`（目标端有、源端无） | `INSERT` | 重新插入被删除的行 |
+| `UPDATE`（值不同） | `DELETE 新行 + INSERT 旧行` | 恢复目标端原始值 |
+| 目标端为空（全量插入） | `TRUNCATE TABLE` | 每表只生成一次，清空目标端 |
+
+**注意事项**：
+1. 仅在 `datafix=file` 且 `checkObject=data` 时生效，其他模式下忽略。
+2. 对于无主键/唯一键的表，相同 WHERE 条件的多条 DELETE 回滚语句会自动合并 LIMIT 值。
+3. 回滚SQL文件命名格式：`rollsql/table.<schema>.<table>.rollback-<TYPE>-<seq>.sql`。
+4. 回滚SQL文件使用与修复SQL相同的事务管理和分片策略。
+5. 回滚SQL文件亦可支持调用 repairDB 工具完成自动回滚。
+
+**使用示例**：
+
+```ini
+; 为所有表生成回滚SQL
+genRollSQL = ON
+rollFileDir = ./rollsql
+
+; 仅对指定表生成回滚SQL
+genRollSQL = "mydb.users, mydb.orders%"
+maxRollRowNum = 5000
+```
 
 ### 推荐配置示例
 
@@ -645,16 +683,16 @@ mariaDBJSONTargetType = LONGTEXT
 
 对于当前版本，`warn-only` 通常表示以下几类可解释、可审计的残余风险：
 
-1. `CHECK` 风险
-2. `COMPRESSED`
-3. `MariaDB JSON -> LONGTEXT/TEXT` 的语义降级
-4. `SYSTEM VERSIONING / WITHOUT OVERLAPS / SEQUENCE` 的 advisory-only 边界
-5. 列宽度收窄（Column Width Shrink）时目标端存在超宽数据或安全检查查询异常
+1. `CHECK` 风险。
+2. `COMPRESSED`。
+3. `MariaDB JSON -> LONGTEXT/TEXT` 的语义降级。
+4. `SYSTEM VERSIONING / WITHOUT OVERLAPS / SEQUENCE` 的 advisory-only 边界。
+5. 列宽度收窄（Column Width Shrink）时目标端存在超宽数据或安全检查查询异常。
 
 对于 VIEW 对象，以下情形结果显示为 `Diffs=yes` 但 advisory 标注 `suggested SQL: none`，需要 DBA 手工处理：
 
-6. VIEW 定义文本一致，但底层列元数据（类型、nullable、charset、collation）已漂移——通常意味着底层基表结构已变更，需先修复基表后 VIEW 才能恢复一致；
-7. SQL SECURITY 差异**不在此列**：此类差异仅记录 Warn 日志，不标记 `Diffs=yes`，无需额外处理（DBA 可从日志中确认差异值后决定是否手工统一）。
+1. VIEW 定义文本一致，但底层列元数据（类型、nullable、charset、collation）已漂移——通常意味着底层基表结构已变更，需先修复基表后 VIEW 才能恢复一致；
+2. SQL SECURITY 差异**不在此列**：此类差异仅记录 Warn 日志，不标记 `Diffs=yes`，无需额外处理（DBA 可从日志中确认差异值后决定是否手工统一）。
 
 ### DDL 差异结果展示
 
@@ -1346,7 +1384,7 @@ result=PARTIAL_SUCCESS continue_on_error=true
 
 ## 已知缺陷/问题
 
-截止当前的 v2.0.0 版本，已知存在以下几个约束/问题。
+截止当前版本，已知存在以下几个约束/问题。
 
 - 当存在触发器时，因为触发器的作用，可能导致在修复完一个表后，触发其他表被改变，从而看起来像是修复后仍不一致的情况。这种情况下，需要先临时删除触发器进行修复，完成后在重新创建触发器。
 
