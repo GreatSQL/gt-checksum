@@ -1,6 +1,7 @@
 package global
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -156,3 +157,6 @@ func ResetRuntimeState() {
 type TableAllColumnInfoS struct {
 	SColumnInfo, DColumnInfo []map[string]string //表的所有列信息
 }
+
+// ErrNoValidTables 当所有表都被跳过（如源端表不存在）时返回此错误
+var ErrNoValidTables = errors.New("no valid tables to check")

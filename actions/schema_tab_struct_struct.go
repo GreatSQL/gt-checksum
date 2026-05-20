@@ -149,6 +149,14 @@ func (stcls *schemaTable) SchemaTableAllCol(tableList []string, logThreadSeq, lo
 	return tableCol
 }
 
+// shouldReturnNoValidTables 判断是否应返回 ErrNoValidTables。
+// 当 normal 和 abnormal 都为空时返回 true（即没有任何有效表）。
+// 注意：checkObject=struct 模式下，表有结构差异是正常预期行为（正是 struct 检查要发现的），
+// 不应视为"跳过"。只有当 normal 和 abnormal 都为空时才返回 true。
+func shouldReturnNoValidTables(normal, abnormal []string) bool {
+	return len(normal) == 0 && len(abnormal) == 0
+}
+
 func (stcls *schemaTable) Struct(dtabS []string, logThreadSeq, logThreadSeq2 int64) error {
 	//校验列名
 	var (
@@ -182,6 +190,17 @@ func (stcls *schemaTable) Struct(dtabS []string, logThreadSeq, logThreadSeq2 int
 	}
 	vlog = fmt.Sprintf("(%d) %s Table structure and column checksum of srcDB and dstDB completed. The consistent result is {%s}(num [%d]), and the inconsistent result is {%s}(num [%d])", logThreadSeq, event, normal, len(normal), abnormal, len(abnormal))
 	global.Wlog.Debug(vlog)
+
+	// 当所有表都被跳过时（例如源端表不存在），提前终止并输出提示信息
+	// 注意：checkObject=struct 模式下，表有结构差异是正常预期行为（正是 struct 检查要发现的），
+	// 不应视为"跳过"。只有当 normal 和 abnormal 都为空（即没有任何有效表）时才终止。
+	if shouldReturnNoValidTables(normal, abnormal) {
+		fmt.Println("gt-checksum: No tables to check (all tables were skipped)")
+		vlog = fmt.Sprintf("(%d) %s All tables were skipped, no valid tables to check", logThreadSeq, event)
+		global.Wlog.Info(vlog)
+		return global.ErrNoValidTables
+	}
+
 	// Pre-populate existingTableKeys from pods that TableColumnNameCheck already
 	// appended (e.g. both-missing or source-missing tables).  This prevents the
 	// append(normal, abnormal...) loop below from creating duplicate Pod entries

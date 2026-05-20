@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"gt-checksum/MySQL"
 	"gt-checksum/actions"
@@ -118,6 +119,10 @@ func main() {
 		// 当checkObject=struct时，执行所有结构相关的检查（包括表结构、索引、分区和外键）
 		checksumStart := time.Now()
 		if err = schemaTableInstance.Struct(tableList, 5, 6); err != nil {
+			if errors.Is(err, global.ErrNoValidTables) {
+				fmt.Println("gt-checksum: No tables to check. Check ./gt-checksum.log for details or set logLevel=debug")
+				os.Exit(1)
+			}
 			fmt.Println(fmt.Sprintf("gt-checksum: Table structure verification failed. Check %s for details or set logLevel=debug", m.SecondaryL.LogV.LogFile))
 			os.Exit(1)
 		}
