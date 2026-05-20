@@ -623,6 +623,16 @@ func (stcls *schemaTable) SchemaTableFilter(logThreadSeq1, logThreadSeq2 int64) 
 							}
 						} else {
 							// 处理精确表名映射
+							// 检查源端表是否存在
+							srcKey := fmt.Sprintf("%s/*schema&table*/%s", srcDB, srcTable)
+							if strings.EqualFold(stcls.caseSensitiveObjectName, "no") {
+								srcKey = strings.ToLower(srcKey)
+							}
+							if _, srcExists := dbCheckNameList[srcKey]; !srcExists {
+								vlog = fmt.Sprintf("Source table %s.%s does not exist in source DB, skipping mapping to %s.%s", srcDB, srcTable, dstDB, dstTable)
+								global.Wlog.Warn(vlog)
+								continue
+							}
 							// 创建表映射
 							mapping := TableMapping{
 								SourceSchema: srcDB,
@@ -735,6 +745,17 @@ func (stcls *schemaTable) SchemaTableFilter(logThreadSeq1, logThreadSeq2 int64) 
 						}
 					} else {
 						// 处理精确表名
+						// 检查源端表是否存在
+						srcKey := fmt.Sprintf("%s/*schema&table*/%s", srcDB, srcTable)
+						if strings.EqualFold(stcls.caseSensitiveObjectName, "no") {
+							srcKey = strings.ToLower(srcKey)
+						}
+						if _, srcExists := dbCheckNameList[srcKey]; !srcExists {
+							vlog = fmt.Sprintf("Source table %s.%s does not exist in source DB, skipping", srcDB, srcTable)
+							global.Wlog.Warn(vlog)
+							continue
+						}
+
 						// 处理忽略表
 						ignoreSchema := stcls.FuzzyMatchingDispos(dbCheckNameList, stcls.ignoreTable, logThreadSeq1)
 

@@ -154,6 +154,9 @@ func (stcls *schemaTable) checkTableExistence(
 			DIFFS:       "yes",
 			Datafix:     stcls.datafix,
 		})
+		// 将表添加到skipIndexCheckTables，跳过后续的索引检查
+		tableKey := fmt.Sprintf("%s.%s", destSchema, destTableName)
+		stcls.skipIndexCheckTables = append(stcls.skipIndexCheckTables, tableKey)
 		return false, true, true, nil
 	}
 

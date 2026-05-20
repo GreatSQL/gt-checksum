@@ -24,13 +24,14 @@ func dummyDB(t *testing.T) *sql.DB {
 // the DB connection (we pass nil db to ensure cache path is exercised).
 // Regression for /report-bug data-mode-oracle-slow.
 func Test_DataModeOracleSlow_TableExistenceCacheHit(t *testing.T) {
+	// Cache keys use "dbPtr|drive|SCHEMA" format; nil *sql.DB produces "0x0" prefix.
 	st := &schemaTable{
 		tableExistenceCache: map[string]map[string]struct{}{
-			"oracle|SBTEST": {
+			"0x0|oracle|SBTEST": {
 				"T9":  {},
 				"T99": {},
 			},
-			"mysql|GT_CHECKSUM": {
+			"0x0|mysql|GT_CHECKSUM": {
 				"TESTBIN":    {},
 				"TESTFLOAT":  {},
 				"TESTSTRING": {},
@@ -65,7 +66,7 @@ func Test_DataModeOracleSlow_TableExistenceCacheHit(t *testing.T) {
 func Test_DataModeOracleSlow_TableExistenceCacheBypassForView(t *testing.T) {
 	st := &schemaTable{
 		tableExistenceCache: map[string]map[string]struct{}{
-			"mysql|GT_CHECKSUM": {"V1": {}},
+			"0x0|mysql|GT_CHECKSUM": {"V1": {}},
 		},
 		caseSensitiveObjectName: "yes",
 	}
