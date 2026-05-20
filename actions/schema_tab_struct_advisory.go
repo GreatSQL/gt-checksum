@@ -13,6 +13,7 @@ import (
 
 var mysqlTableAutoIncrementOptionPattern = regexp.MustCompile(`(?i)\)\s*ENGINE\s*=.*?\bAUTO_INCREMENT\s*=\s*([0-9]+)\b`)
 var mysqlAlterTableStatementPattern = regexp.MustCompile("(?is)^\\s*ALTER\\s+TABLE\\s+((?:`[^`]+`\\.`[^`]+`)|(?:[^\\s]+))\\s+(.*?);?\\s*$")
+var afterFirstClausePattern = regexp.MustCompile(`(?i)\s+AFTER\s+` + "`" + `[^` + "`" + `]+` + "`" + `|\s+FIRST\b`)
 
 func resolveMySQLTableAutoIncrementFixValue(sourceValue, destValue sql.NullInt64) (int64, bool) {
 	if sourceValue.Valid == destValue.Valid {
@@ -366,6 +367,7 @@ func isModifyColumnClause(clause string) bool {
 // isCollationOnlyModifyColumn 检查 MODIFY COLUMN 子句是否仅修改 COLLATE（无其他属性变更）
 // 判断逻辑：如果子句中只包含 CHARACTER SET 和 COLLATE 关键字，且没有其他属性变更（如 NOT NULL、DEFAULT 等），
 // 则认为是仅修改 COLLATE 的子句
+// 注意：AFTER/FIRST 子句仅用于调整列顺序，不视为实质性属性变更
 func isCollationOnlyModifyColumn(clause string) bool {
 	upperClause := strings.ToUpper(strings.TrimSpace(clause))
 
@@ -379,11 +381,28 @@ func isCollationOnlyModifyColumn(clause string) bool {
 		return false
 	}
 
+	// 剥离 AFTER/FIRST 子句（仅用于调整列顺序，不是实质性属性变更）
+	// 使用正则表达式匹配 AFTER `column_name` 或 FIRST
+	trimmedClause := afterFirstClausePattern.ReplaceAllString(upperClause, "")
+	trimmedClause = strings.TrimSpace(trimmedClause)
+
 	// 检查是否包含其他属性关键字（这些关键字表示有实质性的列定义变更）
-	// 注意：NOT NULL、DEFAULT、COMMENT、AUTO_INCREMENT 等属性即使存在，
-	// 也可能只是为了保持列定义完整性，而非实质性变更
-	// 因此，我们采用更宽松的判断：只要包含 CHARACTER SET/COLLATE，就认为是 COLLATE 修复
-	// 这样可以最大程度地简化修复 SQL
+	// 如果包含这些属性，则不是仅修改 COLLATE 的子句
+	otherProperties := []string{
+		" NOT NULL",
+		" NULL",
+		" DEFAULT ",
+		" COMMENT ",
+		" AUTO_INCREMENT",
+		" UNSIGNED",
+		" SIGNED",
+		" ZEROFILL",
+	}
+	for _, prop := range otherProperties {
+		if strings.Contains(trimmedClause, prop) {
+			return false
+		}
+	}
 
 	return true
 }

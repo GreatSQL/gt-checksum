@@ -1144,10 +1144,13 @@ func decideCollationCompatibility(sourceRaw, targetRaw, sourceNormalized, target
 	}
 
 	// Check if this is a MySQL internal version upgrade collation drift (e.g., utf8mb4_general_ci → utf8mb4_0900_ai_ci)
-	// These have different sorting behavior and require fix SQL
+	// These have different sorting behavior and require fix SQL, but the fix is a single table-level CONVERT TO.
+	// Return WarnOnly so the column-level comparison routes through columnCollationRepairCandidates →
+	// buildColumnCollationRepairSQL → canUseTableCharsetConvertForColumnCollationDrift, which emits only
+	// one CONVERT TO instead of per-column MODIFY COLUMN statements.
 	if IsUTF8MB4DefaultCollationDrift(sourceNormalized, targetNormalized) {
 		return CompatibilityDecision{
-			State:  CompatibilityUnsupported,
+			State:  CompatibilityWarnOnly,
 			Reason: fmt.Sprintf("utf8mb4 default collation drift detected between legacy and MySQL 8.x defaults: source=%s target=%s", sourceNormalized, targetNormalized),
 			Source: sourceRaw,
 			Target: targetRaw,
