@@ -86,27 +86,35 @@ func canUseTableCharsetConvertForColumnCollationDrift(sourceMeta, destMeta mysql
 	for i, candidate := range candidates {
 		// 字段 CHARSET 必须与表级 CHARSET 一致
 		if !strings.EqualFold(strings.TrimSpace(candidate.SourceCharset), sourceCharset) {
-			global.Wlog.Debug(fmt.Sprintf("canUseTableCharsetConvertForColumnCollationDrift: candidate[%d] %s SourceCharset=%s != tableCharset=%s, rejecting table-level repair",
-				i, candidate.ColumnName, candidate.SourceCharset, sourceCharset))
+			if global.Wlog != nil {
+				global.Wlog.Debug(fmt.Sprintf("canUseTableCharsetConvertForColumnCollationDrift: candidate[%d] %s SourceCharset=%s != tableCharset=%s, rejecting table-level repair",
+					i, candidate.ColumnName, candidate.SourceCharset, sourceCharset))
+			}
 			return false
 		}
 		// 检查目标端字段 COLLATION 是否与目标端表级 COLLATION 一致
 		// 如果一致，说明字段是继承表级 COLLATION，可以通过修改表级定义来修复
 		if !strings.EqualFold(strings.TrimSpace(candidate.DestCollation), destTableCollation) {
-			global.Wlog.Debug(fmt.Sprintf("canUseTableCharsetConvertForColumnCollationDrift: candidate[%d] %s DestCollation=%s != destTableCollation=%s, rejecting table-level repair",
-				i, candidate.ColumnName, candidate.DestCollation, destTableCollation))
+			if global.Wlog != nil {
+				global.Wlog.Debug(fmt.Sprintf("canUseTableCharsetConvertForColumnCollationDrift: candidate[%d] %s DestCollation=%s != destTableCollation=%s, rejecting table-level repair",
+					i, candidate.ColumnName, candidate.DestCollation, destTableCollation))
+			}
 			return false
 		}
 		// 如果源端表级 COLLATION 已显式定义，则要求源端字段 COLLATION 也与之一致
 		// 如果源端表级 COLLATION 未显式定义（为空），则跳过此检查（字段继承隐式默认值）
 		if sourceTableCollation != "" && !strings.EqualFold(strings.TrimSpace(candidate.SourceCollation), sourceTableCollation) {
-			global.Wlog.Debug(fmt.Sprintf("canUseTableCharsetConvertForColumnCollationDrift: candidate[%d] %s SourceCollation=%s != sourceTableCollation=%s, rejecting table-level repair",
-				i, candidate.ColumnName, candidate.SourceCollation, sourceTableCollation))
+			if global.Wlog != nil {
+				global.Wlog.Debug(fmt.Sprintf("canUseTableCharsetConvertForColumnCollationDrift: candidate[%d] %s SourceCollation=%s != sourceTableCollation=%s, rejecting table-level repair",
+					i, candidate.ColumnName, candidate.SourceCollation, sourceTableCollation))
+			}
 			return false
 		}
 	}
 
-	global.Wlog.Debug(fmt.Sprintf("canUseTableCharsetConvertForColumnCollationDrift: all %d candidates match table-level charset/collation, using table-level CONVERT TO", len(candidates)))
+	if global.Wlog != nil {
+		global.Wlog.Debug(fmt.Sprintf("canUseTableCharsetConvertForColumnCollationDrift: all %d candidates match table-level charset/collation, using table-level CONVERT TO", len(candidates)))
+	}
 	return true
 }
 
@@ -150,6 +158,114 @@ func (stcls *schemaTable) buildColumnCollationRepairSQL(
 			}
 		}
 
+		// 检查是否存在 dTypeMapping 覆盖的列类型差异
+		// 如果存在，需要生成列级 MODIFY COLUMN SQL（同时包含 collation 和 dTypeMapping 映射的类型）
+		// 而不是表级 CONVERT TO SQL
+		hasDTypeMappingOverride := false
+		if schemacompat.GlobalDTypeMappingRules != nil {
+			var dtRules []schemacompat.TypeMappingRule
+			isMariaDBToMySQL := stcls.isMariaDBToMySQL()
+			if isMariaDBToMySQL {
+				dtRules = schemacompat.GlobalDTypeMappingRules.DTypeMapping.MariaDBToMySQL
+			} else {
+				dtRules = schemacompat.GlobalDTypeMappingRules.DTypeMapping.MySQLUpgrade
+			}
+			global.Wlog.Debug(fmt.Sprintf("(%d) buildColumnCollationRepairSQL: dTypeMapping check: isMariaDBToMySQL=%v, dtRulesLen=%d, candidatesLen=%d",
+				logThreadSeq, isMariaDBToMySQL, len(dtRules), len(candidates)))
+			for _, candidate := range candidates {
+				if len(dtRules) == 0 {
+					global.Wlog.Debug(fmt.Sprintf("(%d) buildColumnCollationRepairSQL: no dTypeMapping rules available, skipping candidate %s",
+						logThreadSeq, candidate.ColumnName))
+					continue
+				}
+				// 从 SourceAttrs 中获取源端类型
+				sourceType := ""
+				if len(candidate.SourceAttrs) > 0 {
+					sourceType = candidate.SourceAttrs[0]
+				}
+				// 构建 MappingContext 检查是否存在匹配的 dTypeMapping 规则
+				sourceNullable := false
+				if len(candidate.SourceAttrs) > 3 {
+					sourceNullable = strings.EqualFold(strings.TrimSpace(candidate.SourceAttrs[3]), "YES")
+				}
+				sourceAutoInc := false
+				if strings.Contains(strings.ToUpper(sourceType), "AUTO_INCREMENT") {
+					sourceAutoInc = true
+				}
+				ctx := schemacompat.BuildMappingContext(sourceType, sourceNullable, candidate.ColumnName, sourceAutoInc, stcls.schema, stcls.table)
+				global.Wlog.Debug(fmt.Sprintf("(%d) buildColumnCollationRepairSQL: checking candidate %s: sourceType=%q, sourceNullable=%v, sourceAutoInc=%v, schema=%s, table=%s, ctx.SourceType=%q",
+					logThreadSeq, candidate.ColumnName, sourceType, sourceNullable, sourceAutoInc, stcls.schema, stcls.table, ctx.SourceType))
+				if _, _, matched := schemacompat.MatchUserRule(dtRules, ctx); matched {
+					hasDTypeMappingOverride = true
+					global.Wlog.Debug(fmt.Sprintf("(%d) buildColumnCollationRepairSQL: column %s has dTypeMapping override, switching to column-level MODIFY",
+						logThreadSeq, candidate.ColumnName))
+					break
+				} else {
+					global.Wlog.Debug(fmt.Sprintf("(%d) buildColumnCollationRepairSQL: column %s has NO dTypeMapping match",
+						logThreadSeq, candidate.ColumnName))
+				}
+			}
+		} else {
+			global.Wlog.Debug(fmt.Sprintf("(%d) buildColumnCollationRepairSQL: GlobalDTypeMappingRules is nil",
+				logThreadSeq))
+		}
+
+		// 如果存在 dTypeMapping 覆盖，生成列级 MODIFY COLUMN SQL
+		if hasDTypeMappingOverride {
+			sort.SliceStable(candidates, func(i, j int) bool {
+				return candidates[i].ColumnSeq < candidates[j].ColumnSeq
+			})
+
+			alterOps := make([]string, 0, len(candidates))
+			for _, candidate := range candidates {
+				repairAttrs := append([]string(nil), candidate.SourceAttrs...)
+				if len(repairAttrs) < 6 {
+					for len(repairAttrs) < 6 {
+						repairAttrs = append(repairAttrs, "null")
+					}
+				}
+
+				// 使用 BuildTargetColumnRepairPlan 获取基础修复计划
+				repairPlan := schemacompat.BuildTargetColumnRepairPlan(
+					candidate.ColumnName,
+					repairAttrs,
+					stcls.sourceVersionInfo(),
+					stcls.destVersionInfo(),
+					candidate.SourceDefinition,
+					stcls.checkRules.MariaDBJSONTargetType,
+					stcls.schema, stcls.table,
+				)
+				if strings.TrimSpace(repairPlan.Type) != "" {
+					repairAttrs[0] = repairPlan.Type
+				}
+				if strings.TrimSpace(repairPlan.Charset) != "" {
+					repairAttrs[1] = repairPlan.Charset
+				}
+				if strings.TrimSpace(repairPlan.Collation) != "" {
+					repairAttrs[2] = repairPlan.Collation
+				}
+				if repairPlan.UseDirectDefinition {
+					if len(repairAttrs) < 7 {
+						repairAttrs = append(repairAttrs, repairPlan.DirectDefinition)
+					} else {
+						repairAttrs[6] = repairPlan.DirectDefinition
+					}
+				}
+
+				// 应用 dTypeMapping 覆盖属性（nullable/default/unsigned）
+				applyDTypeMappingOverrides(repairAttrs, candidate.ColumnName, stcls.isOracleToMySQL(), stcls.isMariaDBToMySQL(), candidate.SourceAttrs[0], stcls.schema, stcls.table)
+
+				alterOps = append(alterOps, fixer.FixAlterColumnSqlDispos("modify", repairAttrs, candidate.ColumnSeq, candidate.LastColumn, candidate.ColumnName, logThreadSeq))
+			}
+
+			if len(alterOps) == 0 {
+				return nil, false
+			}
+			global.Wlog.Debug(fmt.Sprintf("(%d) buildColumnCollationRepairSQL: generated %d column-level MODIFY statements with dTypeMapping overrides for %s.%s",
+				logThreadSeq, len(alterOps), stcls.schema, stcls.table))
+			return fixer.FixAlterColumnSqlGenerate(alterOps, logThreadSeq), true
+		}
+
 		// 使用 CONVERT TO CHARACTER SET 修复列级 collation 漂移时，必须始终显式指定
 		// source collation，否则在跨版本场景（如 MySQL 5.6 → 8.0）下，目标端会使用
 		// 其自身默认 collation（utf8mb4_0900_ai_ci），而非源端期望的 collation。
@@ -183,6 +299,7 @@ func (stcls *schemaTable) buildColumnCollationRepairSQL(
 			stcls.destVersionInfo(),
 			candidate.SourceDefinition,
 			stcls.checkRules.MariaDBJSONTargetType,
+			stcls.schema, stcls.table,
 		)
 		if strings.TrimSpace(repairPlan.Type) != "" {
 			repairAttrs[0] = repairPlan.Type

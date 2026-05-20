@@ -435,6 +435,9 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 		rc.SecondaryL.RulesV.RequirePK = "OFF"
 	}
 
+	// dTypeMappingFile 参数：用户自定义数据类型映射规则文件路径
+	rc.SecondaryL.RulesV.DTypeMappingFile = strings.TrimSpace(getLastConfigValue("dTypeMappingFile"))
+
 	//Repair 获取相关参数
 	fixTrxNumValue := getLastConfigValue("fixTrxNum")
 	if fixTrxNumValue != "" {

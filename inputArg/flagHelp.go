@@ -94,6 +94,11 @@ func (rc *ConfigParameter) cliHelp() {
 			Value:       "",
 			Destination: &rc.CliTerminalResultMode,
 		},
+		cli.BoolFlag{
+			Name:        "preview-dtype-mapping",
+			Usage:       "Print the dTypeMapping rule table and exit (requires dTypeMappingFile to be set)",
+			Destination: &rc.PreviewDTypeMapping,
+		},
 	}
 	app.Action = func(c *cli.Context) { //应用执行函数
 		if rc.Config == "" {

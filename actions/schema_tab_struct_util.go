@@ -44,6 +44,12 @@ func shouldUseCaseSensitiveColumnMatching(sourceDrive, destDrive, caseSensitiveO
 	return strings.EqualFold(caseSensitiveObjectName, "yes")
 }
 
+// tableExistenceCacheKey 构造 tableExistenceCache 的缓存键。
+// 使用 db 指针地址区分源/目标连接，避免同 drive+schema 场景下表名混淆。
+func tableExistenceCacheKey(db *sql.DB, drive, schema string) string {
+	return fmt.Sprintf("%p|%s|%s", db, drive, strings.ToUpper(schema))
+}
+
 // preloadTableExistence 预加载 schemas 内所有 BASE TABLE 名称，写入 stcls.tableExistenceCache。
 // Oracle 走 ALL_TABLES、MySQL 走 INFORMATION_SCHEMA.TABLES，均只发送一次 SQL。
 func (stcls *schemaTable) preloadTableExistence(db *sql.DB, drive string, schemas []string) {
@@ -65,7 +71,7 @@ func (stcls *schemaTable) preloadTableExistence(db *sql.DB, drive string, schema
 		}
 		seen[k] = struct{}{}
 		upperSchemas = append(upperSchemas, k)
-		cacheKey := drive + "|" + k
+		cacheKey := tableExistenceCacheKey(db, drive, k)
 		if _, ok := stcls.tableExistenceCache[cacheKey]; !ok {
 			stcls.tableExistenceCache[cacheKey] = make(map[string]struct{})
 		}
@@ -94,7 +100,7 @@ func (stcls *schemaTable) preloadTableExistence(db *sql.DB, drive string, schema
 		if err := rows.Scan(&owner, &tableName); err != nil {
 			continue
 		}
-		cacheKey := drive + "|" + strings.ToUpper(owner)
+		cacheKey := tableExistenceCacheKey(db, drive, owner)
 		if _, ok := stcls.tableExistenceCache[cacheKey]; !ok {
 			stcls.tableExistenceCache[cacheKey] = make(map[string]struct{})
 		}
@@ -312,6 +318,91 @@ func normalizeMetadataComment(v string) string {
 	}
 }
 
+// applyDTypeMappingOverrides 根据 dTypeMapping 规则将 nullable/default 覆盖写入 repairAttrs
+// repairAttrs 布局：[0]=type [1]=charset [2]=collation [3]=nullable [4]=default [5]=comment
+// sourceType 为列的原始源端类型（在 repairPlan 改写 repairAttrs[0] 之前保存），用于规则匹配；
+// 传空字符串时回退到 repairAttrs[0]（兼容旧调用路径）。
+func applyDTypeMappingOverrides(repairAttrs []string, colName string, isOracleToMySQL, isMariaDBToMySQL bool, sourceType string, schema, table string) {
+	if schemacompat.GlobalDTypeMappingRules == nil || len(repairAttrs) < 5 {
+		return
+	}
+	var rules []schemacompat.TypeMappingRule
+	if isOracleToMySQL {
+		rules = schemacompat.GlobalDTypeMappingRules.DTypeMapping.OracleToMySQL
+	} else if isMariaDBToMySQL {
+		rules = schemacompat.GlobalDTypeMappingRules.DTypeMapping.MariaDBToMySQL
+	} else {
+		rules = schemacompat.GlobalDTypeMappingRules.DTypeMapping.MySQLUpgrade
+	}
+	if len(rules) == 0 {
+		return
+	}
+	matchType := sourceType
+	if strings.TrimSpace(matchType) == "" {
+		matchType = repairAttrs[0]
+	}
+	sourceNullable := strings.ToUpper(strings.TrimSpace(repairAttrs[3])) != "NO"
+	autoInc := strings.Contains(strings.ToLower(matchType), "auto_increment")
+	ctx := schemacompat.BuildMappingContext(matchType, sourceNullable, colName, autoInc, schema, table)
+	rule, _, matched := schemacompat.MatchUserRuleWithOverrides(rules, ctx)
+	if !matched || rule == nil {
+		return
+	}
+	// 覆盖 nullable
+	if rule.Nullable != nil {
+		if *rule.Nullable {
+			repairAttrs[3] = "YES"
+		} else {
+			repairAttrs[3] = "NO"
+		}
+	}
+	// 覆盖 default
+	if rule.Default != nil {
+		switch v := rule.Default.(type) {
+		case string:
+			repairAttrs[4] = v
+		case bool:
+			if v {
+				repairAttrs[4] = "1"
+			} else {
+				repairAttrs[4] = "0"
+			}
+		case int64:
+			repairAttrs[4] = fmt.Sprintf("%d", v)
+		case float64:
+			repairAttrs[4] = fmt.Sprintf("%g", v)
+		}
+	}
+	// 覆盖 unsigned：将 UNSIGNED 属性写入 repairAttrs[0]（类型字符串）
+	if rule.Unsigned != nil {
+		typeUpper := strings.ToUpper(repairAttrs[0])
+		if *rule.Unsigned {
+			if !strings.Contains(typeUpper, "UNSIGNED") {
+				repairAttrs[0] = repairAttrs[0] + " unsigned"
+			}
+		} else {
+			if strings.Contains(typeUpper, "UNSIGNED") {
+				repairAttrs[0] = strings.ReplaceAll(repairAttrs[0], " unsigned", "")
+				repairAttrs[0] = strings.ReplaceAll(repairAttrs[0], " UNSIGNED", "")
+			}
+		}
+	}
+	// 覆盖 autoinc：将 AUTO_INCREMENT 属性写入 repairAttrs[0]（类型字符串）
+	if rule.AutoInc != nil {
+		typeUpper := strings.ToUpper(repairAttrs[0])
+		if *rule.AutoInc {
+			if !strings.Contains(typeUpper, "AUTO_INCREMENT") {
+				repairAttrs[0] = repairAttrs[0] + " AUTO_INCREMENT"
+			}
+		} else {
+			if strings.Contains(typeUpper, "AUTO_INCREMENT") {
+				repairAttrs[0] = strings.ReplaceAll(repairAttrs[0], " AUTO_INCREMENT", "")
+				repairAttrs[0] = strings.ReplaceAll(repairAttrs[0], "auto_increment", "")
+			}
+		}
+	}
+}
+
 func listMariaDBSequenceNames(db *sql.DB, schema string) ([]string, error) {
 	rows, err := db.Query(`
 SELECT TABLE_NAME
@@ -414,7 +505,7 @@ func (stcls *schemaTable) tableExistsByDrive(db *sql.DB, drive, schema, table, o
 	if stcls != nil && stcls.tableExistenceCache != nil {
 		kind := strings.ToLower(strings.TrimSpace(objectKind))
 		if kind == "" || kind == "table" {
-			if tables, ok := stcls.tableExistenceCache[drive+"|"+strings.ToUpper(schema)]; ok {
+			if tables, ok := stcls.tableExistenceCache[tableExistenceCacheKey(db, drive, schema)]; ok {
 				_, exists := tables[strings.ToUpper(table)]
 				return exists, nil
 			}

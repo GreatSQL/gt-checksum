@@ -72,6 +72,8 @@ type RulesS struct {
 	// OFF = do not add (default)
 	// Only valid when checkObject=struct.
 	RequirePK string // ON | OFF
+	// DTypeMappingFile 指定用户自定义数据类型映射规则文件路径（YAML 或 JSON）
+	DTypeMappingFile string
 }
 
 type LogS struct {
@@ -130,6 +132,8 @@ type ConfigParameter struct {
 	// ColumnPlan is populated during startup from SchemaV.Columns.
 	// nil means full-table compare mode (columns parameter not set).
 	ColumnPlan *TableColumnPlan
+	// PreviewDTypeMapping 为 true 时，加载规则后输出映射预览表并退出
+	PreviewDTypeMapping bool
 }
 
 var rc ConfigParameter

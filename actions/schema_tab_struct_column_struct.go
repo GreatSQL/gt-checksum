@@ -314,6 +314,7 @@ func (stcls *schemaTable) reconcileColumnDiffs(
 							sourceOriginalColName,
 							cm.sourceColumnMap[v1],
 							stcls.destVersionInfo(),
+							stcls.schema, stcls.table,
 						)
 					} else {
 						sourceCanonical = schemacompat.CanonicalizeColumnForComparison(
@@ -323,6 +324,7 @@ func (stcls *schemaTable) reconcileColumnDiffs(
 							stcls.destVersionInfo(),
 							sms.sourceColumnDefinitions[sourceOriginalColName],
 							stcls.checkRules.MariaDBJSONTargetType,
+							stcls.schema, stcls.table,
 						)
 					}
 					destCanonical = schemacompat.CanonicalizeColumnForComparison(
@@ -332,6 +334,7 @@ func (stcls *schemaTable) reconcileColumnDiffs(
 						stcls.sourceVersionInfo(),
 						sms.destColumnDefinitions[destOriginalColName],
 						stcls.checkRules.MariaDBJSONTargetType,
+						destSchema, stcls.destTable,
 					)
 				}
 
@@ -371,15 +374,63 @@ func (stcls *schemaTable) reconcileColumnDiffs(
 								Reason:         decision.Reason,
 							})
 						} else {
+							// 检查 dTypeMapping 规则是否覆盖了该类型转换（如 CHAR→VARCHAR）
+							// 若覆盖则视为已知可接受的迁移转换，跳过 diff 标记
+							if !sms.isOracleToMySQL && schemacompat.GlobalDTypeMappingRules != nil {
+								var dtRules []schemacompat.TypeMappingRule
+								if stcls.isMariaDBToMySQL() {
+									dtRules = schemacompat.GlobalDTypeMappingRules.DTypeMapping.MariaDBToMySQL
+								} else {
+									dtRules = schemacompat.GlobalDTypeMappingRules.DTypeMapping.MySQLUpgrade
+								}
+								sourceNullable := sourceCanonical.Nullable
+								if schemacompat.IsDTypeMappingCoveredTransition(dtRules, sourceType, destType, sourceNullable, sourceOriginalColName, sourceCanonical.AutoIncrement, stcls.schema, stcls.table) {
+									vlog = fmt.Sprintf("(%d) %s Column %s type transition %s->%s covered by dTypeMapping rule, skipping diff",
+										logThreadSeq, event, repairColumnName, sourceType, destType)
+									global.Wlog.Debug(vlog)
+									goto skipTypeMismatch
+								}
+							}
 							tableAbnormalBool = true
 							vlog = fmt.Sprintf("(%d) %s Column %s definition mismatch: source=%s, dest=%s, reason=%s",
 								logThreadSeq, event, repairColumnName, sourceType, destType, decision.Reason)
 							global.Wlog.Warn(vlog)
+						skipTypeMismatch:
 						}
 					} else if decision.State == schemacompat.CompatibilityNormalizedEqual {
-						vlog = fmt.Sprintf("(%d) %s Column %s definition normalized-equal: source=%s, dest=%s, reason=%s",
-							logThreadSeq, event, repairColumnName, sourceType, destType, decision.Reason)
-						global.Wlog.Debug(vlog)
+						// 即使 source/dest 规范化后相等，也需检查 dTypeMapping 规则是否要求不同的目标类型
+						dtypeMismatch := false
+						if !sms.isOracleToMySQL && schemacompat.GlobalDTypeMappingRules != nil {
+							var dtRules []schemacompat.TypeMappingRule
+							if stcls.isMariaDBToMySQL() {
+								dtRules = schemacompat.GlobalDTypeMappingRules.DTypeMapping.MariaDBToMySQL
+							} else {
+								dtRules = schemacompat.GlobalDTypeMappingRules.DTypeMapping.MySQLUpgrade
+							}
+							ctx := schemacompat.BuildMappingContext(sourceType, sourceCanonical.Nullable, sourceOriginalColName, sourceCanonical.AutoIncrement, stcls.schema, stcls.table)
+							if mappedType, _, matched := schemacompat.MatchUserRule(dtRules, ctx); matched {
+								mappedBase := strings.ToUpper(strings.Fields(mappedType)[0])
+								if idx2 := strings.IndexByte(mappedBase, '('); idx2 >= 0 {
+									mappedBase = mappedBase[:idx2]
+								}
+								destBase := strings.ToUpper(strings.Fields(destType)[0])
+								if idx2 := strings.IndexByte(destBase, '('); idx2 >= 0 {
+									destBase = destBase[:idx2]
+								}
+								if mappedBase != destBase {
+									dtypeMismatch = true
+									tableAbnormalBool = true
+									vlog = fmt.Sprintf("(%d) %s Column %s type mismatch (dTypeMapping rule requires %s but dest is %s): source=%s, dest=%s",
+										logThreadSeq, event, repairColumnName, mappedType, destType, sourceType, destType)
+									global.Wlog.Warn(vlog)
+								}
+							}
+						}
+						if !dtypeMismatch {
+							vlog = fmt.Sprintf("(%d) %s Column %s definition normalized-equal: source=%s, dest=%s, reason=%s",
+								logThreadSeq, event, repairColumnName, sourceType, destType, decision.Reason)
+							global.Wlog.Debug(vlog)
+						}
 					}
 				} else if sourceType != destType {
 					tableAbnormalBool = true
@@ -669,6 +720,13 @@ func (stcls *schemaTable) reconcileColumnDiffs(
 					}
 					originalLastColumn := cm.getTargetPositionColumnName(lastcolumn)
 					repairAttrs := append([]string(nil), alterColumnData...)
+					// 保存原始源端类型，供 applyDTypeMappingOverrides 规则匹配使用
+					// BuildTargetColumnRepairPlan 可能将 repairAttrs[0] 从源类型改写为目标类型（如 char→varchar），
+					// 若用改写后的类型匹配 source_type 规则会失败，因此必须在改写前保存。
+					originalSourceType := ""
+					if len(repairAttrs) > 0 {
+						originalSourceType = repairAttrs[0]
+					}
 					if sms.useCanonicalCompare {
 						var repairPlan schemacompat.ColumnRepairPlan
 						if sms.isOracleToMySQL {
@@ -676,6 +734,7 @@ func (stcls *schemaTable) reconcileColumnDiffs(
 								sourceOriginalColName,
 								repairAttrs,
 								stcls.destVersionInfo(),
+								stcls.schema, stcls.table,
 							)
 						} else {
 							repairPlan = schemacompat.BuildTargetColumnRepairPlan(
@@ -685,6 +744,7 @@ func (stcls *schemaTable) reconcileColumnDiffs(
 								stcls.destVersionInfo(),
 								sms.sourceColumnDefinitions[sourceOriginalColName],
 								stcls.checkRules.MariaDBJSONTargetType,
+								stcls.schema, stcls.table,
 							)
 						}
 						if len(repairAttrs) < 6 {
@@ -719,6 +779,8 @@ func (stcls *schemaTable) reconcileColumnDiffs(
 							repairAttrs[3] = "YES"
 						}
 					}
+					// 应用 dTypeMapping 覆盖属性（nullable/default）到修复 SQL
+					applyDTypeMappingOverrides(repairAttrs, sourceOriginalColName, sms.isOracleToMySQL, stcls.isMariaDBToMySQL(), originalSourceType, stcls.schema, stcls.table)
 					// 检查目标表是否存在主键
 					if mysqlDataFix, ok := cm.dbf.DataAbnormalFix().(*mysql.MysqlDataAbnormalFixStruct); ok {
 						mysqlDataFix.CheckDestTableHasPrimaryKey(stcls.destDB, logThreadSeq)
@@ -745,6 +807,11 @@ func (stcls *schemaTable) reconcileColumnDiffs(
 				originalColName := cm.getSourceOriginalColumnName(v1)
 				originalLastColumn := cm.getTargetPositionColumnName(lastcolumn)
 				repairAttrs := append([]string(nil), cm.sourceColumnMap[v1]...)
+				// 保存原始源端类型，供 applyDTypeMappingOverrides 规则匹配使用
+				originalSourceTypeAdd := ""
+				if len(repairAttrs) > 0 {
+					originalSourceTypeAdd = repairAttrs[0]
+				}
 				if sms.useCanonicalCompare {
 					var repairPlan schemacompat.ColumnRepairPlan
 					if sms.isOracleToMySQL {
@@ -752,6 +819,7 @@ func (stcls *schemaTable) reconcileColumnDiffs(
 							originalColName,
 							repairAttrs,
 							stcls.destVersionInfo(),
+							stcls.schema, stcls.table,
 						)
 					} else {
 						repairPlan = schemacompat.BuildTargetColumnRepairPlan(
@@ -761,6 +829,7 @@ func (stcls *schemaTable) reconcileColumnDiffs(
 							stcls.destVersionInfo(),
 							sms.sourceColumnDefinitions[originalColName],
 							stcls.checkRules.MariaDBJSONTargetType,
+							stcls.schema, stcls.table,
 						)
 					}
 					if len(repairAttrs) < 6 {
@@ -794,6 +863,8 @@ func (stcls *schemaTable) reconcileColumnDiffs(
 						repairAttrs[3] = "YES"
 					}
 				}
+				// 应用 dTypeMapping 覆盖属性（nullable/default）到修复 SQL
+				applyDTypeMappingOverrides(repairAttrs, originalColName, sms.isOracleToMySQL, stcls.isMariaDBToMySQL(), originalSourceTypeAdd, stcls.schema, stcls.table)
 				// 检查目标表是否存在主键
 				if mysqlDataFix, ok := cm.dbf.DataAbnormalFix().(*mysql.MysqlDataAbnormalFixStruct); ok {
 					mysqlDataFix.CheckDestTableHasPrimaryKey(stcls.destDB, logThreadSeq)

@@ -7,6 +7,7 @@ import (
 	"gt-checksum/dbExec"
 	"gt-checksum/global"
 	"gt-checksum/inputArg"
+	"gt-checksum/schemacompat"
 	"os"
 	"regexp"
 	"strings"
@@ -92,8 +93,8 @@ type schemaTable struct {
 	// 仅在 Oracle 源端启用；一次 dba_tab_columns 扫描替代 N 次逐表 Q_table_columns。
 	sourceOracleColumnsCache map[string]map[string][]map[string]interface{}
 
-	// tableExistenceCache 按 "drive|SCHEMA" 预加载 schema 下所有 BASE TABLE 名称（统一大写）。
-	// 消除 TableColumnNameCheck 中 42 次 tableExistsByDrive 的 COUNT(1) 小查询。
+	// tableExistenceCache 按 "dbPtr|drive|SCHEMA" 预加载 schema 下所有 BASE TABLE 名称（统一大写）。
+	// dbPtr 区分源/目标连接，避免同 drive+schema 场景下表名混淆。消除 tableExistsByDrive 的 COUNT(1) 小查询。
 	tableExistenceCache map[string]map[string]struct{}
 
 	// partitionedTableCache 按 "drive|SCHEMA" 预加载 schema 下「已分区」表名（统一大写）。
@@ -263,6 +264,19 @@ func dbOpenTest(drive, jdbc string) *sql.DB {
 func SchemaTableInit(m *inputArg.ConfigParameter) *schemaTable {
 	sdb := dbOpenTest(m.SecondaryL.DsnsV.SrcDrive, m.SecondaryL.DsnsV.SrcJdbc)
 	ddb := dbOpenTest(m.SecondaryL.DsnsV.DestDrive, m.SecondaryL.DsnsV.DestJdbc)
+
+	// 加载用户自定义数据类型映射规则
+	if path := strings.TrimSpace(m.SecondaryL.RulesV.DTypeMappingFile); path != "" {
+		if err := schemacompat.LoadDTypeMappingFile(path); err != nil {
+			global.Wlog.Warn(fmt.Sprintf("dTypeMapping: failed to load mapping file %q: %v", path, err))
+		}
+	}
+
+	// 预览模式：输出规则表后退出
+	if m.PreviewDTypeMapping {
+		schemacompat.PrintDTypeMappingPreview()
+		os.Exit(0)
+	}
 
 	// 初始化表映射关系
 	tableMappings := make(map[string]string)

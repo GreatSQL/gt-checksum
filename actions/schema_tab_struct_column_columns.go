@@ -85,11 +85,13 @@ func (stcls *schemaTable) detectOracleToMySQLColumnHardMismatch(
 		}
 		sourceCanonical := schemacompat.CanonicalizeOracleColumnForComparison(
 			sourceOriginal, sourceAttrs, stcls.destVersionInfo(),
+			stcls.schema, stcls.table,
 		)
 		destCanonical := schemacompat.CanonicalizeColumnForComparison(
 			destOriginal, destAttrs,
 			stcls.destVersionInfo(), stcls.sourceVersionInfo(),
 			"", stcls.checkRules.MariaDBJSONTargetType,
+			stcls.schema, stcls.table,
 		)
 		checks := []struct {
 			kind     string
