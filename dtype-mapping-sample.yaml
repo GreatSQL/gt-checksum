@@ -1,0 +1,52 @@
+dTypeMapping:
+  oracle_to_mysql:
+    - source_type: NUMBER
+      target_type: BIGINT
+      condition: "p <= 19 and s = 0"
+      description: "整数小于等于19位映射为BIGINT"
+    - source_type: NUMBER
+      target_type: DECIMAL
+      description: "其余NUMBER映射为DECIMAL(p,s)"
+  mariadb_to_mysql:
+    # 案例1：schema 级 — sbtest 下所有表都用同一规则
+    - object: sbtest.*
+      source_type: CHAR
+      target_type: VARCHAR
+      nullable: false
+      default: ''
+    # 案例2：表级 — 只映射 sbtest.t9
+    - object: sbtest.t9
+      source_type: INT
+      target_type: BIGINT
+      nullable: false
+      unsigned: true
+      autoinc: true
+    # 案例3：列级 — 只映射 sbtest.t9 的 c 和 k 列
+    - source_type: CHAR
+      target_type: VARCHAR
+      object: sbtest.t9.c
+      nullable: false
+      default: ''
+    - source_type: INT
+      target_type: BIGINT
+      object: sbtest.t9.k
+      nullable: false
+      unsigned: true
+      autoinc: true
+  mysql_upgrade:
+    - source_type: CHAR
+      target_type: VARCHAR
+      object: sbtest.t9.c
+      nullable: true
+      default: 'nil'
+    - source_type: INT
+      target_type: BIGINT
+      object: sbtest.t9.k
+      nullable: true
+      unsigned: false
+    - source_type: INT
+      target_type: BIGINT
+      object: sbtest.t9.id
+      nullable: false
+      unsigned: true
+      autoinc: true

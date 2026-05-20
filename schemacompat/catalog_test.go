@@ -51,7 +51,7 @@ func TestBuildTargetColumnRepairPlanMariaDBToMariaDB(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			plan := BuildTargetColumnRepairPlan("col", []string{tt.columnType, "", ""}, tt.srcInfo, tt.dstInfo, "", "")
+			plan := BuildTargetColumnRepairPlan("col", []string{tt.columnType, "", ""}, tt.srcInfo, tt.dstInfo, "", "", "", "")
 			if tt.wantContain != "" && !containsStr(plan.Type, tt.wantContain) {
 				t.Fatalf("expected plan.Type %q to contain %q", plan.Type, tt.wantContain)
 			}
@@ -163,7 +163,7 @@ func TestBuildTargetColumnRepairPlanGeneratedColumn(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			attrs := []string{tt.columnType, "null", "null", "YES", "empty", ""}
-			plan := BuildTargetColumnRepairPlan(tt.colName, attrs, tt.srcInfo, tt.dstInfo, tt.createDefinition, "")
+			plan := BuildTargetColumnRepairPlan(tt.colName, attrs, tt.srcInfo, tt.dstInfo, tt.createDefinition, "", "", "")
 			if plan.UseDirectDefinition != tt.wantDirect {
 				t.Fatalf("UseDirectDefinition = %v, want %v (DirectDefinition=%q)", plan.UseDirectDefinition, tt.wantDirect, plan.DirectDefinition)
 			}
@@ -464,8 +464,8 @@ func TestDecideColumnDefinitionCompatibilityMariaDB100GeneratedExpression(t *tes
 				}
 			}
 
-			srcCanonical := CanonicalizeColumnForComparison(colName, srcAttrs, mariaDB100, mysql80, tt.srcDefinition, "")
-			dstCanonical := CanonicalizeColumnForComparison(colName, dstAttrs, mysql80, mariaDB100, tt.dstDefinition, "")
+			srcCanonical := CanonicalizeColumnForComparison(colName, srcAttrs, mariaDB100, mysql80, tt.srcDefinition, "", "", "")
+			dstCanonical := CanonicalizeColumnForComparison(colName, dstAttrs, mysql80, mariaDB100, tt.dstDefinition, "", "", "")
 
 			decision := DecideColumnDefinitionCompatibility(srcCanonical, dstCanonical)
 			if tt.wantCompat && decision.IsMismatch() {

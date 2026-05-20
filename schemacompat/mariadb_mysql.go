@@ -132,7 +132,7 @@ func DetectMariaDBUnsupportedTableFeatures(createSQL string, sourceInfo, targetI
 	return features
 }
 
-func CanonicalizeColumnForComparison(name string, attrs []string, sourceInfo, targetInfo global.MySQLVersionInfo, createDefinition, jsonTargetType string) CanonicalColumn {
+func CanonicalizeColumnForComparison(name string, attrs []string, sourceInfo, targetInfo global.MySQLVersionInfo, createDefinition, jsonTargetType string, schema, table string) CanonicalColumn {
 	column := CanonicalizeMySQLColumn(name, attrs, sourceInfo)
 	column.GeneratedExpression, column.GeneratedKind = extractGeneratedColumnMetadata(column.RawType, createDefinition, sourceInfo)
 
@@ -174,12 +174,47 @@ func CanonicalizeColumnForComparison(name string, attrs []string, sourceInfo, ta
 				column.NormalizedCollation = normalizeCollation(targetDefaultCollation(targetInfo, column.NormalizedCharset))
 			}
 		}
+		// MariaDB→MySQL 场景：在比较阶段应用 mariadb_to_mysql 用户规则，
+		// 将源端列类型映射为目标端期望类型后再做比较，使校验能感知类型差异。
+		if GlobalDTypeMappingRules != nil && len(GlobalDTypeMappingRules.DTypeMapping.MariaDBToMySQL) > 0 {
+			ctx := BuildMappingContext(column.NormalizedType, column.Nullable, name, column.AutoIncrement, schema, table)
+			if rule, _, ok := MatchUserRuleWithOverrides(GlobalDTypeMappingRules.DTypeMapping.MariaDBToMySQL, ctx); ok && rule != nil {
+				column.NormalizedType = ApplyPrecisionToTargetType(rule.TargetType, ctx)
+				if rule.Nullable != nil {
+					column.Nullable = *rule.Nullable
+				}
+				if rule.Default != nil {
+					column.DefaultValue = formatDTypeMappingDefault(rule.Default)
+				}
+			}
+		}
+	}
+
+	// MySQL→MySQL 升级场景：在比较阶段应用 mysql_upgrade 用户规则，
+	// 仅对源端列（旧版本）应用映射，使比较能感知目标端未完成迁移的差异。
+	// 通过版本号判断当前处理的是源端列（sourceInfo 版本 < targetInfo 版本）；
+	// 目标端调用时 sourceInfo/targetInfo 已互换，版本号条件不满足，映射不会重复应用。
+	if sourceInfo.Flavor == global.DatabaseFlavorMySQL && targetInfo.Flavor == global.DatabaseFlavorMySQL &&
+		GlobalDTypeMappingRules != nil && len(GlobalDTypeMappingRules.DTypeMapping.MySQLUpgrade) > 0 &&
+		(sourceInfo.Major < targetInfo.Major ||
+			(sourceInfo.Major == targetInfo.Major && sourceInfo.Minor < targetInfo.Minor)) {
+		ctx := BuildMappingContext(column.NormalizedType, column.Nullable, name, column.AutoIncrement, schema, table)
+		if rule, _, ok := MatchUserRuleWithOverrides(GlobalDTypeMappingRules.DTypeMapping.MySQLUpgrade, ctx); ok && rule != nil {
+			column.NormalizedType = ApplyPrecisionToTargetType(rule.TargetType, ctx)
+			// 将规则的 nullable/default 覆盖写入 canonical，使比较阶段能感知期望值
+			if rule.Nullable != nil {
+				column.Nullable = *rule.Nullable
+			}
+			if rule.Default != nil {
+				column.DefaultValue = formatDTypeMappingDefault(rule.Default)
+			}
+		}
 	}
 
 	return column
 }
 
-func BuildTargetColumnRepairPlan(name string, attrs []string, sourceInfo, targetInfo global.MySQLVersionInfo, createDefinition, jsonTargetType string) ColumnRepairPlan {
+func BuildTargetColumnRepairPlan(name string, attrs []string, sourceInfo, targetInfo global.MySQLVersionInfo, createDefinition, jsonTargetType string, schema, table string) ColumnRepairPlan {
 	plan := ColumnRepairPlan{
 		Type:      normalizeNullish(getColumnAttr(attrs, 0)),
 		Charset:   normalizeNullish(getColumnAttr(attrs, 1)),
@@ -201,12 +236,39 @@ func BuildTargetColumnRepairPlan(name string, attrs []string, sourceInfo, target
 	}
 
 	if sourceInfo.Flavor != global.DatabaseFlavorMariaDB || targetInfo.Flavor != global.DatabaseFlavorMySQL {
+		// MySQL→MySQL 升级场景：应用 mysql_upgrade 用户规则
+		if sourceInfo.Flavor == global.DatabaseFlavorMySQL && targetInfo.Flavor == global.DatabaseFlavorMySQL &&
+			GlobalDTypeMappingRules != nil && len(GlobalDTypeMappingRules.DTypeMapping.MySQLUpgrade) > 0 {
+			nullable := strings.EqualFold(normalizeNullish(getColumnAttr(attrs, 3)), "yes")
+			autoInc := strings.Contains(strings.ToLower(plan.Type), "auto_increment")
+			ctx := BuildMappingContext(plan.Type, nullable, name, autoInc, schema, table)
+			if userType, _, ok := MatchUserRule(GlobalDTypeMappingRules.DTypeMapping.MySQLUpgrade, ctx); ok {
+				plan.Type = ApplyPrecisionToTargetType(userType, ctx)
+			}
+		}
 		// MariaDB→MariaDB: COMPRESSED, PERSISTENT and similar attributes are
 		// natively supported on the target side — do not strip them.
 		if targetInfo.Flavor != global.DatabaseFlavorMariaDB {
 			plan.Type = stripMariaDBOnlyColumnAttributes(plan.Type)
 		}
 		return plan
+	}
+
+	// MariaDB→MySQL：先检查用户自定义规则
+	if GlobalDTypeMappingRules != nil && len(GlobalDTypeMappingRules.DTypeMapping.MariaDBToMySQL) > 0 {
+		nullable := strings.EqualFold(normalizeNullish(getColumnAttr(attrs, 3)), "yes")
+		autoInc := strings.Contains(strings.ToLower(plan.Type), "auto_increment")
+		ctx := BuildMappingContext(plan.Type, nullable, name, autoInc, schema, table)
+		if userType, _, ok := MatchUserRule(GlobalDTypeMappingRules.DTypeMapping.MariaDBToMySQL, ctx); ok {
+			plan.Type = ApplyPrecisionToTargetType(userType, ctx)
+			plan.Type = normalizeMySQLRepairColumnType(plan.Type)
+			if plan.Collation != "" && plan.Collation != "null" {
+				if mapped, ok2 := MapMariaDBCollationToMySQL(plan.Collation); ok2 {
+					plan.Collation = mapped
+				}
+			}
+			return plan
+		}
 	}
 
 	switch {

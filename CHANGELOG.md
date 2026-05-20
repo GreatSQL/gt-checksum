@@ -1,11 +1,20 @@
 ## 4.0.0
+- [功能新增]: 新增 `dTypeMappingFile` 参数，支持用户自定义数据类型映射规则文件（YAML/JSON 格式），支持 `oracle_to_mysql`、`mysql_upgrade`、`mariadb_to_mysql` 三种迁移场景，支持 `schema/table/column` 级别的精细化映射规则，支持 `nullable`、`unsigned`、`autoinc`、`default` 等属性覆盖。
+- [功能新增]: 新增 `--preview-dtype-mapping` CLI 参数，用于预览数据类型映射规则表后退出，便于调试和验证规则配置。
 - [功能新增]: 新增反向回滚SQL生成能力，支持通过 `genRollSQL` 参数（ON/OFF/自定义表名）控制是否为修复SQL生成对应的回滚语句（`INSERT` 的回滚为 `DELETE`，`DELETE` 的回滚为 `INSERT`），支持有主键/无主键表，回滚SQL文件存储在 `rollFileDir` 目录下，仅在 `datafix=file` 且 `checkObject=data` 时生效。
 - [功能新增]: 新增 `maxRollRowNum` 参数（默认值 10000），单表待修复行数超过该阈值时不生成回滚SQL，避免大表回滚文件过大；目标端表为空时始终生成 `TRUNCATE TABLE` 回滚SQL（忽略本参数）。
 - [功能新增]: 新增 SSL 加密连接支持，支持源端和目标端独立配置 SSL 参数（`srcSslCa/srcSslCert/srcSslKey/srcSslMode、dstSslCa/dstSslCert/dstSslKey/dstSslMode`），支持 `DISABLED/PREFERRED/REQUIRED/VERIFY_CA/VERIFY_IDENTITY` 五种模式。
 - [功能新增]: repairDB 工具新增目标端 SSL 连接配置支持（`dstSslCa/dstSslCert/dstSslKey/dstSslMode`）。
+- [功能优化]: 优化 COLLATE 修复逻辑，当存在 `dTypeMapping` 规则覆盖时，自动生成列级 `MODIFY COLUMN` SQL（同时包含 collation 和类型映射），而非表级 `CONVERT TO` SQL。
+- [功能优化]: 优化 utf8mb4 默认 collation 漂移检测（如 `utf8mb4_general_ci` ↔ `utf8mb4_0900_ai_ci`），返回 `WarnOnly` 以简化修复 SQL，仅生成一条表级 `CONVERT TO` 语句。
+- [功能优化]: 优化 `isCollationOnlyModifyColumn` 函数，剥离 `AFTER/FIRST` 子句后再判断是否仅修改 COLLATE，避免列顺序调整被误判为实质性属性变更。
+- [功能优化]: 优化源端表存在性检查，在表映射时验证源端表是否存在，避免映射不存在的表导致后续校验失败。
 - [功能优化]: 优化无主键表的 `DELETE` 修复逻辑，移除目标端 `COUNT` 查询，统一使用 `LIMIT 1` 简化语句生成，避免因 `NULL` 值导致的 `LIMIT` 计算错误。
 - [功能优化]: 新增 `mergeDuplicateDeleteLimits` 函数，合并相同 `WHERE` 条件的多条 `DELETE LIMIT` 语句，将重复语句的 `LIMIT` 值累加为一条，减少回滚SQL文件数量。
 - [功能优化]: refactor(repairDB): 拆分 `main.go` 为多文件模块化结构（`config/executor/lock/plan/sql_parser/stage/stats/types`）。
 - [功能优化]: refactor(oracle_random_data_load): 拆分 `main.go` 为多文件模块化结构（`config/generator/schema/types/util/worker`）。
+- [问题修复]: 修复 `global.Wlog` 空指针检查，避免日志初始化前调用 `Debug/Warn` 等方法导致 panic。
 - [问题修复]: 修复 Oracle `NUMBER(19,0)` 类型映射精度阈值（从 18 调整为 19），并新增 `tinyint(1)` ↔ `bit(1)` 类型等价映射。
+- [测试完善]: 新增 `dtype_mapping` 单元测试，覆盖多种映射场景、条件表达式、对象级别匹配及边界情况。
+- [测试完善]: 新增 `schema_tab_struct_advisory`、`schema_tab_struct_column_existence`、`schema_tab_struct_struct`、`schema_tab_struct_util` 等多个单元测试，提升 struct 校验与修复逻辑的测试覆盖率。
 - [测试完善]: 新增回滚SQL生成相关的单元测试，覆盖 `rollback_sql_util.go` 和 `mergeDuplicateDeleteLimits` 函数的各种场景。

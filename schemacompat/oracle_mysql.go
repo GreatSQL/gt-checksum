@@ -257,7 +257,7 @@ func normalizeOracleDefault(v string) string {
 
 // CanonicalizeOracleColumnForComparison builds a CanonicalColumn from Oracle
 // column metadata for comparison against a MySQL target column.
-func CanonicalizeOracleColumnForComparison(name string, attrs []string, destVersion global.MySQLVersionInfo) CanonicalColumn {
+func CanonicalizeOracleColumnForComparison(name string, attrs []string, destVersion global.MySQLVersionInfo, schema, table string) CanonicalColumn {
 	getAttr := func(idx int) string {
 		if idx < 0 || idx >= len(attrs) {
 			return ""
@@ -266,7 +266,14 @@ func CanonicalizeOracleColumnForComparison(name string, attrs []string, destVers
 	}
 
 	rawType := normalizeNullish(getAttr(0))
+	nullable := normalizeOracleNullable(getAttr(3))
+	ctx := BuildMappingContext(rawType, nullable, name, false, schema, table)
 	normalizedType := NormalizeOracleColumnType(rawType)
+	if GlobalDTypeMappingRules != nil {
+		if userType, _, ok := MatchUserRule(GlobalDTypeMappingRules.DTypeMapping.OracleToMySQL, ctx); ok {
+			normalizedType = ApplyPrecisionToTargetType(userType, ctx)
+		}
+	}
 
 	return CanonicalColumn{
 		Name:                name,
@@ -276,7 +283,7 @@ func CanonicalizeOracleColumnForComparison(name string, attrs []string, destVers
 		NormalizedCharset:   "",
 		Collation:           "",
 		NormalizedCollation: "",
-		Nullable:            normalizeOracleNullable(getAttr(3)),
+		Nullable:            nullable,
 		DefaultValue:        normalizeOracleDefault(getAttr(4)),
 		Comment:             normalizeNullish(getAttr(5)),
 		Visibility:          ColumnVisibilityVisible,
@@ -499,7 +506,7 @@ func DecideOracleToMySQLDefaultCompatibility(source, target CanonicalColumn) Com
 
 // BuildOracleToMySQLRepairPlan generates a ColumnRepairPlan that converts
 // Oracle column attributes to MySQL-compatible repair attributes.
-func BuildOracleToMySQLRepairPlan(name string, attrs []string, destVersion global.MySQLVersionInfo) ColumnRepairPlan {
+func BuildOracleToMySQLRepairPlan(name string, attrs []string, destVersion global.MySQLVersionInfo, schema, table string) ColumnRepairPlan {
 	getAttr := func(idx int) string {
 		if idx < 0 || idx >= len(attrs) {
 			return ""
@@ -508,7 +515,14 @@ func BuildOracleToMySQLRepairPlan(name string, attrs []string, destVersion globa
 	}
 
 	rawType := normalizeNullish(getAttr(0))
+	nullable := normalizeOracleNullable(getAttr(3))
+	ctx := BuildMappingContext(rawType, nullable, name, false, schema, table)
 	mysqlType := NormalizeOracleColumnType(rawType)
+	if GlobalDTypeMappingRules != nil {
+		if userType, _, ok := MatchUserRule(GlobalDTypeMappingRules.DTypeMapping.OracleToMySQL, ctx); ok {
+			mysqlType = ApplyPrecisionToTargetType(userType, ctx)
+		}
+	}
 
 	return ColumnRepairPlan{
 		Type:      mysqlType,
@@ -536,9 +550,17 @@ func GenerateOracleToMySQLCreateTableSQL(destSchema, destTable string, oracleCol
 			continue
 		}
 		rawType := fmt.Sprintf("%v", col["columnType"])
+		isNullStr := strings.TrimSpace(fmt.Sprintf("%v", col["isNull"]))
+		isNullable := normalizeOracleNullable(isNullStr)
+		ctx := BuildMappingContext(rawType, isNullable, colName, false, destSchema, destTable)
 		mysqlType := NormalizeOracleColumnType(rawType)
+		if GlobalDTypeMappingRules != nil {
+			if userType, _, ok := MatchUserRule(GlobalDTypeMappingRules.DTypeMapping.OracleToMySQL, ctx); ok {
+				mysqlType = ApplyPrecisionToTargetType(userType, ctx)
+			}
+		}
 
-		nullable := strings.TrimSpace(fmt.Sprintf("%v", col["isNull"]))
+		nullable := isNullStr
 		nullClause := ""
 		if strings.EqualFold(nullable, "N") || strings.EqualFold(nullable, "NO") {
 			nullClause = " NOT NULL"

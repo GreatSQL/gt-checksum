@@ -5,7 +5,8 @@ import (
 )
 
 // TestDecideCollationCompatibility_UTF8MB4DefaultDrift 测试 MySQL 5.6/5.7 到 8.0 的 utf8mb4 默认 collation 漂移
-// 修复后应返回 CompatibilityUnsupported 而不是 CompatibilityWarnOnly
+// 返回 CompatibilityWarnOnly，使列级对比走 columnCollationRepairCandidates → buildColumnCollationRepairSQL
+// 路径，由 canUseTableCharsetConvertForColumnCollationDrift 统一生成单条 CONVERT TO，而非逐列 MODIFY COLUMN
 func TestDecideCollationCompatibility_UTF8MB4DefaultDrift(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -17,13 +18,13 @@ func TestDecideCollationCompatibility_UTF8MB4DefaultDrift(t *testing.T) {
 			name:          "MySQL 5.6/5.7 to 8.0: utf8mb4_general_ci -> utf8mb4_0900_ai_ci",
 			source:        "utf8mb4_general_ci",
 			target:        "utf8mb4_0900_ai_ci",
-			expectedState: CompatibilityUnsupported,
+			expectedState: CompatibilityWarnOnly,
 		},
 		{
 			name:          "MySQL 8.0 to 5.6/5.7: utf8mb4_0900_ai_ci -> utf8mb4_general_ci",
 			source:        "utf8mb4_0900_ai_ci",
 			target:        "utf8mb4_general_ci",
-			expectedState: CompatibilityUnsupported,
+			expectedState: CompatibilityWarnOnly,
 		},
 		{
 			name:          "Same collation: utf8mb4_general_ci -> utf8mb4_general_ci",

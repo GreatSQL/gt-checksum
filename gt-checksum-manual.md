@@ -520,6 +520,7 @@ SET character_set_client = DEFAULT;
 | 参数名 | 可选值 | 默认值 | 说明 |
 |---|---|---|---|
 | `mariaDBJSONTargetType` | `JSON` / `LONGTEXT` / `TEXT` | `JSON` | 控制 `MariaDB JSON` alias 在 `MariaDB -> MySQL 8.0/8.4` 结构迁移时的目标列类型。`JSON` 语义最接近；`LONGTEXT` 适合作为兼容性保底；`TEXT` 当前已实现但未纳入发布级实库基线。 |
+| `dTypeMappingFile` | 文件路径 | 空 | 用户自定义数据类型映射规则文件路径，支持 YAML（`.yaml`/`.yml`）或 JSON（`.json`）格式。不设置则使用内置默认映射规则。规则采用 first-match 语义：文件中先定义的规则优先生效。支持三种迁移场景：`oracle_to_mysql` / `mysql_upgrade` / `mariadb_to_mysql`。详见下方 [dTypeMapping 数据类型映射规则](#dtype-mapping-数据类型映射规则) 章节。 |
 | `datafix` | `file` / `table` | `file` | `checkObject=struct` 场景建议固定为 `file`，先生成 fix SQL 供 DBA 审查，再使用 `repairDB` 回放。 |
 | `requirePK` | `ON` / `OFF` | `OFF` | 仅在 `checkObject=struct` 模式下生效。`ON` 时为无主键表自动添加 `my_row_id` 隐藏列（需同时满足：无主键、无 NOT NULL 唯一索引、目标端未启用 `sql_generate_invisible_primary_key`）。适用于 MySQL 单机实例迁移到 MGR 环境的场景。 |
 
@@ -611,6 +612,91 @@ rollFileDir = ./rollsql
 genRollSQL = "mydb.users, mydb.orders%"
 maxRollRowNum = 5000
 ```
+
+### dTypeMapping 数据类型映射规则
+
+v4.0.0 新增用户自定义数据类型映射规则功能，允许用户通过 YAML 或 JSON 文件定义源端到目标端的类型映射规则，覆盖内置默认映射逻辑。
+
+**支持的迁移场景**：
+
+| 场景标识 | 说明 |
+|---|---|
+| `oracle_to_mysql` | Oracle → MySQL 迁移 |
+| `mysql_upgrade` | MySQL 版本升级（如 5.7 → 8.0） |
+| `mariadb_to_mysql` | MariaDB → MySQL 迁移 |
+
+**规则文件格式**（YAML）：
+
+```yaml
+dTypeMapping:
+  oracle_to_mysql:
+    - source_type: NUMBER
+      target_type: BIGINT
+      condition: "p <= 19 and s = 0"
+      description: "整数小于等于19位映射为BIGINT"
+    - source_type: NUMBER
+      target_type: DECIMAL
+      description: "其余NUMBER映射为DECIMAL(p,s)"
+
+  mysql_upgrade:
+    - source_type: CHAR
+      target_type: VARCHAR
+
+  mariadb_to_mysql:
+    - source_type: ENUM
+      target_type: TINYINT
+```
+
+**规则字段说明**：
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `source_type` | 是 | 源端数据类型（如 `NUMBER`、`CHAR`、`ENUM`） |
+| `target_type` | 是 | 目标端数据类型（如 `BIGINT`、`VARCHAR`、`TINYINT`） |
+| `condition` | 否 | 条件表达式，仅当条件满足时才应用规则（如 `p <= 19 and s = 0`） |
+| `object` | 否 | 对象级别匹配，支持 `schema.*`、`schema.table`、`schema.table.column` 三种格式 |
+| `column_pattern` | 否 | 列名正则表达式匹配（如 `^age_.*`） |
+| `nullable` | 否 | 覆盖目标端 nullable 属性（`true`/`false`） |
+| `unsigned` | 否 | 覆盖目标端 unsigned 属性（`true`/`false`） |
+| `autoinc` | 否 | 覆盖目标端 auto_increment 属性（`true`/`false`） |
+| `default` | 否 | 覆盖目标端默认值 |
+| `description` | 否 | 规则描述，仅用于文档目的 |
+
+**对象级别匹配示例**：
+
+```yaml
+dTypeMapping:
+  mariadb_to_mysql:
+    # 案例1：schema 级 — sbtest 下所有表都用同一规则
+    - object: sbtest.*
+      source_type: CHAR
+      target_type: VARCHAR
+
+    # 案例2：表级 — 只映射 sbtest.t9
+    - object: sbtest.t9
+      source_type: INT
+      target_type: BIGINT
+
+    # 案例3：列级 — 只映射 sbtest.t9 的 c 和 k 列
+    - source_type: CHAR
+      target_type: VARCHAR
+      object: sbtest.t9.c
+```
+
+**CLI 预览模式**：
+
+使用 `--preview-dtype-mapping` 参数可以预览映射规则表后退出，便于调试和验证规则配置：
+
+```bash
+gt-checksum -c gc.conf --preview-dtype-mapping
+```
+
+**注意事项**：
+1. 规则采用 first-match 语义：文件中先定义的规则优先生效。
+2. 未设置 `object` 字段的规则匹配所有对象。
+3. 条件表达式支持的变量：`p`（精度）、`s`（小数位）、`len`（长度）。
+4. 用户规则优先级高于内置默认映射规则。
+5. 映射规则同时影响校验比较阶段和修复 SQL 生成阶段。
 
 ### 推荐配置示例
 

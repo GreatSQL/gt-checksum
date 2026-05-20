@@ -130,7 +130,7 @@ func TestCanonicalizeOracleColumnForComparison(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			col := CanonicalizeOracleColumnForComparison(tt.name, tt.attrs, destVersion)
+			col := CanonicalizeOracleColumnForComparison(tt.name, tt.attrs, destVersion, "", "")
 			if col.NormalizedType != tt.wantType {
 				t.Errorf("NormalizedType = %q, want %q", col.NormalizedType, tt.wantType)
 			}
@@ -317,7 +317,7 @@ func TestNormalizeOracleDefault(t *testing.T) {
 
 func TestBuildOracleToMySQLRepairPlan(t *testing.T) {
 	attrs := []string{"NUMBER(10,2)", "null", "null", "Y", "", ""}
-	plan := BuildOracleToMySQLRepairPlan("price", attrs, global.MySQLVersionInfo{Major: 8, Minor: 0})
+	plan := BuildOracleToMySQLRepairPlan("price", attrs, global.MySQLVersionInfo{Major: 8, Minor: 0}, "", "")
 	if plan.Type != "decimal(10,2)" {
 		t.Errorf("RepairPlan.Type = %q, want %q", plan.Type, "decimal(10,2)")
 	}
@@ -366,8 +366,8 @@ func TestNullableNormalization_OracleYEquivalentToMySQLYES(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			oracleCanon := CanonicalizeOracleColumnForComparison("col", tt.oracleAttrs, destVersion)
-			mysqlCanon := CanonicalizeColumnForComparison("col", tt.mysqlAttrs, destVersion, destVersion, "", "")
+			oracleCanon := CanonicalizeOracleColumnForComparison("col", tt.oracleAttrs, destVersion, "", "")
+			mysqlCanon := CanonicalizeColumnForComparison("col", tt.mysqlAttrs, destVersion, destVersion, "", "", "", "")
 
 			got := oracleCanon.Nullable == mysqlCanon.Nullable
 			if got != tt.wantEqual {
