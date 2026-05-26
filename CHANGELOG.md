@@ -9,6 +9,7 @@
 - [功能新增]: 新增 `maxRollRowNum` 参数（默认值 10000），单表待修复行数超过该阈值时不生成回滚SQL，避免大表回滚文件过大；目标端表为空时始终生成 `TRUNCATE TABLE` 回滚SQL（忽略本参数）。
 - [功能新增]: 新增 SSL 加密连接支持，支持源端和目标端独立配置 SSL 参数（`srcSslCa/srcSslCert/srcSslKey/srcSslMode、dstSslCa/dstSslCert/dstSslKey/dstSslMode`），支持 `DISABLED/PREFERRED/REQUIRED/VERIFY_CA/VERIFY_IDENTITY` 五种模式。
 - [功能新增]: repairDB 工具新增目标端 SSL 连接配置支持（`dstSslCa/dstSslCert/dstSslKey/dstSslMode`）。
+- [性能优化]: 优化数据校验行数统计流程，count/sample/index/no-index 场景下源端与目标端行数改为并行查询，减少等待时间，并补充连接获取失败日志。
 - [功能优化]: 优化断点续传在 `datafix=file` 场景下的 fixsql/rollsql 处理，续传时保留已完整提交的事务并清理不完整内容，避免重复生成修复SQL。
 - [功能优化]: 优化 COLLATE 修复逻辑，当存在 `dTypeMapping` 规则覆盖时，自动生成列级 `MODIFY COLUMN` SQL（同时包含 collation 和类型映射），而非表级 `CONVERT TO` SQL。
 - [功能优化]: 优化 utf8mb4 默认 collation 漂移检测（如 `utf8mb4_general_ci` ↔ `utf8mb4_0900_ai_ci`），返回 `WarnOnly` 以简化修复 SQL，仅生成一条表级 `CONVERT TO` 语句。

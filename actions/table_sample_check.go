@@ -30,13 +30,14 @@ func (sp *SchedulePlan) sampSingleTableCheckProcessing(chanrowCount int, logThre
 	vlog = fmt.Sprintf("(%d) Verifying data for table without index %s.%s", logThreadSeq, sp.schema, sp.table)
 	global.Wlog.Info(vlog)
 	idxc := dbExec.IndexColumnStruct{Drivce: sp.sdrive, Schema: sp.schema, Table: sp.table, ColumnName: sp.columnName, ChanrowCount: chanrowCount, CaseSensitiveObjectName: sp.caseSensitiveObjectName}
-	sdb := sp.sdbPool.Get(int64(logThreadSeq))
-	_, err = idxc.TableIndexColumn().TableRows(sdb, int64(logThreadSeq))
-	sp.sdbPool.Put(sdb, int64(logThreadSeq))
-
-	ddb := sp.ddbPool.Get(int64(logThreadSeq))
-	_, err = idxc.TableIndexColumn().TableRows(ddb, int64(logThreadSeq))
-	sp.ddbPool.Put(ddb, int64(logThreadSeq))
+	idxcDest := dbExec.IndexColumnStruct{Drivce: sp.ddrive, Schema: sp.destSchema, Table: sp.getDestTableName(), ColumnName: sp.columnName, ChanrowCount: chanrowCount, CaseSensitiveObjectName: sp.caseSensitiveObjectName}
+	_, _, err, destErr := sp.querySourceTargetTableRows(idxc, idxcDest, int64(logThreadSeq))
+	if err != nil {
+		global.Wlog.Warn(fmt.Sprintf("(%d) Failed to retrieve source table row count for %s.%s: %v", logThreadSeq, sp.schema, sp.table, err))
+	}
+	if destErr != nil {
+		global.Wlog.Warn(fmt.Sprintf("(%d) Failed to retrieve target table row count for %s.%s: %v", logThreadSeq, sp.destSchema, sp.getDestTableName(), destErr))
+	}
 
 	pods := Pod{Schema: sp.schema, Table: sp.table,
 		IndexColumn: "NULL",
@@ -129,15 +130,13 @@ func (sp *SchedulePlan) sampSingleTableCheckProcessing(chanrowCount int, logThre
 */
 func (sp *SchedulePlan) DoSampleDataCheck() {
 	var (
-		stmpTableCount, dtmpTableCount uint64
-		chanrowCount                   int
-		err                            error
-		vlog                           string
-		queueDepth                     = sp.mqQueueDepth
-		sqlWhere                       = make(chanString, queueDepth)
-		selectSql                      = make(chanMap, queueDepth)
-		diffQueryData                  = make(chanDiffDataS, queueDepth)
-		fixSQL                         = make(chanFixSQLItem, queueDepth)
+		chanrowCount  int
+		vlog          string
+		queueDepth    = sp.mqQueueDepth
+		sqlWhere      = make(chanString, queueDepth)
+		selectSql     = make(chanMap, queueDepth)
+		diffQueryData = make(chanDiffDataS, queueDepth)
+		fixSQL        = make(chanFixSQLItem, queueDepth)
 	)
 	logThreadSeq := rand.Int63()
 	vlog = fmt.Sprintf("(%d) Starting sampling data checksum", logThreadSeq)
@@ -276,28 +275,19 @@ func (sp *SchedulePlan) DoSampleDataCheck() {
 		sp.chanrowCount = sp.chunkSize
 		sp.columnName = v
 
-		//统计表的总行数
-		sdb := sp.sdbPool.Get(logThreadSeq)
-		//查询源端的表总行数
 		idxc := dbExec.IndexColumnStruct{Schema: sourceSchema, Table: sourceTable, ColumnName: sp.columnName, Drivce: sp.sdrive, CaseSensitiveObjectName: sp.caseSensitiveObjectName}
-		stmpTableCount, err = idxc.TableIndexColumn().TmpTableIndexColumnRowsCount(sdb, logThreadSeq)
-		sp.sdbPool.Put(sdb, logThreadSeq)
+		idxcDest := dbExec.IndexColumnStruct{Schema: destSchema, Table: destTable, ColumnName: sp.columnName, Drivce: sp.ddrive, CaseSensitiveObjectName: sp.caseSensitiveObjectName}
+		stmpTableCount, dtmpTableCount, err, destErr := sp.querySourceTargetTmpTableRows(idxc, idxcDest, logThreadSeq)
 		if err != nil {
 			vlog = fmt.Sprintf("(%d) Failed to retrieve source table row count: %v", logThreadSeq, err)
 			global.Wlog.Error(vlog)
 			return
 		}
-
-		ddb := sp.ddbPool.Get(logThreadSeq)
-		//查询目标端的表总行数
-		idxcDest := dbExec.IndexColumnStruct{Schema: destSchema, Table: destTable, ColumnName: sp.columnName, Drivce: sp.ddrive, CaseSensitiveObjectName: sp.caseSensitiveObjectName}
-		dtmpTableCount, err = idxcDest.TableIndexColumn().TmpTableIndexColumnRowsCount(ddb, logThreadSeq)
-		if err != nil {
-			vlog = fmt.Sprintf("(%d) Failed to retrieve target table row count: %v", logThreadSeq, err)
+		if destErr != nil {
+			vlog = fmt.Sprintf("(%d) Failed to retrieve target table row count: %v", logThreadSeq, destErr)
 			global.Wlog.Error(vlog)
 			return
 		}
-		sp.ddbPool.Put(ddb, logThreadSeq)
 
 		vlog = fmt.Sprintf("(%d) Verifying row counts for table %s", logThreadSeq, displayTableName)
 		global.Wlog.Debug(vlog)
@@ -364,7 +354,24 @@ func (sp *SchedulePlan) DoSampleDataCheck() {
 		selectColumnStringM[sp.ddrive] = idxcDest.TableIndexColumn().TmpTableIndexColumnSelectDispos(logThreadSeq)
 
 		var scheduleCount = make(chan int64, 1)
-		go sp.recursiveIndexColumn(sqlWhere, sdb, ddb, 0, sp.chanrowCount, "", selectColumnStringM, logThreadSeq)
+		go func() {
+			sdb := sp.sdbPool.Get(logThreadSeq)
+			ddb := sp.ddbPool.Get(logThreadSeq)
+			if sdb == nil || ddb == nil {
+				global.Wlog.Error(fmt.Sprintf("(%d) Failed to get database connection for recursive index column query", logThreadSeq))
+				if sdb != nil {
+					sp.sdbPool.Put(sdb, logThreadSeq)
+				}
+				if ddb != nil {
+					sp.ddbPool.Put(ddb, logThreadSeq)
+				}
+				close(sqlWhere)
+				return
+			}
+			defer sp.sdbPool.Put(sdb, logThreadSeq)
+			defer sp.ddbPool.Put(ddb, logThreadSeq)
+			sp.recursiveIndexColumn(sqlWhere, sdb, ddb, 0, sp.chanrowCount, "", selectColumnStringM, logThreadSeq)
+		}()
 
 		go sp.queryTableDataSeparate(selectSql, make(chanMap), diffQueryData, tableColumn, scheduleCount, logThreadSeq)
 		go sp.AbnormalDataDispos(diffQueryData, fixSQL, logThreadSeq)

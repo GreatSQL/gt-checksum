@@ -128,21 +128,18 @@ func (sp *SchedulePlan) NoIndexTableCount(logThreadSeq int64) int64 {
 
 	idxc := dbExec.IndexColumnStruct{Drivce: sp.sdrive, Schema: sp.sourceSchema, Table: sp.table, ColumnName: columnNames, ChanrowCount: sp.chanrowCount, CaseSensitiveObjectName: sp.caseSensitiveObjectName}
 
-	sdb := sp.sdbPool.Get(int64(logThreadSeq))
-	A, err = idxc.TableIndexColumn().TableRows(sdb, int64(logThreadSeq))
-	if err != nil {
-		return 0
-	}
-	sp.sdbPool.Put(sdb, int64(logThreadSeq))
-
-	ddb := sp.ddbPool.Get(int64(logThreadSeq))
 	idxcDest := dbExec.IndexColumnStruct{Drivce: sp.ddrive, Schema: sp.destSchema, Table: sp.getDestTableName(), ColumnName: columnNames, ChanrowCount: sp.chanrowCount, CaseSensitiveObjectName: sp.caseSensitiveObjectName}
 
-	B, err = idxcDest.TableIndexColumn().TableRows(ddb, int64(logThreadSeq))
-	if err != nil {
+	A, B, err, destErr := sp.querySourceTargetTableRows(idxc, idxcDest, int64(logThreadSeq))
+	if err != nil || destErr != nil {
+		if err != nil {
+			global.Wlog.Error(fmt.Sprintf("(%d) Failed to retrieve source table row count for %s.%s: %v", logThreadSeq, sp.sourceSchema, sp.table, err))
+		}
+		if destErr != nil {
+			global.Wlog.Error(fmt.Sprintf("(%d) Failed to retrieve target table row count for %s.%s: %v", logThreadSeq, sp.destSchema, sp.getDestTableName(), destErr))
+		}
 		return 0
 	}
-	sp.ddbPool.Put(ddb, int64(logThreadSeq))
 	var barTableRow int64
 	if A >= B {
 		barTableRow = int64(A)
@@ -220,8 +217,8 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 		}
 
 		dbf := dbExec.DataAbnormalFixStruct{
-			Schema:                  sp.destSchema,        // 使用目标schema而不是原始schema
-			SourceSchema:            sp.sourceSchema,     // 添加源schema用于处理映射关系
+			Schema:                  sp.destSchema,         // 使用目标schema而不是原始schema
+			SourceSchema:            sp.sourceSchema,       // 添加源schema用于处理映射关系
 			Table:                   sp.getDestTableName(), // 使用目标端表名
 			ColData:                 colData.DColumnInfo,
 			DestDevice:              sp.ddrive,
@@ -443,14 +440,14 @@ func (sp *SchedulePlan) FixSqlExec(sqlStrExec <-chan string, logThreadSeq int64)
 		case v, ok := <-sqlStrExec:
 			if !ok {
 				if len(noIndexD) == 0 {
-						if len(sqlSlice) > 0 {
-							if sp.datafixType == "file" {
-								vlog = fmt.Sprintf("(%d) Opened fix file %s", logThreadSeq, tableFileName)
-								global.Wlog.Debug(vlog)
-								if err := writeToFile(sqlSlice); err != nil {
-									sp.getErr("Failed to write no-index fix SQL", err)
-								}
+					if len(sqlSlice) > 0 {
+						if sp.datafixType == "file" {
+							vlog = fmt.Sprintf("(%d) Opened fix file %s", logThreadSeq, tableFileName)
+							global.Wlog.Debug(vlog)
+							if err := writeToFile(sqlSlice); err != nil {
+								sp.getErr("Failed to write no-index fix SQL", err)
 							}
+						}
 						displayTableName := sp.getDisplayTableName()
 						vlog = fmt.Sprintf("(%d) The delete repair sql statements of table %s are generated.", logThreadSeq, displayTableName)
 						global.Wlog.Debug(vlog)
@@ -475,13 +472,13 @@ func (sp *SchedulePlan) FixSqlExec(sqlStrExec <-chan string, logThreadSeq int64)
 							<-noIndexD
 						}()
 
-							if sp.datafixType == "file" {
-								vlog = fmt.Sprintf("(%d) Opened fix file %s", logThreadSeq, tableFileName)
-								global.Wlog.Debug(vlog)
-								if err := writeToFile(a); err != nil {
-									sp.getErr("Failed to write no-index fix SQL", err)
-								}
+						if sp.datafixType == "file" {
+							vlog = fmt.Sprintf("(%d) Opened fix file %s", logThreadSeq, tableFileName)
+							global.Wlog.Debug(vlog)
+							if err := writeToFile(a); err != nil {
+								sp.getErr("Failed to write no-index fix SQL", err)
 							}
+						}
 						displayTableName := sp.getDisplayTableName()
 						vlog = fmt.Sprintf("(%d) The delete repair sql statements of table %s are generated.", logThreadSeq, displayTableName)
 						global.Wlog.Debug(vlog)
@@ -809,8 +806,7 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 	}
 	//Output verification result information
 	// 重新查询精确行数
-	sourceExactCount, sourceCountExact := sp.getExactRowCount(sp.sdbPool, sp.schema, sp.table, logThreadSeq)
-	targetExactCount, targetCountExact := sp.getExactRowCount(sp.ddbPool, sp.schema, sp.table, logThreadSeq)
+	sourceExactCount, sourceCountExact, targetExactCount, targetCountExact := sp.getExactRowCountsParallel(sp.schema, sp.table, sp.schema, sp.table, logThreadSeq)
 	if !sourceCountExact {
 		global.Wlog.Warn(fmt.Sprintf("(%d) Source row count for %s.%s is not exact, fallback value=%d", logThreadSeq, sp.schema, sp.table, sourceExactCount))
 		if sourceExactCount == 0 && barTableRow > 0 {
@@ -870,6 +866,10 @@ func (sp *SchedulePlan) queryEstimatedIndexCardinality(db *sql.DB, schema, table
 
 func (sp *SchedulePlan) getExactRowCount(dbPool *global.Pool, schema, table string, logThreadSeq int64) (int64, bool) {
 	db := dbPool.Get(logThreadSeq)
+	if db == nil {
+		global.Wlog.Error(fmt.Sprintf("(%d) Failed to get database connection for row count %s.%s", logThreadSeq, schema, table))
+		return 0, false
+	}
 	defer dbPool.Put(db, logThreadSeq)
 
 	// Handle schema name mapping

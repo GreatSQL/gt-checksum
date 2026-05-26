@@ -337,14 +337,14 @@ func (sp *SchedulePlan) doIndexDataCheck() {
 
 			// 获取行数用于报告
 			idxc = dbExec.IndexColumnStruct{Schema: sp.sourceSchema, Table: sp.table, Drivce: sp.sdrive, CaseSensitiveObjectName: sp.caseSensitiveObjectName}
-			sdb := sp.sdbPool.Get(logThreadSeq)
-			srcRows, _ := idxc.TableIndexColumn().TableRows(sdb, int64(logThreadSeq))
-			sp.sdbPool.Put(sdb, logThreadSeq)
-
 			idxcDest := dbExec.IndexColumnStruct{Schema: sp.destSchema, Table: destTable, Drivce: sp.ddrive, CaseSensitiveObjectName: sp.caseSensitiveObjectName}
-			ddb := sp.ddbPool.Get(logThreadSeq)
-			destRows, _ := idxcDest.TableIndexColumn().TableRows(ddb, int64(logThreadSeq))
-			sp.ddbPool.Put(ddb, logThreadSeq)
+			srcRows, destRows, srcRowsErr, destRowsErr := sp.querySourceTargetTableRows(idxc, idxcDest, logThreadSeq)
+			if srcRowsErr != nil {
+				global.Wlog.Error(fmt.Sprintf("(%d) [doIndexDataCheck] Failed to get source table rows for %s.%s: %v", logThreadSeq, sp.sourceSchema, sp.table, srcRowsErr))
+			}
+			if destRowsErr != nil {
+				global.Wlog.Error(fmt.Sprintf("(%d) [doIndexDataCheck] Failed to get destination table rows for %s.%s: %v", logThreadSeq, sp.destSchema, destTable, destRowsErr))
+			}
 
 			sp.pods.DIFFS = "DDL-yes"
 			sp.pods.Rows = fmt.Sprintf("%d,%d", srcRows, destRows)
@@ -356,29 +356,23 @@ func (sp *SchedulePlan) doIndexDataCheck() {
 
 	// 确保使用正确的源表和目标表的Schema
 	idxc = dbExec.IndexColumnStruct{Schema: sp.sourceSchema, Table: sp.table, Drivce: sp.sdrive, CaseSensitiveObjectName: sp.caseSensitiveObjectName}
-	sdb := sp.sdbPool.Get(logThreadSeq)
 	var vlog string
 	vlog = fmt.Sprintf("(%d) [doIndexDataCheck] Querying source table rows for %s.%s", logThreadSeq, sp.sourceSchema, sp.table)
 	global.Wlog.Debug(vlog)
-	A, err := idxc.TableIndexColumn().TableRows(sdb, int64(logThreadSeq))
-	sp.sdbPool.Put(sdb, logThreadSeq)
+	idxcDest = dbExec.IndexColumnStruct{Schema: sp.destSchema, Table: destTable, Drivce: sp.ddrive, CaseSensitiveObjectName: sp.caseSensitiveObjectName}
+	vlog = fmt.Sprintf("(%d) [doIndexDataCheck] Querying destination table rows for %s.%s", logThreadSeq, sp.destSchema, destTable)
+	global.Wlog.Debug(vlog)
+	A, B, err, destErr := sp.querySourceTargetTableRows(idxc, idxcDest, logThreadSeq)
 	if err != nil {
 		vlog = fmt.Sprintf("(%d) [doIndexDataCheck] Failed to get source table rows for %s.%s: %v", logThreadSeq, sp.sourceSchema, sp.table, err)
 		global.Wlog.Error(vlog)
 		return
 	}
-
-	idxcDest = dbExec.IndexColumnStruct{Schema: sp.destSchema, Table: destTable, Drivce: sp.ddrive, CaseSensitiveObjectName: sp.caseSensitiveObjectName}
-	ddb := sp.ddbPool.Get(logThreadSeq)
-	vlog = fmt.Sprintf("(%d) [doIndexDataCheck] Querying destination table rows for %s.%s", logThreadSeq, sp.destSchema, destTable)
-	global.Wlog.Debug(vlog)
-	B, err := idxcDest.TableIndexColumn().TableRows(ddb, int64(logThreadSeq))
-	if err != nil {
-		vlog = fmt.Sprintf("(%d) [doIndexDataCheck] Failed to get destination table rows for %s.%s: %v", logThreadSeq, sp.destSchema, destTable, err)
+	if destErr != nil {
+		vlog = fmt.Sprintf("(%d) [doIndexDataCheck] Failed to get destination table rows for %s.%s: %v", logThreadSeq, sp.destSchema, destTable, destErr)
 		global.Wlog.Error(vlog)
 		return
 	}
-	sp.ddbPool.Put(ddb, logThreadSeq)
 	if A >= B {
 		sp.tableMaxRows = A
 	} else {
@@ -397,8 +391,7 @@ func (sp *SchedulePlan) doIndexDataCheck() {
 		_ = sp.ChecksumProgress.SetTableTotalRows(schemaTable, totalChunks, 1)
 	}
 	// 重新查询精确行数
-	sourceExactCount, sourceCountExact := sp.getExactRowCount(sp.sdbPool, sp.sourceSchema, sp.table, logThreadSeq)
-	targetExactCount, targetCountExact := sp.getExactRowCount(sp.ddbPool, sp.destSchema, destTable, logThreadSeq)
+	sourceExactCount, sourceCountExact, targetExactCount, targetCountExact := sp.getExactRowCountsParallel(sp.sourceSchema, sp.table, sp.destSchema, destTable, logThreadSeq)
 	sp.pods.Rows = fmt.Sprintf("%d,%d", sourceExactCount, targetExactCount)
 
 	// 仅在两端都拿到精确计数时，才用行数差异做提前判定。

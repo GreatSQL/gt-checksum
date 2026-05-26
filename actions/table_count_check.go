@@ -21,11 +21,9 @@ func (sp *SchedulePlan) getErr(msg string, err error) {
 */
 func (sp *SchedulePlan) DoCountDataCheck() {
 	var (
-		sourceSchema, sourceTable      string
-		destSchema, destTable          string
-		stmpTableCount, dtmpTableCount uint64
-		err                            error
-		vlog                           string
+		sourceSchema, sourceTable string
+		destSchema, destTable     string
+		vlog                      string
 	)
 	logThreadSeq := rand.Int63()
 	vlog = fmt.Sprintf("(%d) Starting table row count checksum", logThreadSeq)
@@ -99,27 +97,19 @@ func (sp *SchedulePlan) DoCountDataCheck() {
 		vlog = fmt.Sprintf("(%d) Initializing row count checksum for table %s", logThreadSeq, displayTableName)
 		global.Wlog.Debug(vlog)
 
-		sdb := sp.sdbPool.Get(logThreadSeq)
-		//查询源端的表总行数
 		idxc := dbExec.IndexColumnStruct{Schema: sourceSchema, Table: sourceTable, ColumnName: sp.columnName, Drivce: sp.sdrive, CaseSensitiveObjectName: sp.caseSensitiveObjectName}
-		stmpTableCount, err = idxc.TableIndexColumn().TmpTableIndexColumnRowsCount(sdb, logThreadSeq)
+		idxcDest := dbExec.IndexColumnStruct{Schema: destSchema, Table: destTable, ColumnName: sp.columnName, Drivce: sp.ddrive, CaseSensitiveObjectName: sp.caseSensitiveObjectName}
+		stmpTableCount, dtmpTableCount, err, destErr := sp.querySourceTargetTmpTableRows(idxc, idxcDest, logThreadSeq)
 		if err != nil {
 			vlog = fmt.Sprintf("(%d) Failed to retrieve source table row count: %v", logThreadSeq, err)
 			global.Wlog.Error(vlog)
 			return
 		}
-		sp.sdbPool.Put(sdb, logThreadSeq)
-
-		ddb := sp.ddbPool.Get(logThreadSeq)
-		//查询目标端的表总行数
-		idxcDest := dbExec.IndexColumnStruct{Schema: destSchema, Table: destTable, ColumnName: sp.columnName, Drivce: sp.ddrive, CaseSensitiveObjectName: sp.caseSensitiveObjectName}
-		dtmpTableCount, err = idxcDest.TableIndexColumn().TmpTableIndexColumnRowsCount(ddb, logThreadSeq)
-		if err != nil {
-			vlog = fmt.Sprintf("(%d) Failed to retrieve target table row count: %v", logThreadSeq, err)
+		if destErr != nil {
+			vlog = fmt.Sprintf("(%d) Failed to retrieve target table row count: %v", logThreadSeq, destErr)
 			global.Wlog.Error(vlog)
 			return
 		}
-		sp.ddbPool.Put(ddb, logThreadSeq)
 
 		//输出校验结果信息
 		var pods = Pod{
