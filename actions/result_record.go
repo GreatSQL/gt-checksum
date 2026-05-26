@@ -3,6 +3,7 @@ package actions
 import (
 	"fmt"
 	"gt-checksum/inputArg"
+	"gt-checksum/progress"
 	"strings"
 	"time"
 )
@@ -211,4 +212,93 @@ func ShouldDisplayInTerminal(record ResultRecord, mode string) bool {
 			record.Diffs == "warn-only"
 	}
 	return true // "all" or any unrecognized value
+}
+
+func podToChecksumTableResult(pod Pod) progress.ChecksumTableResult {
+	return progress.ChecksumTableResult{
+		Schema:      pod.Schema,
+		Table:       pod.Table,
+		IndexColumn: pod.IndexColumn,
+		CheckObject: pod.CheckObject,
+		Rows:        pod.Rows,
+		Diffs:       pod.DIFFS,
+		Datafix:     pod.Datafix,
+		MappingInfo: pod.MappingInfo,
+		ColumnsInfo: pod.ColumnsInfo,
+	}
+}
+
+func checksumTableResultToPod(result progress.ChecksumTableResult) Pod {
+	return Pod{
+		Schema:      result.Schema,
+		Table:       result.Table,
+		IndexColumn: result.IndexColumn,
+		CheckObject: result.CheckObject,
+		Rows:        result.Rows,
+		DIFFS:       result.Diffs,
+		Datafix:     result.Datafix,
+		MappingInfo: result.MappingInfo,
+		ColumnsInfo: result.ColumnsInfo,
+	}
+}
+
+func dataPodKey(pod Pod) string {
+	return strings.TrimSpace(pod.Schema) + "." + strings.TrimSpace(pod.Table)
+}
+
+func checksumTableResultKey(result progress.ChecksumTableResult) string {
+	return strings.TrimSpace(result.Schema) + "." + strings.TrimSpace(result.Table)
+}
+
+func latestResultPodForTable(startIndex int, schema, table string) (Pod, bool) {
+	key := strings.TrimSpace(schema) + "." + strings.TrimSpace(table)
+	if startIndex < 0 {
+		startIndex = 0
+	}
+	if startIndex > len(measuredDataPods) {
+		startIndex = len(measuredDataPods)
+	}
+	for i := len(measuredDataPods) - 1; i >= startIndex; i-- {
+		pod := measuredDataPods[i]
+		if dataPodKey(pod) == key {
+			return pod, true
+		}
+	}
+	return Pod{}, false
+}
+
+// PrependChecksumProgressResults merges completed table rows loaded from a
+// resumed progress file into the in-memory result list before terminal/CSV output.
+// Existing in-memory rows win to avoid duplicating tables completed again in the
+// current process.
+func PrependChecksumProgressResults(results []progress.ChecksumTableResult) {
+	if len(results) == 0 {
+		return
+	}
+
+	existing := make(map[string]struct{}, len(measuredDataPods))
+	for _, pod := range measuredDataPods {
+		existing[dataPodKey(pod)] = struct{}{}
+	}
+
+	prefix := make([]Pod, 0, len(results))
+	for _, result := range results {
+		key := checksumTableResultKey(result)
+		if key == "." || key == "" {
+			continue
+		}
+		if _, ok := existing[key]; ok {
+			continue
+		}
+		prefix = append(prefix, checksumTableResultToPod(result))
+		existing[key] = struct{}{}
+	}
+	if len(prefix) == 0 {
+		return
+	}
+
+	merged := make([]Pod, 0, len(prefix)+len(measuredDataPods))
+	merged = append(merged, prefix...)
+	merged = append(merged, measuredDataPods...)
+	measuredDataPods = merged
 }

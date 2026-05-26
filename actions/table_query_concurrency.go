@@ -691,6 +691,7 @@ func (sp *SchedulePlan) Schedulingtasks() {
 			}
 		}
 
+		resultStartIndex := len(measuredDataPods)
 		if len(v) == 0 { //校验无索引表
 			// columns 模式不支持无索引表：无法可靠定位行，禁止启用
 			if len(spCopy.columnPlanSourceCols) > 0 {
@@ -741,7 +742,12 @@ func (sp *SchedulePlan) Schedulingtasks() {
 		// 断点续传：记录已完成的表
 		if spCopy.ChecksumProgress != nil {
 			schemaTable := fmt.Sprintf("%s.%s", spCopy.schema, spCopy.table)
-			if err := spCopy.ChecksumProgress.MarkCompleted(schemaTable); err != nil {
+			var result *progress.ChecksumTableResult
+			if pod, ok := latestResultPodForTable(resultStartIndex, spCopy.schema, spCopy.table); ok {
+				persisted := podToChecksumTableResult(pod)
+				result = &persisted
+			}
+			if err := spCopy.ChecksumProgress.MarkCompletedWithResult(schemaTable, result); err != nil {
 				global.Wlog.Warn(fmt.Sprintf("Failed to save progress for table %s: %v", schemaTable, err))
 			}
 		}

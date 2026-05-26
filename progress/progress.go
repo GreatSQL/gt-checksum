@@ -27,16 +27,32 @@ type TableChunkProgress struct {
 	CompletedFixSQL []int64 `json:"completed_fixsql,omitempty"`
 }
 
+// ChecksumTableResult stores the terminal/report row for a completed data table.
+// It intentionally mirrors only stable, user-facing result fields so progress files
+// remain decoupled from the actions.Pod implementation.
+type ChecksumTableResult struct {
+	Schema      string `json:"schema"`
+	Table       string `json:"table"`
+	IndexColumn string `json:"index_column"`
+	CheckObject string `json:"check_object"`
+	Rows        string `json:"rows"`
+	Diffs       string `json:"diffs"`
+	Datafix     string `json:"datafix"`
+	MappingInfo string `json:"mapping_info,omitempty"`
+	ColumnsInfo string `json:"columns_info,omitempty"`
+}
+
 // ChecksumProgress tracks which tables have been verified for gt-checksum.
 type ChecksumProgress struct {
 	mu sync.Mutex
 
-	RunID           string                         `json:"run_id"`
-	StartTime       string                         `json:"start_time"`
-	ConfigHash      string                         `json:"config_hash"`
-	CompletedTables []string                       `json:"completed_tables"`
-	TableProgress   map[string]*TableChunkProgress `json:"table_progress,omitempty"`
-	Status          string                         `json:"status"`
+	RunID                 string                         `json:"run_id"`
+	StartTime             string                         `json:"start_time"`
+	ConfigHash            string                         `json:"config_hash"`
+	CompletedTables       []string                       `json:"completed_tables"`
+	CompletedTableResults []ChecksumTableResult          `json:"completed_table_results,omitempty"`
+	TableProgress         map[string]*TableChunkProgress `json:"table_progress,omitempty"`
+	Status                string                         `json:"status"`
 
 	// filePath is the on-disk location (not serialized).
 	filePath string `json:"-"`
@@ -58,13 +74,14 @@ type RepairProgress struct {
 // NewChecksumProgress creates a new ChecksumProgress with the given metadata.
 func NewChecksumProgress(runID, configHash, filePath string) *ChecksumProgress {
 	return &ChecksumProgress{
-		RunID:           runID,
-		StartTime:       time.Now().Format(time.RFC3339),
-		ConfigHash:      configHash,
-		CompletedTables: make([]string, 0),
-		TableProgress:   make(map[string]*TableChunkProgress),
-		Status:          StatusRunning,
-		filePath:        filePath,
+		RunID:                 runID,
+		StartTime:             time.Now().Format(time.RFC3339),
+		ConfigHash:            configHash,
+		CompletedTables:       make([]string, 0),
+		CompletedTableResults: make([]ChecksumTableResult, 0),
+		TableProgress:         make(map[string]*TableChunkProgress),
+		Status:                StatusRunning,
+		filePath:              filePath,
 	}
 }
 
@@ -97,6 +114,9 @@ func LoadChecksumProgress(path string) (*ChecksumProgress, error) {
 	p.filePath = path
 	if p.CompletedTables == nil {
 		p.CompletedTables = make([]string, 0)
+	}
+	if p.CompletedTableResults == nil {
+		p.CompletedTableResults = make([]ChecksumTableResult, 0)
 	}
 	if p.TableProgress == nil {
 		p.TableProgress = make(map[string]*TableChunkProgress)
@@ -222,20 +242,45 @@ func (p *ChecksumProgress) IsCompleted(schemaTable string) bool {
 
 // MarkCompleted adds the table to the completed list and persists to disk.
 func (p *ChecksumProgress) MarkCompleted(schemaTable string) error {
+	return p.MarkCompletedWithResult(schemaTable, nil)
+}
+
+// MarkCompletedWithResult adds the table to the completed list, stores its
+// report row when provided, and persists to disk.
+func (p *ChecksumProgress) MarkCompletedWithResult(schemaTable string, result *ChecksumTableResult) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// Avoid duplicates.
+	exists := false
 	for _, t := range p.CompletedTables {
 		if t == schemaTable {
-			return nil
+			exists = true
+			break
 		}
 	}
+	if !exists {
+		p.CompletedTables = append(p.CompletedTables, schemaTable)
+	}
 
-	p.CompletedTables = append(p.CompletedTables, schemaTable)
+	if result != nil {
+		p.upsertCompletedTableResultLocked(schemaTable, *result)
+	}
 	// Remove in-progress chunk tracking now that the table is fully done.
 	delete(p.TableProgress, schemaTable)
 	return p.saveLocked()
+}
+
+func (p *ChecksumProgress) upsertCompletedTableResultLocked(schemaTable string, result ChecksumTableResult) {
+	if p.CompletedTableResults == nil {
+		p.CompletedTableResults = make([]ChecksumTableResult, 0)
+	}
+	for i, existing := range p.CompletedTableResults {
+		if completedTableResultKey(existing) == schemaTable {
+			p.CompletedTableResults[i] = result
+			return
+		}
+	}
+	p.CompletedTableResults = append(p.CompletedTableResults, result)
 }
 
 // MarkStatus updates the status and persists to disk.
@@ -279,6 +324,21 @@ func (p *ChecksumProgress) CompletedCount() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return len(p.CompletedTables)
+}
+
+// CompletedTableResultsSnapshot returns a copy of persisted completed-table
+// report rows in completion order.
+func (p *ChecksumProgress) CompletedTableResultsSnapshot() []ChecksumTableResult {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	result := make([]ChecksumTableResult, len(p.CompletedTableResults))
+	copy(result, p.CompletedTableResults)
+	return result
+}
+
+func completedTableResultKey(result ChecksumTableResult) string {
+	return strings.TrimSpace(result.Schema) + "." + strings.TrimSpace(result.Table)
 }
 
 // IsFileSuccess returns true if the given file has status "success".

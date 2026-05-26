@@ -74,6 +74,7 @@ func main() {
 
 	// 断点续传：检查并加载进度文件
 	var checksumProgress *progress.ChecksumProgress
+	var resumedChecksumResults []progress.ChecksumTableResult
 	if m.SecondaryL.RulesV.Resume != "OFF" {
 		// 使用 result 目录存放进度文件，与 CSV 结果文件同目录
 		resultDir := "result"
@@ -105,6 +106,7 @@ func main() {
 				if strings.ToLower(strings.TrimSpace(answer)) == "y" {
 					checksumProgress = existingProgress
 					m.RunID = existingProgress.RunID
+					resumedChecksumResults = existingProgress.CompletedTableResultsSnapshot()
 					fmt.Println("Resuming from checkpoint...")
 				} else {
 					fmt.Println("Starting fresh run...")
@@ -121,6 +123,7 @@ func main() {
 				// resume == "ON"：自动续传，沿用旧 RunID 保持文件名一致
 				checksumProgress = existingProgress
 				m.RunID = existingProgress.RunID
+				resumedChecksumResults = existingProgress.CompletedTableResultsSnapshot()
 				fmt.Println("Auto-resuming from checkpoint...")
 			}
 		} else {
@@ -309,6 +312,7 @@ func main() {
 	//输出结果信息
 	fmt.Println("")
 	fmt.Println("** gt-checksum Overview of results **")
+	actions.PrependChecksumProgressResults(resumedChecksumResults)
 	actions.CheckResultOut(m)
 
 	// Export result CSV (honours resultExport=OFF to skip).

@@ -111,6 +111,66 @@ func TestChecksumProgress_MarkCompletedDuplicate(t *testing.T) {
 	}
 }
 
+func TestChecksumProgress_MarkCompletedWithResult(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test-progress.json")
+
+	p := NewChecksumProgress("20260520-143022", "sha256:abc123", path)
+	result := ChecksumTableResult{
+		Schema:      "sbtest",
+		Table:       "t2",
+		IndexColumn: "id",
+		CheckObject: "data",
+		Rows:        "100000000,99972787",
+		Diffs:       "yes",
+		Datafix:     "file",
+	}
+	if err := p.MarkCompletedWithResult("sbtest.t2", &result); err != nil {
+		t.Fatalf("MarkCompletedWithResult failed: %v", err)
+	}
+
+	loaded, err := LoadChecksumProgress(path)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if !loaded.IsCompleted("sbtest.t2") {
+		t.Fatal("loaded progress should mark sbtest.t2 completed")
+	}
+	results := loaded.CompletedTableResultsSnapshot()
+	if len(results) != 1 {
+		t.Fatalf("completed table results length = %d, want 1", len(results))
+	}
+	if results[0] != result {
+		t.Fatalf("completed table result mismatch: got %+v want %+v", results[0], result)
+	}
+}
+
+func TestChecksumProgress_MarkCompletedWithResultUpdatesDuplicate(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test-progress.json")
+
+	p := NewChecksumProgress("20260520-143022", "sha256:abc123", path)
+	first := ChecksumTableResult{Schema: "sbtest", Table: "t2", IndexColumn: "id", CheckObject: "data", Rows: "1,1", Diffs: "no", Datafix: "file"}
+	second := ChecksumTableResult{Schema: "sbtest", Table: "t2", IndexColumn: "id", CheckObject: "data", Rows: "2,1", Diffs: "yes", Datafix: "file"}
+	if err := p.MarkCompletedWithResult("sbtest.t2", &first); err != nil {
+		t.Fatalf("first MarkCompletedWithResult failed: %v", err)
+	}
+	if err := p.MarkCompletedWithResult("sbtest.t2", &second); err != nil {
+		t.Fatalf("second MarkCompletedWithResult failed: %v", err)
+	}
+
+	if p.CompletedCount() != 1 {
+		t.Fatalf("CompletedCount = %d, want 1", p.CompletedCount())
+	}
+	results := p.CompletedTableResultsSnapshot()
+	if len(results) != 1 {
+		t.Fatalf("completed table results length = %d, want 1", len(results))
+	}
+	if results[0] != second {
+		t.Fatalf("completed table result mismatch: got %+v want %+v", results[0], second)
+	}
+}
+
 func TestChecksumProgress_MarkStatus(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test-progress.json")

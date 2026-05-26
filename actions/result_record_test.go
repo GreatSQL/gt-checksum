@@ -2,6 +2,7 @@ package actions
 
 import (
 	"gt-checksum/inputArg"
+	"gt-checksum/progress"
 	"testing"
 )
 
@@ -215,6 +216,57 @@ func TestShouldDisplayInTerminal_abnormalModeFilters(t *testing.T) {
 		if ShouldDisplayInTerminal(rec, "abnormal") {
 			t.Errorf("mode=abnormal should hide diffs=%q", diffs)
 		}
+	}
+}
+
+func TestPrependChecksumProgressResults(t *testing.T) {
+	original := measuredDataPods
+	defer func() { measuredDataPods = original }()
+
+	measuredDataPods = []Pod{
+		{Schema: "sbtest", Table: "t4", IndexColumn: "id", CheckObject: "data", Rows: "3000000,2997380", DIFFS: "yes", Datafix: "file"},
+		{Schema: "sbtest", Table: "t5", IndexColumn: "c1", CheckObject: "data", Rows: "12,12", DIFFS: "no", Datafix: "file"},
+	}
+	previous := []progress.ChecksumTableResult{
+		{Schema: "sbtest", Table: "t9", IndexColumn: "id", CheckObject: "data", Rows: "0,0", Diffs: "no", Datafix: "file"},
+		{Schema: "sbtest", Table: "t7", IndexColumn: "c1,c2,c3,c4", CheckObject: "data", Rows: "6,6", Diffs: "no", Datafix: "file"},
+		{Schema: "sbtest", Table: "t2", IndexColumn: "id", CheckObject: "data", Rows: "100000000,99972787", Diffs: "yes", Datafix: "file"},
+	}
+
+	PrependChecksumProgressResults(previous)
+
+	if len(measuredDataPods) != 5 {
+		t.Fatalf("measuredDataPods length = %d, want 5", len(measuredDataPods))
+	}
+	wantOrder := []string{"t9", "t7", "t2", "t4", "t5"}
+	for i, want := range wantOrder {
+		if measuredDataPods[i].Table != want {
+			t.Fatalf("row %d table = %s, want %s", i, measuredDataPods[i].Table, want)
+		}
+	}
+	if measuredDataPods[2].Rows != "100000000,99972787" || measuredDataPods[2].DIFFS != "yes" {
+		t.Fatalf("previous t2 result not preserved: %+v", measuredDataPods[2])
+	}
+}
+
+func TestPrependChecksumProgressResultsSkipsDuplicates(t *testing.T) {
+	original := measuredDataPods
+	defer func() { measuredDataPods = original }()
+
+	measuredDataPods = []Pod{
+		{Schema: "sbtest", Table: "t4", IndexColumn: "id", CheckObject: "data", Rows: "2,2", DIFFS: "no", Datafix: "file"},
+	}
+	previous := []progress.ChecksumTableResult{
+		{Schema: "sbtest", Table: "t4", IndexColumn: "id", CheckObject: "data", Rows: "1,1", Diffs: "yes", Datafix: "file"},
+	}
+
+	PrependChecksumProgressResults(previous)
+
+	if len(measuredDataPods) != 1 {
+		t.Fatalf("measuredDataPods length = %d, want 1", len(measuredDataPods))
+	}
+	if measuredDataPods[0].Rows != "2,2" || measuredDataPods[0].DIFFS != "no" {
+		t.Fatalf("current in-memory result should win, got %+v", measuredDataPods[0])
 	}
 }
 
