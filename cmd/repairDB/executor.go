@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"gt-checksum/progress"
 	"log"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -19,6 +21,20 @@ const maxDeadlockRetries = 3
 
 // dbConnMaxLifetime caps how long a pooled connection may be reused.
 const dbConnMaxLifetime = 10 * time.Minute
+
+// fileKey returns a unique identifier for a SQL file relative to the fix file directory.
+// This avoids collisions when different subdirectories contain files with the same name.
+func fileKey(sqlFile string) string {
+	// Try to get relative path from FixFileDir
+	if config.FixFileDir != "" {
+		rel, err := filepath.Rel(config.FixFileDir, sqlFile)
+		if err == nil && !strings.HasPrefix(rel, "..") {
+			return rel
+		}
+	}
+	// Fallback to base name
+	return filepath.Base(sqlFile)
+}
 
 type sqlExecutionUnit struct {
 	index         int
@@ -276,14 +292,36 @@ func openExecutionDB(dsn string) (*sql.DB, error) {
 }
 
 // parallelExecuteSQLFiles executes files concurrently using the provided connection pool.
-func parallelExecuteSQLFiles(db *sql.DB, files []string, stageName string) ([]FileExecResult, error) {
+// If repairProgress is not nil, it records the status of each file after execution
+// and skips files that have already been executed successfully.
+func parallelExecuteSQLFiles(db *sql.DB, files []string, stageName string, repairProgress *progress.RepairProgress) ([]FileExecResult, error) {
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, config.ParallelThds)
 	errCh := make(chan error, len(files))
 	var executionSeq uint64
 	collector := &resultCollector{}
 
+	// 断点续传：过滤掉已成功执行的文件
+	filesToExecute := make([]string, 0, len(files))
+	skippedCount := 0
 	for _, sqlFile := range files {
+		if repairProgress != nil && repairProgress.IsFileSuccess(fileKey(sqlFile)) {
+			skippedCount++
+			log.Printf("[RESUME] Skipping already executed file: %s\n", sqlFile)
+			continue
+		}
+		filesToExecute = append(filesToExecute, sqlFile)
+	}
+	if skippedCount > 0 {
+		log.Printf("[RESUME] Skipped %d already executed file(s) in stage %s\n", skippedCount, stageName)
+	}
+
+	if len(filesToExecute) == 0 {
+		log.Printf("[%s] all files already executed, skipping stage\n", stageName)
+		return nil, nil
+	}
+
+	for _, sqlFile := range filesToExecute {
 		file := sqlFile
 		wg.Add(1)
 		sem <- struct{}{}
@@ -299,6 +337,18 @@ func parallelExecuteSQLFiles(db *sql.DB, files []string, stageName string) ([]Fi
 			if result.FilePath != "" {
 				collector.append(result)
 			}
+
+			// 断点续传：记录文件执行状态
+			if repairProgress != nil {
+				fileStatus := "success"
+				if err != nil {
+					fileStatus = "failed"
+				}
+				if markErr := repairProgress.MarkFile(fileKey(file), fileStatus); markErr != nil {
+					log.Printf("[WARN] Failed to save progress for file %s: %v\n", file, markErr)
+				}
+			}
+
 			if err != nil {
 				errCh <- fmt.Errorf("Failed to execute SQL file %s: %v", file, err)
 				log.Printf("Failed to execute SQL file %s: %v\n", file, err)

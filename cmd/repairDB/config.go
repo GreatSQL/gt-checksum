@@ -57,6 +57,17 @@ func parseConfig(confFile string) error {
 			}
 		case "resultFile":
 			config.ResultFile = value
+		case "resume":
+			switch strings.ToUpper(strings.TrimSpace(value)) {
+			case "OFF":
+				config.Resume = "OFF"
+			case "ON":
+				config.Resume = "ON"
+			case "ASK":
+				config.Resume = "ASK"
+			default:
+				return fmt.Errorf("invalid value for resume: %q (must be OFF, ON, or ASK)", value)
+			}
 		case "dstSslCa":
 			config.SslCa = value
 		case "dstSslCert":
@@ -76,6 +87,9 @@ func parseConfig(confFile string) error {
 	}
 	if !logbinSet {
 		config.LogBin = true // default: keep sql_log_bin ON
+	}
+	if config.Resume == "" {
+		config.Resume = "OFF" // default: no resume
 	}
 	config.LogFile = "repairDB.log"
 

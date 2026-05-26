@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"gt-checksum/progress"
 	"io"
 	"log"
 	"os"
@@ -55,10 +56,38 @@ func run() (err error) {
 		return fmt.Errorf("fixFileDir directory does not exist: %s", config.FixFileDir)
 	}
 
+	// Lock file lifecycle:
+	// 1. Created at startup (in defer below)
+	// 2. Exists while running or after completion/failure
+	// 3. In resume mode: deleted if previous run failed (to allow restart)
+	// 4. Recreated in defer at function exit
 	lockPath := filepath.Join(config.FixFileDir, lockFileName)
 	if err := checkLockFile(lockPath); err != nil {
-		fmt.Fprintf(os.Stderr, "WARNING: %v\n", err)
-		return fmt.Errorf("lock file check failed: %v", err)
+		// Resume mode: check lock file content to decide whether to allow restart
+		if config.Resume != "OFF" {
+			lockContent, readErr := os.ReadFile(lockPath)
+			if readErr != nil {
+				return fmt.Errorf("failed to read lock file for resume check: %v", readErr)
+			}
+
+			// Empty lock file means previous execution completed successfully, no resume needed
+			if len(lockContent) == 0 {
+				fmt.Fprintf(os.Stderr, "Previous execution completed successfully. No resume needed.\n")
+				fmt.Fprintf(os.Stderr, "To start a fresh run, remove the lock file: %s\n", lockPath)
+				return fmt.Errorf("previous execution completed successfully, remove lock file to start fresh")
+			}
+
+			// Non-empty lock file means previous execution failed, can resume
+			fmt.Fprintf(os.Stderr, "WARNING: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Resume mode enabled, previous execution failed. Resuming...\n")
+			// Remove old lock file, will be recreated in defer
+			if removeErr := os.Remove(lockPath); removeErr != nil && !os.IsNotExist(removeErr) {
+				log.Printf("[WARN] Failed to remove old lock file: %v\n", removeErr)
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "WARNING: %v\n", err)
+			return fmt.Errorf("lock file check failed: %v", err)
+		}
 	}
 
 	defer func() {
@@ -168,6 +197,49 @@ func run() (err error) {
 
 	startTime := time.Now()
 
+	// 断点续传：初始化进度文件
+	var repairProgress *progress.RepairProgress
+	progressPath := progress.RepairProgressFilePath(config.FixFileDir)
+
+	if config.Resume != "OFF" {
+		if p, err := progress.LoadRepairProgress(progressPath); err != nil {
+			log.Printf("[WARN] Failed to load progress file: %v\n", err)
+		} else if p != nil && p.IsRunning() {
+			// 发现未完成的进度文件
+			log.Printf("[RESUME] Found existing progress file: %s\n", progressPath)
+			log.Printf("[RESUME] Previously executed files: %d\n", p.FileCount())
+			log.Printf("[RESUME] Successful files: %d\n", p.SuccessCount())
+
+			if config.Resume == "ASK" {
+				fmt.Print("\nDo you want to resume from the last checkpoint? (y/n): ")
+				var answer string
+				fmt.Scanln(&answer)
+				if strings.ToLower(strings.TrimSpace(answer)) == "y" {
+					repairProgress = p
+					log.Println("[RESUME] Resuming from checkpoint...")
+				} else {
+					log.Println("[RESUME] Starting fresh run...")
+					if err := p.Remove(); err != nil {
+						log.Printf("[WARN] Failed to remove old progress file: %v\n", err)
+					}
+				}
+			} else {
+				// resume == "ON"
+				repairProgress = p
+				log.Println("[RESUME] Auto-resuming from checkpoint...")
+			}
+		}
+	}
+
+	// 如果没有加载到已有进度文件，创建新的
+	if repairProgress == nil && config.Resume != "OFF" {
+		repairProgress = progress.NewRepairProgress(config.FixFileDir, progressPath)
+		if saveErr := repairProgress.Save(); saveErr != nil {
+			log.Printf("[WARN] Failed to create progress file: %v\n", saveErr)
+			repairProgress = nil
+		}
+	}
+
 	// SSL configuration
 	dsn := parseDSN(config.DstDSN)
 	hasSSL := config.SslMode != "" || config.SslCa != "" || config.SslCert != "" || config.SslKey != ""
@@ -198,7 +270,7 @@ func run() (err error) {
 			}
 			return fmt.Errorf("[%s] failed to connect to database: %v", stage.Name, err)
 		}
-		stageResults, stageErr := parallelExecuteSQLFiles(db, files, stage.Name)
+		stageResults, stageErr := parallelExecuteSQLFiles(db, files, stage.Name, repairProgress)
 		allResults = append(allResults, stageResults...)
 		db.Close()
 		if stageErr != nil {
@@ -212,6 +284,15 @@ func run() (err error) {
 	totalTime := time.Since(startTime)
 
 	writeCSVIfPossible(allResults, totalTime, *resultFile)
+
+	// 断点续传：标记进度文件为已完成
+	if repairProgress != nil {
+		if err := repairProgress.MarkStatus(progress.StatusCompleted); err != nil {
+			log.Printf("[WARN] Failed to mark progress as completed: %v\n", err)
+		} else {
+			log.Printf("Progress file marked as completed: %s\n", repairProgress.FilePath())
+		}
+	}
 
 	minutes := int(totalTime.Minutes())
 	seconds := totalTime.Seconds() - float64(minutes*60)
