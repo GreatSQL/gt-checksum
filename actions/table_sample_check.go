@@ -137,7 +137,7 @@ func (sp *SchedulePlan) DoSampleDataCheck() {
 		sqlWhere                       = make(chanString, queueDepth)
 		selectSql                      = make(chanMap, queueDepth)
 		diffQueryData                  = make(chanDiffDataS, queueDepth)
-		fixSQL                         = make(chanString, queueDepth)
+		fixSQL                         = make(chanFixSQLItem, queueDepth)
 	)
 	logThreadSeq := rand.Int63()
 	vlog = fmt.Sprintf("(%d) Starting sampling data checksum", logThreadSeq)

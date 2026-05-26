@@ -9,10 +9,16 @@ import (
 	"strings"
 )
 
+func sendFixSQL(cc chanFixSQLItem, chunkSeq int64, sql string) {
+	if sql != "" {
+		cc <- fixSQLItem{ChunkSeq: chunkSeq, SQL: sql}
+	}
+}
+
 /*
 差异数据的二次校验，并生成修复语句
 */
-func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanString, logThreadSeq int64) {
+func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanFixSQLItem, logThreadSeq int64) {
 	var (
 		vlog             string
 		aa               = &CheckSumTypeStruct{}
@@ -60,6 +66,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 				curry <- struct{}{}
 				go func(c1 DifferencesDataStruct, sdb, ddb *sql.DB) {
 					defer func() {
+						cc <- fixSQLItem{ChunkSeq: c1.ChunkSeq, Done: true}
 						<-curry
 						sp.sdbPool.Put(sdb, logThreadSeq)
 						sp.ddbPool.Put(ddb, logThreadSeq)
@@ -520,7 +527,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 											if err != nil {
 												sp.getErr(fmt.Sprintf("dest: checksum table %s.%s generate UPDATE sql error (columns-mode).", c1.Schema, c1.Table), err)
 											} else if sqlstr != "" {
-												cc <- sqlstr
+												sendFixSQL(cc, c1.ChunkSeq, sqlstr)
 												// 为 UPDATE fix 生成回滚：DELETE 新行 + INSERT 旧行
 												if sp.rollCC != nil {
 													oldDstRow := delByPK[pkKey]
@@ -560,7 +567,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 											if err != nil {
 												sp.getErr(fmt.Sprintf("dest: checksum table %s.%s generate DELETE sql error (columns-mode target-only).", c1.Schema, c1.Table), err)
 											} else if sqlstr != "" {
-												cc <- sqlstr
+												sendFixSQL(cc, c1.ChunkSeq, sqlstr)
 												// 为 columns-mode target-only DELETE 生成回滚 INSERT
 												if sp.rollCC != nil {
 													if rbSql := rollbackRowToInsert(destSchema, destTable, dstRow, filteredDstCols); rbSql != "" {
@@ -760,7 +767,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 														// 如果当前已经有值，先生成并发送当前的合并SQL
 														if len(currentValues) > 0 {
 															mergedSql := fmt.Sprintf("%s%s);", baseSql, strings.Join(currentValues, ", "))
-															cc <- mergedSql
+															sendFixSQL(cc, c1.ChunkSeq, mergedSql)
 															// 重置当前值列表和长度
 															currentValues = []string{value}
 															currentLength = baseSqlLen + valueLen
@@ -773,7 +780,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 																sp.getErr(fmt.Sprintf("\ndest: checksum table %s.%s generate DELETE sql error.", c1.Schema, c1.Table), err)
 															}
 															if sqlstr != "" {
-																cc <- sqlstr
+																sendFixSQL(cc, c1.ChunkSeq, sqlstr)
 															}
 														}
 													} else {
@@ -786,7 +793,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 												// 处理剩余的值
 												if len(currentValues) > 0 {
 													mergedSql := fmt.Sprintf("%s%s);", baseSql, strings.Join(currentValues, ", "))
-													cc <- mergedSql
+													sendFixSQL(cc, c1.ChunkSeq, mergedSql)
 												}
 											} else {
 												// 如果无法合并，回退到单独执行
@@ -852,13 +859,13 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 														if markDeleteKeyIfAbsent(primaryKey, useGlobalKeyDedupe) {
 															// 发送SQL语句
 															if sqlstr != "" {
-																cc <- sqlstr
+																sendFixSQL(cc, c1.ChunkSeq, sqlstr)
 															}
 														}
 													} else {
 														// 如果无法提取主键值，直接发送SQL语句
 														if sqlstr != "" {
-															cc <- sqlstr
+															sendFixSQL(cc, c1.ChunkSeq, sqlstr)
 														}
 													}
 												}
@@ -896,7 +903,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 												if markDeleteKeyIfAbsent(sqlstr, useGlobalKeyDedupe) {
 													// 发送SQL语句
 													if sqlstr != "" {
-														cc <- sqlstr
+														sendFixSQL(cc, c1.ChunkSeq, sqlstr)
 													}
 												}
 											}
@@ -973,7 +980,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 
 													// 发送SQL语句
 													if sqlstr != "" {
-														cc <- sqlstr
+														sendFixSQL(cc, c1.ChunkSeq, sqlstr)
 													}
 												}
 											} else {
@@ -981,7 +988,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 												if markDeleteKeyIfAbsent(sqlstr, useGlobalKeyDedupe) {
 													// 发送SQL语句
 													if sqlstr != "" {
-														cc <- sqlstr
+														sendFixSQL(cc, c1.ChunkSeq, sqlstr)
 													}
 												}
 											}
@@ -1092,7 +1099,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanS
 													logThreadSeq, batchIndex, insertCount, sqlPreview)
 											}
 
-											cc <- sqlstr
+											sendFixSQL(cc, c1.ChunkSeq, sqlstr)
 											// 为 INSERT fix 生成回滚 DELETE
 											if sp.rollCC != nil {
 												if rbSql := rollbackInsertToDelete(sqlstr, destSchema, destTable, dbf.IndexColumn); rbSql != "" {

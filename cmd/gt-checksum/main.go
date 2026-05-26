@@ -8,8 +8,10 @@ import (
 	"gt-checksum/dbExec"
 	"gt-checksum/global"
 	"gt-checksum/inputArg"
+	"gt-checksum/progress"
 	"gt-checksum/utils"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -69,6 +71,67 @@ func main() {
 	//启动内存监控
 	utils.MemoryMonitor(fmt.Sprintf("%dMB", m.SecondaryL.RulesV.MemoryLimit), m)
 	actions.ResetMemoryPeakStats()
+
+	// 断点续传：检查并加载进度文件
+	var checksumProgress *progress.ChecksumProgress
+	if m.SecondaryL.RulesV.Resume != "OFF" {
+		// 使用 result 目录存放进度文件，与 CSV 结果文件同目录
+		resultDir := "result"
+		if m.SecondaryL.RulesV.ResultFile != "" {
+			// 如果配置了 resultFile，使用其目录部分
+			if dir := filepath.Dir(m.SecondaryL.RulesV.ResultFile); dir != "." {
+				resultDir = dir
+			}
+		}
+		// 先扫描 resultDir 中是否存在 status=running 的旧进度文件
+		existingProgress, scanErr := progress.FindRunningChecksumProgress(resultDir)
+		if scanErr != nil {
+			global.Wlog.Warn(fmt.Sprintf("Failed to scan for existing progress files: %v", scanErr))
+		}
+
+		if existingProgress != nil {
+			fmt.Printf("\n[RESUME] Found existing progress file: %s\n", existingProgress.FilePath())
+			fmt.Printf("  Run ID: %s\n", existingProgress.RunID)
+			fmt.Printf("  Started: %s\n", existingProgress.StartTime)
+			fmt.Printf("  Completed tables: %d\n", existingProgress.CompletedCount())
+			if existingProgress.CompletedCount() > 0 {
+				fmt.Printf("  Completed list:\n%s", existingProgress.FormatCompletedTablesSummary())
+			}
+
+			if m.SecondaryL.RulesV.Resume == "ASK" {
+				fmt.Print("\nDo you want to resume from the last checkpoint? (y/n): ")
+				var answer string
+				fmt.Scanln(&answer)
+				if strings.ToLower(strings.TrimSpace(answer)) == "y" {
+					checksumProgress = existingProgress
+					m.RunID = existingProgress.RunID
+					fmt.Println("Resuming from checkpoint...")
+				} else {
+					fmt.Println("Starting fresh run...")
+					if err := existingProgress.Remove(); err != nil {
+						global.Wlog.Warn(fmt.Sprintf("Failed to remove old progress file: %v", err))
+					}
+					progressPath := progress.ProgressFilePath(resultDir, m.RunID)
+					checksumProgress = progress.NewChecksumProgress(m.RunID, "", progressPath)
+					if saveErr := checksumProgress.Save(); saveErr != nil {
+						global.Wlog.Warn(fmt.Sprintf("Failed to create initial progress file: %v", saveErr))
+					}
+				}
+			} else {
+				// resume == "ON"：自动续传，沿用旧 RunID 保持文件名一致
+				checksumProgress = existingProgress
+				m.RunID = existingProgress.RunID
+				fmt.Println("Auto-resuming from checkpoint...")
+			}
+		} else {
+			// 没有找到正在运行的进度文件，创建新的进度对象
+			progressPath := progress.ProgressFilePath(resultDir, m.RunID)
+			checksumProgress = progress.NewChecksumProgress(m.RunID, "", progressPath)
+			if saveErr := checksumProgress.Save(); saveErr != nil {
+				global.Wlog.Warn(fmt.Sprintf("Failed to create initial progress file: %v", saveErr))
+			}
+		}
+	}
 
 	if m.SecondaryL.RulesV.CheckObject == "data" {
 		if !actions.SchemaTableInit(m).GlobalAccessPriCheck(1, 2) {
@@ -208,8 +271,18 @@ func main() {
 		//针对待校验表生成查询条件计划清单
 		fmt.Println("gt-checksum: Generating data checksum plan")
 		checksumStart := time.Now()
-		actions.CheckTableQuerySchedule(sdc, ddc, tableIndexColumnMap, tableAllCol, *m).Schedulingtasks()
+		sp := actions.CheckTableQuerySchedule(sdc, ddc, tableIndexColumnMap, tableAllCol, *m)
+		if checksumProgress != nil {
+			sp.ChecksumProgress = checksumProgress
+		}
+		sp.Schedulingtasks()
 		checksumTime = time.Since(checksumStart)
+
+		if checksumProgress != nil {
+			if err := checksumProgress.MarkStatus(progress.StatusCompleted); err != nil {
+				fmt.Printf("Warning: failed to mark progress as completed: %v\n", err)
+			}
+		}
 
 		// 记录额外操作时间
 		extraOpsStart := time.Now()

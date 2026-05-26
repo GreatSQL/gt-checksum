@@ -21,15 +21,21 @@ type sqlRollingWriter struct {
 
 	pathFunc func(fileSeq int) (string, bool)
 
-	fileSeq    int
-	current    *os.File
-	currentCnt int
-	currentB   int64
+	// startFileSeq 用于 resume 模式：writer 从此序号之后开始编号，
+	// 跳过已完成 chunk 写入的文件，避免覆盖或追加到已有完整文件。
+	startFileSeq int
+	fileSeq      int
+	current      *os.File
+	currentCnt   int
+	currentB     int64
 }
 
 func (w *sqlRollingWriter) ensureFile() error {
 	if w.current != nil {
 		return nil
+	}
+	if w.fileSeq == 0 && w.startFileSeq > 0 {
+		w.fileSeq = w.startFileSeq
 	}
 	w.fileSeq++
 	path, _ := w.pathFunc(w.fileSeq)
@@ -140,15 +146,24 @@ func (sp *SchedulePlan) newSQLRollingWriter(sqlType string, maxStmtPerFile int, 
 		return fmt.Sprintf("%s/table.%s.%s-%d.sql",
 			sp.datafixSql, fixFileNameEncode(fixSchema), fixFileNameEncode(fixTable), fileSeq), false
 	}
+	startSeq := 0
+	if sp.resumeFixFileSeqs != nil {
+		if sqlType == "DELETE" {
+			startSeq = sp.resumeFixFileSeqs["DELETE"]
+		} else {
+			startSeq = sp.resumeFixFileSeqs["INSERT"]
+		}
+	}
 	return &sqlRollingWriter{
-		datafixType: sp.datafixType,
-		ddrive:      sp.ddrive,
-		djdbc:       sp.djdbc,
-		logThread:   logThreadSeq,
-		fixTrxNum:   sp.fixTrxNum,
-		maxStmt:     maxStmtPerFile,
-		maxBytes:    maxFileSizeBytes,
-		pathFunc:    pathFunc,
+		datafixType:  sp.datafixType,
+		ddrive:       sp.ddrive,
+		djdbc:        sp.djdbc,
+		logThread:    logThreadSeq,
+		fixTrxNum:    sp.fixTrxNum,
+		maxStmt:      maxStmtPerFile,
+		maxBytes:     maxFileSizeBytes,
+		pathFunc:     pathFunc,
+		startFileSeq: startSeq,
 	}
 }
 
@@ -332,14 +347,19 @@ func (sp *SchedulePlan) newRollbackSQLRollingWriter(sqlType string, maxStmtPerFi
 		return fmt.Sprintf("%s/table.%s.%s.rollback-%s-%d.sql",
 			sp.rollSqlDir, fixFileNameEncode(fixSchema), fixFileNameEncode(fixTable), sqlType, fileSeq), false
 	}
+	startSeq := 0
+	if sp.resumeFixFileSeqs != nil {
+		startSeq = sp.resumeFixFileSeqs["rollback-"+sqlType]
+	}
 	return &sqlRollingWriter{
-		datafixType: sp.datafixType,
-		ddrive:      sp.ddrive,
-		djdbc:       sp.djdbc,
-		logThread:   logThreadSeq,
-		fixTrxNum:   sp.fixTrxNum,
-		maxStmt:     maxStmtPerFile,
-		maxBytes:    maxFileSizeBytes,
-		pathFunc:    pathFunc,
+		datafixType:  sp.datafixType,
+		ddrive:       sp.ddrive,
+		djdbc:        sp.djdbc,
+		logThread:    logThreadSeq,
+		fixTrxNum:    sp.fixTrxNum,
+		maxStmt:      maxStmtPerFile,
+		maxBytes:     maxFileSizeBytes,
+		pathFunc:     pathFunc,
+		startFileSeq: startSeq,
 	}
 }

@@ -74,6 +74,11 @@ type RulesS struct {
 	RequirePK string // ON | OFF
 	// DTypeMappingFile 指定用户自定义数据类型映射规则文件路径（YAML 或 JSON）
 	DTypeMappingFile string
+	// Resume controls break-resume behavior for data checksum.
+	// OFF = no resume (default)
+	// ON  = auto-resume from last checkpoint
+	// ASK = prompt user at startup
+	Resume string // OFF | ON | ASK
 }
 
 type LogS struct {

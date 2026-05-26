@@ -1,11 +1,15 @@
 package actions
 
 import (
+	"bufio"
 	"fmt"
 	"gt-checksum/global"
 	"gt-checksum/inputArg"
+	"gt-checksum/progress"
 	"math/rand"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -69,6 +73,16 @@ type SchedulePlan struct {
 	rollCC           chanString // 回滚 SQL channel，nil 表示不生成
 	rollRowCountMap  sync.Map   // key: "schema.table", value: int64（跨 chunk 累计差异行数）
 	rollTruncateOnce sync.Map   // key: "schema.table"，确保 TRUNCATE 只写一次
+
+	// ChecksumProgress 用于断点续传，记录已完成校验的表。
+	// 仅在 resume 模式下非 nil。
+	ChecksumProgress *progress.ChecksumProgress
+
+	// resumeFixFileSeqs 在 chunk 级 resume 时记录各 SQL 类型已保留的最大 fileSeq，
+	// 供 sqlRollingWriter 从正确位置续写，避免覆盖已完成 chunk 的文件。
+	// key: "INSERT" | "DELETE" | "rollback-INSERT" | "rollback-DELETE"
+	resumeFixFileSeqs  map[string]int
+	resumeFixSQLOffset int64
 }
 
 // columnsModeSourceOnlyAdvisory 记录 columns 模式下差异行的统计信息，
@@ -149,6 +163,7 @@ type DifferencesDataStruct struct {
 	TableColumnInfo global.TableAllColumnInfoS //该表的所有列信息，包括列类型
 	SqlWhere        map[string]string          //差异数据查询的where 条件
 	indexColumnType string                     //索引列类型
+	ChunkSeq        int64                      // 当前差异所属 chunk 序号，用于 resume 精确推进 fixsql 完成边界
 }
 
 func preserveDDLResultPods(pods []Pod) []Pod {
@@ -159,6 +174,323 @@ func preserveDDLResultPods(pods []Pod) []Pod {
 		}
 	}
 	return preserved
+}
+
+// cleanupFixSQLFilesForTable 在 resume 模式下清理指定表的旧 fixsql/rollsql 文件，
+// 避免重新处理时追加导致重复 SQL。
+func cleanupFixSQLFilesForTable(fixDir, rollDir, schema, table string) {
+	fixSchema := fixFileNameEncode(schema)
+	fixTable := fixFileNameEncode(table)
+
+	// 清理 fixsql 目录中的旧文件：table.{schema}.{table}-*.sql 和 table.{schema}.{table}-DELETE-*.sql
+	if fixDir != "" {
+		patterns := []string{
+			filepath.Join(fixDir, fmt.Sprintf("table.%s.%s-*.sql", fixSchema, fixTable)),
+		}
+		for _, pattern := range patterns {
+			matches, _ := filepath.Glob(pattern)
+			for _, f := range matches {
+				if err := os.Remove(f); err != nil {
+					global.Wlog.Warn(fmt.Sprintf("[RESUME] Failed to remove old fixsql file %s: %v", f, err))
+				} else {
+					global.Wlog.Info(fmt.Sprintf("[RESUME] Removed old fixsql file: %s", f))
+				}
+			}
+		}
+	}
+
+	// 清理 rollsql 目录中的旧文件：table.{schema}.{table}.rollback-*.sql
+	if rollDir != "" {
+		pattern := filepath.Join(rollDir, fmt.Sprintf("table.%s.%s.rollback-*.sql", fixSchema, fixTable))
+		matches, _ := filepath.Glob(pattern)
+		for _, f := range matches {
+			if err := os.Remove(f); err != nil {
+				global.Wlog.Warn(fmt.Sprintf("[RESUME] Failed to remove old rollsql file %s: %v", f, err))
+			} else {
+				global.Wlog.Info(fmt.Sprintf("[RESUME] Removed old rollsql file: %s", f))
+			}
+		}
+	}
+}
+
+// countCommitsInFile counts the number of "COMMIT;" lines in the file at path.
+// Used before deleting a partial fixsql file to determine how many chunks to roll back.
+func countCommitsInFile(path string) int {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0
+	}
+	defer f.Close()
+	count := 0
+	reader := bufio.NewReader(f)
+	for {
+		line, err := reader.ReadString('\n')
+		if strings.TrimSpace(line) == "COMMIT;" {
+			count++
+		}
+		if err != nil {
+			break
+		}
+	}
+	return count
+}
+
+// findAndDeleteLastFixFile 在 dir 目录中查找匹配 filePrefix+N+".sql" 格式的最大序号文件，
+// 删除该文件（可能不完整），返回 (已保留的最大 fileSeq, 被删除文件中的 chunk 数)。
+// 若无匹配文件返回 (0, 0)。
+// Deprecated: 使用 findAndDeleteLastFixFileV2 替代，chunk 数由调用方从进度文件获取。
+func findAndDeleteLastFixFile(dir, filePrefix string) (int, int) {
+	seq, deleted := findAndDeleteLastFixFileV2(dir, filePrefix)
+	if !deleted {
+		return seq, 0
+	}
+	return seq, 0 // chunk 数由调用方从进度文件精确获取，此处不再统计 COMMIT 数
+}
+
+// findAndDeleteLastFixFileV2 在 dir 目录中查找匹配 filePrefix+N+".sql" 格式的最大序号文件，
+// 删除该文件，返回 (已保留的最大 fileSeq, 是否成功删除了文件)。
+// 若无匹配文件返回 (0, false)。
+func findAndDeleteLastFixFileV2(dir, filePrefix string) (int, bool) {
+	if dir == "" {
+		return 0, false
+	}
+	pattern := filepath.Join(dir, filePrefix+"*.sql")
+	matches, _ := filepath.Glob(pattern)
+
+	maxSeq := 0
+	maxPath := ""
+	for _, f := range matches {
+		base := filepath.Base(f)
+		numStr := strings.TrimSuffix(strings.TrimPrefix(base, filePrefix), ".sql")
+		n, err := strconv.Atoi(numStr)
+		if err == nil && n > maxSeq {
+			maxSeq = n
+			maxPath = f
+		}
+	}
+	if maxSeq == 0 {
+		return 0, false
+	}
+	if err := os.Remove(maxPath); err != nil {
+		if global.Wlog != nil {
+			global.Wlog.Warn(fmt.Sprintf("[RESUME] Failed to remove partial fixsql %s: %v", maxPath, err))
+		}
+		return maxSeq, false
+	}
+	if global.Wlog != nil {
+		global.Wlog.Info(fmt.Sprintf("[RESUME] Removed partial fixsql (last chunk): %s", maxPath))
+	}
+	return maxSeq - 1, true
+}
+
+// findLastFixFilePath 在 dir 目录中查找匹配 filePrefix+N+".sql" 格式的最大序号文件，
+// 返回该文件的完整路径。若无匹配文件返回空字符串。
+// 用于在删除文件前统计其 COMMIT 数，精确计算需要回滚的 chunk 数。
+func findLastFixFilePath(dir, filePrefix string) string {
+	if dir == "" {
+		return ""
+	}
+	pattern := filepath.Join(dir, filePrefix+"*.sql")
+	matches, _ := filepath.Glob(pattern)
+
+	maxSeq := 0
+	maxPath := ""
+	for _, f := range matches {
+		base := filepath.Base(f)
+		numStr := strings.TrimSuffix(strings.TrimPrefix(base, filePrefix), ".sql")
+		n, err := strconv.Atoi(numStr)
+		if err == nil && n > maxSeq {
+			maxSeq = n
+			maxPath = f
+		}
+	}
+	return maxPath
+}
+
+// truncateFileToLastCommit truncates the file at path to the byte offset
+// immediately after the last "COMMIT;" line, removing any incomplete trailing
+// transaction. Returns the number of bytes kept, or 0 if no COMMIT was found
+// (meaning the file is entirely incomplete and should be deleted by the caller).
+func truncateFileToLastCommit(path string) (int64, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+
+	var lastCommitEnd int64
+	var pos int64
+	reader := bufio.NewReader(f)
+	for {
+		line, err := reader.ReadString('\n')
+		pos += int64(len(line))
+		if strings.TrimSpace(line) == "COMMIT;" {
+			lastCommitEnd = pos
+		}
+		if err != nil {
+			break
+		}
+	}
+
+	if lastCommitEnd == 0 {
+		return 0, nil
+	}
+	if err := os.Truncate(path, lastCommitEnd); err != nil {
+		return 0, err
+	}
+	return lastCommitEnd, nil
+}
+
+// keepAndTruncateLastFixFile finds the file with the highest sequence number,
+// truncates it to the last complete COMMIT boundary to remove any incomplete
+// trailing transaction, and returns maxSeq so the writer starts a new file.
+// If no COMMIT is found (file entirely incomplete), deletes the file and returns maxSeq-1.
+// Returns 0 if no matching files found.
+func keepAndTruncateLastFixFile(dir, filePrefix string) int {
+	if dir == "" {
+		return 0
+	}
+	pattern := filepath.Join(dir, filePrefix+"*.sql")
+	matches, _ := filepath.Glob(pattern)
+
+	maxSeq := 0
+	maxPath := ""
+	for _, f := range matches {
+		base := filepath.Base(f)
+		numStr := strings.TrimSuffix(strings.TrimPrefix(base, filePrefix), ".sql")
+		n, err := strconv.Atoi(numStr)
+		if err == nil && n > maxSeq {
+			maxSeq = n
+			maxPath = f
+		}
+	}
+	if maxSeq == 0 {
+		return 0
+	}
+
+	kept, err := truncateFileToLastCommit(maxPath)
+	if err != nil {
+		if global.Wlog != nil {
+			global.Wlog.Warn(fmt.Sprintf("[RESUME] Failed to truncate partial fixsql %s: %v", maxPath, err))
+		}
+		return maxSeq
+	}
+	if kept == 0 {
+		if err := os.Remove(maxPath); err != nil {
+			if global.Wlog != nil {
+				global.Wlog.Warn(fmt.Sprintf("[RESUME] Failed to remove entirely incomplete fixsql %s: %v", maxPath, err))
+			}
+		} else {
+			if global.Wlog != nil {
+				global.Wlog.Info(fmt.Sprintf("[RESUME] Removed entirely incomplete fixsql (no COMMIT found): %s", maxPath))
+			}
+		}
+		return maxSeq - 1
+	}
+	if global.Wlog != nil {
+		global.Wlog.Info(fmt.Sprintf("[RESUME] Truncated partial fixsql to last COMMIT (%d bytes kept): %s", kept, maxPath))
+	}
+	return maxSeq
+}
+
+// cleanupIncompleteFixSQLForTable 在 chunk 级 resume 模式下，截断各类型最后一个
+// 可能不完整的 fixsql/rollsql 文件到最后一个 COMMIT 边界，保留已完成事务。
+// INSERT/DELETE/rollback 文件都采用同一策略，避免续跑时整文件删除导致已生成 fixsql 丢失；
+// 若文件完全没有 COMMIT 则删除。
+func cleanupIncompleteFixSQLForTable(fixDir, rollDir, schema, table string) map[string]int {
+	seqs := make(map[string]int)
+	fixSchema := fixFileNameEncode(schema)
+	fixTable := fixFileNameEncode(table)
+
+	if fixDir != "" {
+		insertPrefix := fmt.Sprintf("table.%s.%s-", fixSchema, fixTable)
+		seqs["INSERT"] = keepAndTruncateLastFixFile(fixDir, insertPrefix)
+
+		deletePrefix := fmt.Sprintf("table.%s.%s-DELETE-", fixSchema, fixTable)
+		seqs["DELETE"] = keepAndTruncateLastFixFile(fixDir, deletePrefix)
+	}
+
+	if rollDir != "" {
+		rbInsPrefix := fmt.Sprintf("table.%s.%s.rollback-INSERT-", fixSchema, fixTable)
+		seqs["rollback-INSERT"] = keepAndTruncateLastFixFile(rollDir, rbInsPrefix)
+
+		rbDelPrefix := fmt.Sprintf("table.%s.%s.rollback-DELETE-", fixSchema, fixTable)
+		seqs["rollback-DELETE"] = keepAndTruncateLastFixFile(rollDir, rbDelPrefix)
+	}
+
+	return seqs
+}
+
+func prepareResumeFixSQLForTable(checksumProgress *progress.ChecksumProgress, schemaTable, fixDir, rollDir, schema, table string, allowCompletedChunks bool) (map[string]int, int64) {
+	if checksumProgress == nil {
+		return nil, 0
+	}
+
+	resumeOffset, hasFixSQLState, unsafeFixSQLState := checksumProgress.GetFixSQLResumeState(schemaTable)
+	if unsafeFixSQLState {
+		cleanupFixSQLFilesForTable(fixDir, rollDir, schema, table)
+		if err := checksumProgress.ResetTableChunkState(schemaTable); err != nil {
+			global.Wlog.Warn(fmt.Sprintf("[RESUME] Failed to reset unsafe chunk state for %s: %v", schemaTable, err))
+		}
+		global.Wlog.Info(fmt.Sprintf("[RESUME] Unsafe fixsql resume state for %s (resumeOffset=%d); cleaned old fixsql files and will recheck table", schemaTable, resumeOffset))
+		return nil, 0
+	}
+
+	if resumeOffset <= 0 {
+		cleanupFixSQLFilesForTable(fixDir, rollDir, schema, table)
+		if err := checksumProgress.ClearCheckingChunks(schemaTable); err != nil {
+			global.Wlog.Warn(fmt.Sprintf("[RESUME] Failed to clear checking chunks for %s: %v", schemaTable, err))
+		}
+		if hasFixSQLState {
+			if err := checksumProgress.ResetTableChunkState(schemaTable); err != nil {
+				global.Wlog.Warn(fmt.Sprintf("[RESUME] Failed to reset chunk state for %s: %v", schemaTable, err))
+			}
+		}
+		global.Wlog.Info(fmt.Sprintf("[RESUME] No safe fixsql resume boundary for %s; cleaned old fixsql files", schemaTable))
+		return nil, 0
+	}
+
+	seqs := cleanupIncompleteFixSQLForTable(fixDir, rollDir, schema, table)
+	if err := checksumProgress.ClearCheckingChunksBefore(schemaTable, resumeOffset); err != nil {
+		global.Wlog.Warn(fmt.Sprintf("[RESUME] Failed to clear stale checking chunks for %s before %d: %v", schemaTable, resumeOffset, err))
+	}
+	global.Wlog.Info(fmt.Sprintf("[RESUME] Partial cleanup for %s: resumeOffset=%d kept INSERT=%d DELETE=%d rollback-INSERT=%d rollback-DELETE=%d",
+		schemaTable, resumeOffset, seqs["INSERT"], seqs["DELETE"], seqs["rollback-INSERT"], seqs["rollback-DELETE"]))
+	return seqs, resumeOffset
+}
+
+func (sp *SchedulePlan) getFixSQLResumeOffset(schemaTable string) int64 {
+	if sp.resumeFixSQLOffset > 0 {
+		return sp.resumeFixSQLOffset
+	}
+	if sp.ChecksumProgress == nil {
+		return 0
+	}
+	return sp.ChecksumProgress.GetSafeFixSQLResumeOffset(schemaTable)
+}
+
+func (sp *SchedulePlan) getFixSQLCompletedChunkSet(schemaTable string) map[int64]struct{} {
+	if sp.ChecksumProgress == nil {
+		return nil
+	}
+	resumeOffset := sp.resumeFixSQLOffset
+	if resumeOffset <= 0 {
+		resumeOffset = sp.ChecksumProgress.GetSafeFixSQLResumeOffset(schemaTable)
+	}
+	if resumeOffset <= 0 {
+		return nil
+	}
+	return sp.ChecksumProgress.GetSafeFixSQLCompletedChunks(schemaTable, true)
+}
+
+func shouldSkipResumeChunk(chunkSeq, resumeOffset int64, completedChunks map[int64]struct{}) bool {
+	if resumeOffset > 0 && chunkSeq >= resumeOffset {
+		return false
+	}
+	if _, ok := completedChunks[chunkSeq]; ok {
+		return true
+	}
+	return len(completedChunks) == 0 && resumeOffset > 0 && chunkSeq < resumeOffset
 }
 
 /*
@@ -243,6 +575,19 @@ func (sp *SchedulePlan) Schedulingtasks() {
 			destTable = sourceTable
 		}
 		spCopy.destTable = destTable
+
+		// 断点续传：跳过已完成的表
+		if sp.ChecksumProgress != nil {
+			schemaTable := fmt.Sprintf("%s.%s", sourceSchema, sourceTable)
+			if sp.ChecksumProgress.IsCompleted(schemaTable) {
+				global.Wlog.Info(fmt.Sprintf("Skipping already completed table: %s", schemaTable))
+				fmt.Printf("\n[RESUME] Skipping completed table %s\n", schemaTable)
+				continue
+			}
+			seqs, resumeOffset := prepareResumeFixSQLForTable(sp.ChecksumProgress, schemaTable, sp.datafixSql, sp.rollSqlDir, destSchema, destTable, len(v) > 0)
+			spCopy.resumeFixFileSeqs = seqs
+			spCopy.resumeFixSQLOffset = resumeOffset
+		}
 
 		// columns 模式精确表对匹配：列计划只对指定的源/目标表对生效，其余表回退全列模式，避免列计划错误套用到多表场景。
 		if sp.columnPlanSourceTable != "" {
@@ -392,6 +737,15 @@ func (sp *SchedulePlan) Schedulingtasks() {
 			// 显示完成消息
 			fmt.Printf("table %s checksum completed\n", displayTableName)
 		}
+
+		// 断点续传：记录已完成的表
+		if spCopy.ChecksumProgress != nil {
+			schemaTable := fmt.Sprintf("%s.%s", spCopy.schema, spCopy.table)
+			if err := spCopy.ChecksumProgress.MarkCompleted(schemaTable); err != nil {
+				global.Wlog.Warn(fmt.Sprintf("Failed to save progress for table %s: %v", schemaTable, err))
+			}
+		}
+
 		if spCopy.file != nil {
 			_ = spCopy.file.Close()
 		}

@@ -15,11 +15,11 @@ MySQL DBA经常使用 **pt-table-checksum** 和 **pt-table-sync** 进行数据�
 
 ## v4.0.0 关键变化
 
+- **[功能新增]** 新增断点续传能力，`gt-checksum` 数据校验和 `repairDB` 可通过 `resume=ON/ASK` 在异常退出后跳过已完成的表或 SQL 文件继续执行，并在 `datafix=file` 场景避免续跑重复生成修复 SQL。
 - **[功能新增]** 新增 `dTypeMappingFile` 参数，支持用户自定义数据类型映射规则（YAML/JSON），覆盖 `oracle_to_mysql`、`mysql_upgrade`、`mariadb_to_mysql` 三种迁移场景，支持 `schema/table/column` 级别精细化控制。
 - **[功能新增]** 新增反向回滚SQL生成能力，通过 `genRollSQL/maxRollRowNum/rollFileDir` 等参数控制，支持为修复SQL自动生成对应的回滚语句，便于修复出错时快速回退。
 - **[功能新增]** 新增 SSL 加密连接支持，源端和目标端可独立配置 SSL 参数，支持五种模式（`DISABLED/PREFERRED/REQUIRED/VERIFY_CA/VERIFY_IDENTITY`）。
 - **[功能优化]** 优化 COLLATE 修复逻辑，当存在 `dTypeMapping` 规则覆盖时自动生成列级 MODIFY COLUMN SQL，而非表级 CONVERT TO SQL。
-- **[功能优化]** 优化 utf8mb4 默认 collation 漂移检测，返回 WarnOnly 以简化修复 SQL。
 - **[功能优化]** 优化无主键表的 DELETE 修复逻辑，简化 LIMIT 处理，避免 NULL 值导致的语句生成错误。
 - **[问题修复]** 修复 Oracle NUMBER(19,0) 类型映射精度阈值，并新增 tinyint(1) ↔ bit(1) 类型等价映射。
 - **[问题修复]** 修复 global.Wlog 空指针检查，避免日志初始化前 panic。
@@ -58,7 +58,7 @@ gt-checksum 采用**滚动发布**策略，官方仅维护最新发布版本。
 1. ~~支持修复回滚；~~ ✅ 已实现（v4.0.0）
 2. ~~支持自定义数据类型映射；~~ ✅ 已实现（v4.0.0）
 3. 支持全量+增量校验；
-4. 支持修复时临时中断后继续执行；
+4. ~~支持修复时临时中断后继续执行；~~ ✅ 已实现（v4.0.0）
 5. ~~支持 SSL 连接；~~ ✅ 已实现（v4.0.0）
 6. 其他。
 
@@ -201,6 +201,7 @@ $ ./repairDB ./fixsql && cat ./repairDB.log
 | `fixFileDir` | 修复 SQL 文件目录（默认 `./fixsql`） | `/data/fixsql` |
 | `logbin` | sql_log_bin 开关（ON/OFF，默认 ON） | `OFF` |
 | `resultFile` | 自定义 CSV 报告输出路径 | `/tmp/repair-report.csv` |
+| `resume` | 断点续传开关（OFF/ON/ASK，默认 OFF） | `ON` |
 
 ### CSV 执行报告
 

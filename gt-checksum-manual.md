@@ -922,6 +922,36 @@ Result exported to: result/gt-checksum-result-20260323195530.csv
 > - `resultFile` 未配置时默认输出到 `result/` 目录；指定自定义路径时，如果父目录不存在会自动创建（v1.3.0 起）。
 > - CSV 导出失败（如无写权限）时只输出 Warning，不影响校验主流程的退出码。
 
+## 断点续传
+
+v4.0.0 新增断点续传能力，用于数据校验或修复过程异常退出后的继续执行。该能力依赖本地进度文件，只适用于源端和目标端数据在任务期间保持静态的场景；若业务仍在写入，建议重新执行完整校验。
+
+### gt-checksum 断点续传参数
+
+| 参数 | 默认值 | 可选值 | 说明 |
+|------|--------|--------|------|
+| `resume` | `OFF` | `OFF` / `ON` / `ASK` | 控制是否启用断点续传。`OFF`：每次从头执行；`ON`：发现未完成进度文件时自动续传；`ASK`：启动时提示用户选择是否续传 |
+
+进度文件默认保存在 `result/` 目录下，文件名格式为 `gt-checksum-progress-<RunID>.json`。如果配置了 `resultFile` 且它是具体文件路径，则进度文件会保存在该文件所在目录。任务正常结束后进度文件状态会标记为 `completed`；异常退出时保留 `running` 状态，下次 `resume=ON/ASK` 会识别并使用。
+
+```ini
+resume=ON
+```
+
+启用后，`gt-checksum` 在 `checkObject=data` 表数据校验中会跳过已完成校验的表。对于 `datafix=file` 场景，续传时会清理或截断当前表未完整写完的 fixsql/rollsql 文件，保留已经完整提交的事务块，避免续传后重复生成修复 SQL。
+
+续跑判断会区分已经安全写完修复 SQL 的数据块和正在校验中的数据块：只有 `completed_fixsql` 边界内的数据块会被跳过，`checking_chunks` 或仅完成查询但未确认写完 fixsql 的数据块会重新校验并重新生成修复 SQL。若没有安全的 fixsql 续跑边界，程序会清理该表旧的 fixsql/rollsql 文件后从头重新生成，避免旧文件中的 DELETE/INSERT 不成对导致数据被过度删除。
+
+### repairDB 断点续传参数
+
+`repairDB` 同样读取配置文件中的 `resume` 参数。启用后，进度文件固定保存在 `<fixFileDir>/.repairDB-progress.json`，已成功执行的 SQL 文件会被跳过，失败或未执行的文件会继续执行。
+
+```ini
+resume=ASK
+```
+
+当 `<fixFileDir>/.repairDB.lock` 已存在时，`resume=OFF` 会按原有逻辑退出；`resume=ON/ASK` 会检查锁文件内容，若上次执行失败则允许续传，若上次已成功完成则提示无需续传。
+
 ---
 
 ## 配置参数详解
@@ -1195,6 +1225,7 @@ CSV 文件使用 UTF-8 BOM 编码，可直接用 Excel 或 WPS 打开，无需�
 | fixFileDir | string | fixsql | 存放修复SQL文件的目录 |
 | logbin | string | ON | 控制修复时是否写入 binlog；`OFF` 时每条连接执行 `SET sql_log_bin=0`，需要 SUPER 或 SESSION_VARIABLES_ADMIN 权限 |
 | resultFile | string | 空 | 自定义 CSV 报告输出路径；留空时自动使用默认路径格式 `result/repairDB-result-<timestamp>.csv`；命令行参数 `--result-file` 优先级高于此配置项 |
+| resume | string | OFF | 断点续传开关：`OFF` 不续传，`ON` 自动续传，`ASK` 启动时询问；进度文件保存为 `<fixFileDir>/.repairDB-progress.json` |
 | dstSslCa | string | 空 | 目标端 CA 证书文件路径（v4.0.0 新增） |
 | dstSslCert | string | 空 | 目标端客户端证书文件路径（v4.0.0 新增） |
 | dstSslKey | string | 空 | 目标端客户端密钥文件路径（v4.0.0 新增） |
@@ -1204,13 +1235,14 @@ CSV 文件使用 UTF-8 BOM 编码，可直接用 Excel 或 WPS 打开，无需�
 
 1. 读取配置文件或命令行参数（命令行参数只能指定 fixsql 所在目录，不支持指定其他参数）；
 2. 扫描指定目录下的所有 `.sql` 文件，并按对象类型分为六个阶段（DELETE / TABLE / VIEW / ROUTINE / TRIGGER / UNKNOWN）；
-3. 打印各阶段文件数量汇总；若存在 UNKNOWN 文件，额外打印 Warn 日志；
-4. 按 DELETE→TABLE→VIEW→ROUTINE→TRIGGER→UNKNOWN 顺序逐阶段执行；每个阶段单独建立连接池、执行完成后关闭；
-5. 每阶段内以 `parallelThds` 线程并发执行该阶段所有文件；
-6. 将 SQL 文件拆分为执行单元：普通语句单独执行，`BEGIN ... COMMIT/ROLLBACK` 作为一个事务块执行；
-7. 若检测到死锁错误（Error 1213），仅对当前失败事务块自动重试，最多 3 次（指数退避），不重试整个 SQL 文件；
-8. 某阶段任一文件失败则该阶段报错退出，后续阶段不再启动；
-9. 全部阶段完成后输出总耗时。
+3. 若启用 `resume`，读取 `<fixFileDir>/.repairDB-progress.json`，跳过已经成功执行的 SQL 文件；
+4. 打印各阶段文件数量汇总；若存在 UNKNOWN 文件，额外打印 Warn 日志；
+5. 按 DELETE→TABLE→VIEW→ROUTINE→TRIGGER→UNKNOWN 顺序逐阶段执行；每个阶段单独建立连接池、执行完成后关闭；
+6. 每阶段内以 `parallelThds` 线程并发执行该阶段所有文件；
+7. 将 SQL 文件拆分为执行单元：普通语句单独执行，`BEGIN ... COMMIT/ROLLBACK` 作为一个事务块执行；
+8. 若检测到死锁错误（Error 1213），仅对当前失败事务块自动重试，最多 3 次（指数退避），不重试整个 SQL 文件；
+9. 某阶段任一文件失败则该阶段报错退出，后续阶段不再启动；
+10. 全部阶段完成后输出总耗时，并在启用 `resume` 时将进度文件状态标记为 `completed`。
 
 ### 锁文件机制
 
@@ -1221,7 +1253,8 @@ CSV 文件使用 UTF-8 BOM 编码，可直接用 Excel 或 WPS 打开，无需�
   - 执行成功时：空文件
   - 执行失败时：包含具体错误信息
 - **执行前检查**：程序启动时自动检查锁文件是否存在
-  - 若存在：发出告警并退出，防止重复执行
+  - 若存在且 `resume=OFF`：发出告警并退出，防止重复执行
+  - 若存在且 `resume=ON/ASK`：空锁文件表示上次已成功完成，不再续传；非空锁文件表示上次失败，允许删除旧锁文件后继续续传
   - 若不存在：继续正常执行
 - **执行后生成**：程序执行完成后自动生成锁文件
 

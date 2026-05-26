@@ -8,12 +8,45 @@ import (
 	"sync"
 )
 
-func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
+func (sp *SchedulePlan) DataFixDispos(fixSQL chanFixSQLItem, logThreadSeq int64) {
 	var (
 		vlog        string
 		deleteCount int
 		insertCount int
 	)
+	pendingSQLByChunk := make(map[int64]int)
+	doneChunks := make(map[int64]bool)
+	schemaTable := fmt.Sprintf("%s.%s", sp.schema, sp.table)
+	markChunkIfSafe := func(chunkSeq int64) {
+		if sp.ChecksumProgress == nil || chunkSeq < 0 || !doneChunks[chunkSeq] || pendingSQLByChunk[chunkSeq] > 0 {
+			return
+		}
+		if err := sp.ChecksumProgress.MarkChunkFixSQLCompleted(schemaTable, chunkSeq); err != nil {
+			global.Wlog.Warn(fmt.Sprintf("(%d) [RESUME] Failed to mark chunk %d fixsql completed for %s: %v", logThreadSeq, chunkSeq, schemaTable, err))
+		}
+		delete(doneChunks, chunkSeq)
+		delete(pendingSQLByChunk, chunkSeq)
+	}
+	markItemsWritten := func(items []fixSQLItem) {
+		for _, item := range items {
+			if item.ChunkSeq < 0 {
+				continue
+			}
+			if pendingSQLByChunk[item.ChunkSeq] > 0 {
+				pendingSQLByChunk[item.ChunkSeq]--
+			}
+			markChunkIfSafe(item.ChunkSeq)
+		}
+	}
+	itemsToSQL := func(items []fixSQLItem) []string {
+		sqls := make([]string, 0, len(items))
+		for _, item := range items {
+			if item.SQL != "" {
+				sqls = append(sqls, item.SQL)
+			}
+		}
+		return sqls
+	}
 
 	// 修复：清空全局writtenSqlMap，确保只针对当前表去重，避免跨表影响
 	writtenSqlMap = sync.Map{}
@@ -58,44 +91,63 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 		defer updateWriter.close()
 	}
 
-	processDeleteBatch := func(batch []string) error {
-		optimized := optimizeSqlStatements(batch, sp.fixTrxNum, isUniqueKey, sp.deleteSqlSize, sp.insertSqlSize)
+	processDeleteBatch := func(batch []fixSQLItem) error {
+		optimized := optimizeSqlStatements(itemsToSQL(batch), sp.fixTrxNum, isUniqueKey, sp.deleteSqlSize, sp.insertSqlSize)
 		if len(optimized) == 0 {
+			markItemsWritten(batch)
 			return nil
 		}
 		if sp.datafixType == "table" {
 			writeOptimizedSqlChunk(optimized, sp.datafixType, nil, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
+			markItemsWritten(batch)
 			return nil
 		}
-		return deleteWriter.write(optimized)
+		if err := deleteWriter.write(optimized); err != nil {
+			return err
+		}
+		markItemsWritten(batch)
+		return nil
 	}
-	processInsertBatch := func(batch []string) error {
-		optimized := optimizeSqlStatements(batch, sp.fixTrxNum, false, sp.deleteSqlSize, sp.insertSqlSize)
+	processInsertBatch := func(batch []fixSQLItem) error {
+		optimized := optimizeSqlStatements(itemsToSQL(batch), sp.fixTrxNum, false, sp.deleteSqlSize, sp.insertSqlSize)
 		if len(optimized) == 0 {
+			markItemsWritten(batch)
 			return nil
 		}
 		if sp.datafixType == "table" {
 			writeOptimizedSqlChunk(optimized, sp.datafixType, nil, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
+			markItemsWritten(batch)
 			return nil
 		}
-		return insertWriter.write(optimized)
+		if err := insertWriter.write(optimized); err != nil {
+			return err
+		}
+		markItemsWritten(batch)
+		return nil
 	}
-	processUpdateBatch := func(batch []string) error {
-		if len(batch) == 0 {
+	processUpdateBatch := func(batch []fixSQLItem) error {
+		sqls := itemsToSQL(batch)
+		if len(sqls) == 0 {
+			markItemsWritten(batch)
 			return nil
 		}
 		if sp.datafixType == "table" {
-			writeOptimizedSqlChunk(batch, sp.datafixType, nil, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
+			writeOptimizedSqlChunk(sqls, sp.datafixType, nil, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
+			markItemsWritten(batch)
 			return nil
 		}
-		return updateWriter.write(batch)
+		if err := updateWriter.write(sqls); err != nil {
+			return err
+		}
+		markItemsWritten(batch)
+		return nil
 	}
 
 	global.Wlog.Info(fmt.Sprintf("(%d) Writing per-object fixsql for %s.%s",
 		logThreadSeq, sp.schema, sp.table))
-	deleteBatch := make([]string, 0, stageBatchStmt)
-	insertBatch := make([]string, 0, stageBatchStmt)
-	updateBatch := make([]string, 0, stageBatchStmt)
+	deleteBatch := make([]fixSQLItem, 0, stageBatchStmt)
+	insertBatch := make([]fixSQLItem, 0, stageBatchStmt)
+	updateBatch := make([]fixSQLItem, 0, stageBatchStmt)
 	var deleteBatchBytes int64
 	var insertBatchBytes int64
 	var updateBatchBytes int64
@@ -105,7 +157,8 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 		if len(deleteBatch) == 0 {
 			return
 		}
-		if err := processDeleteBatch(deleteBatch); err != nil {
+		batch := append([]fixSQLItem(nil), deleteBatch...)
+		if err := processDeleteBatch(batch); err != nil {
 			sp.getErr(fmt.Sprintf("Failed streaming DELETE fixsql for %s.%s", sp.schema, sp.table), err)
 		}
 		deleteBatch = deleteBatch[:0]
@@ -115,7 +168,8 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 		if len(insertBatch) == 0 {
 			return
 		}
-		if err := processInsertBatch(insertBatch); err != nil {
+		batch := append([]fixSQLItem(nil), insertBatch...)
+		if err := processInsertBatch(batch); err != nil {
 			sp.getErr(fmt.Sprintf("Failed streaming INSERT fixsql for %s.%s", sp.schema, sp.table), err)
 		}
 		insertBatch = insertBatch[:0]
@@ -125,40 +179,47 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 		if len(updateBatch) == 0 {
 			return
 		}
-		if err := processUpdateBatch(updateBatch); err != nil {
+		batch := append([]fixSQLItem(nil), updateBatch...)
+		if err := processUpdateBatch(batch); err != nil {
 			sp.getErr(fmt.Sprintf("Failed streaming UPDATE fixsql for %s.%s", sp.schema, sp.table), err)
 		}
 		updateBatch = updateBatch[:0]
 		updateBatchBytes = 0
 	}
 
-	for v := range fixSQL {
-		sqlType := detectFixSQLType(v)
+	for item := range fixSQL {
+		if item.Done {
+			doneChunks[item.ChunkSeq] = true
+			markChunkIfSafe(item.ChunkSeq)
+			continue
+		}
+		sqlType := detectFixSQLType(item.SQL)
 		if sqlType == "" {
 			continue
 		}
+		pendingSQLByChunk[item.ChunkSeq]++
 		sp.pods.DIFFS = "yes"
-		sqlBytes := int64(len(v) + 1)
+		sqlBytes := int64(len(item.SQL) + 1)
 		switch sqlType {
 		case "DELETE":
 			if len(deleteBatch) > 0 && (len(deleteBatch) >= stageBatchStmt || deleteBatchBytes+sqlBytes > stageBatchBytes) {
 				flushDelete()
 			}
-			deleteBatch = append(deleteBatch, v)
+			deleteBatch = append(deleteBatch, item)
 			deleteBatchBytes += sqlBytes
 			deleteCount++
 		case "INSERT":
 			if len(insertBatch) > 0 && (len(insertBatch) >= stageBatchStmt || insertBatchBytes+sqlBytes > stageBatchBytes) {
 				flushInsert()
 			}
-			insertBatch = append(insertBatch, v)
+			insertBatch = append(insertBatch, item)
 			insertBatchBytes += sqlBytes
 			insertCount++
 		case "UPDATE":
 			if len(updateBatch) > 0 && (len(updateBatch) >= stageBatchStmt || updateBatchBytes+sqlBytes > stageBatchBytes) {
 				flushUpdate()
 			}
-			updateBatch = append(updateBatch, v)
+			updateBatch = append(updateBatch, item)
 			updateBatchBytes += sqlBytes
 			updateCount++
 		}
@@ -166,6 +227,9 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanString, logThreadSeq int64) {
 	flushDelete()
 	flushInsert()
 	flushUpdate()
+	for chunkSeq := range doneChunks {
+		markChunkIfSafe(chunkSeq)
+	}
 
 	if deleteCount > 0 || insertCount > 0 || updateCount > 0 {
 		vlog = fmt.Sprintf("(%d) Repair statements generated for %s.%s: DELETE=%d, INSERT=%d, UPDATE=%d",

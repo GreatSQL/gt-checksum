@@ -669,11 +669,36 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 	)
 
 	displayTableName := sp.getDisplayTableName()
+	schemaTable := fmt.Sprintf("%s.%s", sp.schema, sp.table)
 
 	fmt.Printf("Starting checksum for table without index %s\n", displayTableName)
 	vlog = fmt.Sprintf("(%d) Verifying data for table without index %s", logThreadSeq, displayTableName)
 	global.Wlog.Info(vlog)
-	barTableRow := sp.NoIndexTableCount(logThreadSeq)
+
+	// Use cached total rows to avoid expensive COUNT(*) on resume.
+	var barTableRow int64
+	if sp.ChecksumProgress != nil {
+		if cachedRows, _, ok := sp.ChecksumProgress.GetTableTotalRows(schemaTable); ok && cachedRows > 0 {
+			barTableRow = cachedRows
+			global.Wlog.Info(fmt.Sprintf("(%d) [RESUME] Using cached row count %d for %s", logThreadSeq, barTableRow, schemaTable))
+		}
+	}
+	if barTableRow == 0 {
+		barTableRow = sp.NoIndexTableCount(logThreadSeq)
+		if sp.ChecksumProgress != nil {
+			_ = sp.ChecksumProgress.SetTableTotalRows(schemaTable, barTableRow, chanrowCount)
+		}
+	}
+
+	// Determine resume offset: skip chunks already completed in a previous run.
+	if sp.ChecksumProgress != nil {
+		resumeOffset := sp.ChecksumProgress.GetSafeResumeOffset(schemaTable)
+		if resumeOffset > 0 {
+			beginSeq = uint64(resumeOffset)
+			global.Wlog.Info(fmt.Sprintf("(%d) [RESUME] Resuming %s from chunk offset %d (skipping %d rows)", logThreadSeq, schemaTable, resumeOffset, resumeOffset))
+			fmt.Printf("[RESUME] Resuming table %s from offset %d (skipping %d rows)\n", schemaTable, resumeOffset, resumeOffset)
+		}
+	}
 	noIdxDestTable := sp.getDestTableName()
 	noIdxMappingInfo := ""
 	if sp.sourceSchema != sp.destSchema || sp.table != noIdxDestTable {
@@ -736,14 +761,14 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 		}
 		Cycles++
 		noIndexC <- struct{}{}
-		go func(a, beginSeq uint64) {
+		go func(a, chunkBeginSeq uint64) {
 			defer func() {
 				<-noIndexC
 			}()
 			displayTableName := sp.getDisplayTableName()
 			vlog = fmt.Sprintf("(%d) Starting MD5 checksum round %d for table without index %s", logThreadSeq, Cycles, displayTableName)
 			global.Wlog.Debug(vlog)
-			stt, dtt, err = sp.QueryTableData(beginSeq, Cycles, chanrowCount, int64(logThreadSeq))
+			stt, dtt, err = sp.QueryTableData(chunkBeginSeq, Cycles, chanrowCount, int64(logThreadSeq))
 			if err != nil {
 				return
 			}
@@ -759,6 +784,12 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 				tableRow <- dlength
 			}
 			sp.QueryDataCheckSum(stt, dtt, md5Chan, FileOper, Cycles, logThreadSeq)
+			// Mark this chunk as completed for break-resume.
+			if sp.ChecksumProgress != nil {
+				if err := sp.ChecksumProgress.MarkChunkCompleted(schemaTable, int64(chunkBeginSeq)); err != nil {
+					global.Wlog.Warn(fmt.Sprintf("(%d) [RESUME] Failed to mark chunk %d completed for %s: %v", logThreadSeq, chunkBeginSeq, schemaTable, err))
+				}
+			}
 			displayTableName = sp.getDisplayTableName()
 			vlog = fmt.Sprintf("(%d) Completed MD5 checksum round %d for table without index %s", logThreadSeq, Cycles, displayTableName)
 			global.Wlog.Debug(vlog)

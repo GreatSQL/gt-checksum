@@ -7,6 +7,7 @@ import (
 	"gt-checksum/inputArg"
 	"hash/fnv"
 	"math/rand"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"sort"
@@ -17,12 +18,19 @@ import (
 
 type (
 	chanString      chan string
+	chanFixSQLItem  chan fixSQLItem
 	chanMap         chan map[string]string
 	chanBool        chan bool
 	chanDiffDataS   chan DifferencesDataStruct
 	chanSliceString chan []string
 	chanStruct      chan struct{}
 )
+
+type fixSQLItem struct {
+	ChunkSeq int64
+	SQL      string
+	Done     bool
+}
 
 var (
 	lock sync.Mutex
@@ -256,7 +264,7 @@ func (sp *SchedulePlan) doIndexDataCheck() {
 	var (
 		sqlWhere            = make(chanString, queueDepth)
 		diffQueryData       = make(chanDiffDataS, queueDepth)
-		fixSQL              = make(chanString, queueDepth)
+		fixSQL              = make(chanFixSQLItem, queueDepth)
 		tableColumn         = sp.tableAllCol[fmt.Sprintf("%s_gtchecksum_%s", sp.schema, sp.table)]
 		selectColumnStringM = make(map[string]map[string]string)
 	)
@@ -292,6 +300,19 @@ func (sp *SchedulePlan) doIndexDataCheck() {
 		Datafix:     sp.datafixType,
 		MappingInfo: mappingInfo,
 		ColumnsInfo: sp.buildColumnsInfo(),
+	}
+
+	// Resume 模式：若 fixsql 目录已存在该表的修复文件（上次运行产生），
+	// 则初始化 DIFFS=yes，避免本次 resume 仅处理剩余 chunk 无差异时错误报告 Diffs=no。
+	if sp.datafixSql != "" && sp.resumeFixFileSeqs != nil {
+		fixSchema := fixFileNameEncode(sp.destSchema)
+		fixTable := fixFileNameEncode(destTable)
+		pattern := filepath.Join(sp.datafixSql, fmt.Sprintf("table.%s.%s-*.sql", fixSchema, fixTable))
+		if matches, _ := filepath.Glob(pattern); len(matches) > 0 {
+			sp.pods.DIFFS = "yes"
+			global.Wlog.Info(fmt.Sprintf("[RESUME] Found %d existing fixsql file(s) for %s.%s, initializing Diffs=yes",
+				len(matches), sp.schema, sp.table))
+		}
 	}
 
 	// 关键检查：验证索引列在目标端是否存在
@@ -362,6 +383,18 @@ func (sp *SchedulePlan) doIndexDataCheck() {
 		sp.tableMaxRows = A
 	} else {
 		sp.tableMaxRows = B
+	}
+	// 记录 index 表开始处理，写入进度文件（供断点续传可见性使用）
+	if sp.ChecksumProgress != nil {
+		schemaTable := fmt.Sprintf("%s.%s", sp.schema, sp.table)
+		totalChunks := int64(sp.tableMaxRows / uint64(sp.chanrowCount))
+		if sp.tableMaxRows%uint64(sp.chanrowCount) > 0 {
+			totalChunks++
+		}
+		if totalChunks < 1 {
+			totalChunks = 1
+		}
+		_ = sp.ChecksumProgress.SetTableTotalRows(schemaTable, totalChunks, 1)
 	}
 	// 重新查询精确行数
 	sourceExactCount, sourceCountExact := sp.getExactRowCount(sp.sdbPool, sp.sourceSchema, sp.table, logThreadSeq)
@@ -535,4 +568,3 @@ func minFloat64(a float64, b float64) float64 {
 	}
 	return b
 }
-

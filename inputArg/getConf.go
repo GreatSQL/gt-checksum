@@ -438,6 +438,20 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 	// dTypeMappingFile 参数：用户自定义数据类型映射规则文件路径
 	rc.SecondaryL.RulesV.DTypeMappingFile = strings.TrimSpace(getLastConfigValue("dTypeMappingFile"))
 
+	// resume 参数：断点续传控制
+	resumeValue := strings.ToUpper(strings.TrimSpace(getLastConfigValue("resume")))
+	switch resumeValue {
+	case "", "OFF":
+		rc.SecondaryL.RulesV.Resume = "OFF"
+	case "ON":
+		rc.SecondaryL.RulesV.Resume = "ON"
+	case "ASK":
+		rc.SecondaryL.RulesV.Resume = "ASK"
+	default:
+		fmt.Printf("Warning: Invalid resume value '%s', using default value 'OFF'\n", resumeValue)
+		rc.SecondaryL.RulesV.Resume = "OFF"
+	}
+
 	//Repair 获取相关参数
 	fixTrxNumValue := getLastConfigValue("fixTrxNum")
 	if fixTrxNumValue != "" {
@@ -545,8 +559,12 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 			// 目录已存在，检查是否为空
 			files, err := os.ReadDir(rc.SecondaryL.RepairV.FixFileDir)
 			if err == nil && len(files) > 0 {
-				fmt.Printf("Error: Directory '%s' already exists and is not empty\n", rc.SecondaryL.RepairV.FixFileDir)
-				os.Exit(1)
+				if rc.SecondaryL.RulesV.Resume == "OFF" {
+					fmt.Printf("Error: Directory '%s' already exists and is not empty\n", rc.SecondaryL.RepairV.FixFileDir)
+					os.Exit(1)
+				}
+				// resume 模式下允许目录非空，由续传逻辑处理已有文件
+				fmt.Printf("[RESUME] Directory '%s' already exists with %d file(s), will reuse for resume\n", rc.SecondaryL.RepairV.FixFileDir, len(files))
 			}
 		} else if os.IsNotExist(err) {
 			// 目录不存在，创建目录
@@ -599,8 +617,12 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 		if _, err := os.Stat(rc.SecondaryL.RepairV.RollFileDir); err == nil {
 			files, err := os.ReadDir(rc.SecondaryL.RepairV.RollFileDir)
 			if err == nil && len(files) > 0 {
-				fmt.Printf("Error: Directory '%s' already exists and is not empty\n", rc.SecondaryL.RepairV.RollFileDir)
-				os.Exit(1)
+				if rc.SecondaryL.RulesV.Resume == "OFF" {
+					fmt.Printf("Error: Directory '%s' already exists and is not empty\n", rc.SecondaryL.RepairV.RollFileDir)
+					os.Exit(1)
+				}
+				// resume 模式下允许目录非空，由续传逻辑处理已有文件
+				fmt.Printf("[RESUME] Directory '%s' already exists with %d file(s), will reuse for resume\n", rc.SecondaryL.RepairV.RollFileDir, len(files))
 			}
 		} else if os.IsNotExist(err) {
 			if err := os.MkdirAll(rc.SecondaryL.RepairV.RollFileDir, 0755); err != nil {

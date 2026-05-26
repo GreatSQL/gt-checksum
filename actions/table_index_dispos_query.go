@@ -17,6 +17,20 @@ import (
 	"time"
 )
 
+const querySQLChunkSeqKey = "__gt_checksum_chunk_seq"
+
+func querySQLChunkSeq(sql map[string]string, fallback int64) int64 {
+	seqText, ok := sql[querySQLChunkSeqKey]
+	if !ok {
+		return fallback
+	}
+	delete(sql, querySQLChunkSeqKey)
+	seq, err := strconv.ParseInt(seqText, 10, 64)
+	if err != nil {
+		return fallback
+	}
+	return seq
+}
 
 /*
 针对表的所有列的数据类型进行处理，将列类型转换成字符串，例如时间类型
@@ -300,7 +314,29 @@ func (sp *SchedulePlan) queryTableData(selectSql chanMap, diffQueryData chanDiff
 // 新的函数处理分离的源端和目标端查询
 func (sp *SchedulePlan) queryTableSqlSeparate(sqlWhere chanString, sourceSelectSql chanMap, destSelectSql chanMap, cc1 global.TableAllColumnInfoS, sc chan int64, logThreadSeq int64) {
 	destTable := sp.getDestTableName()
+
+	var resumeOffset int64
+	var completedChunks map[int64]struct{}
+	if sp.ChecksumProgress != nil {
+		schemaTable := fmt.Sprintf("%s.%s", sp.schema, sp.table)
+		resumeOffset = sp.getFixSQLResumeOffset(schemaTable)
+		completedChunks = sp.getFixSQLCompletedChunkSet(schemaTable)
+		if len(completedChunks) > 0 {
+			global.Wlog.Info(fmt.Sprintf("(%d) [RESUME] index table %s: skipping %d completed chunk(s), safe offset=%d", logThreadSeq, schemaTable, len(completedChunks), resumeOffset))
+			fmt.Printf("[RESUME] index table %s: skipping %d completed chunk(s), safe offset=%d\n", schemaTable, len(completedChunks), resumeOffset)
+		} else if resumeOffset > 0 {
+			global.Wlog.Info(fmt.Sprintf("(%d) [RESUME] index table %s: skipping first %d completed chunks", logThreadSeq, schemaTable, resumeOffset))
+			fmt.Printf("[RESUME] index table %s: skipping first %d completed chunks\n", schemaTable, resumeOffset)
+		}
+	}
+	var chunkSeq int64
+
 	for c := range sqlWhere {
+		currentChunkSeq := chunkSeq
+		chunkSeq++
+		if shouldSkipResumeChunk(currentChunkSeq, resumeOffset, completedChunks) {
+			continue
+		}
 		// 源端查询SQL
 		sourceWhere := strings.Replace(c, fmt.Sprintf("%s.%s", sp.destSchema, destTable), fmt.Sprintf("%s.%s", sp.sourceSchema, sp.table), -1)
 		sourceWhere = strings.Replace(sourceWhere, fmt.Sprintf("`%s`.`%s`", sp.destSchema, destTable), fmt.Sprintf("`%s`.`%s`", sp.sourceSchema, sp.table), -1)
@@ -347,8 +383,9 @@ func (sp *SchedulePlan) queryTableSqlSeparate(sqlWhere chanString, sourceSelectS
 
 		// 关键修复：只有源端和目标端SQL都生成成功后，才同时发送到各自的channel
 		// 防止因某一端失败导致channel不同步，造成后续所有chunk配对错误
-		sourceSelectSql <- map[string]string{sp.sdrive: sourceSql}
-		destSelectSql <- map[string]string{sp.ddrive: destSqlStr}
+		chunkSeqStr := strconv.FormatInt(currentChunkSeq, 10)
+		sourceSelectSql <- map[string]string{sp.sdrive: sourceSql, querySQLChunkSeqKey: chunkSeqStr}
+		destSelectSql <- map[string]string{sp.ddrive: destSqlStr, querySQLChunkSeqKey: chunkSeqStr}
 	}
 	close(sourceSelectSql)
 	close(destSelectSql)
@@ -357,7 +394,7 @@ func (sp *SchedulePlan) queryTableSqlSeparate(sqlWhere chanString, sourceSelectS
 func (sp *SchedulePlan) queryTableDataSeparate(sourceSelectSql chanMap, destSelectSql chanMap, diffQueryData chanDiffDataS, cc1 global.TableAllColumnInfoS, sc chan int64, logThreadSeq int64) {
 	var (
 		curry     = make(chanStruct, sp.concurrency)
-		autoSeq   = int64(0) // 任务计数器
+		autoSeq   int64
 		total     = int64(0)
 		startTime = time.Now().UnixMilli() // 开始时间
 		allClosed = false
@@ -414,6 +451,18 @@ func (sp *SchedulePlan) queryTableDataSeparate(sourceSelectSql chanMap, destSele
 			}
 
 			autoSeq++
+			fallbackChunkSeq := autoSeq - 1
+			chunkSeq := querySQLChunkSeq(sourceSql, fallbackChunkSeq)
+			destChunkSeq := querySQLChunkSeq(destSql, chunkSeq)
+			if destChunkSeq != chunkSeq {
+				global.Wlog.Warn(fmt.Sprintf("(%d) [RESUME] source/dest chunk sequence mismatch for %s.%s: source=%d dest=%d", logThreadSeq, sp.schema, sp.table, chunkSeq, destChunkSeq))
+			}
+			if sp.ChecksumProgress != nil {
+				schemaTable := fmt.Sprintf("%s.%s", sp.schema, sp.table)
+				if err := sp.ChecksumProgress.MarkChunkChecking(schemaTable, chunkSeq); err != nil {
+					global.Wlog.Warn(fmt.Sprintf("(%d) [RESUME] Failed to mark chunk %d checking for %s: %v", logThreadSeq, chunkSeq, schemaTable, err))
+				}
+			}
 
 			// 计算当前完成百分比并更新进度条
 			var displayProgress int64
@@ -477,6 +526,7 @@ func (sp *SchedulePlan) queryTableDataSeparate(sourceSelectSql chanMap, destSele
 						Table:           sp.table,
 						SqlWhere:        map[string]string{"src": sourceSql[sp.sdrive], "dst": destSql[sp.ddrive]},
 						TableColumnInfo: cc1,
+						ChunkSeq:        currentSeq,
 					}
 					return
 				}
@@ -492,6 +542,7 @@ func (sp *SchedulePlan) queryTableDataSeparate(sourceSelectSql chanMap, destSele
 						Table:           sp.table,
 						SqlWhere:        map[string]string{"src": sourceSql[sp.sdrive], "dst": destSql[sp.ddrive]},
 						TableColumnInfo: cc1,
+						ChunkSeq:        currentSeq,
 					}
 					return
 				}
@@ -503,8 +554,17 @@ func (sp *SchedulePlan) queryTableDataSeparate(sourceSelectSql chanMap, destSele
 						Table:           sp.table,
 						SqlWhere:        map[string]string{"src": sourceSql[sp.sdrive], "dst": destSql[sp.ddrive]},
 						TableColumnInfo: cc1,
+						ChunkSeq:        currentSeq,
 					}
 					diffQueryData <- differencesData
+					return
+				}
+
+				if sp.ChecksumProgress != nil {
+					schemaTable := fmt.Sprintf("%s.%s", sp.schema, sp.table)
+					if err := sp.ChecksumProgress.MarkChunkFixSQLCompleted(schemaTable, currentSeq); err != nil {
+						global.Wlog.Warn(fmt.Sprintf("(%d) [RESUME] Failed to mark chunk %d fixsql completed for %s: %v", logThreadSeq, currentSeq, schemaTable, err))
+					}
 				}
 
 				// DEBUG: 记录任务完成时间
@@ -514,7 +574,7 @@ func (sp *SchedulePlan) queryTableDataSeparate(sourceSelectSql chanMap, destSele
 				// DEBUG: 记录任务完成（不更新进度条，避免跳动）
 				//currentTime := time.Now().UnixMilli()
 				//global.Wlog.Debug("DEBUG_TASK_COMPLETE_%d: currentSeq=%d, autoSeq=%d, total=%d, time=%.2fs, curry_len=%d\n", logThreadSeq, currentSeq, autoSeq, total, float64(currentTime-startTime)/1000, len(curry))
-			}(autoSeq, sourceSql, destSql)
+			}(chunkSeq, sourceSql, destSql)
 		}
 	}
 }
