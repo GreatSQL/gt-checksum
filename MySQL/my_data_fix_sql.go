@@ -29,10 +29,10 @@ var (
 	sqlGenerateInvisiblePKEnabled *bool
 
 	// 互斥锁保护缓存map的并发访问
-	tablePrimaryKeyMutex          sync.RWMutex
-	databaseCacheMutex            sync.RWMutex
-	tableNotNullUniqueIndexMutex  sync.RWMutex
-	sqlGenerateInvisiblePKMutex   sync.RWMutex
+	tablePrimaryKeyMutex         sync.RWMutex
+	databaseCacheMutex           sync.RWMutex
+	tableNotNullUniqueIndexMutex sync.RWMutex
+	sqlGenerateInvisiblePKMutex  sync.RWMutex
 )
 
 // mysqlQuoteIdent 对 MySQL 标识符加反引号，并对内部反引号做双写转义。
@@ -123,12 +123,12 @@ type MysqlDataAbnormalFixStruct struct {
 	IndexType               string
 	IndexColumn             []string
 	DatafixType             string
-	SourceSchema            string            // 添加源端schema字段
-	CaseSensitiveObjectName string            // 是否区分对象名大小写
-	IndexVisibilityMap      map[string]string // 索引可见性信息
-	ForeignKeyDefinitions   map[string]string // 外键DDL定义信息
+	SourceSchema            string                // 添加源端schema字段
+	CaseSensitiveObjectName string                // 是否区分对象名大小写
+	IndexVisibilityMap      map[string]string     // 索引可见性信息
+	ForeignKeyDefinitions   map[string]string     // 外键DDL定义信息
 	DestFlavor              global.DatabaseFlavor // 目标端数据库类型，用于生成兼容目标端语法的 fix SQL
-	PartitionColumns        []string          // 分区列列表，用于分区表主键修复
+	PartitionColumns        []string              // 分区列列表，用于分区表主键修复
 }
 
 type foreignKeyColumn struct {
@@ -335,6 +335,30 @@ func isBinaryLikeColumnType(dataType string) bool {
 		strings.Contains(t, "BLOB")
 }
 
+func isDecimalNumericColumnType(dataType string) bool {
+	t := strings.ToUpper(strings.TrimSpace(dataType))
+	return strings.HasPrefix(t, "DECIMAL") ||
+		strings.HasPrefix(t, "DEC") ||
+		strings.HasPrefix(t, "NUMERIC") ||
+		strings.HasPrefix(t, "FIXED")
+}
+
+func formatMySQLNumericLiteral(value, dataType string) (string, bool) {
+	v := strings.TrimSpace(value)
+	if isIntegerDeleteType(dataType) {
+		if integerLiteralPattern.MatchString(v) {
+			return v, true
+		}
+		return "", false
+	}
+	if isFloatDeleteType(dataType) || isDecimalNumericColumnType(dataType) {
+		if numericLiteralPattern.MatchString(v) {
+			return v, true
+		}
+	}
+	return "", false
+}
+
 func formatMySQLInsertLiteral(value, dataType string) string {
 	if strings.EqualFold(value, "<entry>") {
 		return "''"
@@ -344,6 +368,9 @@ func formatMySQLInsertLiteral(value, dataType string) string {
 	}
 	if strings.EqualFold(dataType, "DATETIME") || strings.Contains(strings.ToUpper(dataType), "TIMESTAMP") {
 		return fmt.Sprintf("'%s'", escapeSQLString(normalizeMySQLDateTimeLiteral(value)))
+	}
+	if lit, ok := formatMySQLNumericLiteral(value, dataType); ok {
+		return lit
 	}
 	if isBitColumnType(dataType) {
 		// BIT 列经过 CAST(col AS UNSIGNED) 归一化后返回十进制字符串，
@@ -494,8 +521,6 @@ ORDER BY ORDINAL_POSITION
 
 	return hasPK
 }
-
-
 
 // 包级变量，用于存储已写入文件的SQL语句，实现跨函数调用的去重
 var writtenSqlMap sync.Map

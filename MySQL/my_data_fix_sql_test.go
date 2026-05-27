@@ -692,8 +692,8 @@ func TestFixAlterIndexSqlExec_FuncIndex_DropAndAdd(t *testing.T) {
 	my := newFixStruct("mul")
 	token := makeFuncToken("(ABS(`price`))", "1")
 	sqls := my.FixAlterIndexSqlExec(
-		[]string{"idx_5"},  // ADD
-		[]string{"idx_5"},  // DROP
+		[]string{"idx_5"}, // ADD
+		[]string{"idx_5"}, // DROP
 		map[string][]string{"idx_5": {token}},
 		"mysql", 1,
 	)
@@ -844,6 +844,26 @@ func TestBuildFloatDeletePredicate_BareFloat(t *testing.T) {
 	// 非 float 类型返回 ok=false
 	if _, ok := buildFloatDeletePredicate("F1", "123.45", "VARCHAR(32)"); ok {
 		t.Error("buildFloatDeletePredicate should return ok=false for VARCHAR")
+	}
+}
+
+func TestFormatMySQLInsertLiteral_NumericColumns(t *testing.T) {
+	cases := []struct {
+		dataType string
+		value    string
+		want     string
+	}{
+		{"BIGINT", "1", "1"},
+		{"decimal(10,2)", "10.50", "10.50"},
+		{"DOUBLE", "-3.14", "-3.14"},
+		{"VARCHAR(32)", "10.50", "'10.50'"},
+		{"BIGINT", "abc", "'abc'"},
+	}
+	for _, c := range cases {
+		got := formatMySQLInsertLiteral(c.value, c.dataType)
+		if got != c.want {
+			t.Errorf("formatMySQLInsertLiteral(%q, %q) = %q; want %q", c.value, c.dataType, got, c.want)
+		}
 	}
 }
 
