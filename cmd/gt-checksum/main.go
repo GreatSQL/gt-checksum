@@ -55,6 +55,60 @@ func extractSchemasFromTables(tables string) []string {
 	return result
 }
 
+const checksumResumeStaleThreshold = progress.ChecksumProgressStaleThreshold
+
+func readChecksumResumeAnswer(prompt string) (bool, error) {
+	fmt.Print(prompt)
+	var answer string
+	if _, err := fmt.Scanln(&answer); err != nil {
+		return false, err
+	}
+	answer = strings.ToLower(strings.TrimSpace(answer))
+	return answer == "y" || answer == "yes", nil
+}
+
+func askStaleChecksumProgressResume(p *progress.ChecksumProgress) (bool, bool, error) {
+	age, hasEndTime, err := p.EndTimeAge(time.Now())
+	if err != nil {
+		global.Wlog.Warn(fmt.Sprintf("Failed to parse checksum progress end_time %q: %v", p.EndTime, err))
+		return false, false, nil
+	}
+	if !hasEndTime || age <= checksumResumeStaleThreshold {
+		return false, false, nil
+	}
+
+	fmt.Printf("\n[RESUME] 进度文件 end_time 为 %s，距离当前已超过 1 小时（%.1f 小时）。\n", p.EndTime, age.Hours())
+	fmt.Println("[RESUME] 期间源端或目标端数据可能发生变化，继续断点续传可能导致校验结果不可信。")
+	resume, err := readChecksumResumeAnswer("是否继续从该断点续传校验？(y/n): ")
+	return true, resume, err
+}
+
+func checksumProgressResultDir(resultFile string) string {
+	resultFile = strings.TrimSpace(resultFile)
+	if resultFile == "" {
+		return "result"
+	}
+
+	cleaned := filepath.Clean(resultFile)
+	if cleaned == "." {
+		return "result"
+	}
+	if strings.HasSuffix(resultFile, string(os.PathSeparator)) || strings.HasSuffix(resultFile, "/") {
+		return cleaned
+	}
+	if cleaned == "result" {
+		return cleaned
+	}
+	if info, err := os.Stat(cleaned); err == nil && info.IsDir() {
+		return cleaned
+	}
+
+	if dir := filepath.Dir(cleaned); dir != "." && dir != "" {
+		return dir
+	}
+	return "result"
+}
+
 func main() {
 	global.ResetRuntimeState()
 
@@ -76,17 +130,16 @@ func main() {
 	var checksumProgress *progress.ChecksumProgress
 	var resumedChecksumResults []progress.ChecksumTableResult
 	if m.SecondaryL.RulesV.Resume != "OFF" {
-		// 使用 result 目录存放进度文件，与 CSV 结果文件同目录
-		resultDir := "result"
-		if m.SecondaryL.RulesV.ResultFile != "" {
-			// 如果配置了 resultFile，使用其目录部分
-			if dir := filepath.Dir(m.SecondaryL.RulesV.ResultFile); dir != "." {
-				resultDir = dir
-			}
-		}
+		resultDir := checksumProgressResultDir(m.SecondaryL.RulesV.ResultFile)
 		// 先扫描 resultDir 中是否存在 status=running 的旧进度文件
 		existingProgress, scanErr := progress.FindRunningChecksumProgress(resultDir)
 		if scanErr != nil {
+			var ambiguousErr *progress.AmbiguousChecksumProgressError
+			if errors.As(scanErr, &ambiguousErr) {
+				fmt.Println(ambiguousErr.Error())
+				global.Wlog.Warn(ambiguousErr.Error())
+				os.Exit(1)
+			}
 			global.Wlog.Warn(fmt.Sprintf("Failed to scan for existing progress files: %v", scanErr))
 		}
 
@@ -99,32 +152,44 @@ func main() {
 				fmt.Printf("  Completed list:\n%s", existingProgress.FormatCompletedTablesSummary())
 			}
 
-			if m.SecondaryL.RulesV.Resume == "ASK" {
-				fmt.Print("\nDo you want to resume from the last checkpoint? (y/n): ")
-				var answer string
-				fmt.Scanln(&answer)
-				if strings.ToLower(strings.TrimSpace(answer)) == "y" {
-					checksumProgress = existingProgress
-					m.RunID = existingProgress.RunID
-					resumedChecksumResults = existingProgress.CompletedTableResultsSnapshot()
-					fmt.Println("Resuming from checkpoint...")
-				} else {
-					fmt.Println("Starting fresh run...")
-					if err := existingProgress.Remove(); err != nil {
-						global.Wlog.Warn(fmt.Sprintf("Failed to remove old progress file: %v", err))
-					}
-					progressPath := progress.ProgressFilePath(resultDir, m.RunID)
-					checksumProgress = progress.NewChecksumProgress(m.RunID, "", progressPath)
-					if saveErr := checksumProgress.Save(); saveErr != nil {
-						global.Wlog.Warn(fmt.Sprintf("Failed to create initial progress file: %v", saveErr))
-					}
+			resumeFromExisting := m.SecondaryL.RulesV.Resume == "ON"
+			stalePrompted, staleResume, confirmErr := askStaleChecksumProgressResume(existingProgress)
+			if confirmErr != nil {
+				fmt.Printf("gt-checksum: failed to read resume confirmation, keep existing progress file unchanged: %v\n", confirmErr)
+				global.Wlog.Warn(fmt.Sprintf("Failed to read resume confirmation for progress file %s: %v", existingProgress.FilePath(), confirmErr))
+				os.Exit(1)
+			}
+			if stalePrompted {
+				resumeFromExisting = staleResume
+			} else if m.SecondaryL.RulesV.Resume == "ASK" {
+				resumeAnswer, err := readChecksumResumeAnswer("\nDo you want to resume from the last checkpoint? (y/n): ")
+				if err != nil {
+					fmt.Printf("gt-checksum: failed to read resume confirmation, keep existing progress file unchanged: %v\n", err)
+					global.Wlog.Warn(fmt.Sprintf("Failed to read resume confirmation for progress file %s: %v", existingProgress.FilePath(), err))
+					os.Exit(1)
 				}
-			} else {
-				// resume == "ON"：自动续传，沿用旧 RunID 保持文件名一致
+				resumeFromExisting = resumeAnswer
+			}
+
+			if resumeFromExisting {
 				checksumProgress = existingProgress
 				m.RunID = existingProgress.RunID
 				resumedChecksumResults = existingProgress.CompletedTableResultsSnapshot()
-				fmt.Println("Auto-resuming from checkpoint...")
+				if m.SecondaryL.RulesV.Resume == "ON" && !stalePrompted {
+					fmt.Println("Auto-resuming from checkpoint...")
+				} else {
+					fmt.Println("Resuming from checkpoint...")
+				}
+			} else {
+				fmt.Println("Starting fresh run...")
+				if err := existingProgress.Remove(); err != nil {
+					global.Wlog.Warn(fmt.Sprintf("Failed to remove old progress file: %v", err))
+				}
+				progressPath := progress.ProgressFilePath(resultDir, m.RunID)
+				checksumProgress = progress.NewChecksumProgress(m.RunID, "", progressPath)
+				if saveErr := checksumProgress.Save(); saveErr != nil {
+					global.Wlog.Warn(fmt.Sprintf("Failed to create initial progress file: %v", saveErr))
+				}
 			}
 		} else {
 			// 没有找到正在运行的进度文件，创建新的进度对象
