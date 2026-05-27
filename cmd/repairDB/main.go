@@ -1,14 +1,17 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"gt-checksum/progress"
 	"io"
 	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -16,6 +19,44 @@ func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "repairDB execution failed:", err)
 		os.Exit(1)
+	}
+}
+
+func setupRepairSignalContext() (context.Context, func()) {
+	ctx, cancel := context.WithCancel(context.Background())
+	signals := make(chan os.Signal, 2)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go handleRepairSignals(cancel, signals, stop, done)
+
+	return ctx, func() {
+		signal.Stop(signals)
+		close(stop)
+		cancel()
+		<-done
+	}
+}
+
+func handleRepairSignals(cancel context.CancelFunc, signals <-chan os.Signal, stop <-chan struct{}, done chan<- struct{}) {
+	defer close(done)
+	interrupted := false
+	for {
+		select {
+		case sig, ok := <-signals:
+			if !ok {
+				return
+			}
+			if !interrupted {
+				interrupted = true
+				log.Printf("Received %s, stopping new SQL scheduling and waiting for in-flight files to finish\n", sig)
+				cancel()
+				continue
+			}
+			log.Printf("Received %s again; waiting for in-flight files to finish safely\n", sig)
+		case <-stop:
+			return
+		}
 	}
 }
 
@@ -30,6 +71,9 @@ func run() (err error) {
 	dryRun := flag.Bool("dry-run", false, "Dry run mode: show statistics only")
 	resultFile := flag.String("result-file", "", "Custom output path for CSV report (default: result/repairDB-result-<timestamp>.csv)")
 	flag.Parse()
+
+	ctx, stopSignals := setupRepairSignalContext()
+	defer stopSignals()
 
 	forceMode := *force || *forceLong
 
@@ -193,6 +237,10 @@ func run() (err error) {
 		}
 	}
 
+	if ctx.Err() != nil {
+		return fmt.Errorf("repairDB interrupted before execution: %w", ctx.Err())
+	}
+
 	log.Printf("开始执行修复操作...\n")
 
 	startTime := time.Now()
@@ -259,6 +307,11 @@ func run() (err error) {
 	var allResults []FileExecResult
 
 	for _, stage := range stages {
+		if ctx.Err() != nil {
+			writeCSVIfPossible(allResults, time.Since(startTime), *resultFile)
+			return fmt.Errorf("repairDB interrupted: %w", ctx.Err())
+		}
+
 		files := prepareStageFiles(stage)
 		logExecutionPlan(stage.Name, files, config.FixFileDir)
 		log.Printf("[%s] starting execution (%d files), concurrency: %d\n", stage.Name, len(files), config.ParallelThds)
@@ -270,7 +323,7 @@ func run() (err error) {
 			}
 			return fmt.Errorf("[%s] failed to connect to database: %v", stage.Name, err)
 		}
-		stageResults, stageErr := parallelExecuteSQLFiles(db, files, stage.Name, repairProgress)
+		stageResults, stageErr := parallelExecuteSQLFiles(ctx, db, files, stage.Name, repairProgress)
 		allResults = append(allResults, stageResults...)
 		db.Close()
 		if stageErr != nil {

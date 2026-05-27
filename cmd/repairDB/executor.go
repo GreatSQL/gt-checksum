@@ -52,7 +52,7 @@ func isDeadlockError(err error) bool {
 }
 
 // executeSQLFile executes a single SQL file against the provided connection pool.
-func executeSQLFile(db *sql.DB, sqlFile string) (FileExecResult, error) {
+func executeSQLFile(ctx context.Context, db *sql.DB, sqlFile string) (FileExecResult, error) {
 	startTime := time.Now()
 	schema, obj := extractSchemaAndObject(sqlFile)
 	stage := detectObjectStage(sqlFile)
@@ -81,7 +81,7 @@ func executeSQLFile(db *sql.DB, sqlFile string) (FileExecResult, error) {
 		return result, err
 	}
 
-	conn, err := db.Conn(context.Background())
+	conn, err := db.Conn(ctx)
 	if err != nil {
 		result.Elapsed = time.Since(startTime)
 		result.ErrorReason = fmt.Sprintf("Failed to get database connection: %v", err)
@@ -93,14 +93,14 @@ func executeSQLFile(db *sql.DB, sqlFile string) (FileExecResult, error) {
 	if !config.LogBin {
 		logBinVal = "0"
 	}
-	if _, err := conn.ExecContext(context.Background(), "SET sql_log_bin = "+logBinVal); err != nil {
+	if _, err := conn.ExecContext(ctx, "SET sql_log_bin = "+logBinVal); err != nil {
 		result.Elapsed = time.Since(startTime)
 		result.ErrorReason = fmt.Sprintf("Failed to SET sql_log_bin=%s: %v", logBinVal, err)
 		return result, err
 	}
 
 	for _, unit := range units {
-		outcome, err := executeUnitWithDeadlockRetry(conn, sqlFile, unit)
+		outcome, err := executeUnitWithDeadlockRetry(ctx, conn, sqlFile, unit)
 		result.mergeFromOutcome(outcome)
 		if err != nil {
 			result.Elapsed = time.Since(startTime)
@@ -165,17 +165,21 @@ func buildSQLExecutionUnits(statements []string) ([]sqlExecutionUnit, error) {
 	return units, nil
 }
 
-func executeUnitWithDeadlockRetry(conn *sql.Conn, sqlFile string, unit sqlExecutionUnit) (unitExecOutcome, error) {
+func executeUnitWithDeadlockRetry(ctx context.Context, conn *sql.Conn, sqlFile string, unit sqlExecutionUnit) (unitExecOutcome, error) {
 	var lastErr error
 	var lastOutcome unitExecOutcome
 	for retryRound := 0; retryRound <= maxDeadlockRetries; retryRound++ {
 		if retryRound > 0 {
 			backoff := time.Duration(1<<uint(retryRound)) * time.Second
 			log.Printf("Deadlock retry in SQL file %s unit #%d: round=%d wait=%v\n", sqlFile, unit.index, retryRound, backoff)
-			time.Sleep(backoff)
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return lastOutcome, fmt.Errorf("execution interrupted before deadlock retry in SQL file %s unit #%d: %w", sqlFile, unit.index, ctx.Err())
+			}
 		}
 
-		outcome, err := executeUnit(conn, unit)
+		outcome, err := executeUnit(ctx, conn, unit)
 		if err == nil {
 			return outcome, nil
 		}
@@ -191,11 +195,11 @@ func executeUnitWithDeadlockRetry(conn *sql.Conn, sqlFile string, unit sqlExecut
 	return lastOutcome, fmt.Errorf("deadlock unresolved after %d retries in SQL file %s unit #%d: %v", maxDeadlockRetries, sqlFile, unit.index, lastErr)
 }
 
-func executeUnit(conn *sql.Conn, unit sqlExecutionUnit) (unitExecOutcome, error) {
+func executeUnit(ctx context.Context, conn *sql.Conn, unit sqlExecutionUnit) (unitExecOutcome, error) {
 	var outcome unitExecOutcome
 
 	if unit.transactional {
-		tx, err := conn.BeginTx(context.Background(), nil)
+		tx, err := conn.BeginTx(ctx, nil)
 		if err != nil {
 			return outcome, fmt.Errorf("Failed to start transaction: %v", err)
 		}
@@ -208,7 +212,7 @@ func executeUnit(conn *sql.Conn, unit sqlExecutionUnit) (unitExecOutcome, error)
 			}
 			stmt = normalizeMySQLDateFormatLiteralInSQLForExec(stmt)
 			stmtType, _ := identifyStatementType(stmt)
-			result, execErr := tx.ExecContext(context.Background(), stmt)
+			result, execErr := tx.ExecContext(ctx, stmt)
 			if execErr != nil {
 				recordStmtFailure(&txOutcome, stmtType)
 				_ = tx.Rollback()
@@ -231,7 +235,7 @@ func executeUnit(conn *sql.Conn, unit sqlExecutionUnit) (unitExecOutcome, error)
 		}
 		stmt = normalizeMySQLDateFormatLiteralInSQLForExec(stmt)
 		stmtType, _ := identifyStatementType(stmt)
-		result, execErr := conn.ExecContext(context.Background(), stmt)
+		result, execErr := conn.ExecContext(ctx, stmt)
 		if execErr != nil {
 			recordStmtFailure(&outcome, stmtType)
 			return outcome, fmt.Errorf("Failed to execute SQL statement: %v", execErr)
@@ -294,7 +298,11 @@ func openExecutionDB(dsn string) (*sql.DB, error) {
 // parallelExecuteSQLFiles executes files concurrently using the provided connection pool.
 // If repairProgress is not nil, it records the status of each file after execution
 // and skips files that have already been executed successfully.
-func parallelExecuteSQLFiles(db *sql.DB, files []string, stageName string, repairProgress *progress.RepairProgress) ([]FileExecResult, error) {
+func parallelExecuteSQLFiles(ctx context.Context, db *sql.DB, files []string, stageName string, repairProgress *progress.RepairProgress) ([]FileExecResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, config.ParallelThds)
 	errCh := make(chan error, len(files))
@@ -321,10 +329,25 @@ func parallelExecuteSQLFiles(db *sql.DB, files []string, stageName string, repai
 		return nil, nil
 	}
 
+	interrupted := false
+scheduleLoop:
 	for _, sqlFile := range filesToExecute {
+		if ctx.Err() != nil {
+			interrupted = true
+			log.Printf("[%s] interrupt received, stop scheduling new SQL files\n", stageName)
+			break scheduleLoop
+		}
+
+		select {
+		case <-ctx.Done():
+			interrupted = true
+			log.Printf("[%s] interrupt received, stop scheduling new SQL files\n", stageName)
+			break scheduleLoop
+		case sem <- struct{}{}:
+		}
+
 		file := sqlFile
 		wg.Add(1)
-		sem <- struct{}{}
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
@@ -333,7 +356,8 @@ func parallelExecuteSQLFiles(db *sql.DB, files []string, stageName string, repai
 			seq := atomic.AddUint64(&executionSeq, 1)
 			log.Printf("[%s] execution sequence #%d: %s\n", stageName, seq, file)
 
-			result, err := executeSQLFile(db, file)
+			// Let in-flight files finish so file-level resume never replays a partial file.
+			result, err := executeSQLFile(context.Background(), db, file)
 			if result.FilePath != "" {
 				collector.append(result)
 			}
@@ -383,6 +407,17 @@ func parallelExecuteSQLFiles(db *sql.DB, files []string, stageName string, repai
 		}
 		return results[i].FilePath < results[j].FilePath
 	})
+
+	if interrupted || ctx.Err() != nil {
+		ctxErr := ctx.Err()
+		if ctxErr == nil {
+			ctxErr = context.Canceled
+		}
+		if errCount > 0 {
+			return results, fmt.Errorf("%s interrupted: %w; %d in-flight file(s) failed, first error: %v", stageName, ctxErr, errCount, firstErr)
+		}
+		return results, fmt.Errorf("%s interrupted: %w", stageName, ctxErr)
+	}
 
 	if errCount > 0 {
 		return results, fmt.Errorf("%s failed: %d file(s) execution error, first error: %v", stageName, errCount, firstErr)

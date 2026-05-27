@@ -1,10 +1,17 @@
 package main
 
 import (
+	"context"
+	"database/sql"
+	"database/sql/driver"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // sliceEqual reports whether two string slices have identical contents in identical order.
@@ -331,7 +338,7 @@ func TestResultCollector_Concurrent(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < resultsPerGoroutine; i++ {
 				collector.append(FileExecResult{
-					FilePath:   fmt.Sprintf("table.db.t%d.sql", gid),
+					FilePath:      fmt.Sprintf("table.db.t%d.sql", gid),
 					InsertSuccess: int64(i),
 				})
 			}
@@ -344,4 +351,192 @@ func TestResultCollector_Concurrent(t *testing.T) {
 	if len(snapshot) != expected {
 		t.Errorf("snapshot length = %d, expected %d", len(snapshot), expected)
 	}
+}
+
+func TestRepairDB_BreakResumeStopsSchedulingAfterInterrupt(t *testing.T) {
+	oldParallelThds := config.ParallelThds
+	oldFixFileDir := config.FixFileDir
+	defer func() {
+		config.ParallelThds = oldParallelThds
+		config.FixFileDir = oldFixFileDir
+	}()
+
+	dir := t.TempDir()
+	config.ParallelThds = 1
+	config.FixFileDir = dir
+
+	sqlFile := filepath.Join(dir, "table.db1.t1.sql")
+	if err := os.WriteFile(sqlFile, []byte("INSERT INTO t VALUES (1);"), 0644); err != nil {
+		t.Fatalf("failed to create SQL file: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	results, err := parallelExecuteSQLFiles(ctx, nil, []string{sqlFile}, "TABLE", nil)
+	if err == nil {
+		t.Fatal("expected interrupted error")
+	}
+	if !strings.Contains(err.Error(), "interrupted") {
+		t.Fatalf("expected interrupted error, got %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("expected no executed result, got %d", len(results))
+	}
+}
+
+func TestRepairDB_RepeatedInterruptKeepsSignalHandlerActive(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	signals := make(chan os.Signal, 2)
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go handleRepairSignals(cancel, signals, stop, done)
+
+	signals <- os.Interrupt
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		close(stop)
+		<-done
+		t.Fatal("expected first interrupt to cancel context")
+	}
+
+	signals <- os.Interrupt
+	select {
+	case <-done:
+		t.Fatal("signal handler exited after repeated interrupt")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	close(stop)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("signal handler did not stop")
+	}
+}
+
+func TestRepairDB_InterruptDoesNotCancelInFlightSQL(t *testing.T) {
+	registerRepairDBInterruptDriver()
+
+	oldParallelThds := config.ParallelThds
+	oldFixFileDir := config.FixFileDir
+	defer func() {
+		config.ParallelThds = oldParallelThds
+		config.FixFileDir = oldFixFileDir
+	}()
+
+	dir := t.TempDir()
+	config.ParallelThds = 1
+	config.FixFileDir = dir
+
+	sqlFile := filepath.Join(dir, "table.db1.t1.sql")
+	if err := os.WriteFile(sqlFile, []byte("INSERT INTO t VALUES (1);"), 0644); err != nil {
+		t.Fatalf("failed to create SQL file: %v", err)
+	}
+
+	db, err := sql.Open(repairDBInterruptDriverName, "")
+	if err != nil {
+		t.Fatalf("failed to open test db: %v", err)
+	}
+	defer db.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ctxErrCh := make(chan error, 1)
+	repairDBInterruptDriverState.Lock()
+	repairDBInterruptDriverState.cancel = cancel
+	repairDBInterruptDriverState.ctxErrCh = ctxErrCh
+	repairDBInterruptDriverState.Unlock()
+	defer func() {
+		repairDBInterruptDriverState.Lock()
+		repairDBInterruptDriverState.cancel = nil
+		repairDBInterruptDriverState.ctxErrCh = nil
+		repairDBInterruptDriverState.Unlock()
+	}()
+
+	results, err := parallelExecuteSQLFiles(ctx, db, []string{sqlFile}, "TABLE", nil)
+	if err == nil {
+		t.Fatal("expected interrupted error")
+	}
+	if !strings.Contains(err.Error(), "interrupted") {
+		t.Fatalf("expected interrupted error, got %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected one in-flight result, got %d", len(results))
+	}
+	if results[0].InsertSuccess != 1 {
+		t.Fatalf("expected insert success count 1, got %d", results[0].InsertSuccess)
+	}
+
+	select {
+	case execCtxErr := <-ctxErrCh:
+		if execCtxErr != nil {
+			t.Fatalf("in-flight SQL context was canceled: %v", execCtxErr)
+		}
+	default:
+		t.Fatal("test driver did not observe INSERT execution")
+	}
+}
+
+const repairDBInterruptDriverName = "repairdb_interrupt_driver"
+
+var repairDBInterruptDriverOnce sync.Once
+var repairDBInterruptDriverState struct {
+	sync.Mutex
+	cancel   func()
+	ctxErrCh chan error
+}
+
+func registerRepairDBInterruptDriver() {
+	repairDBInterruptDriverOnce.Do(func() {
+		sql.Register(repairDBInterruptDriverName, repairDBInterruptDriver{})
+	})
+}
+
+type repairDBInterruptDriver struct{}
+
+func (repairDBInterruptDriver) Open(string) (driver.Conn, error) {
+	return repairDBInterruptConn{}, nil
+}
+
+type repairDBInterruptConn struct{}
+
+func (repairDBInterruptConn) Prepare(string) (driver.Stmt, error) {
+	return nil, fmt.Errorf("prepare not supported")
+}
+
+func (repairDBInterruptConn) Close() error {
+	return nil
+}
+
+func (repairDBInterruptConn) Begin() (driver.Tx, error) {
+	return repairDBInterruptTx{}, nil
+}
+
+func (repairDBInterruptConn) ExecContext(ctx context.Context, query string, _ []driver.NamedValue) (driver.Result, error) {
+	if strings.HasPrefix(strings.TrimSpace(query), "SET ") {
+		return driver.RowsAffected(0), nil
+	}
+
+	repairDBInterruptDriverState.Lock()
+	cancel := repairDBInterruptDriverState.cancel
+	ctxErrCh := repairDBInterruptDriverState.ctxErrCh
+	repairDBInterruptDriverState.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if ctxErrCh != nil {
+		ctxErrCh <- ctx.Err()
+	}
+	return driver.RowsAffected(1), nil
+}
+
+type repairDBInterruptTx struct{}
+
+func (repairDBInterruptTx) Commit() error {
+	return nil
+}
+
+func (repairDBInterruptTx) Rollback() error {
+	return nil
 }

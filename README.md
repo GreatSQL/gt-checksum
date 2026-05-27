@@ -15,7 +15,7 @@ MySQL DBA经常使用 **pt-table-checksum** 和 **pt-table-sync** 进行数据�
 
 ## v4.0.0 关键变化
 
-- **[功能新增]** 新增断点续传能力，`gt-checksum` 数据校验和 `repairDB` 可通过 `resume=ON/ASK` 在异常退出后继续执行；`gt-checksum` 会记录 `end_time`，旧断点会提示确认，多个 running 进度文件会拒绝自动选择，`datafix=file` 续跑会清理不完整修复文件。
+- **[功能新增]** 新增断点续传能力，`gt-checksum` 数据校验和 `repairDB` 可通过 `resume=ON/ASK` 在异常退出后继续执行；`gt-checksum` 会校验旧断点和多个 running 进度文件，`repairDB` 中断时会等待已开始文件完成，避免续传重放半执行文件。
 - **[功能新增]** 新增 `dTypeMappingFile` 参数，支持用户自定义数据类型映射规则（YAML/JSON），覆盖 `oracle_to_mysql`、`mysql_upgrade`、`mariadb_to_mysql` 三种迁移场景，支持 `schema/table/column` 级别精细化控制。
 - **[功能新增]** 新增反向回滚SQL生成能力，通过 `genRollSQL/maxRollRowNum/rollFileDir` 等参数控制，支持为修复SQL自动生成对应的回滚语句，便于修复出错时快速回退。
 - **[功能新增]** 新增 SSL 加密连接支持，源端和目标端可独立配置 SSL 参数，支持五种模式（`DISABLED/PREFERRED/REQUIRED/VERIFY_CA/VERIFY_IDENTITY`）。
@@ -182,6 +182,8 @@ $ ./repairDB ./fixsql && cat ./repairDB.log
 这就表示完成修复，可以再次执行数据校验，确认数据一致性。
 
 **注意**：由于是并行执行数据修复工作，修复过程中可能产生事务死锁冲突。`repairDB` 在检测到 MySQL deadlock（Error 1213）时，会自动对当前失败的事务块（`BEGIN ... COMMIT`）执行重试，最多重试 3 次；而不会重试整个 SQL 文件，从而降低主键重复冲突风险。建议修复结束后检查 `repairDB.log`：若死锁在 3 次重试内已恢复，可直接再次执行校验；若仍有未恢复死锁或其他错误，再手动处理对应 SQL 文件。
+
+**中断处理**：修复执行中收到 `Ctrl+C` 或 `SIGTERM` 时，`repairDB` 会停止调度新的 SQL 文件，并等待已开始执行的文件完成；启用 `resume=ON/ASK` 后，下次执行会跳过已成功文件并继续剩余文件。
 
 ### repairDB CLI 参数
 
