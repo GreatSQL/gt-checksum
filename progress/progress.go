@@ -17,6 +17,9 @@ const (
 	StatusCompleted = "completed"
 )
 
+// ChecksumProgressStaleThreshold is the safety window for auto-resuming a checkpoint.
+const ChecksumProgressStaleThreshold = time.Hour
+
 // TableChunkProgress tracks chunk-level progress for a single table.
 // CompletedChunks is a sorted list of beginSeq values that have been fully queried.
 type TableChunkProgress struct {
@@ -48,6 +51,7 @@ type ChecksumProgress struct {
 
 	RunID                 string                         `json:"run_id"`
 	StartTime             string                         `json:"start_time"`
+	EndTime               string                         `json:"end_time,omitempty"`
 	ConfigHash            string                         `json:"config_hash"`
 	CompletedTables       []string                       `json:"completed_tables"`
 	CompletedTableResults []ChecksumTableResult          `json:"completed_table_results,omitempty"`
@@ -168,6 +172,7 @@ func (p *ChecksumProgress) saveLocked() error {
 	if p.filePath == "" {
 		return fmt.Errorf("checksum progress file path not set")
 	}
+	p.EndTime = time.Now().Format(time.RFC3339)
 
 	dir := filepath.Dir(p.filePath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -335,6 +340,25 @@ func (p *ChecksumProgress) CompletedTableResultsSnapshot() []ChecksumTableResult
 	result := make([]ChecksumTableResult, len(p.CompletedTableResults))
 	copy(result, p.CompletedTableResults)
 	return result
+}
+
+func (p *ChecksumProgress) EndTimeAge(now time.Time) (time.Duration, bool, error) {
+	p.mu.Lock()
+	endTime := strings.TrimSpace(p.EndTime)
+	p.mu.Unlock()
+
+	if endTime == "" {
+		return 0, false, nil
+	}
+	parsed, err := time.Parse(time.RFC3339, endTime)
+	if err != nil {
+		return 0, true, err
+	}
+	age := now.Sub(parsed)
+	if age < 0 {
+		age = 0
+	}
+	return age, true, nil
 }
 
 func completedTableResultKey(result ChecksumTableResult) string {
@@ -819,28 +843,66 @@ func (p *ChecksumProgress) GetCompletedChunkCount(schemaTable string) int {
 	return len(tp.CompletedChunks)
 }
 
+// AmbiguousChecksumProgressError is returned when auto-resume finds multiple
+// running checkpoint files and cannot safely choose one.
+type AmbiguousChecksumProgressError struct {
+	ResultDir  string
+	Candidates []*ChecksumProgress
+}
+
+func (e *AmbiguousChecksumProgressError) Error() string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "gt-checksum: multiple status=running checkpoint progress files were found in %s; resume cannot safely choose one automatically.\n", e.ResultDir)
+	sb.WriteString("Please delete unrelated gt-checksum-progress-*.json files, or specify the runID to resume and retry.\n")
+	sb.WriteString("Candidate files:\n")
+	for _, candidate := range e.Candidates {
+		fmt.Fprintf(&sb, "  - run_id=%s path=%s start_time=%s end_time=%s completed_tables=%d\n",
+			candidate.RunID,
+			candidate.FilePath(),
+			candidate.StartTime,
+			candidate.EndTime,
+			candidate.CompletedCount(),
+		)
+	}
+	return strings.TrimRight(sb.String(), "\n")
+}
+
 // FindRunningChecksumProgress scans the given directory for a checksum progress file
 // with status "running". Returns nil if none found.
 func FindRunningChecksumProgress(resultDir string) (*ChecksumProgress, error) {
+	runningProgresses, err := findRunningChecksumProgresses(resultDir)
+	if err != nil {
+		return nil, err
+	}
+	if len(runningProgresses) == 0 {
+		return nil, nil
+	}
+	if len(runningProgresses) > 1 {
+		return nil, &AmbiguousChecksumProgressError{ResultDir: resultDir, Candidates: runningProgresses}
+	}
+	return runningProgresses[0], nil
+}
+
+func findRunningChecksumProgresses(resultDir string) ([]*ChecksumProgress, error) {
 	pattern := filepath.Join(resultDir, "gt-checksum-progress-*.json")
 	matches, err := filepath.Glob(pattern)
 	if err != nil {
 		return nil, fmt.Errorf("failed to glob %s: %w", pattern, err)
 	}
 
+	runningProgresses := make([]*ChecksumProgress, 0, len(matches))
 	for _, match := range matches {
 		p, err := LoadChecksumProgress(match)
 		if err != nil {
-			// Log warning for corrupted progress files
 			fmt.Fprintf(os.Stderr, "[WARN] Skipping corrupted progress file %s: %v\n", match, err)
 			continue
 		}
 		if p != nil && p.IsRunning() {
-			return p, nil
+			runningProgresses = append(runningProgresses, p)
 		}
 	}
 
-	return nil, nil
+	return runningProgresses, nil
 }
 
 // FindRunningRepairProgress checks the given path for a repair progress file

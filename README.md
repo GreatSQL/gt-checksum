@@ -15,13 +15,13 @@ MySQL DBA经常使用 **pt-table-checksum** 和 **pt-table-sync** 进行数据�
 
 ## v4.0.0 关键变化
 
-- **[功能新增]** 新增断点续传能力，`gt-checksum` 数据校验和 `repairDB` 可通过 `resume=ON/ASK` 在异常退出后跳过已完成的表或 SQL 文件继续执行，并在 `datafix=file` 场景避免续跑重复生成修复 SQL。
+- **[功能新增]** 新增断点续传能力，`gt-checksum` 数据校验和 `repairDB` 可通过 `resume=ON/ASK` 在异常退出后继续执行；`gt-checksum` 会记录 `end_time`，旧断点会提示确认，多个 running 进度文件会拒绝自动选择，`datafix=file` 续跑会清理不完整修复文件。
 - **[功能新增]** 新增 `dTypeMappingFile` 参数，支持用户自定义数据类型映射规则（YAML/JSON），覆盖 `oracle_to_mysql`、`mysql_upgrade`、`mariadb_to_mysql` 三种迁移场景，支持 `schema/table/column` 级别精细化控制。
 - **[功能新增]** 新增反向回滚SQL生成能力，通过 `genRollSQL/maxRollRowNum/rollFileDir` 等参数控制，支持为修复SQL自动生成对应的回滚语句，便于修复出错时快速回退。
 - **[功能新增]** 新增 SSL 加密连接支持，源端和目标端可独立配置 SSL 参数，支持五种模式（`DISABLED/PREFERRED/REQUIRED/VERIFY_CA/VERIFY_IDENTITY`）。
 - **[功能优化]** 优化 COLLATE 修复逻辑，当存在 `dTypeMapping` 规则覆盖时自动生成列级 MODIFY COLUMN SQL，而非表级 CONVERT TO SQL。
 - **[性能优化]** 优化数据校验行数统计流程，源端和目标端行数改为并行查询；同时改进无主键表 DELETE 修复逻辑，避免 NULL 值导致的语句生成错误。
-- **[问题修复]** 修复 Oracle NUMBER(19,0) 类型映射精度阈值，并新增 tinyint(1) ↔ bit(1) 类型等价映射。
+- **[问题修复]** 修复 Oracle NUMBER(19,0) 类型映射精度阈值、tinyint(1) ↔ bit(1) 类型等价映射，以及 MySQL 数值列 INSERT 修复 SQL 字面量输出问题。
 - **[问题修复]** 修复 global.Wlog 空指针检查，避免日志初始化前 panic。
 
 更多详细变化详见 [CHANGELOG](./CHANGELOG.md)。

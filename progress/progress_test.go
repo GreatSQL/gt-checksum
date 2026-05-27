@@ -1,10 +1,14 @@
 package progress
 
 import (
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestChecksumProgress_LoadSave(t *testing.T) {
@@ -33,6 +37,44 @@ func TestChecksumProgress_LoadSave(t *testing.T) {
 	}
 	if loaded.Status != StatusRunning {
 		t.Errorf("Status mismatch: got %s, want %s", loaded.Status, StatusRunning)
+	}
+}
+
+func TestChecksumProgress_SaveRecordsRunningEndTime(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test-progress.json")
+
+	p := NewChecksumProgress("20260520-143022", "sha256:abc123", path)
+	if err := p.Save(); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	loaded, err := LoadChecksumProgress(path)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if loaded.EndTime == "" {
+		t.Fatal("running progress should include end_time")
+	}
+	if _, err := time.Parse(time.RFC3339, loaded.EndTime); err != nil {
+		t.Fatalf("end_time should be RFC3339, got %q: %v", loaded.EndTime, err)
+	}
+}
+
+func TestChecksumProgress_EndTimeAge(t *testing.T) {
+	p := NewChecksumProgress("20260520-143022", "sha256:abc123", "test-progress.json")
+	now := time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC)
+	p.EndTime = now.Add(-2 * time.Hour).Format(time.RFC3339)
+
+	age, ok, err := p.EndTimeAge(now)
+	if err != nil {
+		t.Fatalf("EndTimeAge failed: %v", err)
+	}
+	if !ok {
+		t.Fatal("EndTimeAge should report existing end_time")
+	}
+	if age != 2*time.Hour {
+		t.Fatalf("EndTimeAge = %v, want 2h", age)
 	}
 }
 
@@ -192,6 +234,12 @@ func TestChecksumProgress_MarkStatus(t *testing.T) {
 	}
 	if loaded.IsRunning() {
 		t.Error("Loaded progress should not be running")
+	}
+	if loaded.EndTime == "" {
+		t.Fatal("Loaded completed progress should include end_time")
+	}
+	if _, err := time.Parse(time.RFC3339, loaded.EndTime); err != nil {
+		t.Fatalf("end_time should be RFC3339, got %q: %v", loaded.EndTime, err)
 	}
 }
 
@@ -360,6 +408,79 @@ func TestFindRunningChecksumProgress(t *testing.T) {
 	}
 	if found != nil {
 		t.Error("Should not find completed progress file")
+	}
+}
+
+func TestFindRunningChecksumProgressReturnsAmbiguousForMultipleActiveRunningFiles(t *testing.T) {
+	dir := t.TempDir()
+
+	first := NewChecksumProgress("20260520-143022", "sha256:first", ProgressFilePath(dir, "20260520-143022"))
+	if err := first.Save(); err != nil {
+		t.Fatalf("Save first progress failed: %v", err)
+	}
+	second := NewChecksumProgress("20260520-143122", "sha256:second", ProgressFilePath(dir, "20260520-143122"))
+	if err := second.Save(); err != nil {
+		t.Fatalf("Save second progress failed: %v", err)
+	}
+
+	found, err := FindRunningChecksumProgress(dir)
+	if err == nil {
+		t.Fatal("FindRunningChecksumProgress should fail for multiple active running files")
+	}
+	if found != nil {
+		t.Fatalf("found = %v, want nil", found)
+	}
+
+	var ambiguousErr *AmbiguousChecksumProgressError
+	if !errors.As(err, &ambiguousErr) {
+		t.Fatalf("error type = %T, want *AmbiguousChecksumProgressError", err)
+	}
+	if len(ambiguousErr.Candidates) != 2 {
+		t.Fatalf("candidate count = %d, want 2", len(ambiguousErr.Candidates))
+	}
+	message := err.Error()
+	for _, want := range []string{"20260520-143022", "20260520-143122", "Please delete unrelated", "runID"} {
+		if !strings.Contains(message, want) {
+			t.Errorf("error message %q should contain %q", message, want)
+		}
+	}
+}
+
+func TestFindRunningChecksumProgressReturnsAmbiguousForMultipleStaleRunningFiles(t *testing.T) {
+	dir := t.TempDir()
+	staleEndTime := time.Now().Add(-2 * ChecksumProgressStaleThreshold).Format(time.RFC3339)
+
+	first := NewChecksumProgress("20260520-143022", "sha256:first", ProgressFilePath(dir, "20260520-143022"))
+	first.EndTime = staleEndTime
+	writeChecksumProgressForTest(t, first)
+	second := NewChecksumProgress("20260520-143122", "sha256:second", ProgressFilePath(dir, "20260520-143122"))
+	second.EndTime = staleEndTime
+	writeChecksumProgressForTest(t, second)
+
+	found, err := FindRunningChecksumProgress(dir)
+	if err == nil {
+		t.Fatal("FindRunningChecksumProgress should fail for multiple running files")
+	}
+	if found != nil {
+		t.Fatalf("found = %v, want nil", found)
+	}
+	var ambiguousErr *AmbiguousChecksumProgressError
+	if !errors.As(err, &ambiguousErr) {
+		t.Fatalf("error type = %T, want *AmbiguousChecksumProgressError", err)
+	}
+	if len(ambiguousErr.Candidates) != 2 {
+		t.Fatalf("candidate count = %d, want 2", len(ambiguousErr.Candidates))
+	}
+}
+
+func writeChecksumProgressForTest(t *testing.T, p *ChecksumProgress) {
+	t.Helper()
+	data, err := json.MarshalIndent(p, "", "  ")
+	if err != nil {
+		t.Fatalf("MarshalIndent failed: %v", err)
+	}
+	if err := os.WriteFile(p.FilePath(), data, 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
 	}
 }
 

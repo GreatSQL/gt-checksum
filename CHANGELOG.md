@@ -1,6 +1,6 @@
 ## 4.0.0
 - [功能新增]: 新增断点续传（break-resume）功能，支持 gt-checksum 数据校验和 repairDB 在异常退出后从上次中断位置继续执行，避免重复校验或修复已完成的表/文件。
-- [功能新增]: gt-checksum 新增 `resume` 参数（OFF/ON/ASK），控制断点续传行为。OFF=不续传（默认），ON=自动续传，ASK=启动时询问用户。进度文件保存在 `result` 目录下，文件名为 `gt-checksum-progress-<日期>.json`。
+- [功能新增]: gt-checksum 新增 `resume` 参数（OFF/ON/ASK），控制断点续传行为。OFF=不续传（默认），ON=自动续传，ASK=启动时询问用户。进度文件保存在 `result` 目录下，文件名为 `gt-checksum-progress-<日期>.json`，记录最近一次进度写入的 `end_time`；若断点超过 1 小时，续传前会提示用户确认。
 - [功能新增]: repairDB 新增 `resume` 参数（OFF/ON/ASK），控制断点续传行为。进度文件保存在 `fixFileDir` 目录下，文件名为 `.repairDB-progress.json`。
 - [功能新增]: 新增 `progress` 包，提供公共的进度文件读写能力，支持原子写入（tmpfile + rename）和并发安全（sync.Mutex）。
 - [功能新增]: 新增 `dTypeMappingFile` 参数，支持用户自定义数据类型映射规则文件（YAML/JSON 格式），支持 `oracle_to_mysql`、`mysql_upgrade`、`mariadb_to_mysql` 三种迁移场景，支持 `schema/table/column` 级别的精细化映射规则，支持 `nullable`、`unsigned`、`autoinc`、`default` 等属性覆盖。
@@ -21,10 +21,11 @@
 - [功能优化]: refactor(oracle_random_data_load): 拆分 `main.go` 为多文件模块化结构（`config/generator/schema/types/util/worker`）。
 - [问题修复]: 修复断点续传在 `datafix=file` 场景下误把正在校验中的 chunk 当作已完成的问题，避免续跑后重复生成 fixsql 或出现先删后插未完整写回的风险。
 - [问题修复]: 修复断点续传删除最后一个不完整 INSERT 文件时回滚范围过大的问题，避免续传后生成多余 fixsql。
+- [问题修复]: 修复 MySQL 数值列生成 INSERT 修复 SQL 时被写成字符串字面量的问题，BIGINT/DECIMAL/DOUBLE 等列会按合法数值字面量输出。
 - [问题修复]: 修复 `global.Wlog` 空指针检查，避免日志初始化前调用 `Debug/Warn` 等方法导致 panic。
 - [问题修复]: 修复 Oracle `NUMBER(19,0)` 类型映射精度阈值（从 18 调整为 19），并新增 `tinyint(1)` ↔ `bit(1)` 类型等价映射。
 - [测试完善]: 新增断点续传 `completed_chunks` 与 `checking_chunks` 区分回归测试，覆盖续跑时仅跳过已安全写完 fixsql 的数据块。
-- [测试完善]: 新增断点续传进度文件与 fixsql 截断回归测试，覆盖进度文件读写、已完成对象跳过、不完整事务截断等场景。
+- [测试完善]: 新增断点续传进度文件、陈旧断点确认、多 running 进度文件和 fixsql 截断回归测试，覆盖进度读写、结果目录推导、已完成对象跳过、不完整事务截断等场景。
 - [测试完善]: 新增 `dtype_mapping` 单元测试，覆盖多种映射场景、条件表达式、对象级别匹配及边界情况。
 - [测试完善]: 新增 `schema_tab_struct_advisory`、`schema_tab_struct_column_existence`、`schema_tab_struct_struct`、`schema_tab_struct_util` 等多个单元测试，提升 struct 校验与修复逻辑的测试覆盖率。
 - [测试完善]: 新增回滚SQL生成相关的单元测试，覆盖 `rollback_sql_util.go` 和 `mergeDuplicateDeleteLimits` 函数的各种场景。
