@@ -357,22 +357,42 @@ func (sp *SchedulePlan) doIndexDataCheck() {
 	// 确保使用正确的源表和目标表的Schema
 	idxc = dbExec.IndexColumnStruct{Schema: sp.sourceSchema, Table: sp.table, Drivce: sp.sdrive, CaseSensitiveObjectName: sp.caseSensitiveObjectName}
 	var vlog string
-	vlog = fmt.Sprintf("(%d) [doIndexDataCheck] Querying source table rows for %s.%s", logThreadSeq, sp.sourceSchema, sp.table)
-	global.Wlog.Debug(vlog)
 	idxcDest = dbExec.IndexColumnStruct{Schema: sp.destSchema, Table: destTable, Drivce: sp.ddrive, CaseSensitiveObjectName: sp.caseSensitiveObjectName}
-	vlog = fmt.Sprintf("(%d) [doIndexDataCheck] Querying destination table rows for %s.%s", logThreadSeq, sp.destSchema, destTable)
-	global.Wlog.Debug(vlog)
-	A, B, err, destErr := sp.querySourceTargetTableRows(idxc, idxcDest, logThreadSeq)
-	if err != nil {
-		vlog = fmt.Sprintf("(%d) [doIndexDataCheck] Failed to get source table rows for %s.%s: %v", logThreadSeq, sp.sourceSchema, sp.table, err)
-		global.Wlog.Error(vlog)
-		return
+
+	schemaTable := fmt.Sprintf("%s.%s", sp.schema, sp.table)
+	var A, B uint64
+
+	// resume 模式：优先从 progress 缓存读取 source/dest 行数，避免重复查询
+	rowStatsCached := false
+	if sp.ChecksumProgress != nil {
+		if cachedA, cachedB, ok := sp.ChecksumProgress.GetTableRowStats(schemaTable); ok {
+			A, B = cachedA, cachedB
+			rowStatsCached = true
+			global.Wlog.Info(fmt.Sprintf("(%d) [RESUME] Using cached row stats for %s: source=%d, dest=%d", logThreadSeq, schemaTable, A, B))
+		}
 	}
-	if destErr != nil {
-		vlog = fmt.Sprintf("(%d) [doIndexDataCheck] Failed to get destination table rows for %s.%s: %v", logThreadSeq, sp.destSchema, destTable, destErr)
-		global.Wlog.Error(vlog)
-		return
+	if !rowStatsCached {
+		vlog = fmt.Sprintf("(%d) [doIndexDataCheck] Querying source table rows for %s.%s", logThreadSeq, sp.sourceSchema, sp.table)
+		global.Wlog.Debug(vlog)
+		vlog = fmt.Sprintf("(%d) [doIndexDataCheck] Querying destination table rows for %s.%s", logThreadSeq, sp.destSchema, destTable)
+		global.Wlog.Debug(vlog)
+		var err, destErr error
+		A, B, err, destErr = sp.querySourceTargetTableRows(idxc, idxcDest, logThreadSeq)
+		if err != nil {
+			vlog = fmt.Sprintf("(%d) [doIndexDataCheck] Failed to get source table rows for %s.%s: %v", logThreadSeq, sp.sourceSchema, sp.table, err)
+			global.Wlog.Error(vlog)
+			return
+		}
+		if destErr != nil {
+			vlog = fmt.Sprintf("(%d) [doIndexDataCheck] Failed to get destination table rows for %s.%s: %v", logThreadSeq, sp.destSchema, destTable, destErr)
+			global.Wlog.Error(vlog)
+			return
+		}
+		if sp.ChecksumProgress != nil {
+			_ = sp.ChecksumProgress.SetTableRowStats(schemaTable, A, B)
+		}
 	}
+
 	if A >= B {
 		sp.tableMaxRows = A
 	} else {
@@ -380,7 +400,6 @@ func (sp *SchedulePlan) doIndexDataCheck() {
 	}
 	// 记录 index 表开始处理，写入进度文件（供断点续传可见性使用）
 	if sp.ChecksumProgress != nil {
-		schemaTable := fmt.Sprintf("%s.%s", sp.schema, sp.table)
 		totalChunks := int64(sp.tableMaxRows / uint64(sp.chanrowCount))
 		if sp.tableMaxRows%uint64(sp.chanrowCount) > 0 {
 			totalChunks++
@@ -390,8 +409,25 @@ func (sp *SchedulePlan) doIndexDataCheck() {
 		}
 		_ = sp.ChecksumProgress.SetTableTotalRows(schemaTable, totalChunks, 1)
 	}
-	// 重新查询精确行数
-	sourceExactCount, sourceCountExact, targetExactCount, targetCountExact := sp.getExactRowCountsParallel(sp.sourceSchema, sp.table, sp.destSchema, destTable, logThreadSeq)
+
+	// 查询精确行数：resume 模式下优先使用缓存，避免重复 COUNT(*) 扫描
+	var sourceExactCount, targetExactCount int64
+	var sourceCountExact, targetCountExact bool
+	exactCached := false
+	if sp.ChecksumProgress != nil {
+		if cSrc, cDst, sExact, dExact, ok := sp.ChecksumProgress.GetTableExactRowStats(schemaTable); ok {
+			sourceExactCount, targetExactCount = cSrc, cDst
+			sourceCountExact, targetCountExact = sExact, dExact
+			exactCached = true
+			global.Wlog.Info(fmt.Sprintf("(%d) [RESUME] Using cached exact row stats for %s: source=%d, dest=%d", logThreadSeq, schemaTable, sourceExactCount, targetExactCount))
+		}
+	}
+	if !exactCached {
+		sourceExactCount, sourceCountExact, targetExactCount, targetCountExact = sp.getExactRowCountsParallel(sp.sourceSchema, sp.table, sp.destSchema, destTable, logThreadSeq)
+		if sp.ChecksumProgress != nil {
+			_ = sp.ChecksumProgress.SetTableExactRowStats(schemaTable, sourceExactCount, targetExactCount, sourceCountExact, targetCountExact)
+		}
+	}
 	sp.pods.Rows = fmt.Sprintf("%d,%d", sourceExactCount, targetExactCount)
 
 	// 仅在两端都拿到精确计数时，才用行数差异做提前判定。

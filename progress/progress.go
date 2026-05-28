@@ -28,6 +28,18 @@ type TableChunkProgress struct {
 	CompletedChunks []int64 `json:"completed_chunks"`
 	CheckingChunks  []int64 `json:"checking_chunks,omitempty"`
 	CompletedFixSQL []int64 `json:"completed_fixsql,omitempty"`
+
+	// Row count statistics cached to avoid re-querying on resume.
+	// SourceRows/DestRows come from querySourceTargetTableRows (metadata estimate).
+	// ExactSourceRows/ExactDestRows come from getExactRowCountsParallel.
+	SourceRows           uint64 `json:"source_rows,omitempty"`
+	DestRows             uint64 `json:"dest_rows,omitempty"`
+	RowStatsCached       bool   `json:"row_stats_cached,omitempty"`
+	ExactSourceRows      int64  `json:"exact_source_rows,omitempty"`
+	ExactDestRows        int64  `json:"exact_dest_rows,omitempty"`
+	ExactSourceRowsValid bool   `json:"exact_source_rows_valid,omitempty"`
+	ExactDestRowsValid   bool   `json:"exact_dest_rows_valid,omitempty"`
+	ExactRowStatsCached  bool   `json:"exact_row_stats_cached,omitempty"`
 }
 
 // ChecksumTableResult stores the terminal/report row for a completed data table.
@@ -271,6 +283,8 @@ func (p *ChecksumProgress) MarkCompletedWithResult(schemaTable string, result *C
 		p.upsertCompletedTableResultLocked(schemaTable, *result)
 	}
 	// Remove in-progress chunk tracking now that the table is fully done.
+	// Note: row count cache fields (SourceRows, ExactSourceRows, etc.) are cleared
+	// along with this entry. Callers must complete all cache writes before this call.
 	delete(p.TableProgress, schemaTable)
 	return p.saveLocked()
 }
@@ -487,6 +501,60 @@ func (p *ChecksumProgress) GetTableTotalRows(schemaTable string) (totalRows int6
 		return 0, 0, false
 	}
 	return tp.TotalRows, tp.ChunkSize, true
+}
+
+// SetTableRowStats caches the source and dest row counts from querySourceTargetTableRows.
+func (p *ChecksumProgress) SetTableRowStats(schemaTable string, sourceRows, destRows uint64) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	tp := p.ensureTableProgressLocked(schemaTable)
+	tp.SourceRows = sourceRows
+	tp.DestRows = destRows
+	tp.RowStatsCached = true
+	return p.saveLocked()
+}
+
+// GetTableRowStats returns the cached source and dest row counts.
+// ok is false if the stats have not been written yet (RowStatsCached == false).
+func (p *ChecksumProgress) GetTableRowStats(schemaTable string) (sourceRows, destRows uint64, ok bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.TableProgress == nil {
+		return 0, 0, false
+	}
+	tp, exists := p.TableProgress[schemaTable]
+	if !exists || !tp.RowStatsCached {
+		return 0, 0, false
+	}
+	return tp.SourceRows, tp.DestRows, true
+}
+
+// SetTableExactRowStats caches the exact source and dest row counts from getExactRowCountsParallel.
+func (p *ChecksumProgress) SetTableExactRowStats(schemaTable string, exactSourceRows, exactDestRows int64, sourceExact, destExact bool) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	tp := p.ensureTableProgressLocked(schemaTable)
+	tp.ExactSourceRows = exactSourceRows
+	tp.ExactDestRows = exactDestRows
+	tp.ExactSourceRowsValid = sourceExact
+	tp.ExactDestRowsValid = destExact
+	tp.ExactRowStatsCached = true
+	return p.saveLocked()
+}
+
+// GetTableExactRowStats returns the cached exact source and dest row counts.
+// ok is false if no cached value exists.
+func (p *ChecksumProgress) GetTableExactRowStats(schemaTable string) (exactSourceRows, exactDestRows int64, sourceExact, destExact, ok bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.TableProgress == nil {
+		return 0, 0, false, false, false
+	}
+	tp, exists := p.TableProgress[schemaTable]
+	if !exists || !tp.ExactRowStatsCached {
+		return 0, 0, false, false, false
+	}
+	return tp.ExactSourceRows, tp.ExactDestRows, tp.ExactSourceRowsValid, tp.ExactDestRowsValid, true
 }
 
 // MarkChunkCompleted records beginSeq as a completed chunk for the table.
@@ -738,6 +806,8 @@ func (p *ChecksumProgress) ClearCheckingChunks(schemaTable string) error {
 
 // ResetTableChunkState clears all chunk-level state for a table while preserving
 // cached table size metadata. Used when existing fixsql files are unsafe to reuse.
+// Note: row count cache fields (SourceRows, ExactSourceRows, etc.) are intentionally
+// preserved — they are independent of chunk progress and remain valid across resets.
 func (p *ChecksumProgress) ResetTableChunkState(schemaTable string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()

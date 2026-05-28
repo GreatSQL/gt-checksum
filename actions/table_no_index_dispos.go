@@ -805,8 +805,24 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 		<-rollDone
 	}
 	//Output verification result information
-	// 重新查询精确行数
-	sourceExactCount, sourceCountExact, targetExactCount, targetCountExact := sp.getExactRowCountsParallel(sp.schema, sp.table, sp.schema, sp.table, logThreadSeq)
+	// 查询精确行数：resume 模式下优先使用缓存，避免重复 COUNT(*) 扫描
+	var sourceExactCount, targetExactCount int64
+	var sourceCountExact, targetCountExact bool
+	exactCached := false
+	if sp.ChecksumProgress != nil {
+		if cSrc, cDst, sExact, dExact, ok := sp.ChecksumProgress.GetTableExactRowStats(schemaTable); ok {
+			sourceExactCount, targetExactCount = cSrc, cDst
+			sourceCountExact, targetCountExact = sExact, dExact
+			exactCached = true
+			global.Wlog.Info(fmt.Sprintf("(%d) [RESUME] Using cached exact row stats for %s: source=%d, dest=%d", logThreadSeq, schemaTable, sourceExactCount, targetExactCount))
+		}
+	}
+	if !exactCached {
+		sourceExactCount, sourceCountExact, targetExactCount, targetCountExact = sp.getExactRowCountsParallel(sp.sourceSchema, sp.table, sp.destSchema, sp.getDestTableName(), logThreadSeq)
+		if sp.ChecksumProgress != nil {
+			_ = sp.ChecksumProgress.SetTableExactRowStats(schemaTable, sourceExactCount, targetExactCount, sourceCountExact, targetCountExact)
+		}
+	}
 	if !sourceCountExact {
 		global.Wlog.Warn(fmt.Sprintf("(%d) Source row count for %s.%s is not exact, fallback value=%d", logThreadSeq, sp.schema, sp.table, sourceExactCount))
 		if sourceExactCount == 0 && barTableRow > 0 {

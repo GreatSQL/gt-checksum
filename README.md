@@ -20,6 +20,7 @@ MySQL DBA经常使用 **pt-table-checksum** 和 **pt-table-sync** 进行数据�
 - **[功能新增]** 新增反向回滚SQL生成能力，通过 `genRollSQL/maxRollRowNum/rollFileDir` 等参数控制，支持为修复SQL自动生成对应的回滚语句，便于修复出错时快速回退。
 - **[功能新增]** 新增 SSL 加密连接支持，源端和目标端可独立配置 SSL 参数，支持五种模式（`DISABLED/PREFERRED/REQUIRED/VERIFY_CA/VERIFY_IDENTITY`）。
 - **[功能优化]** 优化 COLLATE 修复逻辑，当存在 `dTypeMapping` 规则覆盖时自动生成列级 MODIFY COLUMN SQL，而非表级 CONVERT TO SQL。
+- **[性能优化]** 断点续传模式下，行数统计（估算值和精确 COUNT(*)）写入进度文件缓存，续传时直接读取，避免重复扫描大表；源端和目标端行数改为并行查询，减少等待时间。
 - **[性能优化]** 优化数据校验行数统计流程，源端和目标端行数改为并行查询；同时改进无主键表 DELETE 修复逻辑，避免 NULL 值导致的语句生成错误。
 - **[问题修复]** 修复 Oracle NUMBER(19,0) 类型映射精度阈值、tinyint(1) ↔ bit(1) 类型等价映射，以及 MySQL 数值列 INSERT 修复 SQL 字面量输出问题。
 - **[问题修复]** 修复 global.Wlog 空指针检查，避免日志初始化前 panic。
