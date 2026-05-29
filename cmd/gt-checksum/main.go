@@ -11,9 +11,11 @@ import (
 	"gt-checksum/progress"
 	"gt-checksum/utils"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -343,7 +345,23 @@ func main() {
 		if checksumProgress != nil {
 			sp.ChecksumProgress = checksumProgress
 		}
+
+		shutdownCh := make(chan struct{})
+		sigCh := make(chan os.Signal, 2)
+		signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+		go func() {
+			sig := <-sigCh
+			fmt.Printf("\n[SIGNAL] Received %s, initiating graceful shutdown (flush pending fixsql)...\n", sig)
+			global.Wlog.Info(fmt.Sprintf("[SIGNAL] Received %s, initiating graceful shutdown", sig))
+			close(shutdownCh)
+			sig = <-sigCh
+			fmt.Printf("\n[SIGNAL] Received %s again, forcing exit\n", sig)
+			os.Exit(1)
+		}()
+		sp.SetShutdownCh(shutdownCh)
+
 		sp.Schedulingtasks()
+		signal.Stop(sigCh)
 		checksumTime = time.Since(checksumStart)
 
 		if checksumProgress != nil {

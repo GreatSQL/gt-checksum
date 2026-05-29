@@ -83,6 +83,9 @@ type SchedulePlan struct {
 	// key: "INSERT" | "DELETE" | "rollback-INSERT" | "rollback-DELETE"
 	resumeFixFileSeqs  map[string]int
 	resumeFixSQLOffset int64
+
+	// shutdownCh 用于优雅关闭：收到信号后 flush pending 数据并保存进度。
+	shutdownCh <-chan struct{}
 }
 
 // columnsModeSourceOnlyAdvisory 记录 columns 模式下差异行的统计信息，
@@ -421,6 +424,72 @@ func cleanupIncompleteFixSQLForTable(fixDir, rollDir, schema, table string) map[
 	return seqs
 }
 
+// cleanupUnsafeFixSQLFiles uses chunk-file mapping to precisely determine which files
+// are safe (all chunks completed) and delete only unsafe files.
+func cleanupUnsafeFixSQLFiles(checksumProgress *progress.ChecksumProgress, schemaTable, fixDir, rollDir, schema, table string) map[string]int {
+	insertSafe, deleteSafe := checksumProgress.GetSafeFileSeqs(schemaTable)
+	seqs := make(map[string]int)
+	fixSchema := fixFileNameEncode(schema)
+	fixTable := fixFileNameEncode(table)
+
+	removeFilesAbove := func(dir, prefix string, safeSeq int) int {
+		if dir == "" {
+			return safeSeq
+		}
+		pattern := filepath.Join(dir, prefix+"*.sql")
+		matches, _ := filepath.Glob(pattern)
+		for _, f := range matches {
+			base := filepath.Base(f)
+			numStr := strings.TrimSuffix(strings.TrimPrefix(base, prefix), ".sql")
+			n, err := strconv.Atoi(numStr)
+			if err != nil {
+				continue
+			}
+			if n > safeSeq {
+				if err := os.Remove(f); err != nil {
+					global.Wlog.Warn(fmt.Sprintf("[RESUME] Failed to remove unsafe fixsql %s: %v", f, err))
+				} else {
+					global.Wlog.Info(fmt.Sprintf("[RESUME] Removed unsafe fixsql (chunk-file mapping): %s", f))
+				}
+			}
+		}
+		if safeSeq > 0 {
+			safePath := filepath.Join(dir, fmt.Sprintf("%s%d.sql", prefix, safeSeq))
+			if _, err := os.Stat(safePath); err == nil {
+				kept, truncErr := truncateFileToLastCommit(safePath)
+				if truncErr != nil {
+					global.Wlog.Warn(fmt.Sprintf("[RESUME] Failed to truncate boundary file %s: %v", safePath, truncErr))
+				} else if kept == 0 {
+					os.Remove(safePath)
+					safeSeq--
+					global.Wlog.Info(fmt.Sprintf("[RESUME] Boundary file had no COMMIT, removed: %s", safePath))
+				} else {
+					global.Wlog.Info(fmt.Sprintf("[RESUME] Truncated boundary file to last COMMIT (%d bytes): %s", kept, safePath))
+				}
+			}
+		}
+		return safeSeq
+	}
+
+	if fixDir != "" {
+		insertPrefix := fmt.Sprintf("table.%s.%s-", fixSchema, fixTable)
+		seqs["INSERT"] = removeFilesAbove(fixDir, insertPrefix, insertSafe)
+
+		deletePrefix := fmt.Sprintf("table.%s.%s-DELETE-", fixSchema, fixTable)
+		seqs["DELETE"] = removeFilesAbove(fixDir, deletePrefix, deleteSafe)
+	}
+
+	if rollDir != "" {
+		rbInsPrefix := fmt.Sprintf("table.%s.%s.rollback-INSERT-", fixSchema, fixTable)
+		seqs["rollback-INSERT"] = keepAndTruncateLastFixFile(rollDir, rbInsPrefix)
+
+		rbDelPrefix := fmt.Sprintf("table.%s.%s.rollback-DELETE-", fixSchema, fixTable)
+		seqs["rollback-DELETE"] = keepAndTruncateLastFixFile(rollDir, rbDelPrefix)
+	}
+
+	return seqs
+}
+
 func prepareResumeFixSQLForTable(checksumProgress *progress.ChecksumProgress, schemaTable, fixDir, rollDir, schema, table string, allowCompletedChunks bool) (map[string]int, int64) {
 	if checksumProgress == nil {
 		return nil, 0
@@ -428,11 +497,27 @@ func prepareResumeFixSQLForTable(checksumProgress *progress.ChecksumProgress, sc
 
 	resumeOffset, hasFixSQLState, unsafeFixSQLState := checksumProgress.GetFixSQLResumeState(schemaTable)
 	if unsafeFixSQLState {
+		if resumeOffset > 0 {
+			var seqs map[string]int
+			if checksumProgress.HasChunkFileMapping(schemaTable) {
+				seqs = cleanupUnsafeFixSQLFiles(checksumProgress, schemaTable, fixDir, rollDir, schema, table)
+				global.Wlog.Info(fmt.Sprintf("[RESUME] Mapping-based cleanup for %s: resumeOffset=%d safe INSERT=%d DELETE=%d",
+					schemaTable, resumeOffset, seqs["INSERT"], seqs["DELETE"]))
+			} else {
+				seqs = cleanupIncompleteFixSQLForTable(fixDir, rollDir, schema, table)
+				global.Wlog.Info(fmt.Sprintf("[RESUME] Partial resume for %s despite in-flight chunks: resumeOffset=%d kept INSERT=%d DELETE=%d rollback-INSERT=%d rollback-DELETE=%d",
+					schemaTable, resumeOffset, seqs["INSERT"], seqs["DELETE"], seqs["rollback-INSERT"], seqs["rollback-DELETE"]))
+			}
+			if err := checksumProgress.ClearCheckingChunks(schemaTable); err != nil {
+				global.Wlog.Warn(fmt.Sprintf("[RESUME] Failed to clear checking chunks for %s: %v", schemaTable, err))
+			}
+			return seqs, resumeOffset
+		}
 		cleanupFixSQLFilesForTable(fixDir, rollDir, schema, table)
 		if err := checksumProgress.ResetTableChunkState(schemaTable); err != nil {
 			global.Wlog.Warn(fmt.Sprintf("[RESUME] Failed to reset unsafe chunk state for %s: %v", schemaTable, err))
 		}
-		global.Wlog.Info(fmt.Sprintf("[RESUME] Unsafe fixsql resume state for %s (resumeOffset=%d); cleaned old fixsql files and will recheck table", schemaTable, resumeOffset))
+		global.Wlog.Info(fmt.Sprintf("[RESUME] Unsafe fixsql resume state for %s with no safe prefix; cleaned old fixsql files and will recheck table", schemaTable))
 		return nil, 0
 	}
 
@@ -450,12 +535,19 @@ func prepareResumeFixSQLForTable(checksumProgress *progress.ChecksumProgress, sc
 		return nil, 0
 	}
 
-	seqs := cleanupIncompleteFixSQLForTable(fixDir, rollDir, schema, table)
+	var seqs map[string]int
+	if checksumProgress.HasChunkFileMapping(schemaTable) {
+		seqs = cleanupUnsafeFixSQLFiles(checksumProgress, schemaTable, fixDir, rollDir, schema, table)
+		global.Wlog.Info(fmt.Sprintf("[RESUME] Mapping-based partial cleanup for %s: resumeOffset=%d safe INSERT=%d DELETE=%d",
+			schemaTable, resumeOffset, seqs["INSERT"], seqs["DELETE"]))
+	} else {
+		seqs = cleanupIncompleteFixSQLForTable(fixDir, rollDir, schema, table)
+		global.Wlog.Info(fmt.Sprintf("[RESUME] Partial cleanup for %s: resumeOffset=%d kept INSERT=%d DELETE=%d rollback-INSERT=%d rollback-DELETE=%d",
+			schemaTable, resumeOffset, seqs["INSERT"], seqs["DELETE"], seqs["rollback-INSERT"], seqs["rollback-DELETE"]))
+	}
 	if err := checksumProgress.ClearCheckingChunksBefore(schemaTable, resumeOffset); err != nil {
 		global.Wlog.Warn(fmt.Sprintf("[RESUME] Failed to clear stale checking chunks for %s before %d: %v", schemaTable, resumeOffset, err))
 	}
-	global.Wlog.Info(fmt.Sprintf("[RESUME] Partial cleanup for %s: resumeOffset=%d kept INSERT=%d DELETE=%d rollback-INSERT=%d rollback-DELETE=%d",
-		schemaTable, resumeOffset, seqs["INSERT"], seqs["DELETE"], seqs["rollback-INSERT"], seqs["rollback-DELETE"]))
 	return seqs, resumeOffset
 }
 
@@ -500,6 +592,15 @@ func (sp *SchedulePlan) Schedulingtasks() {
 	totalTables := len(sp.tableIndexColumnMap)
 	var logThreadSeq int64 // outer-loop log identifier; inner branches may override
 	for k, v := range sp.tableIndexColumnMap {
+		if sp.shutdownCh != nil {
+			select {
+			case <-sp.shutdownCh:
+				global.Wlog.Info("[SHUTDOWN] Graceful shutdown requested, stopping after current table")
+				fmt.Printf("\n[SHUTDOWN] Graceful shutdown requested, stopping table scheduling\n")
+				return
+			default:
+			}
+		}
 		//是否校验无索引表
 		if sp.checkNoIndexTable == "no" && len(v) == 0 {
 			continue
@@ -761,6 +862,11 @@ func (sp *SchedulePlan) Schedulingtasks() {
 }
 
 // NewTableProgress is deprecated and removed as each table now creates its own progress bar directly in Schedulingtasks
+
+// SetShutdownCh sets the graceful shutdown channel for the schedule plan.
+func (sp *SchedulePlan) SetShutdownCh(ch <-chan struct{}) {
+	sp.shutdownCh = ch
+}
 
 func CheckTableQuerySchedule(sdb, ddb *global.Pool, tableIndexColumnMap map[string][]string, tableAllCol map[string]global.TableAllColumnInfoS, m inputArg.ConfigParameter) *SchedulePlan {
 	// 保留前置结构校验阶段已经生成的DDL差异结果，避免在进入数据校验调度时被清空

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"gt-checksum/global"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -16,16 +17,25 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanFixSQLItem, logThreadSeq int64)
 	)
 	pendingSQLByChunk := make(map[int64]int)
 	doneChunks := make(map[int64]bool)
+	chunkFileSeqs := make(map[int64]map[string]map[int]struct{})
 	schemaTable := fmt.Sprintf("%s.%s", sp.schema, sp.table)
 	markChunkIfSafe := func(chunkSeq int64) {
 		if sp.ChecksumProgress == nil || chunkSeq < 0 || !doneChunks[chunkSeq] || pendingSQLByChunk[chunkSeq] > 0 {
 			return
 		}
-		if err := sp.ChecksumProgress.MarkChunkFixSQLCompleted(schemaTable, chunkSeq); err != nil {
-			global.Wlog.Warn(fmt.Sprintf("(%d) [RESUME] Failed to mark chunk %d fixsql completed for %s: %v", logThreadSeq, chunkSeq, schemaTable, err))
+		fileMapping := buildFileMappingForChunk(chunkFileSeqs, chunkSeq)
+		if len(fileMapping) > 0 {
+			if err := sp.ChecksumProgress.MarkChunkFixSQLCompletedWithFiles(schemaTable, chunkSeq, fileMapping); err != nil {
+				global.Wlog.Warn(fmt.Sprintf("(%d) [RESUME] Failed to mark chunk %d fixsql completed for %s: %v", logThreadSeq, chunkSeq, schemaTable, err))
+			}
+		} else {
+			if err := sp.ChecksumProgress.MarkChunkFixSQLCompleted(schemaTable, chunkSeq); err != nil {
+				global.Wlog.Warn(fmt.Sprintf("(%d) [RESUME] Failed to mark chunk %d fixsql completed for %s: %v", logThreadSeq, chunkSeq, schemaTable, err))
+			}
 		}
 		delete(doneChunks, chunkSeq)
 		delete(pendingSQLByChunk, chunkSeq)
+		delete(chunkFileSeqs, chunkSeq)
 	}
 	markItemsWritten := func(items []fixSQLItem) {
 		for _, item := range items {
@@ -102,9 +112,12 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanFixSQLItem, logThreadSeq int64)
 			markItemsWritten(batch)
 			return nil
 		}
+		beforeSeq := deleteWriter.FileSeq()
 		if err := deleteWriter.write(optimized); err != nil {
 			return err
 		}
+		afterSeq := deleteWriter.FileSeq()
+		recordBatchChunkFileSeqs(chunkFileSeqs, batch, "DELETE", beforeSeq, afterSeq)
 		markItemsWritten(batch)
 		return nil
 	}
@@ -119,9 +132,12 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanFixSQLItem, logThreadSeq int64)
 			markItemsWritten(batch)
 			return nil
 		}
+		beforeSeq := insertWriter.FileSeq()
 		if err := insertWriter.write(optimized); err != nil {
 			return err
 		}
+		afterSeq := insertWriter.FileSeq()
+		recordBatchChunkFileSeqs(chunkFileSeqs, batch, "INSERT", beforeSeq, afterSeq)
 		markItemsWritten(batch)
 		return nil
 	}
@@ -271,6 +287,49 @@ func detectFixSQLType(sql string) string {
 		return "TRUNCATE"
 	}
 	return ""
+}
+
+func recordBatchChunkFileSeqs(m map[int64]map[string]map[int]struct{}, batch []fixSQLItem, sqlType string, beforeSeq, afterSeq int) {
+	startSeq := beforeSeq
+	if startSeq == 0 {
+		startSeq = afterSeq
+	}
+	if startSeq == 0 {
+		return
+	}
+	for _, item := range batch {
+		if item.ChunkSeq < 0 {
+			continue
+		}
+		if m[item.ChunkSeq] == nil {
+			m[item.ChunkSeq] = make(map[string]map[int]struct{})
+		}
+		if m[item.ChunkSeq][sqlType] == nil {
+			m[item.ChunkSeq][sqlType] = make(map[int]struct{})
+		}
+		for seq := startSeq; seq <= afterSeq; seq++ {
+			if seq > 0 {
+				m[item.ChunkSeq][sqlType][seq] = struct{}{}
+			}
+		}
+	}
+}
+
+func buildFileMappingForChunk(m map[int64]map[string]map[int]struct{}, chunkSeq int64) map[string][]int {
+	entry, ok := m[chunkSeq]
+	if !ok || len(entry) == 0 {
+		return nil
+	}
+	result := make(map[string][]int, len(entry))
+	for sqlType, seqSet := range entry {
+		seqs := make([]int, 0, len(seqSet))
+		for seq := range seqSet {
+			seqs = append(seqs, seq)
+		}
+		sort.Ints(seqs)
+		result[sqlType] = seqs
+	}
+	return result
 }
 
 // RollbackDispos consumes rollback SQL from rollCC and writes them to rollback SQL files.

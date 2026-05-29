@@ -959,3 +959,75 @@ func TestChecksumProgress_FixSQLCompletedChunksCanBeSparse(t *testing.T) {
 		}
 	}
 }
+
+func TestGetSafeFileSeqs_AllCompleted(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "progress.json")
+	p := NewChecksumProgress("r1", "h1", path)
+	_ = p.SetTableTotalRows("db1.t1", 100, 1)
+
+	for _, seq := range []int64{0, 1, 2, 3} {
+		fm := map[string][]int{"INSERT": {1}, "DELETE": {1}}
+		if seq >= 2 {
+			fm = map[string][]int{"INSERT": {2}}
+		}
+		_ = p.MarkChunkFixSQLCompletedWithFiles("db1.t1", seq, fm)
+	}
+
+	insertSafe, deleteSafe := p.GetSafeFileSeqs("db1.t1")
+	if insertSafe != 2 {
+		t.Errorf("expected insertSafe=2, got %d", insertSafe)
+	}
+	if deleteSafe != 1 {
+		t.Errorf("expected deleteSafe=1, got %d", deleteSafe)
+	}
+}
+
+func TestGetSafeFileSeqs_PartialUnsafe(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "progress.json")
+	p := NewChecksumProgress("r1", "h1", path)
+	_ = p.SetTableTotalRows("db1.t1", 100, 1)
+
+	_ = p.MarkChunkFixSQLCompletedWithFiles("db1.t1", 0, map[string][]int{"INSERT": {1}})
+	_ = p.MarkChunkFixSQLCompletedWithFiles("db1.t1", 1, map[string][]int{"INSERT": {1}})
+	_ = p.MarkChunkFixSQLCompletedWithFiles("db1.t1", 2, map[string][]int{"INSERT": {2}})
+	// chunk 3 is checking — its file mapping is NOT recorded (only completed chunks have mappings)
+	_ = p.MarkChunkChecking("db1.t1", 3)
+
+	insertSafe, _ := p.GetSafeFileSeqs("db1.t1")
+	// file 1 has chunks 0,1 (all completed) → safe
+	// file 2 has chunk 2 (completed) → safe based on known mappings
+	// chunk 3's file assignment is unknown (not in mapping) — handled by truncation at resume time
+	if insertSafe != 2 {
+		t.Errorf("expected insertSafe=2 (only known mappings considered), got %d", insertSafe)
+	}
+}
+
+func TestGetSafeFileSeqs_NoMapping(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "progress.json")
+	p := NewChecksumProgress("r1", "h1", path)
+	_ = p.SetTableTotalRows("db1.t1", 100, 1)
+	_ = p.MarkChunkFixSQLCompleted("db1.t1", 0)
+
+	insertSafe, deleteSafe := p.GetSafeFileSeqs("db1.t1")
+	if insertSafe != 0 || deleteSafe != 0 {
+		t.Errorf("expected 0,0 when no mapping, got %d,%d", insertSafe, deleteSafe)
+	}
+}
+
+func TestHasChunkFileMapping(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "progress.json")
+	p := NewChecksumProgress("r1", "h1", path)
+	_ = p.SetTableTotalRows("db1.t1", 100, 1)
+
+	if p.HasChunkFileMapping("db1.t1") {
+		t.Error("should be false before any mapping is saved")
+	}
+	_ = p.MarkChunkFixSQLCompletedWithFiles("db1.t1", 0, map[string][]int{"INSERT": {1}})
+	if !p.HasChunkFileMapping("db1.t1") {
+		t.Error("should be true after mapping is saved")
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -28,6 +29,10 @@ type TableChunkProgress struct {
 	CompletedChunks []int64 `json:"completed_chunks"`
 	CheckingChunks  []int64 `json:"checking_chunks,omitempty"`
 	CompletedFixSQL []int64 `json:"completed_fixsql,omitempty"`
+
+	// ChunkFileMapping tracks which file sequences contain SQL for each chunk.
+	// Outer key: SQL type ("INSERT"/"DELETE"), inner key: chunkSeq (string), value: fileSeq list.
+	ChunkFileMapping map[string]map[string][]int `json:"chunk_file_mapping,omitempty"`
 
 	// Row count statistics cached to avoid re-querying on resume.
 	// SourceRows/DestRows come from querySourceTargetTableRows (metadata estimate).
@@ -654,6 +659,106 @@ func (p *ChecksumProgress) MarkChunkFixSQLCompleted(schemaTable string, beginSeq
 	tp.CompletedFixSQL = insertSortedUnique(tp.CompletedFixSQL, beginSeq)
 	tp.CompletedChunks = insertSortedUnique(tp.CompletedChunks, beginSeq)
 	return p.saveLocked()
+}
+
+// MarkChunkFixSQLCompletedWithFiles records chunk completion and the file sequences it wrote to.
+func (p *ChecksumProgress) MarkChunkFixSQLCompletedWithFiles(schemaTable string, beginSeq int64, fileMapping map[string][]int) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	tp := p.ensureTableProgressLocked(schemaTable)
+	tp.CheckingChunks = removeSortedValue(tp.CheckingChunks, beginSeq)
+	tp.CompletedFixSQL = insertSortedUnique(tp.CompletedFixSQL, beginSeq)
+	tp.CompletedChunks = insertSortedUnique(tp.CompletedChunks, beginSeq)
+
+	if len(fileMapping) > 0 {
+		if tp.ChunkFileMapping == nil {
+			tp.ChunkFileMapping = make(map[string]map[string][]int)
+		}
+		seqStr := strconv.FormatInt(beginSeq, 10)
+		for sqlType, seqs := range fileMapping {
+			if tp.ChunkFileMapping[sqlType] == nil {
+				tp.ChunkFileMapping[sqlType] = make(map[string][]int)
+			}
+			tp.ChunkFileMapping[sqlType][seqStr] = seqs
+		}
+	}
+	return p.saveLocked()
+}
+
+// GetSafeFileSeqs computes the maximum safe file sequence for each SQL type.
+// A file is safe if ALL chunks that wrote to it are in CompletedFixSQL.
+// Returns 0 for a type if no mapping exists or no files are safe.
+func (p *ChecksumProgress) GetSafeFileSeqs(schemaTable string) (insertSafe, deleteSafe int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.TableProgress == nil {
+		return 0, 0
+	}
+	tp, ok := p.TableProgress[schemaTable]
+	if !ok || tp.ChunkFileMapping == nil {
+		return 0, 0
+	}
+
+	completedSet := make(map[int64]struct{}, len(tp.CompletedFixSQL))
+	for _, seq := range tp.CompletedFixSQL {
+		completedSet[seq] = struct{}{}
+	}
+
+	calcSafe := func(sqlType string) int {
+		chunkMap, ok := tp.ChunkFileMapping[sqlType]
+		if !ok || len(chunkMap) == 0 {
+			return 0
+		}
+		fileChunks := make(map[int][]int64)
+		maxFileSeq := 0
+		for chunkSeqStr, fileSeqs := range chunkMap {
+			chunkSeq, err := strconv.ParseInt(chunkSeqStr, 10, 64)
+			if err != nil {
+				continue
+			}
+			for _, fseq := range fileSeqs {
+				fileChunks[fseq] = append(fileChunks[fseq], chunkSeq)
+				if fseq > maxFileSeq {
+					maxFileSeq = fseq
+				}
+			}
+		}
+		safeSeq := 0
+		for fseq := 1; fseq <= maxFileSeq; fseq++ {
+			chunks, exists := fileChunks[fseq]
+			if !exists {
+				break
+			}
+			allCompleted := true
+			for _, cs := range chunks {
+				if _, ok := completedSet[cs]; !ok {
+					allCompleted = false
+					break
+				}
+			}
+			if !allCompleted {
+				break
+			}
+			safeSeq = fseq
+		}
+		return safeSeq
+	}
+
+	return calcSafe("INSERT"), calcSafe("DELETE")
+}
+
+// HasChunkFileMapping returns true when the table has chunk-to-file mapping data.
+func (p *ChecksumProgress) HasChunkFileMapping(schemaTable string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.TableProgress == nil {
+		return false
+	}
+	tp, ok := p.TableProgress[schemaTable]
+	return ok && tp.ChunkFileMapping != nil && len(tp.ChunkFileMapping) > 0
 }
 
 func consecutiveResumeOffset(values []int64, chunkSize int64) int64 {

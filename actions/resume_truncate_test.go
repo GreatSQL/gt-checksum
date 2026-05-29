@@ -435,23 +435,25 @@ func TestResume_PrepareDoesNotSkipCheckingChunksWithNewFixSQLState(t *testing.T)
 	}
 
 	seqs, offset := prepareResumeFixSQLForTable(p, "sbtest.t4", fixDir, rollDir, "sbtest", "t4", true)
-	if offset != 0 {
-		t.Fatalf("unsafe checking chunks must force full table recheck, got offset %d", offset)
+	if offset != 4 {
+		t.Fatalf("unsafe state with safe prefix should partial-resume from offset 4, got %d", offset)
 	}
-	if seqs != nil {
-		t.Fatalf("expected nil file seqs after unsafe cleanup, got %v", seqs)
+	if seqs == nil {
+		t.Fatalf("expected non-nil file seqs for partial resume, got nil")
 	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("unsafe partial fixsql should be removed, stat err=%v", err)
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		t.Fatalf("fixsql file with completed chunks should be kept, but was deleted")
 	}
 
 	completed := p.GetSafeFixSQLCompletedChunks("sbtest.t4", true)
-	if len(completed) != 0 {
-		t.Fatalf("completed chunks should be reset after unsafe cleanup, got %v", completed)
+	for seq := int64(0); seq < 4; seq++ {
+		if !shouldSkipResumeChunk(seq, offset, completed) {
+			t.Fatalf("completed chunk %d within safe prefix should be skipped", seq)
+		}
 	}
 	for _, seq := range []int64{4, 10, 11} {
 		if shouldSkipResumeChunk(seq, offset, completed) {
-			t.Fatalf("checking or legacy-only chunk %d must be regenerated", seq)
+			t.Fatalf("checking chunk %d must be regenerated, not skipped", seq)
 		}
 	}
 }
@@ -559,4 +561,68 @@ func itoa(n int) string {
 		buf[pos] = '-'
 	}
 	return string(buf[pos:])
+}
+
+// TestRecordBatchChunkFileSeqs 验证 chunk→file 映射记录逻辑
+func TestRecordBatchChunkFileSeqs(t *testing.T) {
+	m := make(map[int64]map[string]map[int]struct{})
+
+	batch := []fixSQLItem{
+		{ChunkSeq: 3, SQL: "INSERT INTO t VALUES(1)"},
+		{ChunkSeq: 5, SQL: "INSERT INTO t VALUES(2)"},
+		{ChunkSeq: 3, SQL: "INSERT INTO t VALUES(3)"},
+	}
+	recordBatchChunkFileSeqs(m, batch, "INSERT", 1, 2)
+
+	if m[3] == nil || m[3]["INSERT"] == nil {
+		t.Fatal("chunk 3 INSERT mapping should exist")
+	}
+	if _, ok := m[3]["INSERT"][1]; !ok {
+		t.Error("chunk 3 should map to fileSeq 1")
+	}
+	if _, ok := m[3]["INSERT"][2]; !ok {
+		t.Error("chunk 3 should map to fileSeq 2")
+	}
+	if _, ok := m[5]["INSERT"][1]; !ok {
+		t.Error("chunk 5 should map to fileSeq 1")
+	}
+}
+
+// TestRecordBatchChunkFileSeqs_FirstWrite 验证首次写入（beforeSeq=0）
+func TestRecordBatchChunkFileSeqs_FirstWrite(t *testing.T) {
+	m := make(map[int64]map[string]map[int]struct{})
+	batch := []fixSQLItem{{ChunkSeq: 0, SQL: "DELETE FROM t WHERE id=1"}}
+	recordBatchChunkFileSeqs(m, batch, "DELETE", 0, 1)
+
+	if m[0] == nil || m[0]["DELETE"] == nil {
+		t.Fatal("chunk 0 DELETE mapping should exist")
+	}
+	if _, ok := m[0]["DELETE"][1]; !ok {
+		t.Error("chunk 0 should map to fileSeq 1 (first write)")
+	}
+}
+
+// TestBuildFileMappingForChunk 验证从内部 map 构建传给 progress 的映射
+func TestBuildFileMappingForChunk(t *testing.T) {
+	m := make(map[int64]map[string]map[int]struct{})
+	m[7] = map[string]map[int]struct{}{
+		"INSERT": {2: {}, 3: {}},
+		"DELETE": {1: {}},
+	}
+
+	result := buildFileMappingForChunk(m, 7)
+	if result == nil {
+		t.Fatal("expected non-nil mapping for chunk 7")
+	}
+	if len(result["INSERT"]) != 2 || result["INSERT"][0] != 2 || result["INSERT"][1] != 3 {
+		t.Errorf("INSERT mapping: expected [2,3], got %v", result["INSERT"])
+	}
+	if len(result["DELETE"]) != 1 || result["DELETE"][0] != 1 {
+		t.Errorf("DELETE mapping: expected [1], got %v", result["DELETE"])
+	}
+
+	nilResult := buildFileMappingForChunk(m, 99)
+	if nilResult != nil {
+		t.Error("expected nil mapping for non-existent chunk")
+	}
 }

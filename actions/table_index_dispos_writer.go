@@ -63,6 +63,10 @@ func (w *sqlRollingWriter) close() error {
 	return w.rotate()
 }
 
+func (w *sqlRollingWriter) FileSeq() int {
+	return w.fileSeq
+}
+
 func (w *sqlRollingWriter) writableSQLCount(sqls []string) int {
 	if len(sqls) == 0 {
 		return 0
