@@ -11,6 +11,12 @@ var delimiterDirectivePattern = regexp.MustCompile(`(?i)^\s*DELIMITER\s+(.+?)\s*
 var mysqlDateFormatLiteralForExecPattern = regexp.MustCompile(`(?i)DATE_FORMAT\(\s*'((?:\\'|[^'])*)'\s*,\s*'%Y-%m-%d %H:%i:%s'\s*\)`)
 var mysqlDateTimePrefixForExecPattern = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(\.\d{1,6})?`)
 
+type sqlStatement struct {
+	sql       string
+	startLine int
+	endLine   int
+}
+
 func isBeginStatement(stmt string) bool {
 	s := strings.ToUpper(strings.TrimSpace(stmt))
 	return s == "BEGIN" || s == "START TRANSACTION"
@@ -39,10 +45,15 @@ func isMySQLDashCommentStart(content string, idx int) bool {
 }
 
 func trimLeadingSQLWhitespaceAndComments(content string) string {
+	trimmed, _ := trimLeadingSQLWhitespaceAndCommentsWithOffset(content)
+	return trimmed
+}
+
+func trimLeadingSQLWhitespaceAndCommentsWithOffset(content string) (string, int) {
 	i := 0
 	for i < len(content) {
 		switch {
-		case content[i] == ' ' || content[i] == '\t' || content[i] == '\n' || content[i] == '\r' || content[i] == '\f' || content[i] == '\v':
+		case isSQLWhitespace(content[i]):
 			i++
 		case isMySQLDashCommentStart(content, i):
 			i += 2
@@ -63,10 +74,19 @@ func trimLeadingSQLWhitespaceAndComments(content string) string {
 				i += 2
 			}
 		default:
-			return content[i:]
+			return content[i:], i
 		}
 	}
-	return ""
+	return "", i
+}
+
+func isSQLWhitespace(c byte) bool {
+	switch c {
+	case ' ', '\t', '\n', '\r', '\f', '\v':
+		return true
+	default:
+		return false
+	}
 }
 
 // parseDelimiterDirective parses lines like:
@@ -219,39 +239,205 @@ func extractStatementsByDelimiter(content, delimiter string) ([]string, string) 
 	return statements, trimLeadingSQLWhitespaceAndComments(content[start:])
 }
 
+func extractStatementsByDelimiterWithLocation(content, delimiter string, baseLine int) ([]sqlStatement, string, int) {
+	if delimiter == "" {
+		delimiter = ";"
+	}
+
+	var statements []sqlStatement
+	start := 0
+	inSingleQuote := false
+	inDoubleQuote := false
+	inBacktick := false
+	inLineComment := false
+	inBlockComment := false
+	escaped := false
+
+	for i := 0; i < len(content); {
+		c := content[i]
+		var next byte
+		if i+1 < len(content) {
+			next = content[i+1]
+		}
+
+		if inLineComment {
+			if c == '\n' {
+				inLineComment = false
+			}
+			i++
+			continue
+		}
+		if inBlockComment {
+			if c == '*' && next == '/' {
+				inBlockComment = false
+				i += 2
+				continue
+			}
+			i++
+			continue
+		}
+
+		if escaped {
+			escaped = false
+			i++
+			continue
+		}
+		if inSingleQuote {
+			if c == '\\' {
+				escaped = true
+				i++
+				continue
+			}
+			if c == '\'' {
+				inSingleQuote = false
+			}
+			i++
+			continue
+		}
+		if inDoubleQuote {
+			if c == '\\' {
+				escaped = true
+				i++
+				continue
+			}
+			if c == '"' {
+				inDoubleQuote = false
+			}
+			i++
+			continue
+		}
+		if inBacktick {
+			if c == '`' {
+				inBacktick = false
+			}
+			i++
+			continue
+		}
+
+		switch {
+		case isMySQLDashCommentStart(content, i):
+			inLineComment = true
+			i += 2
+			continue
+		case c == '#':
+			inLineComment = true
+			i++
+			continue
+		case c == '/' && next == '*':
+			inBlockComment = true
+			i += 2
+			continue
+		case c == '\'':
+			inSingleQuote = true
+			i++
+			continue
+		case c == '"':
+			inDoubleQuote = true
+			i++
+			continue
+		case c == '`':
+			inBacktick = true
+			i++
+			continue
+		}
+
+		if strings.HasPrefix(content[i:], delimiter) {
+			raw := content[start:i]
+			stmt, stmtStart, stmtEnd := trimSQLStatementText(raw)
+			if stmt != "" {
+				absoluteStart := start + stmtStart
+				absoluteEnd := start + stmtEnd
+				statements = append(statements, sqlStatement{
+					sql:       stmt,
+					startLine: baseLine + strings.Count(content[:absoluteStart], "\n"),
+					endLine:   baseLine + strings.Count(content[:absoluteEnd], "\n"),
+				})
+			}
+			i += len(delimiter)
+			if i < len(content) && content[i] == ';' {
+				i++
+			}
+			start = i
+			continue
+		}
+
+		i++
+	}
+
+	rest, restOffset := trimLeadingSQLWhitespaceAndCommentsWithOffset(content[start:])
+	restStartLine := baseLine + strings.Count(content[:start+restOffset], "\n")
+	return statements, rest, restStartLine
+}
+
+func trimSQLStatementText(raw string) (string, int, int) {
+	start := 0
+	for start < len(raw) && isSQLWhitespace(raw[start]) {
+		start++
+	}
+	end := len(raw)
+	for end > start && isSQLWhitespace(raw[end-1]) {
+		end--
+	}
+	return raw[start:end], start, end
+}
+
 // splitSQLStatements splits SQL statements and supports MySQL DELIMITER directive.
 func splitSQLStatements(content string) []string {
-	var statements []string
+	withLocation := splitSQLStatementsWithLocation(content)
+	statements := make([]string, 0, len(withLocation))
+	for _, stmt := range withLocation {
+		statements = append(statements, stmt.sql)
+	}
+	return statements
+}
+
+func splitSQLStatementsWithLocation(content string) []sqlStatement {
+	var statements []sqlStatement
 	delimiter := ";"
 	var currentStmt strings.Builder
+	currentStartLine := 1
 	lines := strings.Split(content, "\n")
 
 	for i, line := range lines {
+		lineNo := i + 1
 		if newDelimiter, ok := parseDelimiterDirective(line); ok {
-			ready, rest := extractStatementsByDelimiter(currentStmt.String(), delimiter)
+			ready, rest, restStartLine := extractStatementsByDelimiterWithLocation(currentStmt.String(), delimiter, currentStartLine)
 			statements = append(statements, ready...)
 			currentStmt.Reset()
 			currentStmt.WriteString(rest)
+			currentStartLine = restStartLine
 			delimiter = newDelimiter
 			continue
 		}
 
+		if currentStmt.Len() == 0 {
+			currentStartLine = lineNo
+		}
 		currentStmt.WriteString(line)
 		if i < len(lines)-1 {
 			currentStmt.WriteString("\n")
 		}
 
-		ready, rest := extractStatementsByDelimiter(currentStmt.String(), delimiter)
+		ready, rest, restStartLine := extractStatementsByDelimiterWithLocation(currentStmt.String(), delimiter, currentStartLine)
 		if len(ready) > 0 {
 			statements = append(statements, ready...)
 			currentStmt.Reset()
 			currentStmt.WriteString(rest)
+			currentStartLine = restStartLine
 		}
 	}
 
-	lastStmt := strings.TrimSpace(trimLeadingSQLWhitespaceAndComments(currentStmt.String()))
+	lastRaw := currentStmt.String()
+	lastRest, restOffset := trimLeadingSQLWhitespaceAndCommentsWithOffset(lastRaw)
+	lastStmt, stmtStart, stmtEnd := trimSQLStatementText(lastRest)
 	if lastStmt != "" {
-		statements = append(statements, lastStmt)
+		absoluteStart := restOffset + stmtStart
+		absoluteEnd := restOffset + stmtEnd
+		statements = append(statements, sqlStatement{
+			sql:       lastStmt,
+			startLine: currentStartLine + strings.Count(lastRaw[:absoluteStart], "\n"),
+			endLine:   currentStartLine + strings.Count(lastRaw[:absoluteEnd], "\n"),
+		})
 	}
 
 	return statements

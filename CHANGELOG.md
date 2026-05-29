@@ -20,12 +20,14 @@
 - [功能优化]: 新增 `mergeDuplicateDeleteLimits` 函数，合并相同 `WHERE` 条件的多条 `DELETE LIMIT` 语句，将重复语句的 `LIMIT` 值累加为一条，减少回滚SQL文件数量。
 - [功能优化]: refactor(repairDB): 拆分 `main.go` 为多文件模块化结构（`config/executor/lock/plan/sql_parser/stage/stats/types`）。
 - [功能优化]: refactor(oracle_random_data_load): 拆分 `main.go` 为多文件模块化结构（`config/generator/schema/types/util/worker`）。
+- [问题修复]: 修复 repairDB 执行 multi-values INSERT 时遇到 `Duplicate entry` 会导致整条语句失败的问题；现在会在内存中拆分为单行 INSERT 重试，重复行记录日志并跳过，其他行继续执行。
 - [问题修复]: 修复 repairDB 收到中断信号时可能取消正在执行 SQL 文件的问题；现在会停止调度新文件并等待已开始文件完成，避免文件级续传重放半执行文件。
 - [问题修复]: 修复断点续传在 `datafix=file` 场景下误把正在校验中的 chunk 当作已完成的问题，避免续跑后重复生成 fixsql 或出现先删后插未完整写回的风险。
 - [问题修复]: 修复断点续传删除最后一个不完整 INSERT 文件时回滚范围过大的问题，避免续传后生成多余 fixsql。
 - [问题修复]: 修复 MySQL 数值列生成 INSERT 修复 SQL 时被写成字符串字面量的问题，BIGINT/DECIMAL/DOUBLE 等列会按合法数值字面量输出。
 - [问题修复]: 修复 `global.Wlog` 空指针检查，避免日志初始化前调用 `Debug/Warn` 等方法导致 panic。
 - [问题修复]: 修复 Oracle `NUMBER(19,0)` 类型映射精度阈值（从 18 调整为 19），并新增 `tinyint(1)` ↔ `bit(1)` 类型等价映射。
+- [测试完善]: 新增 repairDB duplicate key 拆分重试回归测试，覆盖 multi-values INSERT 部分重复、非重复错误中断、行号定位和复杂 values 拆分场景。
 - [测试完善]: 新增 repairDB 中断处理回归测试，覆盖停止调度新文件、重复中断信号以及已开始 SQL 文件不被取消等场景。
 - [测试完善]: 新增断点续传 `completed_chunks` 与 `checking_chunks` 区分回归测试，覆盖续跑时仅跳过已安全写完 fixsql 的数据块。
 - [测试完善]: 新增断点续传进度文件、陈旧断点确认、多 running 进度文件和 fixsql 截断回归测试，覆盖进度读写、结果目录推导、已完成对象跳过、不完整事务截断等场景。

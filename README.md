@@ -22,6 +22,7 @@ MySQL DBA经常使用 **pt-table-checksum** 和 **pt-table-sync** 进行数据�
 - **[功能优化]** 优化 COLLATE 修复逻辑，当存在 `dTypeMapping` 规则覆盖时自动生成列级 MODIFY COLUMN SQL，而非表级 CONVERT TO SQL。
 - **[性能优化]** 断点续传模式下，行数统计（估算值和精确 COUNT(*)）写入进度文件缓存，续传时直接读取，避免重复扫描大表；源端和目标端行数改为并行查询，减少等待时间。
 - **[性能优化]** 优化数据校验行数统计流程，源端和目标端行数改为并行查询；同时改进无主键表 DELETE 修复逻辑，避免 NULL 值导致的语句生成错误。
+- **[问题修复]** 修复 `repairDB` 执行 multi-values INSERT 遇到 `Duplicate entry` 时整条语句失败的问题；现在会在内存中拆成单行 INSERT 重试，重复行记录 `[DUPKEY-SPLIT]` 日志并跳过，不改写原 SQL 文件。
 - **[问题修复]** 修复 Oracle NUMBER(19,0) 类型映射精度阈值、tinyint(1) ↔ bit(1) 类型等价映射，以及 MySQL 数值列 INSERT 修复 SQL 字面量输出问题。
 - **[问题修复]** 修复 global.Wlog 空指针检查，避免日志初始化前 panic。
 
@@ -183,6 +184,8 @@ $ ./repairDB ./fixsql && cat ./repairDB.log
 这就表示完成修复，可以再次执行数据校验，确认数据一致性。
 
 **注意**：由于是并行执行数据修复工作，修复过程中可能产生事务死锁冲突。`repairDB` 在检测到 MySQL deadlock（Error 1213）时，会自动对当前失败的事务块（`BEGIN ... COMMIT`）执行重试，最多重试 3 次；而不会重试整个 SQL 文件，从而降低主键重复冲突风险。建议修复结束后检查 `repairDB.log`：若死锁在 3 次重试内已恢复，可直接再次执行校验；若仍有未恢复死锁或其他错误，再手动处理对应 SQL 文件。
+
+**重复键处理**：当 TABLE 阶段的 multi-values INSERT 因 MySQL `Error 1062: Duplicate entry` 失败时，`repairDB` 会定位对应 SQL 文件和行号，在内存中拆成多条 single-value INSERT 逐条重试；仍然重复的行会记录 `[DUPKEY-SPLIT]` 日志并跳过，其他行继续执行，原 SQL 文件不会被改写。
 
 **中断处理**：修复执行中收到 `Ctrl+C` 或 `SIGTERM` 时，`repairDB` 会停止调度新的 SQL 文件，并等待已开始执行的文件完成；启用 `resume=ON/ASK` 后，下次执行会跳过已成功文件并继续剩余文件。
 

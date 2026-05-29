@@ -39,7 +39,11 @@ func fileKey(sqlFile string) string {
 type sqlExecutionUnit struct {
 	index         int
 	transactional bool
-	statements    []string
+	statements    []sqlStatement
+}
+
+type sqlContextExecer interface {
+	ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error)
 }
 
 // isDeadlockError checks if an error is a MySQL deadlock error (Error 1213)
@@ -73,7 +77,7 @@ func executeSQLFile(ctx context.Context, db *sql.DB, sqlFile string) (FileExecRe
 
 	result.ObjectType = detectObjectTypeFromContent(stage, string(content))
 
-	statements := splitSQLStatements(string(content))
+	statements := splitSQLStatementsWithLocation(string(content))
 	units, err := buildSQLExecutionUnits(statements)
 	if err != nil {
 		result.Elapsed = time.Since(startTime)
@@ -113,12 +117,12 @@ func executeSQLFile(ctx context.Context, db *sql.DB, sqlFile string) (FileExecRe
 	return result, nil
 }
 
-func buildSQLExecutionUnits(statements []string) ([]sqlExecutionUnit, error) {
+func buildSQLExecutionUnits(statements []sqlStatement) ([]sqlExecutionUnit, error) {
 	var units []sqlExecutionUnit
 	unitIndex := 1
 	i := 0
 	for i < len(statements) {
-		stmt := strings.TrimSpace(statements[i])
+		stmt := strings.TrimSpace(statements[i].sql)
 		if stmt == "" {
 			i++
 			continue
@@ -126,10 +130,10 @@ func buildSQLExecutionUnits(statements []string) ([]sqlExecutionUnit, error) {
 
 		switch {
 		case isBeginStatement(stmt):
-			var txStatements []string
+			var txStatements []sqlStatement
 			foundEnd := false
 			for j := i + 1; j < len(statements); j++ {
-				nextStmt := strings.TrimSpace(statements[j])
+				nextStmt := strings.TrimSpace(statements[j].sql)
 				if nextStmt == "" {
 					continue
 				}
@@ -144,7 +148,11 @@ func buildSQLExecutionUnits(statements []string) ([]sqlExecutionUnit, error) {
 					foundEnd = true
 					break
 				}
-				txStatements = append(txStatements, nextStmt)
+				txStatements = append(txStatements, sqlStatement{
+					sql:       nextStmt,
+					startLine: statements[j].startLine,
+					endLine:   statements[j].endLine,
+				})
 			}
 			if !foundEnd {
 				return nil, fmt.Errorf("SQL file contains BEGIN without matching COMMIT/ROLLBACK")
@@ -155,7 +163,11 @@ func buildSQLExecutionUnits(statements []string) ([]sqlExecutionUnit, error) {
 			units = append(units, sqlExecutionUnit{
 				index:         unitIndex,
 				transactional: false,
-				statements:    []string{stmt},
+				statements: []sqlStatement{{
+					sql:       stmt,
+					startLine: statements[i].startLine,
+					endLine:   statements[i].endLine,
+				}},
 			})
 			unitIndex++
 			i++
@@ -179,7 +191,7 @@ func executeUnitWithDeadlockRetry(ctx context.Context, conn *sql.Conn, sqlFile s
 			}
 		}
 
-		outcome, err := executeUnit(ctx, conn, unit)
+		outcome, err := executeUnit(ctx, conn, sqlFile, unit)
 		if err == nil {
 			return outcome, nil
 		}
@@ -195,7 +207,7 @@ func executeUnitWithDeadlockRetry(ctx context.Context, conn *sql.Conn, sqlFile s
 	return lastOutcome, fmt.Errorf("deadlock unresolved after %d retries in SQL file %s unit #%d: %v", maxDeadlockRetries, sqlFile, unit.index, lastErr)
 }
 
-func executeUnit(ctx context.Context, conn *sql.Conn, unit sqlExecutionUnit) (unitExecOutcome, error) {
+func executeUnit(ctx context.Context, conn *sql.Conn, sqlFile string, unit sqlExecutionUnit) (unitExecOutcome, error) {
 	var outcome unitExecOutcome
 
 	if unit.transactional {
@@ -205,20 +217,13 @@ func executeUnit(ctx context.Context, conn *sql.Conn, unit sqlExecutionUnit) (un
 		}
 
 		var txOutcome unitExecOutcome
-		for _, stmt := range unit.statements {
-			stmt = strings.TrimSpace(stmt)
-			if stmt == "" {
-				continue
-			}
-			stmt = normalizeMySQLDateFormatLiteralInSQLForExec(stmt)
-			stmtType, _ := identifyStatementType(stmt)
-			result, execErr := tx.ExecContext(ctx, stmt)
+		for _, statement := range unit.statements {
+			stmtOutcome, execErr := executeStatementWithDupKeySplit(ctx, tx, sqlFile, unit, statement)
+			txOutcome.add(stmtOutcome)
 			if execErr != nil {
-				recordStmtFailure(&txOutcome, stmtType)
 				_ = tx.Rollback()
 				return outcome, fmt.Errorf("Failed to execute SQL statement in transaction (rolled back): %v", execErr)
 			}
-			recordStmtSuccess(&txOutcome, stmtType, result)
 		}
 
 		if err := tx.Commit(); err != nil {
@@ -228,21 +233,119 @@ func executeUnit(ctx context.Context, conn *sql.Conn, unit sqlExecutionUnit) (un
 		return outcome, nil
 	}
 
-	for _, stmt := range unit.statements {
-		stmt = strings.TrimSpace(stmt)
-		if stmt == "" {
-			continue
-		}
-		stmt = normalizeMySQLDateFormatLiteralInSQLForExec(stmt)
-		stmtType, _ := identifyStatementType(stmt)
-		result, execErr := conn.ExecContext(ctx, stmt)
+	for _, statement := range unit.statements {
+		stmtOutcome, execErr := executeStatementWithDupKeySplit(ctx, conn, sqlFile, unit, statement)
+		outcome.add(stmtOutcome)
 		if execErr != nil {
-			recordStmtFailure(&outcome, stmtType)
 			return outcome, fmt.Errorf("Failed to execute SQL statement: %v", execErr)
 		}
-		recordStmtSuccess(&outcome, stmtType, result)
 	}
 	return outcome, nil
+}
+
+func executeStatementWithDupKeySplit(ctx context.Context, execer sqlContextExecer, sqlFile string, unit sqlExecutionUnit, statement sqlStatement) (unitExecOutcome, error) {
+	var outcome unitExecOutcome
+	stmt := strings.TrimSpace(statement.sql)
+	if stmt == "" {
+		return outcome, nil
+	}
+
+	stmt = normalizeMySQLDateFormatLiteralInSQLForExec(stmt)
+	stmtType, _ := identifyStatementType(stmt)
+	result, execErr := execer.ExecContext(ctx, stmt)
+	if execErr == nil {
+		recordStmtSuccess(&outcome, stmtType, result)
+		return outcome, nil
+	}
+
+	if isDuplicateKeyError(execErr) {
+		splitOutcome, handled, splitErr := executeSplitInsertOnDuplicateKey(ctx, execer, sqlFile, unit, statement, stmt, execErr)
+		if handled {
+			return splitOutcome, splitErr
+		}
+	}
+
+	recordStmtFailure(&outcome, stmtType)
+	return outcome, execErr
+}
+
+func executeSplitInsertOnDuplicateKey(ctx context.Context, execer sqlContextExecer, sqlFile string, unit sqlExecutionUnit, statement sqlStatement, stmt string, duplicateErr error) (unitExecOutcome, bool, error) {
+	var outcome unitExecOutcome
+	splitStatements, ok, err := splitMultiValueInsert(stmt)
+	if err != nil {
+		log.Printf("[DUPKEY-SPLIT] SQL file %s unit #%d line %s duplicate key split skipped: parse error=%v originalError=%v\n", sqlFile, unit.index, statementLineRange(statement), err, duplicateErr)
+		return outcome, false, nil
+	}
+	if !ok {
+		return outcome, false, nil
+	}
+
+	if conn, ok := execer.(*sql.Conn); ok {
+		tx, txErr := conn.BeginTx(ctx, nil)
+		if txErr != nil {
+			return outcome, true, fmt.Errorf("Failed to start split INSERT retry transaction: %v", txErr)
+		}
+		splitOutcome, splitErr := executeSplitInsertStatements(ctx, tx, sqlFile, unit, statement, splitStatements, duplicateErr)
+		if splitErr != nil {
+			_ = tx.Rollback()
+			var failedOutcome unitExecOutcome
+			recordStmtFailure(&failedOutcome, "INSERT")
+			return failedOutcome, true, splitErr
+		}
+		if commitErr := tx.Commit(); commitErr != nil {
+			return outcome, true, fmt.Errorf("Failed to commit split INSERT retry transaction: %v", commitErr)
+		}
+		return splitOutcome, true, nil
+	}
+
+	outcome, err = executeSplitInsertStatements(ctx, execer, sqlFile, unit, statement, splitStatements, duplicateErr)
+	return outcome, true, err
+}
+
+func executeSplitInsertStatements(ctx context.Context, execer sqlContextExecer, sqlFile string, unit sqlExecutionUnit, statement sqlStatement, splitStatements []splitInsertStatement, duplicateErr error) (unitExecOutcome, error) {
+	var outcome unitExecOutcome
+	startTime := time.Now()
+	var successRows int64
+	var skippedDuplicates int64
+	log.Printf("[DUPKEY-SPLIT] SQL file %s unit #%d line %s duplicate key detected, split multi-values INSERT into %d single INSERT statements: %v\n", sqlFile, unit.index, statementLineRange(statement), len(splitStatements), duplicateErr)
+
+	for _, splitStmt := range splitStatements {
+		result, execErr := execer.ExecContext(ctx, splitStmt.sql)
+		if execErr == nil {
+			rows, rowsErr := result.RowsAffected()
+			if rowsErr != nil {
+				rows = 1
+			}
+			successRows += rows
+			recordStmtSuccess(&outcome, "INSERT", result)
+			log.Printf("[DUPKEY-SPLIT] SQL file %s unit #%d line %s tuple #%d/%d executed successfully, rowsAffected=%d\n", sqlFile, unit.index, statementLineRange(statement), splitStmt.tupleIndex, len(splitStatements), rows)
+			continue
+		}
+
+		if isDuplicateKeyError(execErr) {
+			skippedDuplicates++
+			recordStmtFailure(&outcome, "INSERT")
+			log.Printf("[DUPKEY-SPLIT] SQL file %s unit #%d line %s tuple #%d/%d skipped duplicate: %v\n", sqlFile, unit.index, statementLineRange(statement), splitStmt.tupleIndex, len(splitStatements), execErr)
+			continue
+		}
+
+		recordStmtFailure(&outcome, "INSERT")
+		log.Printf("[DUPKEY-SPLIT] SQL file %s unit #%d line %s tuple #%d/%d failed with non-duplicate error: %v\n", sqlFile, unit.index, statementLineRange(statement), splitStmt.tupleIndex, len(splitStatements), execErr)
+		return outcome, fmt.Errorf("split INSERT tuple #%d/%d failed: %v", splitStmt.tupleIndex, len(splitStatements), execErr)
+	}
+
+	log.Printf("[DUPKEY-SPLIT] SQL file %s unit #%d line %s split retry completed, tupleTotal=%d successRows=%d skippedDuplicates=%d elapsed=%v\n", sqlFile, unit.index, statementLineRange(statement), len(splitStatements), successRows, skippedDuplicates, time.Since(startTime))
+	return outcome, nil
+}
+
+func statementLineRange(statement sqlStatement) string {
+	if statement.startLine <= 0 || statement.endLine <= 0 {
+		return "unknown"
+	}
+	if statement.startLine == statement.endLine {
+		return fmt.Sprintf("%d", statement.startLine)
+	}
+	return fmt.Sprintf("%d-%d", statement.startLine, statement.endLine)
 }
 
 func recordStmtSuccess(o *unitExecOutcome, stmtType string, result sql.Result) {
