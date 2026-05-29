@@ -23,6 +23,7 @@ func parseConfig(confFile string) error {
 	}
 
 	logbinSet := false
+	splitInsertOnDupKeySet := false
 	lines := strings.Split(string(content), "\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
@@ -57,6 +58,16 @@ func parseConfig(confFile string) error {
 			}
 		case "resultFile":
 			config.ResultFile = value
+		case "splitInsertOnDupKey":
+			splitInsertOnDupKeySet = true
+			switch strings.ToUpper(value) {
+			case "OFF":
+				config.SplitInsertOnDupKey = false
+			case "ON":
+				config.SplitInsertOnDupKey = true
+			default:
+				return fmt.Errorf("invalid value for splitInsertOnDupKey: %q (must be ON or OFF)", value)
+			}
 		case "resume":
 			switch strings.ToUpper(strings.TrimSpace(value)) {
 			case "OFF":
@@ -87,6 +98,9 @@ func parseConfig(confFile string) error {
 	}
 	if !logbinSet {
 		config.LogBin = true // default: keep sql_log_bin ON
+	}
+	if !splitInsertOnDupKeySet {
+		config.SplitInsertOnDupKey = true
 	}
 	if config.Resume == "" {
 		config.Resume = "OFF" // default: no resume

@@ -258,7 +258,7 @@ func executeStatementWithDupKeySplit(ctx context.Context, execer sqlContextExece
 		return outcome, nil
 	}
 
-	if isDuplicateKeyError(execErr) {
+	if config.SplitInsertOnDupKey && isDuplicateKeyError(execErr) {
 		splitOutcome, handled, splitErr := executeSplitInsertOnDuplicateKey(ctx, execer, sqlFile, unit, statement, stmt, execErr)
 		if handled {
 			return splitOutcome, splitErr

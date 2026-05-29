@@ -12,7 +12,17 @@ import (
 	"testing"
 )
 
+func setSplitInsertOnDupKeyForTest(t *testing.T, enabled bool) {
+	t.Helper()
+	old := config.SplitInsertOnDupKey
+	config.SplitInsertOnDupKey = enabled
+	t.Cleanup(func() {
+		config.SplitInsertOnDupKey = old
+	})
+}
+
 func TestExecuteSQLFile_DuplicateKeySplitContinues(t *testing.T) {
+	setSplitInsertOnDupKeyForTest(t, true)
 	registerRepairDBDupKeyDriver()
 	resetRepairDBDupKeyDriverState("")
 
@@ -59,7 +69,47 @@ func TestExecuteSQLFile_DuplicateKeySplitContinues(t *testing.T) {
 	assertQueryContains(t, queries, "VALUES (4,'after')")
 }
 
+func TestExecuteSQLFile_DuplicateKeySplitDisabled(t *testing.T) {
+	setSplitInsertOnDupKeyForTest(t, false)
+	registerRepairDBDupKeyDriver()
+	resetRepairDBDupKeyDriverState("")
+
+	dir := t.TempDir()
+	sqlFile := filepath.Join(dir, "table.db1.t1.sql")
+	content := "INSERT INTO `db1`.`t1`(`id`,`name`) VALUES (1,'ok'),(2,'dup'),(3,'ok');\n"
+	if err := os.WriteFile(sqlFile, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to create SQL file: %v", err)
+	}
+
+	db, err := sql.Open(repairDBDupKeyDriverName, "")
+	if err != nil {
+		t.Fatalf("failed to open test db: %v", err)
+	}
+	defer db.Close()
+
+	result, err := executeSQLFile(context.Background(), db, sqlFile)
+	if err == nil {
+		t.Fatal("expected duplicate key error when splitInsertOnDupKey is disabled")
+	}
+	if !strings.Contains(err.Error(), "Duplicate entry") {
+		t.Fatalf("expected original duplicate key error, got %v", err)
+	}
+	if result.InsertSuccess != 0 {
+		t.Fatalf("InsertSuccess = %d, want 0", result.InsertSuccess)
+	}
+	if result.InsertFailure != 1 {
+		t.Fatalf("InsertFailure = %d, want 1", result.InsertFailure)
+	}
+
+	queries := repairDBDupKeyQueries()
+	if len(queries) != 1 {
+		t.Fatalf("executed query count = %d, want 1: %#v", len(queries), queries)
+	}
+	assertQueryContains(t, queries, "VALUES (1,'ok'),(2,'dup'),(3,'ok')")
+}
+
 func TestExecuteSQLFile_DuplicateKeySplitNonDuplicateErrorStops(t *testing.T) {
+	setSplitInsertOnDupKeyForTest(t, true)
 	registerRepairDBDupKeyDriver()
 	resetRepairDBDupKeyDriverState("(3,'bad')")
 

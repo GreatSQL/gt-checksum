@@ -7,13 +7,14 @@ import (
 
 // Config stores configuration information
 type Config struct {
-	DstDSN       string
-	ParallelThds int
-	FixFileDir   string
-	LogFile      string
-	LogBin       bool   // true = keep sql_log_bin ON (default); false = SET sql_log_bin=0 per connection
-	ResultFile   string // custom output path for CSV report, empty = use default
-	Resume       string // OFF | ON | ASK, controls break-resume behavior
+	DstDSN              string
+	ParallelThds        int
+	FixFileDir          string
+	LogFile             string
+	LogBin              bool   // true = keep sql_log_bin ON (default); false = SET sql_log_bin=0 per connection
+	SplitInsertOnDupKey bool   // true = split multi-values INSERT on duplicate key (default)
+	ResultFile          string // custom output path for CSV report, empty = use default
+	Resume              string // OFF | ON | ASK, controls break-resume behavior
 	// SSL fields
 	SslCa   string
 	SslCert string

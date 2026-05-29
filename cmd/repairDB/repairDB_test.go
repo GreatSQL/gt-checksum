@@ -14,6 +14,58 @@ import (
 	"time"
 )
 
+func writeRepairDBConfigForTest(t *testing.T, body string) string {
+	t.Helper()
+	confFile := filepath.Join(t.TempDir(), "gc.conf")
+	if err := os.WriteFile(confFile, []byte(body), 0644); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+	return confFile
+}
+
+func TestParseConfigSplitInsertOnDupKeyDefaultOn(t *testing.T) {
+	old := config
+	t.Cleanup(func() { config = old })
+	config = Config{}
+
+	confFile := writeRepairDBConfigForTest(t, "dstDSN=mysql|user:pass@tcp(127.0.0.1:3306)/db\n")
+	if err := parseConfig(confFile); err != nil {
+		t.Fatalf("parseConfig returned error: %v", err)
+	}
+	if !config.SplitInsertOnDupKey {
+		t.Fatal("SplitInsertOnDupKey = false, want true by default")
+	}
+}
+
+func TestParseConfigSplitInsertOnDupKeyOff(t *testing.T) {
+	old := config
+	t.Cleanup(func() { config = old })
+	config = Config{}
+
+	confFile := writeRepairDBConfigForTest(t, "dstDSN=mysql|user:pass@tcp(127.0.0.1:3306)/db\nsplitInsertOnDupKey=OFF\n")
+	if err := parseConfig(confFile); err != nil {
+		t.Fatalf("parseConfig returned error: %v", err)
+	}
+	if config.SplitInsertOnDupKey {
+		t.Fatal("SplitInsertOnDupKey = true, want false")
+	}
+}
+
+func TestParseConfigSplitInsertOnDupKeyInvalid(t *testing.T) {
+	old := config
+	t.Cleanup(func() { config = old })
+	config = Config{}
+
+	confFile := writeRepairDBConfigForTest(t, "dstDSN=mysql|user:pass@tcp(127.0.0.1:3306)/db\nsplitInsertOnDupKey=INVALID\n")
+	err := parseConfig(confFile)
+	if err == nil {
+		t.Fatal("expected invalid splitInsertOnDupKey error")
+	}
+	if !strings.Contains(err.Error(), "invalid value for splitInsertOnDupKey") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 // sliceEqual reports whether two string slices have identical contents in identical order.
 func sliceEqual(a, b []string) bool {
 	if len(a) != len(b) {

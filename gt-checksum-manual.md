@@ -1232,6 +1232,7 @@ CSV 文件使用 UTF-8 BOM 编码，可直接用 Excel 或 WPS 打开，无需�
 | parallelThds | int | 4 | 并行执行SQL文件的线程数 |
 | fixFileDir | string | fixsql | 存放修复SQL文件的目录 |
 | logbin | string | ON | 控制修复时是否写入 binlog；`OFF` 时每条连接执行 `SET sql_log_bin=0`，需要 SUPER 或 SESSION_VARIABLES_ADMIN 权限 |
+| splitInsertOnDupKey | string | ON | 控制 multi-values INSERT 遇到 `Duplicate entry` 时是否自动拆分为单行 INSERT 重试；`OFF` 时保留整条语句失败 |
 | resultFile | string | 空 | 自定义 CSV 报告输出路径；留空时自动使用默认路径格式 `result/repairDB-result-<timestamp>.csv`；命令行参数 `--result-file` 优先级高于此配置项 |
 | resume | string | OFF | 断点续传开关：`OFF` 不续传，`ON` 自动续传，`ASK` 启动时询问；进度文件保存为 `<fixFileDir>/.repairDB-progress.json` |
 | dstSslCa | string | 空 | 目标端 CA 证书文件路径（v4.0.0 新增） |

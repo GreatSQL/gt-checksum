@@ -21,6 +21,7 @@
 - [功能优化]: refactor(repairDB): 拆分 `main.go` 为多文件模块化结构（`config/executor/lock/plan/sql_parser/stage/stats/types`）。
 - [功能优化]: refactor(oracle_random_data_load): 拆分 `main.go` 为多文件模块化结构（`config/generator/schema/types/util/worker`）。
 - [问题修复]: 修复 repairDB 执行 multi-values INSERT 时遇到 `Duplicate entry` 会导致整条语句失败的问题；现在会在内存中拆分为单行 INSERT 重试，重复行记录日志并跳过，其他行继续执行。
+- [功能优化]: repairDB 新增 `splitInsertOnDupKey` 参数（ON/OFF，默认 ON），可控制上述 Duplicate key 自动拆分重试行为；设置为 OFF 时保留整条 INSERT 失败。
 - [问题修复]: 修复 repairDB 收到中断信号时可能取消正在执行 SQL 文件的问题；现在会停止调度新文件并等待已开始文件完成，避免文件级续传重放半执行文件。
 - [问题修复]: 修复断点续传在 `datafix=file` 场景下误把正在校验中的 chunk 当作已完成的问题，避免续跑后重复生成 fixsql 或出现先删后插未完整写回的风险。
 - [问题修复]: 修复断点续传删除最后一个不完整 INSERT 文件时回滚范围过大的问题，避免续传后生成多余 fixsql。

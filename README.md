@@ -206,6 +206,7 @@ $ ./repairDB ./fixsql && cat ./repairDB.log
 | `parallelThds` | 并发执行线程数（默认 4） | `8` |
 | `fixFileDir` | 修复 SQL 文件目录（默认 `./fixsql`） | `/data/fixsql` |
 | `logbin` | sql_log_bin 开关（ON/OFF，默认 ON） | `OFF` |
+| `splitInsertOnDupKey` | multi-values INSERT 重复键自动拆分重试开关（ON/OFF，默认 ON；OFF 时整条语句失败） | `OFF` |
 | `resultFile` | 自定义 CSV 报告输出路径 | `/tmp/repair-report.csv` |
 | `resume` | 断点续传开关（OFF/ON/ASK，默认 OFF） | `ON` |
 
