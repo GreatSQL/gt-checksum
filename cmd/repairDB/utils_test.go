@@ -89,9 +89,9 @@ func TestEstimateBinlogSize(t *testing.T) {
 		expectedMin int64
 		expectedMax int64
 	}{
-		{1000000, 0, 1000, 1300000, 1300000},     // More inserts: 1.3x
-		{1000000, 1000, 0, 1100000, 1100000},     // More deletes: 1.1x
-		{1000000, 500, 500, 1100000, 1300000},    // Equal: could be either
+		{1000000, 0, 1000, 1300000, 1300000},  // More inserts: 1.3x
+		{1000000, 1000, 0, 1100000, 1100000},  // More deletes: 1.1x
+		{1000000, 500, 500, 1100000, 1300000}, // Equal: could be either
 	}
 
 	for _, tt := range tests {
@@ -103,38 +103,39 @@ func TestEstimateBinlogSize(t *testing.T) {
 	}
 }
 
-// TestCollectFixSQLStatistics tests the statistics collection for fix SQL files
+// TestCollectFixSQLStatistics tests the statistics collection for fix SQL files.
 func TestCollectFixSQLStatistics(t *testing.T) {
-	// Use the actual fixsql directory
-	fixsqlDir := "/home/yejr/gitee/gt-checksum/fixsql"
+	fixsqlDir := t.TempDir()
+	files := map[string]string{
+		"table.db.t1.sql":          "INSERT INTO `db`.`t1` VALUES (1),(2);\nUPDATE `db`.`t1` SET c=1 WHERE id=1;\n",
+		"table.db.t1-DELETE-1.sql": "DELETE FROM `db`.`t1` WHERE id=2;\n",
+		"view.db.v1.sql":           "DROP VIEW IF EXISTS `db`.`v1`;\nCREATE VIEW `db`.`v1` AS SELECT 1;\n",
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(fixsqlDir, name), []byte(content), 0600); err != nil {
+			t.Fatalf("write test SQL file %s failed: %v", name, err)
+		}
+	}
 
 	stats, err := collectFixSQLStatistics(fixsqlDir)
 	if err != nil {
 		t.Fatalf("collectFixSQLStatistics failed: %v", err)
 	}
 
-	t.Logf("Total files: %d", stats.TotalFiles)
-	t.Logf("Table files: %d", stats.TableFiles)
-	t.Logf("View files: %d", stats.ViewFiles)
-	t.Logf("ALTER count: %d", stats.AlterCount)
-	t.Logf("DROP count: %d", stats.DropCount)
-	t.Logf("CREATE count: %d", stats.CreateCount)
-
-	// Basic sanity checks
-	if stats.TotalFiles == 0 {
-		t.Skip("No SQL files found in fixsql directory - skipping test")
+	if stats.TotalFiles != 3 {
+		t.Fatalf("TotalFiles = %d, want 3", stats.TotalFiles)
 	}
-
-	// Verify that table + view files don't exceed total files
-	if stats.TableFiles+stats.ViewFiles > stats.TotalFiles {
-		t.Errorf("Table files (%d) + View files (%d) exceeds total files (%d)",
-			stats.TableFiles, stats.ViewFiles, stats.TotalFiles)
+	if stats.TableFiles != 1 || stats.DeleteFiles != 1 || stats.ViewFiles != 1 {
+		t.Fatalf("unexpected file stages: table=%d delete=%d view=%d", stats.TableFiles, stats.DeleteFiles, stats.ViewFiles)
 	}
-
-	// Verify statement counts are non-negative
-	if stats.AlterCount < 0 || stats.DropCount < 0 || stats.CreateCount < 0 {
-		t.Errorf("Statement counts should be non-negative: ALTER=%d, DROP=%d, CREATE=%d",
-			stats.AlterCount, stats.DropCount, stats.CreateCount)
+	if stats.InsertRows != 2 || stats.UpdateRows != 1 || stats.DeleteRows != 1 {
+		t.Fatalf("unexpected row stats: insert=%d update=%d delete=%d", stats.InsertRows, stats.UpdateRows, stats.DeleteRows)
+	}
+	if stats.DropCount != 1 || stats.CreateCount != 1 {
+		t.Fatalf("unexpected object statement counts: drop=%d create=%d", stats.DropCount, stats.CreateCount)
+	}
+	if stats.TableCount != 1 {
+		t.Fatalf("TableCount = %d, want 1", stats.TableCount)
 	}
 }
 
@@ -299,4 +300,3 @@ func TestExtractSchemaAndObject(t *testing.T) {
 		}
 	}
 }
-
