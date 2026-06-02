@@ -17,6 +17,10 @@ func normalizePrivilegeAccessRole(accessRole string) string {
 	return normalizedAccessRole
 }
 
+func formatPrivilegeAccessRoleForLog(accessRole string) string {
+	return fmt.Sprintf("[%s]", normalizePrivilegeAccessRole(accessRole))
+}
+
 func normalizePrivilegeCheckObject(checkObject string) string {
 	normalizedCheckObject := strings.ToLower(strings.TrimSpace(checkObject))
 	switch normalizedCheckObject {
@@ -239,7 +243,8 @@ func (my *QueryTable) routineDefinitionAccessPriCheck(db *sql.DB, checkTableList
 	if err != nil {
 		return nil, err
 	}
-	global.Wlog.Debug(fmt.Sprintf("(%d) [%s] Checking routine definition privileges for %s role on %s version %s, check table list is {%v}", logThreadSeq, Event, normalizePrivilegeAccessRole(accessRole), DBType, version, checkTableList))
+	roleForLog := formatPrivilegeAccessRoleForLog(accessRole)
+	global.Wlog.Debug(fmt.Sprintf("(%d) [%s] Checking routine definition privileges for %s role on %s version %s, check table list is {%v}", logThreadSeq, Event, roleForLog, DBType, version, checkTableList))
 
 	queryGlobalPrivileges := func(privileges []string) ([]map[string]interface{}, error) {
 		query := fmt.Sprintf("SELECT PRIVILEGE_TYPE AS privileges FROM INFORMATION_SCHEMA.USER_PRIVILEGES WHERE PRIVILEGE_TYPE IN('%s') AND GRANTEE=\"%s\";", strings.Join(privileges, "','"), currentUser)
@@ -252,11 +257,11 @@ func (my *QueryTable) routineDefinitionAccessPriCheck(db *sql.DB, checkTableList
 			return nil, err
 		}
 		if mysqlRowsContainPrivilege(globalPrivilegeRows, "SHOW_ROUTINE") || mysqlRowsContainPrivilege(globalPrivilegeRows, "SELECT") {
-			global.Wlog.Debug(fmt.Sprintf("(%d) [%s] Routine definition privilege precheck passed for %s role with SHOW_ROUTINE or global SELECT", logThreadSeq, Event, normalizePrivilegeAccessRole(accessRole)))
+			global.Wlog.Debug(fmt.Sprintf("(%d) [%s] Routine definition privilege precheck passed for %s role with SHOW_ROUTINE or global SELECT", logThreadSeq, Event, roleForLog))
 			return newCheckTableList, nil
 		}
 		grantSQL := mysqlGlobalGrantSQL([]string{"SHOW_ROUTINE"}, currentUser)
-		global.Wlog.Error(fmt.Sprintf("(%d) [%s] The current user connecting to %s DB for %s role lacks routine definition privilege on MySQL %s. MySQL 8.0.20+ requires SHOW_ROUTINE or global SELECT to read routine definitions. Suggested GRANT statement: %s", logThreadSeq, Event, DBType, normalizePrivilegeAccessRole(accessRole), version, grantSQL))
+		global.Wlog.Error(fmt.Sprintf("(%d) [%s] The current user connecting to %s DB for %s role lacks routine definition privilege on MySQL %s. MySQL 8.0.20+ requires SHOW_ROUTINE or global SELECT to read routine definitions. Suggested GRANT statement: %s", logThreadSeq, Event, DBType, roleForLog, version, grantSQL))
 		return map[string]int{}, nil
 	}
 
@@ -265,13 +270,13 @@ func (my *QueryTable) routineDefinitionAccessPriCheck(db *sql.DB, checkTableList
 		return nil, err
 	}
 	if mysqlRowsContainPrivilege(globalSelectRows, "SELECT") {
-		global.Wlog.Debug(fmt.Sprintf("(%d) [%s] Routine definition privilege precheck passed for %s role with global SELECT", logThreadSeq, Event, normalizePrivilegeAccessRole(accessRole)))
+		global.Wlog.Debug(fmt.Sprintf("(%d) [%s] Routine definition privilege precheck passed for %s role with global SELECT", logThreadSeq, Event, roleForLog))
 		return newCheckTableList, nil
 	}
 
 	if mysqlVersionRequiresGlobalSelectForRoutine(version) {
 		grantSQL := mysqlGlobalGrantSQL([]string{"SELECT"}, currentUser)
-		global.Wlog.Error(fmt.Sprintf("(%d) [%s] The current user connecting to %s DB for %s role lacks routine definition privilege on MySQL %s. MySQL 8.0.0-8.0.19 does not support SHOW_ROUTINE and requires global SELECT for routines not defined by the current user. Suggested GRANT statement: %s", logThreadSeq, Event, DBType, normalizePrivilegeAccessRole(accessRole), version, grantSQL))
+		global.Wlog.Error(fmt.Sprintf("(%d) [%s] The current user connecting to %s DB for %s role lacks routine definition privilege on MySQL %s. MySQL 8.0.0-8.0.19 does not support SHOW_ROUTINE and requires global SELECT for routines not defined by the current user. Suggested GRANT statement: %s", logThreadSeq, Event, DBType, roleForLog, version, grantSQL))
 		return map[string]int{}, nil
 	}
 
@@ -281,7 +286,7 @@ func (my *QueryTable) routineDefinitionAccessPriCheck(db *sql.DB, checkTableList
 		return nil, err
 	}
 	if mysqlRowsContainPrivilege(schemaPrivilegeRows, "SELECT") {
-		global.Wlog.Debug(fmt.Sprintf("(%d) [%s] Routine definition privilege precheck passed for %s role with SELECT on mysql.*", logThreadSeq, Event, normalizePrivilegeAccessRole(accessRole)))
+		global.Wlog.Debug(fmt.Sprintf("(%d) [%s] Routine definition privilege precheck passed for %s role with SELECT on mysql.*", logThreadSeq, Event, roleForLog))
 		return newCheckTableList, nil
 	}
 
@@ -291,12 +296,12 @@ func (my *QueryTable) routineDefinitionAccessPriCheck(db *sql.DB, checkTableList
 		return nil, err
 	}
 	if mysqlRowsContainPrivilege(tablePrivilegeRows, "SELECT") {
-		global.Wlog.Debug(fmt.Sprintf("(%d) [%s] Routine definition privilege precheck passed for %s role with SELECT on mysql.proc", logThreadSeq, Event, normalizePrivilegeAccessRole(accessRole)))
+		global.Wlog.Debug(fmt.Sprintf("(%d) [%s] Routine definition privilege precheck passed for %s role with SELECT on mysql.proc", logThreadSeq, Event, roleForLog))
 		return newCheckTableList, nil
 	}
 
 	grantSQL := mysqlTableGrantSQL([]string{"SELECT"}, "mysql.proc", currentUser)
-	global.Wlog.Error(fmt.Sprintf("(%d) [%s] The current user connecting to %s DB for %s role lacks routine definition privilege on MySQL %s. MySQL 5.6/5.7 and MariaDB require being the routine definer or having SELECT on mysql.proc for complete routine definitions. Suggested GRANT statement: %s", logThreadSeq, Event, DBType, normalizePrivilegeAccessRole(accessRole), version, grantSQL))
+	global.Wlog.Error(fmt.Sprintf("(%d) [%s] The current user connecting to %s DB for %s role lacks routine definition privilege on MySQL %s. MySQL 5.6/5.7 and MariaDB require being the routine definer or having SELECT on mysql.proc for complete routine definitions. Suggested GRANT statement: %s", logThreadSeq, Event, DBType, roleForLog, version, grantSQL))
 	return map[string]int{}, nil
 }
 
@@ -373,6 +378,7 @@ func (my *QueryTable) GlobalAccessPri(db *sql.DB, accessRole string, logThreadSe
 		err                  error
 		normalizedAccessRole = normalizePrivilegeAccessRole(accessRole)
 	)
+	roleForLog := formatPrivilegeAccessRoleForLog(normalizedAccessRole)
 	//要确定MySQL的版本，5.7和8.0
 	if version, err = my.DatabaseVersion(db, logThreadSeq); err != nil {
 		return false, err
@@ -381,7 +387,7 @@ func (my *QueryTable) GlobalAccessPri(db *sql.DB, accessRole string, logThreadSe
 		return false, nil
 	}
 	if global.DetectDatabaseFlavor(version) == global.DatabaseFlavorMariaDB {
-		logMsg = fmt.Sprintf("(%d) [%s] Skip global privilege precheck for %s DB %s role version %s; current MariaDB path does not require MySQL-specific global privilege names", logThreadSeq, Event, DBType, normalizedAccessRole, version)
+		logMsg = fmt.Sprintf("(%d) [%s] Skip global privilege precheck for %s DB %s role version %s; current MariaDB path does not require MySQL-specific global privilege names", logThreadSeq, Event, DBType, roleForLog, version)
 		global.Wlog.Info(logMsg)
 		return true, nil
 	}
@@ -394,14 +400,14 @@ func (my *QueryTable) GlobalAccessPri(db *sql.DB, accessRole string, logThreadSe
 	if mysqlRequiresReplicationClientPrivilege(normalizedCheckObject) {
 		globalPri["REPLICATION CLIENT"] = 0
 	} else {
-		logMsg = fmt.Sprintf("(%d) [%s] Skip REPLICATION CLIENT precheck for %s DB %s role checkObject=%s; current path does not read MySQL replication/binlog status", logThreadSeq, Event, DBType, normalizedAccessRole, normalizedCheckObject)
+		logMsg = fmt.Sprintf("(%d) [%s] Skip REPLICATION CLIENT precheck for %s DB %s role checkObject=%s; current path does not read MySQL replication/binlog status", logThreadSeq, Event, DBType, roleForLog, normalizedCheckObject)
 		global.Wlog.Debug(logMsg)
 	}
 
-	logMsg = fmt.Sprintf("(%d) [%s] The permissions that the current %s DB needs to check for %s role is message {%v}, to check it...", logThreadSeq, Event, DBType, normalizedAccessRole, globalPri)
+	logMsg = fmt.Sprintf("(%d) [%s] The permissions that the current %s DB needs to check for %s role is message {%v}, to check it...", logThreadSeq, Event, DBType, roleForLog, globalPri)
 	global.Wlog.Debug(logMsg)
 	if len(globalPri) == 0 {
-		logMsg = fmt.Sprintf("(%d) [%s] No required global privileges for the current %s DB %s role checkObject=%s; skip global privilege precheck", logThreadSeq, Event, DBType, normalizedAccessRole, normalizedCheckObject)
+		logMsg = fmt.Sprintf("(%d) [%s] No required global privileges for the current %s DB %s role checkObject=%s; skip global privilege precheck", logThreadSeq, Event, DBType, roleForLog, normalizedCheckObject)
 		global.Wlog.Debug(logMsg)
 		return true, nil
 	}
@@ -443,13 +449,13 @@ func (my *QueryTable) GlobalAccessPri(db *sql.DB, accessRole string, logThreadSe
 		}
 	}
 	if len(globalPri) == 0 {
-		logMsg = fmt.Sprintf("(%d) [%s] The current global access user with permission to connect to %s DB for %s role is normal and can be verified normally...", logThreadSeq, Event, DBType, normalizedAccessRole)
+		logMsg = fmt.Sprintf("(%d) [%s] The current global access user with permission to connect to %s DB for %s role is normal and can be verified normally...", logThreadSeq, Event, DBType, roleForLog)
 		global.Wlog.Debug(logMsg)
 		return true, nil
 	}
 	missingPrivileges := sortedPrivilegeKeys(globalPri)
 	grantSQL := mysqlGlobalGrantSQL(missingPrivileges, currentUser)
-	logMsg = fmt.Sprintf("(%d) [%s] The current user connecting to %s DB for %s role lacks required global privileges %v. Suggested GRANT statement: %s", logThreadSeq, Event, DBType, normalizedAccessRole, missingPrivileges, grantSQL)
+	logMsg = fmt.Sprintf("(%d) [%s] The current user connecting to %s DB for %s role lacks required global privileges %v. Suggested GRANT statement: %s", logThreadSeq, Event, DBType, roleForLog, missingPrivileges, grantSQL)
 	global.Wlog.Error(logMsg)
 	return false, nil
 	//if _, ok := globalPri["FLUSH_TABLES"]; ok {
@@ -484,6 +490,7 @@ func (my *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, c
 	// 源端只需要读取权限；目标端按 checkObject/datafix 组合检查实际修复路径需要的权限。
 	globalPri = mysqlRequiredTablePrivileges(checkObject, datafix, accessRole)
 	normalizedAccessRole := normalizePrivilegeAccessRole(accessRole)
+	roleForLog := formatPrivilegeAccessRoleForLog(normalizedAccessRole)
 	normalizedCheckObject := normalizePrivilegeCheckObject(checkObject)
 	requiredPrivileges = sortedPrivilegeKeys(globalPri)
 	globalPriS = append(globalPriS, requiredPrivileges...)
@@ -495,13 +502,13 @@ func (my *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, c
 			newCheckTableList[strings.ToUpper(AA)]++
 		}
 	}
-	logMsg = fmt.Sprintf("(%d) [%s] The permissions that the current %s DB needs to check for %s role and checkObject=%s is message {%v}, check table list is {%v}. to check it...", logThreadSeq, Event, DBType, normalizedAccessRole, normalizedCheckObject, globalPri, checkTableList)
+	logMsg = fmt.Sprintf("(%d) [%s] The permissions that the current %s DB needs to check for %s role and checkObject=%s is message {%v}, check table list is {%v}. to check it...", logThreadSeq, Event, DBType, roleForLog, normalizedCheckObject, globalPri, checkTableList)
 	global.Wlog.Debug(logMsg)
 	if normalizedCheckObject == "routine" {
 		return my.routineDefinitionAccessPriCheck(db, checkTableList, newCheckTableList, normalizedAccessRole, logThreadSeq)
 	}
 	if len(requiredPrivileges) == 0 {
-		logMsg = fmt.Sprintf("(%d) [%s] No table-level privileges need to be checked for %s role and checkObject=%s.", logThreadSeq, Event, normalizedAccessRole, normalizedCheckObject)
+		logMsg = fmt.Sprintf("(%d) [%s] No table-level privileges need to be checked for %s role and checkObject=%s.", logThreadSeq, Event, roleForLog, normalizedCheckObject)
 		global.Wlog.Debug(logMsg)
 		return newCheckTableList, nil
 	}
@@ -673,7 +680,7 @@ func (my *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, c
 	}
 	if len(missingByTable) > 0 {
 		missingDetails := mysqlFormatMissingTablePrivilegeDetails(missingByTable, currentUser)
-		logMsg = fmt.Sprintf("(%d) [%s] The current user connecting to %s DB for %s role requires table privileges %v. Missing table privilege details: %s", logThreadSeq, Event, DBType, normalizedAccessRole, requiredPrivileges, strings.Join(missingDetails, " | "))
+		logMsg = fmt.Sprintf("(%d) [%s] The current user connecting to %s DB for %s role requires table privileges %v. Missing table privilege details: %s", logThreadSeq, Event, DBType, roleForLog, requiredPrivileges, strings.Join(missingDetails, " | "))
 		global.Wlog.Error(logMsg)
 	}
 	logMsg = fmt.Sprintf("(%d) [%s] The %s DB table information that needs to be verified to meet the permissions is {%v}, and the information that is not satisfied is {%v}...", logThreadSeq, Event, DBType, combinedPT, combinedAbPT)

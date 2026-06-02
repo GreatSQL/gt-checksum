@@ -19,6 +19,15 @@ func TestPrivGrantsPrecheck_OracleGlobalGrantSQL(t *testing.T) {
 	}
 }
 
+func TestPrivGrantsPrecheck_OracleFormatAccessRoleForLog(t *testing.T) {
+	if got := formatPrivilegeAccessRoleForLog(" Source "); got != "[source]" {
+		t.Fatalf("formatPrivilegeAccessRoleForLog returned %q, want [source]", got)
+	}
+	if got := formatPrivilegeAccessRoleForLog("dest"); got != "[dest]" {
+		t.Fatalf("formatPrivilegeAccessRoleForLog returned %q, want [dest]", got)
+	}
+}
+
 func TestPrivGrantsPrecheck_OracleRequiredTablePrivilegesByCheckObject(t *testing.T) {
 	dataPrivileges, dataAnyPrivileges := oracleRequiredTablePrivileges("data", "table", "dest")
 	wantDataPrivileges := []string{"DELETE", "INSERT", "SELECT"}

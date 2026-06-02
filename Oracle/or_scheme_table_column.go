@@ -41,6 +41,10 @@ func normalizePrivilegeAccessRole(accessRole string) string {
 	return normalizedAccessRole
 }
 
+func formatPrivilegeAccessRoleForLog(accessRole string) string {
+	return fmt.Sprintf("[%s]", normalizePrivilegeAccessRole(accessRole))
+}
+
 func normalizePrivilegeCheckObject(checkObject string) string {
 	normalizedCheckObject := strings.ToLower(strings.TrimSpace(checkObject))
 	switch normalizedCheckObject {
@@ -282,8 +286,9 @@ func (or *QueryTable) GlobalAccessPri(db *sql.DB, accessRole string, logThreadSe
 		globalDynamic        []map[string]interface{}
 		normalizedAccessRole = normalizePrivilegeAccessRole(accessRole)
 	)
+	roleForLog := formatPrivilegeAccessRoleForLog(normalizedAccessRole)
 	globalPri["SELECT ANY DICTIONARY"] = 0
-	vlog = fmt.Sprintf("(%d) [%s] The permissions that the current %s DB needs to check for %s role is message {%v}, to check it...", logThreadSeq, Event, DBType, normalizedAccessRole, globalPri)
+	vlog = fmt.Sprintf("(%d) [%s] The permissions that the current %s DB needs to check for %s role is message {%v}, to check it...", logThreadSeq, Event, DBType, roleForLog, globalPri)
 	global.Wlog.Debug(vlog)
 	//vlog = fmt.Sprintf("(%d) The permissions that the current Oracle DB needs to check is message {%v}, to check it...", logThreadSeq, globalPri)
 	//global.Wlog.Debug(vlog)
@@ -319,7 +324,7 @@ func (or *QueryTable) GlobalAccessPri(db *sql.DB, accessRole string, logThreadSe
 		}
 	}
 	if len(globalPri) == 0 {
-		vlog = fmt.Sprintf("(%d) [%s] The current global access user with permission to connect to %s DB for %s role is normal and can be verified normally...", logThreadSeq, Event, DBType, normalizedAccessRole)
+		vlog = fmt.Sprintf("(%d) [%s] The current global access user with permission to connect to %s DB for %s role is normal and can be verified normally...", logThreadSeq, Event, DBType, roleForLog)
 		global.Wlog.Debug(vlog)
 		return true, nil
 	}
@@ -337,7 +342,7 @@ func (or *QueryTable) GlobalAccessPri(db *sql.DB, accessRole string, logThreadSe
 	}
 	missingPrivileges := sortedPrivilegeKeys(globalPri)
 	grantSQL := oracleGlobalGrantSQL(missingPrivileges, currentUser)
-	vlog = fmt.Sprintf("(%d) [%s] The current user connecting to %s DB for %s role lacks required global privileges %v. Suggested GRANT statement: %s", logThreadSeq, Event, DBType, normalizedAccessRole, missingPrivileges, grantSQL)
+	vlog = fmt.Sprintf("(%d) [%s] The current user connecting to %s DB for %s role lacks required global privileges %v. Suggested GRANT statement: %s", logThreadSeq, Event, DBType, roleForLog, missingPrivileges, grantSQL)
 	global.Wlog.Error(vlog)
 	return false, nil
 }
@@ -386,6 +391,7 @@ func (or *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, c
 	// 源端只需要读取权限；目标端按 checkObject/datafix 组合检查实际修复路径需要的权限。
 	globalPri, globalPriAllTab = oracleRequiredTablePrivileges(checkObject, datafix, accessRole)
 	normalizedAccessRole := normalizePrivilegeAccessRole(accessRole)
+	roleForLog := formatPrivilegeAccessRoleForLog(normalizedAccessRole)
 	normalizedCheckObject := normalizePrivilegeCheckObject(checkObject)
 	for k := range globalPriAllTab {
 		priAllTableS = append(priAllTableS, k)
@@ -399,10 +405,10 @@ func (or *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, c
 			newCheckTableList[strings.ToUpper(AA)]++
 		}
 	}
-	vlog = fmt.Sprintf("(%d) [%s] The permissions that the current %s DB needs to check for %s role and checkObject=%s is message {%v},check table list is {%v}. to check it...", logThreadSeq, Event, DBType, normalizedAccessRole, normalizedCheckObject, globalPri, checkTableList)
+	vlog = fmt.Sprintf("(%d) [%s] The permissions that the current %s DB needs to check for %s role and checkObject=%s is message {%v},check table list is {%v}. to check it...", logThreadSeq, Event, DBType, roleForLog, normalizedCheckObject, globalPri, checkTableList)
 	global.Wlog.Debug(vlog)
 	if len(globalPri) == 0 && len(globalPriAllTab) == 0 {
-		vlog = fmt.Sprintf("(%d) [%s] No table-level privileges need to be checked for %s role and checkObject=%s.", logThreadSeq, Event, normalizedAccessRole, normalizedCheckObject)
+		vlog = fmt.Sprintf("(%d) [%s] No table-level privileges need to be checked for %s role and checkObject=%s.", logThreadSeq, Event, roleForLog, normalizedCheckObject)
 		global.Wlog.Debug(vlog)
 		return newCheckTableList, nil
 	}

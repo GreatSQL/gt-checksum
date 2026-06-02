@@ -30,12 +30,29 @@ func TestPrivGrantsPrecheck_MySQLGlobalGrantSQL(t *testing.T) {
 	}
 }
 
+func TestPrivGrantsPrecheck_MySQLWildcardSchemaGrantSQL(t *testing.T) {
+	grantSQL := mysqlTableGrantSQL([]string{"SELECT"}, "gt_checksum.*", "'yejr'@'%'")
+	wantGrantSQL := "GRANT SELECT ON `gt_checksum`.* TO 'yejr'@'%';"
+	if grantSQL != wantGrantSQL {
+		t.Fatalf("grant SQL = %q, want %q", grantSQL, wantGrantSQL)
+	}
+}
+
 func TestPrivGrantsPrecheck_NormalizeAccessRole(t *testing.T) {
 	if got := normalizePrivilegeAccessRole(" Source "); got != "source" {
 		t.Fatalf("normalizePrivilegeAccessRole returned %q, want source", got)
 	}
 	if got := normalizePrivilegeAccessRole(""); got != "unknown" {
 		t.Fatalf("normalizePrivilegeAccessRole returned %q, want unknown", got)
+	}
+}
+
+func TestPrivGrantsPrecheck_FormatAccessRoleForLog(t *testing.T) {
+	if got := formatPrivilegeAccessRoleForLog(" Dest "); got != "[dest]" {
+		t.Fatalf("formatPrivilegeAccessRoleForLog returned %q, want [dest]", got)
+	}
+	if got := formatPrivilegeAccessRoleForLog("source"); got != "[source]" {
+		t.Fatalf("formatPrivilegeAccessRoleForLog returned %q, want [source]", got)
 	}
 }
 

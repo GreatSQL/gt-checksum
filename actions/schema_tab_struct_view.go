@@ -648,7 +648,7 @@ func (stcls *schemaTable) checkViewStruct(viewEntries []string, logThreadSeq, lo
 				logThreadSeq, destSchema, destViewName))
 			srcCreateSQL, qErr := queryMySQLCreateViewStatement(stcls.sourceDB, sourceSchema, sourceViewName)
 			if qErr != nil {
-				global.Wlog.Error(fmt.Sprintf("(%d) [check_view_struct] SHOW CREATE VIEW %s.%s failed: %v",
+				global.Wlog.Error(fmt.Sprintf("(%d) [check_view_struct] SHOW CREATE VIEW [source] %s.%s failed: %v",
 					logThreadSeq, sourceSchema, sourceViewName, qErr))
 			} else {
 				srcCSClient, srcColConn := queryMySQLViewCharsetMetadata(stcls.sourceDB, sourceSchema, sourceViewName)
@@ -667,13 +667,13 @@ func (stcls *schemaTable) checkViewStruct(viewEntries []string, logThreadSeq, lo
 			// Both exist: compare normalised DDL, then column signatures.
 			srcCreateSQL, qErr := queryMySQLCreateViewStatement(stcls.sourceDB, sourceSchema, sourceViewName)
 			if qErr != nil {
-				global.Wlog.Error(fmt.Sprintf("(%d) [check_view_struct] SHOW CREATE VIEW source %s.%s failed: %v",
+				global.Wlog.Error(fmt.Sprintf("(%d) [check_view_struct] SHOW CREATE VIEW [source] %s.%s failed: %v",
 					logThreadSeq, sourceSchema, sourceViewName, qErr))
 				return qErr
 			}
 			dstCreateSQL, qErr := queryMySQLCreateViewStatement(stcls.destDB, destSchema, destViewName)
 			if qErr != nil {
-				global.Wlog.Error(fmt.Sprintf("(%d) [check_view_struct] SHOW CREATE VIEW dest %s.%s failed: %v",
+				global.Wlog.Error(fmt.Sprintf("(%d) [check_view_struct] SHOW CREATE VIEW [dest] %s.%s failed: %v",
 					logThreadSeq, destSchema, destViewName, qErr))
 				return qErr
 			}
