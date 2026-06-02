@@ -23,6 +23,7 @@ MySQL DBA经常使用 **pt-table-checksum** 和 **pt-table-sync** 进行数据�
 - **[功能优化]** 优化 COLLATE 修复逻辑，当存在 `dTypeMapping` 规则覆盖时自动生成列级 MODIFY COLUMN SQL，而非表级 CONVERT TO SQL。
 - **[性能优化]** 断点续传模式下，行数统计（估算值和精确 COUNT(*)）写入进度文件缓存，续传时直接读取，避免重复扫描大表；源端和目标端行数改为并行查询，减少等待时间。
 - **[性能优化]** 优化数据校验行数统计流程，源端和目标端行数改为并行查询；同时改进无主键表 DELETE 修复逻辑，避免 NULL 值导致的语句生成错误。
+- **[问题修复]** 修复无索引表在 `datafix=table` 下未在线执行 `DELETE`/`INSERT` 的问题，避免再次校验仍持续报差异。
 - **[问题修复]** 修复 `repairDB` 执行 multi-values INSERT 遇到 `Duplicate entry` 时整条语句失败的问题；现在会在内存中拆成单行 INSERT 重试，重复行记录 `[DUPKEY-SPLIT]` 日志并跳过，不改写原 SQL 文件。
 - **[问题修复]** 修复 Oracle NUMBER(19,0) 类型映射精度阈值、tinyint(1) ↔ bit(1) 类型等价映射，以及 MySQL 数值列 INSERT 修复 SQL 字面量输出问题。
 - **[问题修复]** 修复 global.Wlog 空指针检查，避免日志初始化前 panic。

@@ -299,3 +299,23 @@ func TestGetExactRowCount_OracleShowActualRowsOnUsesCountQuery(t *testing.T) {
 		t.Fatalf("exact row count query must not use exec command: %q", state.queries[0])
 	}
 }
+
+func TestNoIndexDatafixTableAppliesRepairBatch(t *testing.T) {
+	tests := []struct {
+		name        string
+		datafixType string
+		want        bool
+	}{
+		{name: "file writes fixsql", datafixType: "file", want: true},
+		{name: "table executes online fix", datafixType: "table", want: true},
+		{name: "disabled skips fix", datafixType: "no", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldApplyNoIndexFixBatch(tt.datafixType); got != tt.want {
+				t.Fatalf("shouldApplyNoIndexFixBatch(%q) = %v, want %v", tt.datafixType, got, tt.want)
+			}
+		})
+	}
+}

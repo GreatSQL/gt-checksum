@@ -392,6 +392,10 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 	return sqlStrExec
 }
 
+func shouldApplyNoIndexFixBatch(datafixType string) bool {
+	return datafixType == "file" || datafixType == "table"
+}
+
 /*
 Perform MD5 verification on different data rows and remove duplicate values
 */
@@ -427,6 +431,16 @@ func (sp *SchedulePlan) FixSqlExec(sqlStrExec <-chan string, logThreadSeq int64)
 		}
 		return nil
 	}
+	applyFixBatch := func(sqls []string) error {
+		switch sp.datafixType {
+		case "file":
+			return writeToFile(sqls)
+		case "table":
+			return ApplyDataFix(sqls, sp.datafixType, nil, sp.ddrive, sp.djdbc, logThreadSeq)
+		default:
+			return nil
+		}
+	}
 	displayTableName := sp.getDisplayTableName()
 	vlog = fmt.Sprintf("(%d) Start to generate delete and insert sql statements for table %s.", logThreadSeq, displayTableName)
 	global.Wlog.Debug(vlog)
@@ -441,11 +455,13 @@ func (sp *SchedulePlan) FixSqlExec(sqlStrExec <-chan string, logThreadSeq int64)
 			if !ok {
 				if len(noIndexD) == 0 {
 					if len(sqlSlice) > 0 {
-						if sp.datafixType == "file" {
-							vlog = fmt.Sprintf("(%d) Opened fix file %s", logThreadSeq, tableFileName)
-							global.Wlog.Debug(vlog)
-							if err := writeToFile(sqlSlice); err != nil {
-								sp.getErr("Failed to write no-index fix SQL", err)
+						if shouldApplyNoIndexFixBatch(sp.datafixType) {
+							if sp.datafixType == "file" {
+								vlog = fmt.Sprintf("(%d) Opened fix file %s", logThreadSeq, tableFileName)
+								global.Wlog.Debug(vlog)
+							}
+							if err := applyFixBatch(sqlSlice); err != nil {
+								sp.getErr("Failed to apply no-index fix SQL", err)
 							}
 						}
 						displayTableName := sp.getDisplayTableName()
@@ -472,11 +488,13 @@ func (sp *SchedulePlan) FixSqlExec(sqlStrExec <-chan string, logThreadSeq int64)
 							<-noIndexD
 						}()
 
-						if sp.datafixType == "file" {
-							vlog = fmt.Sprintf("(%d) Opened fix file %s", logThreadSeq, tableFileName)
-							global.Wlog.Debug(vlog)
-							if err := writeToFile(a); err != nil {
-								sp.getErr("Failed to write no-index fix SQL", err)
+						if shouldApplyNoIndexFixBatch(sp.datafixType) {
+							if sp.datafixType == "file" {
+								vlog = fmt.Sprintf("(%d) Opened fix file %s", logThreadSeq, tableFileName)
+								global.Wlog.Debug(vlog)
+							}
+							if err := applyFixBatch(a); err != nil {
+								sp.getErr("Failed to apply no-index fix SQL", err)
 							}
 						}
 						displayTableName := sp.getDisplayTableName()
