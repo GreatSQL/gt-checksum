@@ -160,3 +160,6 @@ type TableAllColumnInfoS struct {
 
 // ErrNoValidTables 当所有表都被跳过（如源端表不存在）时返回此错误
 var ErrNoValidTables = errors.New("no valid tables to check")
+
+// ErrTargetTablePrivilegeMissing 表示目标端表元数据不可见且缺少必要表权限。
+var ErrTargetTablePrivilegeMissing = errors.New("target table privilege missing")

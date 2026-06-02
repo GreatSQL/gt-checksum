@@ -318,7 +318,11 @@ func main() {
 		//校验表结构
 		tableListColCheck, abnormalTableList, err = schemaTableInstance.TableColumnNameCheck(tableList, 9, 10)
 		if err != nil {
-			fmt.Println("gt-checksum: Table structure verification failed. Check log file or set logLevel=debug for details")
+			if errors.Is(err, global.ErrTargetTablePrivilegeMissing) {
+				fmt.Println(fmt.Sprintf("gt-checksum: Insufficient access permission to target table. Check %s for details or set logLevel=debug", m.SecondaryL.LogV.LogFile))
+			} else {
+				fmt.Println("gt-checksum: Table structure verification failed. Check log file or set logLevel=debug for details")
+			}
 			os.Exit(1)
 		}
 

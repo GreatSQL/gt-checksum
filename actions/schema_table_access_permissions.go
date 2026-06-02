@@ -74,9 +74,37 @@ func accessPriSchemaWildcard(pattern string) (string, bool) {
 	return schema, true
 }
 
+func (stcls *schemaTable) accessPriTablePatterns() string {
+	if strings.TrimSpace(stcls.rawTables) != "" {
+		return stcls.rawTables
+	}
+	return stcls.table
+}
+
+func (stcls *schemaTable) sourceWildcardAccessSchemas() map[string]int {
+	wildcardSchemas := make(map[string]int)
+	for _, tablePattern := range strings.Split(stcls.accessPriTablePatterns(), ",") {
+		tablePattern = strings.TrimSpace(tablePattern)
+		if tablePattern == "" {
+			continue
+		}
+		if strings.Contains(tablePattern, ":") {
+			parts := strings.SplitN(tablePattern, ":", 2)
+			if sourceSchema, ok := accessPriSchemaWildcard(parts[0]); ok {
+				wildcardSchemas[sourceSchema]++
+			}
+			continue
+		}
+		if sourceSchema, ok := accessPriSchemaWildcard(tablePattern); ok {
+			wildcardSchemas[sourceSchema]++
+		}
+	}
+	return wildcardSchemas
+}
+
 func (stcls *schemaTable) destWildcardAccessSchemas() map[string]int {
 	wildcardSchemas := make(map[string]int)
-	for _, tablePattern := range strings.Split(stcls.table, ",") {
+	for _, tablePattern := range strings.Split(stcls.accessPriTablePatterns(), ",") {
 		tablePattern = strings.TrimSpace(tablePattern)
 		if tablePattern == "" {
 			continue
@@ -204,10 +232,14 @@ func (stcls *schemaTable) TableAccessPriCheck(checkTableList []string, logThread
 	vlog = fmt.Sprintf("Processed table list for access checksum: %v", processedTableList)
 	global.Wlog.Debug(vlog)
 
+	sourcePrivilegeCheckList := stcls.compressAccessCheckListForWildcardSchemas(processedTableList, stcls.sourceWildcardAccessSchemas(), false)
+	vlog = fmt.Sprintf("Source table list for permission check: %v", sourcePrivilegeCheckList)
+	global.Wlog.Debug(vlog)
+
 	tc := dbExec.TableColumnNameStruct{Schema: stcls.schema, Table: stcls.table, Drive: stcls.sourceDrive}
 	vlog = fmt.Sprintf("(%d) Obtain the privileges for tables access for srcDB, and check that they are set correctly", logThreadSeq)
 	global.Wlog.Debug(vlog)
-	if StableList, err = tc.Query().TableAccessPriCheck(stcls.sourceDB, processedTableList, stcls.checkRules.CheckObject, stcls.datafix, "source", logThreadSeq2); err != nil {
+	if StableList, err = tc.Query().TableAccessPriCheck(stcls.sourceDB, sourcePrivilegeCheckList, stcls.checkRules.CheckObject, stcls.datafix, "source", logThreadSeq2); err != nil {
 		return nil, nil, err
 	}
 	if len(StableList) == 0 {
@@ -235,10 +267,7 @@ func (stcls *schemaTable) TableAccessPriCheck(checkTableList []string, logThread
 		}
 	}
 
-	destPrivilegeCheckList := destTableList
-	if strings.EqualFold(stcls.datafix, "table") {
-		destPrivilegeCheckList = stcls.compressAccessCheckListForWildcardSchemas(destTableList, stcls.destWildcardAccessSchemas(), true)
-	}
+	destPrivilegeCheckList := stcls.compressAccessCheckListForWildcardSchemas(destTableList, stcls.destWildcardAccessSchemas(), true)
 
 	vlog = fmt.Sprintf("Destination table list for permission check: %v", destPrivilegeCheckList)
 	global.Wlog.Debug(vlog)

@@ -351,6 +351,69 @@ var schemaTableFilterObjectTypeMap = func(tc dbExec.TableColumnNameStruct, db *s
 	return tc.Query().ObjectTypeMap(db, logThreadSeq)
 }
 
+var schemaTableFilterTableAccessPriCheck = func(tc dbExec.TableColumnNameStruct, db *sql.DB, checkTableList []string, checkObject, datafix, accessRole string, logThreadSeq int64) (map[string]int, error) {
+	return tc.Query().TableAccessPriCheck(db, checkTableList, checkObject, datafix, accessRole, logThreadSeq)
+}
+
+func sourceMetadataPrivilegeHintTargets(tableOption string) []string {
+	seen := make(map[string]struct{})
+	targets := make([]string, 0)
+	for _, pattern := range strings.Split(tableOption, ",") {
+		pattern = strings.TrimSpace(pattern)
+		if pattern == "" {
+			continue
+		}
+		if strings.Contains(pattern, ":") {
+			pattern = strings.TrimSpace(strings.SplitN(pattern, ":", 2)[0])
+		}
+		parts := strings.SplitN(pattern, ".", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		schemaName := strings.TrimSpace(parts[0])
+		tableName := strings.TrimSpace(parts[1])
+		if schemaName == "" || tableName == "" || strings.ContainsAny(schemaName, "*%") {
+			continue
+		}
+		if tableName == "*" || strings.Contains(tableName, "%") {
+			tableName = "*"
+		}
+		target := fmt.Sprintf("%s.%s", schemaName, tableName)
+		if _, exists := seen[target]; exists {
+			continue
+		}
+		seen[target] = struct{}{}
+		targets = append(targets, target)
+	}
+	return targets
+}
+
+func mysqlGrantHintQuoteIdentifier(identifier string) string {
+	identifier = strings.TrimSpace(identifier)
+	if identifier == "*" {
+		return "*"
+	}
+	return fmt.Sprintf("`%s`", strings.ReplaceAll(identifier, "`", "``"))
+}
+
+func mysqlSelectGrantHint(target string) string {
+	parts := strings.SplitN(strings.TrimSpace(target), ".", 2)
+	if len(parts) != 2 {
+		return ""
+	}
+	return fmt.Sprintf("GRANT SELECT ON %s.%s TO '<source_user>'@'<host>';", mysqlGrantHintQuoteIdentifier(parts[0]), mysqlGrantHintQuoteIdentifier(parts[1]))
+}
+
+func sourceMetadataPrivilegeGrantHints(targets []string) []string {
+	hints := make([]string, 0, len(targets))
+	for _, target := range targets {
+		if hint := mysqlSelectGrantHint(target); hint != "" {
+			hints = append(hints, hint)
+		}
+	}
+	return hints
+}
+
 // extractCandidateSchemas returns the distinct schema names present in the
 // DatabaseNameList key set (format: "schema/*schema&table*/table").
 // The result is used to constrain the ObjectTypeMap metadata query to only the
@@ -439,7 +502,18 @@ func (stcls *schemaTable) SchemaTableFilter(logThreadSeq1, logThreadSeq2 int64) 
 
 	// 判断源库是否为空
 	if len(dbCheckNameList) == 0 {
-		vlog = fmt.Sprintf("(%d) Databases of srcDSN {%s} is empty, please check if the \"tables\" option is correct", logThreadSeq1, stcls.sourceDrive)
+		privilegeHintTargets := sourceMetadataPrivilegeHintTargets(stcls.table)
+		grantHints := sourceMetadataPrivilegeGrantHints(privilegeHintTargets)
+		if strings.EqualFold(stcls.sourceDrive, "mysql") && len(grantHints) > 0 {
+			vlog = fmt.Sprintf("(%d) Source metadata of srcDSN {%s} is empty for tables={%s}. If these objects exist, the current source user may lack SELECT privilege on the selected schema/table; suggested source GRANT examples: %s", logThreadSeq1, stcls.sourceDrive, stcls.table, strings.Join(grantHints, " "))
+			global.Wlog.Error(vlog)
+			if _, accessErr := schemaTableFilterTableAccessPriCheck(tc, stcls.sourceDB, privilegeHintTargets, stcls.checkRules.CheckObject, stcls.datafix, "source", logThreadSeq2); accessErr != nil {
+				vlog = fmt.Sprintf("(%d) Source table privilege precheck for empty metadata failed (non-fatal): %v", logThreadSeq1, accessErr)
+				global.Wlog.Warn(vlog)
+			}
+			return f, nil
+		}
+		vlog = fmt.Sprintf("(%d) Databases of srcDSN {%s} is empty for tables={%s}. Please check whether the \"tables\" option is correct and whether the current source user has privileges to read the selected objects metadata.", logThreadSeq1, stcls.sourceDrive, stcls.table)
 		global.Wlog.Error(vlog)
 		return f, nil
 	}

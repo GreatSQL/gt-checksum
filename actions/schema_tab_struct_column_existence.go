@@ -38,6 +38,10 @@ ORDER BY cc.position`
 	return cols, nil
 }
 
+var schemaTableColumnExistenceTableAccessPriCheck = func(tc dbExec.TableColumnNameStruct, db *sql.DB, checkTableList []string, checkObject, datafix, accessRole string, logThreadSeq int64) (map[string]int, error) {
+	return tc.Query().TableAccessPriCheck(db, checkTableList, checkObject, datafix, accessRole, logThreadSeq)
+}
+
 func (stcls *schemaTable) resolveTableMapping(item string, logThreadSeq int64, event string) (sourceSchema, sourceTableName, destSchema, destTableName, mappedTableKey string, ok bool) {
 	sourceTable := item
 	destTable := item
@@ -83,6 +87,62 @@ func (stcls *schemaTable) resolveTableMapping(item string, logThreadSeq int64, e
 	return sourceSchema, sourceTableName, destSchema, destTableName, mappedTableKey, true
 }
 
+func (stcls *schemaTable) ensureTargetAccessBeforeMissingTableRepair(destSchema, destTableName, event string, logThreadSeq int64) error {
+	if !strings.EqualFold(stcls.destDrive, "mysql") {
+		return nil
+	}
+
+	targetTableName := fmt.Sprintf("%s.%s", destSchema, destTableName)
+	tc := dbExec.TableColumnNameStruct{
+		Schema:                  destSchema,
+		Table:                   destTableName,
+		Drive:                   stcls.destDrive,
+		Db:                      stcls.destDB,
+		CaseSensitiveObjectName: stcls.caseSensitiveObjectName,
+	}
+	targetPrivilegeCheckList := stcls.compressAccessCheckListForWildcardSchemas([]string{targetTableName}, stcls.destWildcardAccessSchemas(), true)
+	privilegedTables, err := schemaTableColumnExistenceTableAccessPriCheck(tc, stcls.destDB, targetPrivilegeCheckList, stcls.checkRules.CheckObject, stcls.datafix, "dest", logThreadSeq)
+	if err != nil {
+		return err
+	}
+	if stcls.privilegeMapCoversTable(privilegedTables, targetTableName, true) {
+		return nil
+	}
+
+	vlog := fmt.Sprintf("(%d) %s Target table %s is not visible in metadata and target user lacks required privileges for checkObject=%s datafix=%s. Refuse to treat it as missing; please grant target table privileges and retry.", logThreadSeq, event, targetTableName, stcls.checkRules.CheckObject, stcls.datafix)
+	global.Wlog.Error(vlog)
+	return fmt.Errorf("%w: target table %s may exist but is not visible to current user; missing required target privileges", global.ErrTargetTablePrivilegeMissing, targetTableName)
+}
+
+func tableExistenceMismatchReason(sourceTableExists, destTableExists bool) string {
+	if !sourceTableExists && !destTableExists {
+		return "table missing on both source and target"
+	}
+	if !sourceTableExists {
+		return "table missing on source"
+	}
+	if !destTableExists {
+		return "table missing on target"
+	}
+	return "table existence mismatch"
+}
+
+func (stcls *schemaTable) recordDataModeTableExistenceMismatch(sourceSchema, sourceTableName, destSchema, destTableName, event string, sourceTableExists, destTableExists bool, logThreadSeq int64) {
+	diffReason := tableExistenceMismatchReason(sourceTableExists, destTableExists)
+	stcls.appendPod(Pod{
+		Schema:      sourceSchema,
+		Table:       sourceTableName,
+		CheckObject: "data",
+		DIFFS:       "DDL-yes",
+		Datafix:     stcls.datafix,
+		Rows:        diffReason,
+	})
+	global.AddSkippedTableWithDiffs(sourceSchema, sourceTableName, "data", diffReason, global.SkipDiffsDDLYes)
+	tableKey := fmt.Sprintf("%s.%s", destSchema, destTableName)
+	stcls.skipIndexCheckTables = append(stcls.skipIndexCheckTables, tableKey)
+	global.Wlog.Warn(fmt.Sprintf("(%d) %s Skip data check for %s.%s -> %s.%s due to DDL mismatch: %s; run checkObject=struct to verify and repair table structure.", logThreadSeq, event, sourceSchema, sourceTableName, destSchema, destTableName, diffReason))
+}
+
 func (stcls *schemaTable) checkTableExistence(
 	sourceSchema, sourceTableName, destSchema, destTableName, mappedTableKey, event string,
 	logThreadSeq int64,
@@ -102,6 +162,16 @@ func (stcls *schemaTable) checkTableExistence(
 
 	if sourceTableExists && destTableExists {
 		return true, true, false, nil
+	}
+
+	if strings.EqualFold(stcls.checkRules.CheckObject, "data") {
+		if sourceTableExists && !destTableExists {
+			if err = stcls.ensureTargetAccessBeforeMissingTableRepair(destSchema, destTableName, event, logThreadSeq); err != nil {
+				return sourceTableExists, destTableExists, false, err
+			}
+		}
+		stcls.recordDataModeTableExistenceMismatch(sourceSchema, sourceTableName, destSchema, destTableName, event, sourceTableExists, destTableExists, logThreadSeq)
+		return sourceTableExists, destTableExists, true, nil
 	}
 
 	oracleToMySQLDataMode := stcls.sourceDrive == "godror" && stcls.destDrive == "mysql" && stcls.checkRules.CheckObject != "struct"
@@ -160,7 +230,12 @@ func (stcls *schemaTable) checkTableExistence(
 		return false, true, true, nil
 	}
 
-	// sourceTableExists && !destTableExists — 由 P3 分支（handleTargetMissingTable）处理。
+	// sourceTableExists && !destTableExists — 先确认目标端权限，再由 P3 分支（handleTargetMissingTable）处理。
+	if sourceTableExists && !destTableExists {
+		if err = stcls.ensureTargetAccessBeforeMissingTableRepair(destSchema, destTableName, event, logThreadSeq); err != nil {
+			return sourceTableExists, destTableExists, false, err
+		}
+	}
 	return sourceTableExists, destTableExists, false, nil
 }
 
