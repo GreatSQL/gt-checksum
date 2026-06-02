@@ -544,7 +544,9 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 		fmt.Println("gt-checksum: [WARN] The fixFilePerTable option is deprecated. Independent file per object is now the only output mode, and this option will be ignored.")
 	}
 
-	if rc.SecondaryL.RepairV.Datafix == "file" {
+	forceFixFileForNonDataObject := strings.EqualFold(rc.SecondaryL.RepairV.Datafix, "table") && !strings.EqualFold(rc.SecondaryL.RulesV.CheckObject, "data")
+	prepareFixFileDir := strings.EqualFold(rc.SecondaryL.RepairV.Datafix, "file") || forceFixFileForNonDataObject
+	if prepareFixFileDir {
 		fixFileDirValue := getLastConfigValue("fixFileDir")
 		if fixFileDirValue != "" {
 			rc.SecondaryL.RepairV.FixFileDir = fixFileDirValue
@@ -554,27 +556,36 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 			fmt.Printf("Using default value '%s' for option fixFileDir\n", rc.SecondaryL.RepairV.FixFileDir)
 		}
 
-		// 检查目录是否存在
-		if _, err := os.Stat(rc.SecondaryL.RepairV.FixFileDir); err == nil {
-			// 目录已存在，检查是否为空
-			files, err := os.ReadDir(rc.SecondaryL.RepairV.FixFileDir)
-			if err == nil && len(files) > 0 {
-				if rc.SecondaryL.RulesV.Resume == "OFF" {
-					fmt.Printf("Error: Directory '%s' already exists and is not empty\n", rc.SecondaryL.RepairV.FixFileDir)
+		if forceFixFileForNonDataObject {
+			fmt.Printf("gt-checksum: [WARN] checkObject=%s with datafix=table does not directly repair target objects; force exporting fix SQL file to %s for manual review\n", rc.SecondaryL.RulesV.CheckObject, rc.SecondaryL.RepairV.FixFileDir)
+		}
+
+		if strings.EqualFold(rc.SecondaryL.RepairV.Datafix, "file") {
+			// 检查目录是否存在
+			if _, err := os.Stat(rc.SecondaryL.RepairV.FixFileDir); err == nil {
+				// 目录已存在，检查是否为空
+				files, err := os.ReadDir(rc.SecondaryL.RepairV.FixFileDir)
+				if err == nil && len(files) > 0 {
+					if rc.SecondaryL.RulesV.Resume == "OFF" {
+						fmt.Printf("Error: Directory '%s' already exists and is not empty\n", rc.SecondaryL.RepairV.FixFileDir)
+						os.Exit(1)
+					}
+					// resume 模式下允许目录非空，由续传逻辑处理已有文件
+					fmt.Printf("[RESUME] Directory '%s' already exists with %d file(s), will reuse for resume\n", rc.SecondaryL.RepairV.FixFileDir, len(files))
+				}
+			} else if os.IsNotExist(err) {
+				// 目录不存在，创建目录
+				if err := os.MkdirAll(rc.SecondaryL.RepairV.FixFileDir, 0755); err != nil {
+					fmt.Printf("Error: Failed to create directory '%s': %v\n", rc.SecondaryL.RepairV.FixFileDir, err)
 					os.Exit(1)
 				}
-				// resume 模式下允许目录非空，由续传逻辑处理已有文件
-				fmt.Printf("[RESUME] Directory '%s' already exists with %d file(s), will reuse for resume\n", rc.SecondaryL.RepairV.FixFileDir, len(files))
-			}
-		} else if os.IsNotExist(err) {
-			// 目录不存在，创建目录
-			if err := os.MkdirAll(rc.SecondaryL.RepairV.FixFileDir, 0755); err != nil {
-				fmt.Printf("Error: Failed to create directory '%s': %v\n", rc.SecondaryL.RepairV.FixFileDir, err)
+			} else {
+				// 其他错误
+				fmt.Printf("Error: Failed to check directory '%s': %v\n", rc.SecondaryL.RepairV.FixFileDir, err)
 				os.Exit(1)
 			}
-		} else {
-			// 其他错误
-			fmt.Printf("Error: Failed to check directory '%s': %v\n", rc.SecondaryL.RepairV.FixFileDir, err)
+		} else if err := os.MkdirAll(rc.SecondaryL.RepairV.FixFileDir, 0755); err != nil {
+			fmt.Printf("Error: Failed to create directory '%s': %v\n", rc.SecondaryL.RepairV.FixFileDir, err)
 			os.Exit(1)
 		}
 	}

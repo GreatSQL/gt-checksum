@@ -9,6 +9,7 @@ import (
 	"gt-checksum/inputArg"
 	"gt-checksum/schemacompat"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -18,6 +19,8 @@ var (
 	// 用于存储表映射关系
 	TableMappingRelations []string
 )
+
+const defaultFixSQLDir = "fixsql"
 
 var partitionMetadataPattern = regexp.MustCompile(`^NAME=(.*?),ORDINAL=(.*?),METHOD=(.*?),EXPRESSION=(.*?),DESCRIPTION=(.*),ROWS=(.*)$`)
 var partitionDelimiterSpacingPattern = regexp.MustCompile(`\s*([(),])\s*`)
@@ -46,6 +49,7 @@ type schemaTable struct {
 	podsBuffer              []Pod
 	schema                  string
 	table                   string
+	rawTables               string // 原始 tables 参数，避免逐表处理时覆盖 table 后丢失 wildcard 语义
 	destTable               string // 目标表名，可能与源表名不同
 	ignoreSchema            string
 	ignoreTable             string
@@ -327,6 +331,7 @@ func SchemaTableInit(m *inputArg.ConfigParameter) *schemaTable {
 	return &schemaTable{
 		ignoreTable:              m.SecondaryL.SchemaV.IgnoreTables,
 		table:                    m.SecondaryL.SchemaV.Tables,
+		rawTables:                m.SecondaryL.SchemaV.Tables,
 		sourceDrive:              m.SecondaryL.DsnsV.SrcDrive,
 		destDrive:                m.SecondaryL.DsnsV.DestDrive,
 		sourceVersion:            sourceVersion,
@@ -349,6 +354,46 @@ func SchemaTableInit(m *inputArg.ConfigParameter) *schemaTable {
 	}
 }
 
+func (stcls *schemaTable) effectiveFixSQLDatafix(logThreadSeq int64) string {
+	if strings.EqualFold(stcls.datafix, "table") && !strings.EqualFold(stcls.checkRules.CheckObject, "data") {
+		if global.Wlog != nil {
+			global.Wlog.Warn(fmt.Sprintf("(%d) checkObject=%s with datafix=table does not directly repair target objects; force exporting fix SQL file for manual review.", logThreadSeq, stcls.checkRules.CheckObject))
+		}
+		return "file"
+	}
+	return stcls.datafix
+}
+
+func (stcls *schemaTable) effectiveFixFileDir(logThreadSeq int64) string {
+	fixFileDir := strings.TrimSpace(stcls.datafixSql)
+	if fixFileDir != "" {
+		return fixFileDir
+	}
+
+	if global.Wlog != nil {
+		if absDir, err := filepath.Abs(defaultFixSQLDir); err == nil {
+			global.Wlog.Info(fmt.Sprintf("(%d) fixFileDir is not set; using default fix SQL dir: %s", logThreadSeq, absDir))
+		} else {
+			global.Wlog.Info(fmt.Sprintf("(%d) fixFileDir is not set; using default fix SQL dir: %s", logThreadSeq, defaultFixSQLDir))
+		}
+	}
+	return defaultFixSQLDir
+}
+
+func (stcls *schemaTable) objectFixFilePath(objType string, logThreadSeq int64) (string, error) {
+	if objType == "" {
+		objType = "table"
+	}
+	fixFileDir := stcls.effectiveFixFileDir(logThreadSeq)
+	if err := os.MkdirAll(fixFileDir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create fix file directory %s: %v", fixFileDir, err)
+	}
+	return filepath.Join(fixFileDir, fmt.Sprintf("%s.%s.%s.sql",
+		objType,
+		fixFileNameEncode(stcls.schema),
+		fixFileNameEncode(stcls.table))), nil
+}
+
 /*
 writeFixSql 处理修复SQL文件写入逻辑，每对象写入独立文件（type.schema.object.sql）
 */
@@ -360,9 +405,10 @@ func (stcls *schemaTable) writeFixSql(sqls []string, logThreadSeq int64) error {
 	// Merge ALTER TABLE statements for the same table (including non-contiguous ones)
 	// to reduce metadata lock overhead and shorten DDL execution time.
 	sqls = mergeAlterTableStatements(sqls, logThreadSeq)
+	effectiveDatafix := stcls.effectiveFixSQLDatafix(logThreadSeq)
 
-	// 执行模式：直接在目标库执行（用于 comment 修复等场景）
-	if strings.EqualFold(stcls.datafix, "table") {
+	// 执行模式：仅 checkObject=data 允许直接在目标库执行。
+	if strings.EqualFold(effectiveDatafix, "table") {
 		if stcls.destDB == nil {
 			err := fmt.Errorf("destination DB is nil in datafix=table mode")
 			global.Wlog.Error(fmt.Sprintf("(%d) %v", logThreadSeq, err))
@@ -384,17 +430,14 @@ func (stcls *schemaTable) writeFixSql(sqls []string, logThreadSeq int64) error {
 	}
 
 	// 预览模式：仅写入修复文件
-	if !strings.EqualFold(stcls.datafix, "file") {
+	if !strings.EqualFold(effectiveDatafix, "file") {
 		return nil
 	}
 
-	objType := stcls.fixFileObjectType
-	if objType == "" {
-		objType = "table"
+	tableFileName, err := stcls.objectFixFilePath(stcls.fixFileObjectType, logThreadSeq)
+	if err != nil {
+		return err
 	}
-	tableFileName := fmt.Sprintf("%s/%s.%s.%s.sql",
-		stcls.datafixSql, objType,
-		fixFileNameEncode(stcls.schema), fixFileNameEncode(stcls.table))
 	file, err := os.OpenFile(tableFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return fmt.Errorf("failed to open fix file %s: %v", tableFileName, err)
@@ -404,7 +447,7 @@ func (stcls *schemaTable) writeFixSql(sqls []string, logThreadSeq int64) error {
 	vlog := fmt.Sprintf("(%d) Opened object-specific fix file %s", logThreadSeq, tableFileName)
 	global.Wlog.Debug(vlog)
 
-	return mysql.WriteFixIfNeededFile(stcls.datafix, file, sqls, logThreadSeq, stcls.djdbc)
+	return mysql.WriteFixIfNeededFile(effectiveDatafix, file, sqls, logThreadSeq, stcls.djdbc)
 }
 
 /*

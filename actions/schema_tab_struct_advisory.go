@@ -121,24 +121,22 @@ func (stcls *schemaTable) writeAdvisoryFixSql(sqls []string, logThreadSeq int64)
 		return nil
 	}
 
-	if !strings.EqualFold(stcls.datafix, "file") {
+	effectiveDatafix := stcls.effectiveFixSQLDatafix(logThreadSeq)
+	if !strings.EqualFold(effectiveDatafix, "file") {
 		global.Wlog.Warn(fmt.Sprintf("(%d) Constraint repair suggestions were generated but not executed. Use datafix=file to export advisory SQL.", logThreadSeq))
 		return nil
 	}
 
-	objType := stcls.fixFileObjectType
-	if objType == "" {
-		objType = "table"
+	tableFileName, err := stcls.objectFixFilePath(stcls.fixFileObjectType, logThreadSeq)
+	if err != nil {
+		return err
 	}
-	tableFileName := fmt.Sprintf("%s/%s.%s.%s.sql",
-		stcls.datafixSql, objType,
-		fixFileNameEncode(stcls.schema), fixFileNameEncode(stcls.table))
 	file, err := os.OpenFile(tableFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return fmt.Errorf("failed to open advisory fix file %s: %v", tableFileName, err)
 	}
 	defer file.Close()
-	return mysql.WriteFixIfNeededFile(stcls.datafix, file, sqls, logThreadSeq, stcls.djdbc)
+	return mysql.WriteFixIfNeededFile(effectiveDatafix, file, sqls, logThreadSeq, stcls.djdbc)
 }
 
 type alterTableMergeBucket struct {
