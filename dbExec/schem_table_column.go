@@ -17,13 +17,13 @@ type TableColumnNameStruct struct {
 	// CandidateSchemas, when non-empty, is forwarded to the driver's
 	// ObjectTypeMap implementation so it can restrict the metadata query
 	// to only the schemas that are relevant for this run.
-	CandidateSchemas        []string
+	CandidateSchemas []string
 }
 
 type QueryTableColumnNameInterface interface {
 	TableColumnName(db *sql.DB, logThreadSeq int64) ([]map[string]interface{}, error)
-	GlobalAccessPri(db *sql.DB, logThreadSeq int64) (bool, error)
-	TableAccessPriCheck(db *sql.DB, checkTableList []string, datafix string, logThreadSeq int64) (map[string]int, error)
+	GlobalAccessPri(db *sql.DB, accessRole string, logThreadSeq int64) (bool, error)
+	TableAccessPriCheck(db *sql.DB, checkTableList []string, checkObject, datafix, accessRole string, logThreadSeq int64) (map[string]int, error)
 	DatabaseNameList(db *sql.DB, logThreadSeq int64) (map[string]int, error)
 	// ObjectTypeMap returns a mapping from canonical object key
 	// ("schema/*schema&table*/table") to TABLE_TYPE ("BASE TABLE" or "VIEW").

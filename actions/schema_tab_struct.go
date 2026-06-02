@@ -364,7 +364,9 @@ func (stcls *schemaTable) writeFixSql(sqls []string, logThreadSeq int64) error {
 	// 执行模式：直接在目标库执行（用于 comment 修复等场景）
 	if strings.EqualFold(stcls.datafix, "table") {
 		if stcls.destDB == nil {
-			return fmt.Errorf("destination DB is nil in datafix=table mode")
+			err := fmt.Errorf("destination DB is nil in datafix=table mode")
+			global.Wlog.Error(fmt.Sprintf("(%d) %v", logThreadSeq, err))
+			return err
 		}
 		for _, raw := range sqls {
 			stmt := normalizeFixSQLForExec(raw)
@@ -372,7 +374,9 @@ func (stcls *schemaTable) writeFixSql(sqls []string, logThreadSeq int64) error {
 				continue
 			}
 			if _, err := stcls.destDB.Exec(stmt); err != nil {
-				return fmt.Errorf("failed to execute fix SQL in table mode: %v, sql: %s", err, stmt)
+				execErr := fmt.Errorf("failed to execute fix SQL in table mode: %v, sql: %s", err, stmt)
+				global.Wlog.Error(fmt.Sprintf("(%d) %v", logThreadSeq, execErr))
+				return execErr
 			}
 			global.Wlog.Debug(fmt.Sprintf("(%d) Executed fix SQL in table mode: %s", logThreadSeq, stmt))
 		}
@@ -420,4 +424,3 @@ func (stcls *schemaTable) GetDestDB() *sql.DB {
 // generateCreateTableSql 生成创建表的SQL语句，包括表级别的字符集和排序规则
 // rewriteCreateTableTargetIdentifier rewrites the leading CREATE TABLE target
 // only, so mapped-table repairs do not accidentally keep the source table name.
-

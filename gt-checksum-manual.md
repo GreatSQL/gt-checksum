@@ -14,7 +14,7 @@ $ gt-checksum -c ./gc.conf
 
 ## 数据库授权
 
-运行 gt-checksum 工具前，建议创建相应的专属数据库账户，并至少授予以下几个权限。
+运行 gt-checksum 工具前，建议创建相应的专属数据库账户，并至少授予以下几个权限。当前权限预检会按 `checkObject` 和源端/目标端角色区分：`data` 模式源端只检查只读权限，目标端根据 `datafix=table` 检查在线修复权限；`struct` 在线修复会提前检查结构修复权限；MySQL 侧 `routine/trigger` 会按对象定义读取权限进行预检。
   
 - MySQL端
 
@@ -28,22 +28,28 @@ $ gt-checksum -c ./gc.conf
 
   2.全局权限
 
-    如果是MySQL 8.0及以上版本，需授予 `REPLICATION CLIENT`, `SESSION_VARIABLES_ADMIN`, `SHOW_ROUTINE`, `TRIGGER` 权限。如果MySQL 5.7及以下版本，则无需授予 `SESSION_VARIABLES_ADMIN` 权限。
+    如果是 MySQL 8.0 及以上版本，普通数据校验需授予 `SESSION_VARIABLES_ADMIN` 权限；`REPLICATION CLIENT` 仅在启用 binlog/增量读取或需要执行 `SHOW MASTER STATUS` 获取复制状态时才需要。如果 MySQL 5.7 及以下版本，则无需授予 `SESSION_VARIABLES_ADMIN` 权限。`routine` 模式会按版本检查定义可见性：MySQL 8.0.20+ 建议授予 `SHOW_ROUTINE`（全局 `SELECT` 也可覆盖），MySQL 8.0.0-8.0.19 需全局 `SELECT`，MySQL 5.6/5.7 与 MariaDB 可授予 `SELECT ON mysql.proc`；`trigger` 模式需按对象授予 `TRIGGER` 权限。
 
   3.校验数据对象
 
-    a.如果参数设置 `datafix=file`，则只需授予 `SELECT`权限（生成修复SQL文件后，由管理员手动执行完成修复）；
-    b.如果参数设置 `datafix=table`，则需要授予 `ALTER, SELECT、INSERT、DELETE` 权限。
+    a.源端仅需授予 `SELECT` 权限；
+    b.目标端如果参数设置 `datafix=file`，则只需授予 `SELECT` 权限（生成修复SQL文件后，由管理员手动执行完成修复）；
+    c.目标端如果参数设置 `datafix=table`，则需要授予 `SELECT、INSERT、DELETE` 权限；`ALTER` 属于结构修复/DDL 修复权限，不属于 `checkObject=data` 的最小权限集合。
 
-  假设现在要对db1.t1做校验和修复，则可授权如下
+  假设现在要对db1.t1做校验和在线修复，则可授权如下（分别在源端和目标端执行；MySQL 8.0及以上版本才需要 `SESSION_VARIABLES_ADMIN`）：
   ```sql
-  mysql> GRANT REPLICATION CLIENT, SESSION_VARIABLES_ADMIN ON *.* TO 'checksum'@'%';
+  -- 源端
+  mysql> GRANT SESSION_VARIABLES_ADMIN ON *.* TO 'checksum'@'%';
+  mysql> GRANT SELECT ON db1.t1 TO 'checksum'@'%';
+
+  -- 目标端
+  mysql> GRANT SESSION_VARIABLES_ADMIN ON *.* TO 'checksum'@'%';
   mysql> GRANT SELECT, INSERT, DELETE ON db1.t1 TO 'checksum'@'%';
   ```
 
   如果还要让执行校验的账户同时具备修复建表DDL、存储程序、触发器等数据对象的权限，则还需要更多授权（如 `SET_USER_ID,SHOW_ROUTINE,SYSTEM_USER,SYSTEM_VARIABLES_ADMIN` 等），整体授权如下例所示：
   ```sql
-  mysql> GRANT REPLICATION CLIENT,SESSION_VARIABLES_ADMIN,SET_USER_ID,SHOW_ROUTINE,SYSTEM_USER,SYSTEM_VARIABLES_ADMIN ON *.* TO 'checksum'@'%';
+  mysql> GRANT SESSION_VARIABLES_ADMIN,SET_USER_ID,SHOW_ROUTINE,SYSTEM_USER,SYSTEM_VARIABLES_ADMIN ON *.* TO 'checksum'@'%';
   mysql> GRANT SELECT, INSERT, UPDATE, DELETE, ALTER, CREATE ROUTINE, ALTER ROUTINE, TRIGGER ON test.* TO 'checksum'@'%';
   ```
   有时候，在创建Function时，还需要修改`log_bin_trust_function_creators`参数，否则会报错。此时还需要授予`SUPER`权限才行。
@@ -56,8 +62,9 @@ $ gt-checksum -c ./gc.conf
 
   2.校验数据对象
 
-    a.如果参数设置 `datafix=file`，则只需授予 `SELECT ANY TABLE` 权限；
-    b.如果参数设置 `datafix=table`，则需要授予 `SELECT ANY TABLE、INSERT ANY TABLE、DELETE ANY TABLE` 权限。
+    a.源端仅需授予 `SELECT ANY TABLE` 或待检表 `SELECT` 权限；
+    b.目标端如果参数设置 `datafix=file`，则只需授予 `SELECT ANY TABLE` 或待检表 `SELECT` 权限；
+    c.目标端如果参数设置 `datafix=table`，则需要授予 `SELECT ANY TABLE、INSERT ANY TABLE、DELETE ANY TABLE` 权限，或对待检表授予等价的 `SELECT、INSERT、DELETE` 对象权限。
 
 ### checkObject 权限矩阵（MySQL & Oracle）
 
@@ -67,17 +74,17 @@ $ gt-checksum -c ./gc.conf
 
 | checkObject | MySQL 所需权限（名称 / 来源 / 说明） | Oracle 所需权限（名称 / 来源 / 说明） | 版本差异与说明 |
 |---|---|---|---|
-| `data` | 1) `REPLICATION CLIENT`（系统权限，程序启动时检查）<br>2) `SESSION_VARIABLES_ADMIN`（系统权限，程序启动时检查）<br>3) `SELECT`（对象权限，表/库/全局任一层级可覆盖）<br>4) 若 `datafix=table`：`INSERT`、`DELETE`、`ALTER`（对象权限） | 1) `SELECT ANY DICTIONARY`（系统权限，程序启动时检查）<br>2) `SELECT`（对象权限）<br>3) 若 `datafix=table`：`INSERT`、`DELETE`（对象权限）或 `INSERT ANY TABLE`、`DELETE ANY TABLE`（系统权限） | MySQL 5.7 无 `SESSION_VARIABLES_ADMIN`；MySQL 8.0 及以上建议授予。Oracle 12c+ 存在 `READ` 对象权限，但当前实现按 `SELECT` 语义检查。 |
-| `struct` | 程序仍执行全局权限检查；结构比对会读取 `INFORMATION_SCHEMA.COLUMNS`、`INFORMATION_SCHEMA.STATISTICS`、`INFORMATION_SCHEMA.PARTITIONS`、`INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS`等。建议至少具备目标对象与上述元数据表 `SELECT` 权限。**若校验对象中包含视图（VIEW），还需额外授予 `SHOW VIEW` 权限**（MySQL 5.7+），否则 `SHOW CREATE VIEW` 会报 `Error 1142: SHOW VIEW command denied`。 | 程序仍执行全局权限检查；结构比对会读取 `DBA_TAB_COLUMNS`、`DBA_COL_COMMENTS`、`USER_CONSTRAINTS`、`ALL_TABLES`，并调用 `DBMS_METADATA.GET_DDL('TABLE',...)`。建议具备 `SELECT ANY DICTIONARY` 及元数据访问能力。 | 当前实现中，`checkObject=struct` 已合并执行表结构、索引、分区、外键检查；VIEW 专项支持仅限 MySQL→MySQL 场景。 |
-| `routine` | 读取 `INFORMATION_SCHEMA.PARAMETERS`、`INFORMATION_SCHEMA.ROUTINES`。为确保可读取完整定义，建议授予 `SHOW_ROUTINE`（系统权限）或等效的全局读取能力。 | 读取 `ALL_PROCEDURES`，并调用 `DBMS_METADATA.GET_DDL('PROCEDURE'/'FUNCTION',...)`。建议具备 `SELECT ANY DICTIONARY` 与 `DBMS_METADATA` 访问能力。 | MySQL 8.0.20+ 引入 `SHOW_ROUTINE` 权限语义更清晰；低版本通常通过更高权限覆盖。 |
-| `trigger` | 读取 `INFORMATION_SCHEMA.TRIGGERS`，并执行 `SHOW CREATE TRIGGER`。建议授予 `TRIGGER`（对象权限）。 | 读取 `ALL_TRIGGERS`，并调用 `DBMS_METADATA.GET_DDL('TRIGGER',...)`。建议具备 `SELECT ANY DICTIONARY` 与元数据访问能力。 | Oracle 11g/12c/19c/23c 在 `ALL_TRIGGERS` 视图语义上基本一致（返回当前用户可访问对象）。 |
+| `data` | 1) `SESSION_VARIABLES_ADMIN`（MySQL 8.0及以上系统权限，程序启动时检查）<br>2) 源端：`SELECT`（对象权限，表/库/全局任一层级可覆盖）<br>3) 目标端：`SELECT`；若 `datafix=table` 再要求 `INSERT`、`DELETE`（对象权限），不再要求 `ALTER`<br>4) `REPLICATION CLIENT` 仅在启用 binlog/增量读取或需要执行 `SHOW MASTER STATUS` 获取复制状态时条件化检查 | 1) `SELECT ANY DICTIONARY`（系统权限，程序启动时检查）<br>2) 源端：`SELECT` 或 `SELECT ANY TABLE`<br>3) 目标端：`SELECT` 或 `SELECT ANY TABLE`；若 `datafix=table` 再要求 `INSERT`、`DELETE`（对象权限）或 `INSERT ANY TABLE`、`DELETE ANY TABLE`（系统权限） | MySQL 5.7 无 `SESSION_VARIABLES_ADMIN`；普通 `data` 校验不再强制要求 `REPLICATION CLIENT`。Oracle 12c+ 存在 `READ` 对象权限，但当前实现按 `SELECT` 语义检查。 |
+| `struct` | `datafix=file` 时不强制执行表级权限预检；`datafix=table` 在线执行结构修复时，源端需 `SELECT`，目标端需 `SELECT`、`ALTER`（表/库/全局授权均可覆盖）。结构比对会读取 `INFORMATION_SCHEMA.COLUMNS`、`INFORMATION_SCHEMA.STATISTICS`、`INFORMATION_SCHEMA.PARTITIONS`、`INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS` 等。**若校验对象中包含视图（VIEW），还需额外授予 `SHOW VIEW` 权限**（MySQL 5.7+）。 | `datafix=file` 时不强制执行表级权限预检；`datafix=table` 时建议源端具备 `SELECT`/`SELECT ANY TABLE`，目标端具备 `SELECT`、`ALTER` 或 `SELECT ANY TABLE`、`ALTER ANY TABLE`。结构比对会读取 `DBA_TAB_COLUMNS`、`DBA_COL_COMMENTS`、`USER_CONSTRAINTS`、`ALL_TABLES`，并调用 `DBMS_METADATA.GET_DDL('TABLE',...)`。 | 当前实现中，`checkObject=struct` 已合并执行表结构、索引、分区、外键检查；VIEW 专项支持仅限 MySQL→MySQL 场景。 |
+| `routine` | 会预检例程定义可见性：MySQL 8.0.20+ 需 `SHOW_ROUTINE` 或全局 `SELECT`；MySQL 8.0.0-8.0.19 需全局 `SELECT`；MySQL 5.6/5.7 与 MariaDB 需全局 `SELECT`、`SELECT ON mysql.*` 或 `SELECT ON mysql.proc`。通过后读取 `INFORMATION_SCHEMA.PARAMETERS`、`INFORMATION_SCHEMA.ROUTINES`。 | 当前不强制执行表级权限预检；读取 `ALL_PROCEDURES`，并调用 `DBMS_METADATA.GET_DDL('PROCEDURE'/'FUNCTION',...)`。建议具备 `SELECT ANY DICTIONARY` 与 `DBMS_METADATA` 访问能力。 | MySQL 8.0.20+ 引入 `SHOW_ROUTINE` 权限语义更清晰；低版本需用全局或 `mysql.proc` 读取权限覆盖。 |
+| `trigger` | 会预检从 `tables` 参数提取出的 `schema.*` 的 `TRIGGER` 权限；通过后读取 `INFORMATION_SCHEMA.TRIGGERS`，并执行 `SHOW CREATE TRIGGER`。 | 当前不强制执行表级权限预检；读取 `ALL_TRIGGERS`，并调用 `DBMS_METADATA.GET_DDL('TRIGGER',...)`。建议具备 `SELECT ANY DICTIONARY` 与元数据访问能力。 | Oracle 11g/12c/19c/23c 在 `ALL_TRIGGERS` 视图语义上基本一致（返回当前用户可访问对象）。 |
 
 补充说明：
 
-1. 不论 `checkObject` 取值为何，程序启动阶段都会先做全局权限检查。
-2. 表级权限检查（`TableAccessPriCheck`）当前仅在 `checkObject=data` 分支中强制执行。
-3. `checkObject=trigger` 或 `routine` 时，若账号无法读取对应元数据，可能出现“未报错但结果不完整”的情况，建议按上表补齐权限后再执行。
-4. 当源端为 `MariaDB`、目标端为 `MySQL 8.0/8.4` 且 `checkObject=data` 时，当前版本会跳过源端 `MariaDB` 的全局权限预检查，不再要求 `SESSION_VARIABLES_ADMIN` 或 `REPLICATION CLIENT` 形式的 `MySQL` 权限名称；但仍需确保源端表具备 `SELECT` 权限，目标端 `MySQL` 侧继续按数据校验/修复路径检查相应权限。
+1. 全局权限检查仅在 `checkObject=data` 分支中强制执行；`struct/routine/trigger` 会跳过全局权限预检，改由对应对象路径做必要的表级或定义可见性检查。
+2. 表级/对象级权限预检按模式执行：`data` 会区分源端和目标端；`struct` 仅在 `datafix=table` 时检查在线结构修复权限；MySQL `trigger/routine` 会在比较前检查触发器或例程定义读取权限，避免权限不足时误判为空对象。
+3. 缺失权限日志会按源端/目标端分别输出必需权限、缺失权限和建议 GRANT 语句；终端只显示概括性提示时，请打开 debug 日志确认具体缺失项。
+4. 当源端为 `MariaDB`、目标端为 `MySQL 8.0/8.4` 且 `checkObject=data` 时，当前版本会跳过源端 `MariaDB` 的全局权限预检查，不再要求 `SESSION_VARIABLES_ADMIN` 或 `REPLICATION CLIENT` 形式的 `MySQL` 权限名称；源端表级权限只检查 `SELECT`，目标端 `MySQL` 侧继续按数据校验/修复路径检查相应权限。
 
 ## 快速使用案例
 
@@ -827,8 +834,8 @@ gt_phase1_mariadb105 t_mariadb_feature_pack      struct       warn-only  file
 
 1. 源端 `MariaDB`：跳过全局权限预检查，不再要求 `SESSION_VARIABLES_ADMIN`、`REPLICATION CLIENT` 这类 `MySQL` 命名的全局权限；
 2. 目标端为 `MySQL 8.0/8.4`：继续按现有逻辑检查全局权限；目标端为 `MariaDB`：同样跳过全局权限预检查；
-3. 源端与目标端表级权限：`checkObject=data` 仍按既有逻辑检查 `SELECT` 以及 `datafix=table` 时所需的对象权限；`checkObject=struct` 则需确保可读取相关元数据并具备目标端执行 fix SQL 所需的对象级 DDL 权限；
-4. 如果终端提示 `Missing required global privileges`，请优先打开 debug 日志，根据日志中源端/目标端各自的权限检查结果确认具体缺失项，而不要仅凭终端输出中的概括性提示判断。
+3. 源端与目标端表级/对象级权限：`checkObject=data` 会区分角色，源端仅检查 `SELECT`，目标端在 `datafix=table` 时继续检查在线修复所需的对象权限；`checkObject=struct + datafix=table` 会检查源端读取权限和目标端 `ALTER` 等结构修复权限；`routine/trigger` 在 MySQL/MariaDB 侧会按例程或触发器定义读取权限预检；
+4. 如果终端提示 `Missing required global privileges` 或 `Insufficient access permission`，请优先打开 debug 日志，根据日志中源端/目标端各自的权限检查结果确认具体缺失项，而不要仅凭终端输出中的概括性提示判断。
 
 ## 结果文件导出
 

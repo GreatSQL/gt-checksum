@@ -249,6 +249,19 @@ func main() {
 
 	switch m.SecondaryL.RulesV.CheckObject {
 	case "struct":
+		// datafix=table 会直接执行结构修复 DDL，需提前确认目标端具备 ALTER 等必要权限。
+		if strings.EqualFold(m.SecondaryL.RepairV.Datafix, "table") {
+			if tableListPriCheck, _, err = schemaTableInstance.TableAccessPriCheck(tableList, 19, 20); err != nil {
+				global.Wlog.Error(fmt.Sprintf("Table privilege precheck failed for checkObject=struct and datafix=table: %v", err))
+				fmt.Println(fmt.Sprintf("gt-checksum: Failed to obtain access permission for table. Check %s for details or set logLevel=debug", m.SecondaryL.LogV.LogFile))
+				os.Exit(1)
+			} else if len(tableListPriCheck) == 0 {
+				fmt.Println(fmt.Sprintf("gt-checksum: Insufficient access permission to the table. Check %s for details or set logLevel=debug", m.SecondaryL.LogV.LogFile))
+				os.Exit(1)
+			}
+			tableList = tableListPriCheck
+		}
+
 		// 当checkObject=struct时，执行所有结构相关的检查（包括表结构、索引、分区和外键）
 		checksumStart := time.Now()
 		if err = schemaTableInstance.Struct(tableList, 5, 6); err != nil {
@@ -256,15 +269,42 @@ func main() {
 				fmt.Println("gt-checksum: No tables to check. Check ./gt-checksum.log for details or set logLevel=debug")
 				os.Exit(1)
 			}
+			global.Wlog.Error(fmt.Sprintf("Table structure verification failed: %v", err))
 			fmt.Println(fmt.Sprintf("gt-checksum: Table structure verification failed. Check %s for details or set logLevel=debug", m.SecondaryL.LogV.LogFile))
 			os.Exit(1)
 		}
 		checksumTime = time.Since(checksumStart)
 	case "trigger":
+		// Trigger metadata in INFORMATION_SCHEMA.TRIGGERS is privilege-scoped.
+		// Precheck TRIGGER on the selected schema(s) before comparing to avoid
+		// silently treating inaccessible triggers as an empty result set.
+		if tableListPriCheck, _, err = schemaTableInstance.TableAccessPriCheck(tableList, 19, 20); err != nil {
+			global.Wlog.Error(fmt.Sprintf("Trigger privilege precheck failed: %v", err))
+			fmt.Println(fmt.Sprintf("gt-checksum: Failed to obtain access permission for trigger. Check %s for details or set logLevel=debug", m.SecondaryL.LogV.LogFile))
+			os.Exit(1)
+		} else if len(tableListPriCheck) == 0 {
+			fmt.Println(fmt.Sprintf("gt-checksum: Insufficient access permission to trigger. Check %s for details or set logLevel=debug", m.SecondaryL.LogV.LogFile))
+			os.Exit(1)
+		}
+		tableList = tableListPriCheck
+
 		checksumStart := time.Now()
 		schemaTableInstance.Trigger(tableList, 11, 12)
 		checksumTime = time.Since(checksumStart)
 	case "routine":
+		// Routine metadata in INFORMATION_SCHEMA.ROUTINES/PARAMETERS is privilege-scoped.
+		// Precheck EXECUTE on the selected schema(s) before comparing to avoid
+		// silently treating inaccessible routines as an empty result set.
+		if tableListPriCheck, _, err = schemaTableInstance.TableAccessPriCheck(tableList, 19, 20); err != nil {
+			global.Wlog.Error(fmt.Sprintf("Routine privilege precheck failed: %v", err))
+			fmt.Println(fmt.Sprintf("gt-checksum: Failed to obtain access permission for routine. Check %s for details or set logLevel=debug", m.SecondaryL.LogV.LogFile))
+			os.Exit(1)
+		} else if len(tableListPriCheck) == 0 {
+			fmt.Println(fmt.Sprintf("gt-checksum: Insufficient access permission to routine. Check %s for details or set logLevel=debug", m.SecondaryL.LogV.LogFile))
+			os.Exit(1)
+		}
+		tableList = tableListPriCheck
+
 		// 当checkObject=routine时，统一入口调用 Routine，同时检查存储过程和函数
 		fmt.Println("gt-checksum: Checking stored procedures and functions (routine mode)")
 		checksumStart := time.Now()

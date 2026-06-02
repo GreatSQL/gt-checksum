@@ -21,7 +21,7 @@ func (stcls *schemaTable) GlobalAccessPriCheck(logThreadSeq, logThreadSeq2 int64
 	tc := dbExec.TableColumnNameStruct{Schema: stcls.schema, Table: stcls.table, Drive: stcls.sourceDrive, Datafix: stcls.datafix}
 	vlog = fmt.Sprintf("(%d) Obtain the global privileges for srcDB, and check that they are set correctly", logThreadSeq)
 	global.Wlog.Debug(vlog)
-	if StableList, err = tc.Query().GlobalAccessPri(stcls.sourceDB, logThreadSeq2); err != nil {
+	if StableList, err = tc.Query().GlobalAccessPri(stcls.sourceDB, "source", logThreadSeq2); err != nil {
 		return false
 	}
 	vlog = fmt.Sprintf("(%d) Source database global privileges checksum result: %v", logThreadSeq, StableList)
@@ -30,7 +30,7 @@ func (stcls *schemaTable) GlobalAccessPriCheck(logThreadSeq, logThreadSeq2 int64
 	vlog = fmt.Sprintf("(%d) Obtain the global privileges for dstDB, and check that they are set correctly", logThreadSeq)
 	global.Wlog.Debug(vlog)
 
-	if DtableList, err = tc.Query().GlobalAccessPri(stcls.destDB, logThreadSeq2); err != nil {
+	if DtableList, err = tc.Query().GlobalAccessPri(stcls.destDB, "dest", logThreadSeq2); err != nil {
 		return false
 	}
 	vlog = fmt.Sprintf("(%d) Target database global privileges checksum result: %v", logThreadSeq, DtableList)
@@ -44,6 +44,132 @@ func (stcls *schemaTable) GlobalAccessPriCheck(logThreadSeq, logThreadSeq2 int64
 	global.Wlog.Error(vlog)
 	return false
 }
+
+func accessPriSplitMappedTableEntry(tableEntry string) (string, string) {
+	tableEntry = strings.TrimSpace(tableEntry)
+	parts := strings.SplitN(tableEntry, ":", 2)
+	if len(parts) == 2 {
+		return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+	}
+	return tableEntry, tableEntry
+}
+
+func accessPriSplitSchemaTable(tableName string) (string, string, bool) {
+	parts := strings.SplitN(strings.TrimSpace(tableName), ".", 2)
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+		return "", "", false
+	}
+	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), true
+}
+
+func accessPriSchemaWildcard(pattern string) (string, bool) {
+	pattern = strings.TrimSpace(pattern)
+	if !strings.HasSuffix(pattern, ".*") {
+		return "", false
+	}
+	schema := strings.TrimSpace(strings.TrimSuffix(pattern, ".*"))
+	if schema == "" || strings.ContainsAny(schema, "*%") {
+		return "", false
+	}
+	return schema, true
+}
+
+func (stcls *schemaTable) destWildcardAccessSchemas() map[string]int {
+	wildcardSchemas := make(map[string]int)
+	for _, tablePattern := range strings.Split(stcls.table, ",") {
+		tablePattern = strings.TrimSpace(tablePattern)
+		if tablePattern == "" {
+			continue
+		}
+		if strings.Contains(tablePattern, ":") {
+			parts := strings.SplitN(tablePattern, ":", 2)
+			if destSchema, ok := accessPriSchemaWildcard(parts[1]); ok {
+				wildcardSchemas[destSchema]++
+			}
+			continue
+		}
+		if destSchema, ok := accessPriSchemaWildcard(tablePattern); ok {
+			wildcardSchemas[destSchema]++
+		}
+	}
+	return wildcardSchemas
+}
+
+func (stcls *schemaTable) accessPriSchemaSelected(schemaSet map[string]int, schema string, dest bool) bool {
+	for selectedSchema := range schemaSet {
+		if dest {
+			if stcls.destObjectNameEqual(selectedSchema, schema) {
+				return true
+			}
+			continue
+		}
+		if stcls.sourceObjectNameEqual(selectedSchema, schema) {
+			return true
+		}
+	}
+	return false
+}
+
+func (stcls *schemaTable) accessPriTableNameEqual(a, b string, dest bool) bool {
+	aSchema, aTable, aOK := accessPriSplitSchemaTable(a)
+	bSchema, bTable, bOK := accessPriSplitSchemaTable(b)
+	if aOK && bOK {
+		if dest {
+			return stcls.destObjectNameEqual(aSchema, bSchema) && stcls.destObjectNameEqual(aTable, bTable)
+		}
+		return stcls.sourceObjectNameEqual(aSchema, bSchema) && stcls.sourceObjectNameEqual(aTable, bTable)
+	}
+	if dest {
+		return stcls.destObjectNameEqual(a, b)
+	}
+	return stcls.sourceObjectNameEqual(a, b)
+}
+
+func (stcls *schemaTable) appendAccessPriTableOnce(tableList []string, tableName string, dest bool) []string {
+	for _, existing := range tableList {
+		if stcls.accessPriTableNameEqual(existing, tableName, dest) {
+			return tableList
+		}
+	}
+	return append(tableList, tableName)
+}
+
+func (stcls *schemaTable) compressAccessCheckListForWildcardSchemas(tableList []string, wildcardSchemas map[string]int, dest bool) []string {
+	if len(wildcardSchemas) == 0 {
+		return tableList
+	}
+	compressedTableList := make([]string, 0, len(tableList))
+	for _, tableName := range tableList {
+		schemaName, _, ok := accessPriSplitSchemaTable(tableName)
+		if ok && stcls.accessPriSchemaSelected(wildcardSchemas, schemaName, dest) {
+			compressedTableList = stcls.appendAccessPriTableOnce(compressedTableList, fmt.Sprintf("%s.*", schemaName), dest)
+			continue
+		}
+		compressedTableList = stcls.appendAccessPriTableOnce(compressedTableList, tableName, dest)
+	}
+	return compressedTableList
+}
+
+func (stcls *schemaTable) privilegeMapCoversTable(privilegeMap map[string]int, tableName string, dest bool) bool {
+	if len(privilegeMap) == 0 {
+		return false
+	}
+	schemaName, _, hasSchema := accessPriSplitSchemaTable(tableName)
+	wildcardTableName := ""
+	if hasSchema {
+		wildcardTableName = fmt.Sprintf("%s.*", schemaName)
+	}
+	for grantedTable := range privilegeMap {
+		if stcls.accessPriTableNameEqual(grantedTable, tableName, dest) {
+			return true
+		}
+		if wildcardTableName != "" && stcls.accessPriTableNameEqual(grantedTable, wildcardTableName, dest) {
+			return true
+		}
+	}
+	return false
+}
+
 func (stcls *schemaTable) TableAccessPriCheck(checkTableList []string, logThreadSeq, logThreadSeq2 int64) ([]string, []string, error) {
 	var (
 		vlog                                 string
@@ -81,11 +207,11 @@ func (stcls *schemaTable) TableAccessPriCheck(checkTableList []string, logThread
 	tc := dbExec.TableColumnNameStruct{Schema: stcls.schema, Table: stcls.table, Drive: stcls.sourceDrive}
 	vlog = fmt.Sprintf("(%d) Obtain the privileges for tables access for srcDB, and check that they are set correctly", logThreadSeq)
 	global.Wlog.Debug(vlog)
-	if StableList, err = tc.Query().TableAccessPriCheck(stcls.sourceDB, processedTableList, stcls.datafix, logThreadSeq2); err != nil {
+	if StableList, err = tc.Query().TableAccessPriCheck(stcls.sourceDB, processedTableList, stcls.checkRules.CheckObject, stcls.datafix, "source", logThreadSeq2); err != nil {
 		return nil, nil, err
 	}
 	if len(StableList) == 0 {
-		vlog = fmt.Sprintf("(%d) The privileges for tables access for srcDB check failed: {%v}.", logThreadSeq, StableList)
+		vlog = fmt.Sprintf("(%d) The privileges for tables access for srcDB check failed: {%v}. See Q_Table_Access_Pri logs above for required privileges, missing privileges and suggested GRANT statements.", logThreadSeq, StableList)
 		global.Wlog.Error(vlog)
 	} else {
 		vlog = fmt.Sprintf("(%d) Source database table access checksum completed: %v", logThreadSeq, StableList)
@@ -109,17 +235,22 @@ func (stcls *schemaTable) TableAccessPriCheck(checkTableList []string, logThread
 		}
 	}
 
-	vlog = fmt.Sprintf("Destination table list for permission check: %v", destTableList)
+	destPrivilegeCheckList := destTableList
+	if strings.EqualFold(stcls.datafix, "table") {
+		destPrivilegeCheckList = stcls.compressAccessCheckListForWildcardSchemas(destTableList, stcls.destWildcardAccessSchemas(), true)
+	}
+
+	vlog = fmt.Sprintf("Destination table list for permission check: %v", destPrivilegeCheckList)
 	global.Wlog.Debug(vlog)
 
 	tc.Drive = stcls.destDrive
 	vlog = fmt.Sprintf("(%d) Obtain the privileges for tables access for dstDB, and check that they are set correctly", logThreadSeq)
 	global.Wlog.Debug(vlog)
-	if DtableList, err = tc.Query().TableAccessPriCheck(stcls.destDB, destTableList, stcls.datafix, logThreadSeq2); err != nil {
+	if DtableList, err = tc.Query().TableAccessPriCheck(stcls.destDB, destPrivilegeCheckList, stcls.checkRules.CheckObject, stcls.datafix, "dest", logThreadSeq2); err != nil {
 		return nil, nil, err
 	}
 	if len(DtableList) == 0 {
-		vlog = fmt.Sprintf("(%d) The privileges for tables access for dstDB check failed: {%v}.", logThreadSeq, DtableList)
+		vlog = fmt.Sprintf("(%d) The privileges for tables access for dstDB check failed: {%v}. See Q_Table_Access_Pri logs above for required privileges, missing privileges and suggested GRANT statements.", logThreadSeq, DtableList)
 		global.Wlog.Error(vlog)
 	} else {
 		vlog = fmt.Sprintf("(%d) Target database table access checksum completed: %v", logThreadSeq, DtableList)
@@ -129,38 +260,18 @@ func (stcls *schemaTable) TableAccessPriCheck(checkTableList []string, logThread
 	vlog = fmt.Sprintf("(%d) Start checking the differences between the tables in srcDB and dstDB", logThreadSeq)
 	global.Wlog.Debug(vlog)
 
-	// 创建映射关系表，用于将源表名映射到目标表名
-	tableMapping := make(map[string]string)
+	// 按原始候选表顺序检查权限并保持映射关系，避免 map 遍历导致顺序不稳定。
 	for _, tableEntry := range checkTableList {
-		if strings.Contains(tableEntry, ":") {
-			parts := strings.Split(tableEntry, ":")
-			if len(parts) == 2 {
-				tableMapping[parts[0]] = parts[1]
-			}
+		sourceTableName, destTableName := accessPriSplitMappedTableEntry(tableEntry)
+		if !stcls.privilegeMapCoversTable(StableList, sourceTableName, false) {
+			abnormalTableList = append(abnormalTableList, sourceTableName)
+			continue
 		}
-	}
-
-	// 检查权限并保持映射关系
-	for k, _ := range StableList {
-		// 查找对应的目标表名
-		destTableName := k
-		if mappedName, exists := tableMapping[k]; exists {
-			destTableName = mappedName
+		if !stcls.privilegeMapCoversTable(DtableList, destTableName, true) {
+			abnormalTableList = append(abnormalTableList, destTableName)
+			continue
 		}
-
-		if _, ok := DtableList[destTableName]; ok {
-			// 保持原始的映射关系
-			originalEntry := k
-			for _, entry := range checkTableList {
-				if strings.HasPrefix(entry, k+":") || entry == k {
-					originalEntry = entry
-					break
-				}
-			}
-			newCheckTableList = append(newCheckTableList, originalEntry)
-		} else {
-			abnormalTableList = append(abnormalTableList, k)
-		}
+		newCheckTableList = append(newCheckTableList, tableEntry)
 	}
 
 	vlog = fmt.Sprintf("(%d) Table access checksum completed - Consistent tables: %d (%s), Inconsistent tables: %d (%s)", logThreadSeq, len(newCheckTableList), newCheckTableList, len(abnormalTableList), abnormalTableList)

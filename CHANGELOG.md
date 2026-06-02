@@ -16,6 +16,12 @@
 - [功能优化]: 优化 utf8mb4 默认 collation 漂移检测（如 `utf8mb4_general_ci` ↔ `utf8mb4_0900_ai_ci`），返回 `WarnOnly` 以简化修复 SQL，仅生成一条表级 `CONVERT TO` 语句。
 - [功能优化]: 优化 `isCollationOnlyModifyColumn` 函数，剥离 `AFTER/FIRST` 子句后再判断是否仅修改 COLLATE，避免列顺序调整被误判为实质性属性变更。
 - [功能优化]: 优化源端表存在性检查，在表映射时验证源端表是否存在，避免映射不存在的表导致后续校验失败。
+- [功能优化]: 优化权限预检流程，按 `checkObject` 与源端/目标端角色检查实际需要的权限；`struct + datafix=table` 会提前校验结构修复权限，`trigger/routine` 会校验对象定义读取权限，避免权限不足时继续执行或误判为空对象。
+- [功能优化]: 优化 MySQL `routine` 权限预检，按 MySQL 8.0.20+ `SHOW_ROUTINE`、8.0.0-8.0.19 全局 `SELECT`、MySQL 5.6/5.7 与 MariaDB `mysql.proc` 读取路径分别给出授权建议。
+- [功能优化]: 优化 `checkObject=data` 表级权限预检，区分源端和目标端角色；源端仅检查只读权限，目标端在 `datafix=table` 时继续检查在线修复所需的写权限。
+- [功能优化]: 优化 MySQL 全局权限预检，普通 `checkObject=data` 数据校验不再强制要求未实际使用的 `REPLICATION CLIENT` 权限，仅在 binlog/增量读取等需要复制状态的路径中条件化检查。
+- [问题修复]: 修复 `checkObject=data` 且 `datafix=table` 时 MySQL 目标端表级权限预检误要求 `ALTER` 的问题；现在 data 模式仅检查 `SELECT/INSERT/DELETE`，`ALTER` 归属 `struct`/DDL 修复权限集合。
+- [问题修复]: 优化全局/表级权限预检缺失权限日志，按源端/目标端分别输出必需权限、缺失权限和可执行 GRANT 授权语句，避免 MySQL 5.6→8.0 等场景下排障信息混淆。
 - [功能优化]: 优化无主键表的 `DELETE` 修复逻辑，移除目标端 `COUNT` 查询，统一使用 `LIMIT 1` 简化语句生成，避免因 `NULL` 值导致的 `LIMIT` 计算错误。
 - [功能优化]: 新增 `mergeDuplicateDeleteLimits` 函数，合并相同 `WHERE` 条件的多条 `DELETE LIMIT` 语句，将重复语句的 `LIMIT` 值累加为一条，减少回滚SQL文件数量。
 - [功能优化]: refactor(repairDB): 拆分 `main.go` 为多文件模块化结构（`config/executor/lock/plan/sql_parser/stage/stats/types`）。
@@ -28,6 +34,7 @@
 - [问题修复]: 修复 MySQL 数值列生成 INSERT 修复 SQL 时被写成字符串字面量的问题，BIGINT/DECIMAL/DOUBLE 等列会按合法数值字面量输出。
 - [问题修复]: 修复 `global.Wlog` 空指针检查，避免日志初始化前调用 `Debug/Warn` 等方法导致 panic。
 - [问题修复]: 修复 Oracle `NUMBER(19,0)` 类型映射精度阈值（从 18 调整为 19），并新增 `tinyint(1)` ↔ `bit(1)` 类型等价映射。
+- [测试完善]: 新增 MySQL/Oracle 权限预检回归测试，覆盖源/目标角色、`data/struct/routine/trigger` 模式、通配符映射、版本化例程权限和 GRANT 建议输出。
 - [测试完善]: 新增 repairDB duplicate key 拆分重试回归测试，覆盖 multi-values INSERT 部分重复、非重复错误中断、行号定位和复杂 values 拆分场景。
 - [测试完善]: 新增 repairDB 中断处理回归测试，覆盖停止调度新文件、重复中断信号以及已开始 SQL 文件不被取消等场景。
 - [测试完善]: 新增断点续传 `completed_chunks` 与 `checking_chunks` 区分回归测试，覆盖续跑时仅跳过已安全写完 fixsql 的数据块。

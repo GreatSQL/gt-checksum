@@ -33,6 +33,76 @@ var (
 	strsql string
 )
 
+func normalizePrivilegeAccessRole(accessRole string) string {
+	normalizedAccessRole := strings.ToLower(strings.TrimSpace(accessRole))
+	if normalizedAccessRole == "" {
+		return "unknown"
+	}
+	return normalizedAccessRole
+}
+
+func normalizePrivilegeCheckObject(checkObject string) string {
+	normalizedCheckObject := strings.ToLower(strings.TrimSpace(checkObject))
+	switch normalizedCheckObject {
+	case "":
+		return "data"
+	case "proc", "procedure", "func", "function":
+		return "routine"
+	default:
+		return normalizedCheckObject
+	}
+}
+
+func sortedPrivilegeKeys(privileges map[string]int) []string {
+	privilegeKeys := make([]string, 0, len(privileges))
+	for privilege := range privileges {
+		privilegeKeys = append(privilegeKeys, privilege)
+	}
+	sort.Strings(privilegeKeys)
+	return privilegeKeys
+}
+
+func oracleGlobalGrantSQL(privileges []string, currentUser string) string {
+	if len(privileges) == 0 {
+		return ""
+	}
+	if currentUser == "" {
+		currentUser = "<USER>"
+	}
+	return fmt.Sprintf("GRANT %s TO %s;", strings.Join(privileges, ", "), currentUser)
+}
+
+func oracleRequiredTablePrivileges(checkObject, datafix, accessRole string) (map[string]int, map[string]int) {
+	requiredPrivileges := make(map[string]int)
+	requiredAnyPrivileges := make(map[string]int)
+	normalizedCheckObject := normalizePrivilegeCheckObject(checkObject)
+	normalizedAccessRole := normalizePrivilegeAccessRole(accessRole)
+	isDestTableFix := strings.ToUpper(strings.TrimSpace(datafix)) == "TABLE" && normalizedAccessRole != "source" && normalizedAccessRole != "src"
+	addPrivilege := func(objectPrivilege, anyPrivilege string) {
+		requiredPrivileges[objectPrivilege] = 0
+		requiredAnyPrivileges[anyPrivilege] = 0
+	}
+
+	switch normalizedCheckObject {
+	case "data":
+		addPrivilege("SELECT", "SELECT ANY TABLE")
+		if isDestTableFix {
+			addPrivilege("INSERT", "INSERT ANY TABLE")
+			addPrivilege("DELETE", "DELETE ANY TABLE")
+		}
+	case "struct":
+		addPrivilege("SELECT", "SELECT ANY TABLE")
+		if isDestTableFix {
+			addPrivilege("ALTER", "ALTER ANY TABLE")
+		}
+	case "routine", "trigger":
+		// routine/trigger 主要依赖数据字典与对象定义读取权限，不在表级权限预检中强制判断。
+	default:
+		addPrivilege("SELECT", "SELECT ANY TABLE")
+	}
+	return requiredPrivileges, requiredAnyPrivileges
+}
+
 /*
 Oracle 获取对应的库表信息，排除'SYS','OUTLN','SYSTEM','DBSNMP','APPQOSSYS','WMSYS','EXFSYS','CTXSYS','XDB','ORDDATA','ORDSYS','MDSYS','OLAPSYS','SYSMAN','FLOWS_FILES','APEX_030200','OWBSYS','SCOTT','HR','OE','SH','IX','PM'
 */
@@ -205,15 +275,16 @@ func (or *QueryTable) TableComment(db *sql.DB, logThreadSeq int64) (string, erro
 /*
 Oracle 查看当前用户是否有全局变量
 */
-func (or *QueryTable) GlobalAccessPri(db *sql.DB, logThreadSeq int64) (bool, error) {
+func (or *QueryTable) GlobalAccessPri(db *sql.DB, accessRole string, logThreadSeq int64) (bool, error) {
 	var (
-		globalPri     = make(map[string]int)
-		Event         = "Q_Table_Global_Access_Pri"
-		globalDynamic []map[string]interface{}
+		globalPri            = make(map[string]int)
+		Event                = "Q_Table_Global_Access_Pri"
+		globalDynamic        []map[string]interface{}
+		normalizedAccessRole = normalizePrivilegeAccessRole(accessRole)
 	)
-	vlog = fmt.Sprintf("(%d) [%s] The permissions that the current %s DB needs to check is message {%v}, to check it...", logThreadSeq, Event, DBType, globalPri)
-	global.Wlog.Debug(vlog)
 	globalPri["SELECT ANY DICTIONARY"] = 0
+	vlog = fmt.Sprintf("(%d) [%s] The permissions that the current %s DB needs to check for %s role is message {%v}, to check it...", logThreadSeq, Event, DBType, normalizedAccessRole, globalPri)
+	global.Wlog.Debug(vlog)
 	//vlog = fmt.Sprintf("(%d) The permissions that the current Oracle DB needs to check is message {%v}, to check it...", logThreadSeq, globalPri)
 	//global.Wlog.Debug(vlog)
 
@@ -248,23 +319,33 @@ func (or *QueryTable) GlobalAccessPri(db *sql.DB, logThreadSeq int64) (bool, err
 		}
 	}
 	if len(globalPri) == 0 {
-		vlog = fmt.Sprintf("(%d) [%s] The current global access user with permission to connect to %s DB is normal and can be verified normally...", logThreadSeq, Event, DBType)
+		vlog = fmt.Sprintf("(%d) [%s] The current global access user with permission to connect to %s DB for %s role is normal and can be verified normally...", logThreadSeq, Event, DBType, normalizedAccessRole)
 		global.Wlog.Debug(vlog)
 		return true, nil
 	}
-	if _, ok := globalPri["SELECT ANY DICTIONARY"]; !ok {
-		vlog = fmt.Sprintf("(%d) [%s] The current user connecting to %s DB lacks \"SELECT ANY DICTIONARY\" permission, Please authorize this permission...", logThreadSeq, Event, DBType)
-		global.Wlog.Error(vlog)
-		return false, nil
+	currentUser := ""
+	strsql = "SELECT USER AS \"user\" FROM dual"
+	if dispos.SqlRows, err = dispos.DBSQLforExec(strsql); err != nil {
+		return false, err
 	}
-
-	return true, nil
+	currentUserRows, userErr := dispos.DataRowsAndColumnSliceDispos([]map[string]interface{}{})
+	if userErr != nil {
+		return false, userErr
+	}
+	if len(currentUserRows) > 0 {
+		currentUser = fmt.Sprintf("%s", currentUserRows[0]["user"])
+	}
+	missingPrivileges := sortedPrivilegeKeys(globalPri)
+	grantSQL := oracleGlobalGrantSQL(missingPrivileges, currentUser)
+	vlog = fmt.Sprintf("(%d) [%s] The current user connecting to %s DB for %s role lacks required global privileges %v. Suggested GRANT statement: %s", logThreadSeq, Event, DBType, normalizedAccessRole, missingPrivileges, grantSQL)
+	global.Wlog.Error(vlog)
+	return false, nil
 }
 
 /*
 Oracle 查询用户是否有表的查询权限
 */
-func (or *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, datafix string, logThreadSeq int64) (map[string]int, error) {
+func (or *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, checkObject, datafix, accessRole string, logThreadSeq int64) (map[string]int, error) {
 	var (
 		globalPri, globalPriAllTab = make(map[string]int), make(map[string]int)
 		newCheckTableList          = make(map[string]int)
@@ -302,19 +383,13 @@ func (or *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 		}
 		priAllTableS []string
 	)
-	globalPri["SELECT"] = 0
-	globalPriAllTab["SELECT ANY TABLE"] = 0
-	if strings.ToUpper(datafix) == "TABLE" {
-		globalPri["INSERT"] = 0
-		globalPriAllTab["INSERT ANY TABLE"] = 0
-		globalPri["DELETE"] = 0
-		globalPriAllTab["DELETE ANY TABLE"] = 0
-	}
-	for k, _ := range globalPriAllTab {
+	// 源端只需要读取权限；目标端按 checkObject/datafix 组合检查实际修复路径需要的权限。
+	globalPri, globalPriAllTab = oracleRequiredTablePrivileges(checkObject, datafix, accessRole)
+	normalizedAccessRole := normalizePrivilegeAccessRole(accessRole)
+	normalizedCheckObject := normalizePrivilegeCheckObject(checkObject)
+	for k := range globalPriAllTab {
 		priAllTableS = append(priAllTableS, k)
 	}
-	vlog = fmt.Sprintf("(%d) [%s] The permissions that the current %s DB needs to check is message {%v},check table list is {%v}. to check it...", logThreadSeq, Event, DBType, globalPri, newCheckTableList)
-	global.Wlog.Debug(vlog)
 
 	//针对要校验的库做去重（库级别的）
 	//校验库.表由切片改为map
@@ -323,6 +398,13 @@ func (or *QueryTable) TableAccessPriCheck(db *sql.DB, checkTableList []string, d
 		if or.CaseSensitiveObjectName == "no" {
 			newCheckTableList[strings.ToUpper(AA)]++
 		}
+	}
+	vlog = fmt.Sprintf("(%d) [%s] The permissions that the current %s DB needs to check for %s role and checkObject=%s is message {%v},check table list is {%v}. to check it...", logThreadSeq, Event, DBType, normalizedAccessRole, normalizedCheckObject, globalPri, checkTableList)
+	global.Wlog.Debug(vlog)
+	if len(globalPri) == 0 && len(globalPriAllTab) == 0 {
+		vlog = fmt.Sprintf("(%d) [%s] No table-level privileges need to be checked for %s role and checkObject=%s.", logThreadSeq, Event, normalizedAccessRole, normalizedCheckObject)
+		global.Wlog.Debug(vlog)
+		return newCheckTableList, nil
 	}
 	//vlog = fmt.Sprintf("(%d) The current Oracle DB needs to check the permission table is message {%v}, to check it...", logThreadSeq, newCheckTableList)
 	//global.Wlog.Debug(vlog)
