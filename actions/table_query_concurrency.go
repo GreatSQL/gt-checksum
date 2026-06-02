@@ -25,6 +25,7 @@ type SchedulePlan struct {
 	tableIndexColumnMap      map[string][]string
 	sdbPool, ddbPool         *global.Pool
 	datafixType              string
+	datafixTableStatus       *datafixTableStatus
 	datafixSql               string
 	sdrive, ddrive           string
 	checkObject              string
@@ -86,6 +87,51 @@ type SchedulePlan struct {
 
 	// shutdownCh 用于优雅关闭：收到信号后 flush pending 数据并保存进度。
 	shutdownCh <-chan struct{}
+}
+
+type datafixTableStatus struct {
+	mu     sync.Mutex
+	failed bool
+}
+
+func (sp *SchedulePlan) resetDatafixTableStatus() {
+	sp.datafixTableStatus = &datafixTableStatus{}
+}
+
+func (sp *SchedulePlan) ensureDatafixTableStatus() *datafixTableStatus {
+	if sp.datafixTableStatus == nil {
+		sp.resetDatafixTableStatus()
+	}
+	return sp.datafixTableStatus
+}
+
+func (sp *SchedulePlan) markDatafixTableError(context string, err error) {
+	if err == nil || !strings.EqualFold(strings.TrimSpace(sp.datafixType), "table") {
+		return
+	}
+	status := sp.ensureDatafixTableStatus()
+	status.mu.Lock()
+	status.failed = true
+	status.mu.Unlock()
+	if context == "" {
+		global.Wlog.Error(fmt.Sprintf("datafix=table repair failed: %v", err))
+		return
+	}
+	global.Wlog.Error(fmt.Sprintf("%s: %v", context, err))
+}
+
+func (sp *SchedulePlan) fixedValueForDatafixTable() string {
+	if !strings.EqualFold(strings.TrimSpace(sp.datafixType), "table") {
+		return ""
+	}
+	status := sp.ensureDatafixTableStatus()
+	status.mu.Lock()
+	failed := status.failed
+	status.mu.Unlock()
+	if failed {
+		return "no"
+	}
+	return "yes"
 }
 
 // columnsModeSourceOnlyAdvisory 记录 columns 模式下差异行的统计信息，
@@ -607,6 +653,7 @@ func (sp *SchedulePlan) Schedulingtasks() {
 		}
 		// 为每个表创建独立的SchedulePlan副本，避免并发冲突
 		spCopy := *sp
+		spCopy.resetDatafixTableStatus()
 		// 解析key中的源表和目标表信息
 		// key格式: sourceSchema/*gtchecksumSchemaTable*/sourceTable/*indexColumnType*/indexType/*mapping*/destSchema/*mappingTable*/destTable
 		vlog := fmt.Sprintf("Processing table key: %s", k)

@@ -28,6 +28,7 @@ type ResultRecord struct {
 	Rows        string
 	Diffs       string
 	Datafix     string
+	Fixed       string
 
 	Mapping string
 	Definer string
@@ -69,6 +70,44 @@ func resolveEffectiveDiffs(pod Pod) string {
 	return pod.DIFFS
 }
 
+func displayFixedValue(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "yes", "no", "skipped":
+		return strings.ToLower(strings.TrimSpace(raw))
+	default:
+		return "-"
+	}
+}
+
+func rowsPairEqual(rows string) bool {
+	parts := strings.Split(rows, ",")
+	if len(parts) != 2 {
+		return false
+	}
+	return strings.TrimSpace(parts[0]) != "" && strings.TrimSpace(parts[0]) == strings.TrimSpace(parts[1])
+}
+
+func shouldSkipFixedForNoDiff(pod Pod) bool {
+	return normalizeCheckObject(pod.CheckObject) == "data" &&
+		strings.EqualFold(strings.TrimSpace(pod.Datafix), "table") &&
+		strings.EqualFold(strings.TrimSpace(resolveEffectiveDiffs(pod)), "no") &&
+		rowsPairEqual(dataResultRows(pod))
+}
+
+func fixedValueForDatafixTablePod(pod Pod) string {
+	if normalizeCheckObject(pod.CheckObject) != "data" || !strings.EqualFold(strings.TrimSpace(pod.Datafix), "table") {
+		return ""
+	}
+	if shouldSkipFixedForNoDiff(pod) {
+		return "skipped"
+	}
+	return displayFixedValue(pod.Fixed)
+}
+
+func fixedValueForRecord(pod Pod) string {
+	return fixedValueForDatafixTablePod(pod)
+}
+
 // normalizePodToRecord converts a single Pod into a stable ResultRecord.
 func normalizePodToRecord(m *inputArg.ConfigParameter, pod Pod, checkTime string) ResultRecord {
 	schema, objectName, objectType := resolveObjectIdentity(pod)
@@ -100,6 +139,7 @@ func normalizePodToRecord(m *inputArg.ConfigParameter, pod Pod, checkTime string
 		Rows:        rows,
 		Diffs:       diffs,
 		Datafix:     pod.Datafix,
+		Fixed:       fixedValueForRecord(pod),
 		Mapping:     resolveMappingForRecord(schema, objectName, pod),
 		Definer:     pod.Definer,
 		Columns:     pod.ColumnsInfo,
@@ -223,6 +263,7 @@ func podToChecksumTableResult(pod Pod) progress.ChecksumTableResult {
 		Rows:        pod.Rows,
 		Diffs:       pod.DIFFS,
 		Datafix:     pod.Datafix,
+		Fixed:       pod.Fixed,
 		MappingInfo: pod.MappingInfo,
 		ColumnsInfo: pod.ColumnsInfo,
 	}
@@ -237,6 +278,7 @@ func checksumTableResultToPod(result progress.ChecksumTableResult) Pod {
 		Rows:        result.Rows,
 		DIFFS:       result.Diffs,
 		Datafix:     result.Datafix,
+		Fixed:       result.Fixed,
 		MappingInfo: result.MappingInfo,
 		ColumnsInfo: result.ColumnsInfo,
 	}

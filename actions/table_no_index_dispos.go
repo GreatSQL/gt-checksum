@@ -285,6 +285,7 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 							if err != nil {
 								vlog = fmt.Sprintf("(%d) Failed to generate DELETE statement: %v", logThreadSeq, err)
 								global.Wlog.Error(vlog)
+								sp.markDatafixTableError("Failed to generate DELETE statement", err)
 								sp.ddbPool.Put(ddb, logThreadSeq)
 								continue
 							}
@@ -350,6 +351,7 @@ func (sp *SchedulePlan) DataFixSql(tmpAnDateMap <-chan map[string]string, pods *
 							if err != nil {
 								vlog = fmt.Sprintf("(%d) Failed to generate INSERT statement: %v", logThreadSeq, err)
 								global.Wlog.Error(vlog)
+								sp.markDatafixTableError("Failed to generate INSERT statement", err)
 								sp.ddbPool.Put(ddb, logThreadSeq)
 								continue
 							}
@@ -441,6 +443,16 @@ func (sp *SchedulePlan) FixSqlExec(sqlStrExec <-chan string, logThreadSeq int64)
 			return nil
 		}
 	}
+	handleApplyError := func(msg string, err error) {
+		if err == nil {
+			return
+		}
+		if sp.datafixType == "table" {
+			sp.markDatafixTableError(msg, err)
+			return
+		}
+		sp.getErr(msg, err)
+	}
 	displayTableName := sp.getDisplayTableName()
 	vlog = fmt.Sprintf("(%d) Start to generate delete and insert sql statements for table %s.", logThreadSeq, displayTableName)
 	global.Wlog.Debug(vlog)
@@ -461,7 +473,7 @@ func (sp *SchedulePlan) FixSqlExec(sqlStrExec <-chan string, logThreadSeq int64)
 								global.Wlog.Debug(vlog)
 							}
 							if err := applyFixBatch(sqlSlice); err != nil {
-								sp.getErr("Failed to apply no-index fix SQL", err)
+								handleApplyError("Failed to apply no-index fix SQL", err)
 							}
 						}
 						displayTableName := sp.getDisplayTableName()
@@ -494,7 +506,7 @@ func (sp *SchedulePlan) FixSqlExec(sqlStrExec <-chan string, logThreadSeq int64)
 								global.Wlog.Debug(vlog)
 							}
 							if err := applyFixBatch(a); err != nil {
-								sp.getErr("Failed to apply no-index fix SQL", err)
+								handleApplyError("Failed to apply no-index fix SQL", err)
 							}
 						}
 						displayTableName := sp.getDisplayTableName()
@@ -856,6 +868,10 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 		}
 	}
 	pods.Rows = fmt.Sprintf("%d,%d", sourceExactCount, targetExactCount)
+	pods.Fixed = sp.fixedValueForDatafixTable()
+	if shouldSkipFixedForNoDiff(pods) {
+		pods.Fixed = "skipped"
+	}
 	measuredDataPods = append(measuredDataPods, pods)
 	displayTableName = sp.getDisplayTableName()
 	vlog = fmt.Sprintf("(%d) Data checksum completed for table without index %s", logThreadSeq, displayTableName)

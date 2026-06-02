@@ -27,7 +27,7 @@ type Bar struct {
 }
 
 type Pod struct {
-	Schema, Table, IndexColumn, Rows, DIFFS, CheckObject, Datafix, FuncName, Definer, ProcName, TriggerName, MappingInfo string
+	Schema, Table, IndexColumn, Rows, DIFFS, CheckObject, Datafix, Fixed, FuncName, Definer, ProcName, TriggerName, MappingInfo string
 	// ObjectKind holds the actual object type ("table", "view", …).
 	// When empty, resolveObjectIdentity() falls back to the existing
 	// CheckObject-based derivation — preserving all pre-Phase-1 behaviour.
@@ -784,10 +784,36 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 				break
 			}
 		}
+		showFixed := strings.EqualFold(strings.TrimSpace(m.SecondaryL.RepairV.Datafix), "table")
+		addDataHeader := func(extra ...string) {
+			header := []interface{}{"Schema", "Table", "IndexColumn", "CheckObject", "Rows", "Diffs", "Datafix"}
+			if showFixed {
+				header = append(header, "Fixed")
+			}
+			for _, col := range extra {
+				header = append(header, col)
+			}
+			table.AddRow(header...)
+		}
+		baseDataRow := func(pod Pod, differences string) []interface{} {
+			row := []interface{}{
+				color.RedString(pod.Schema),
+				color.WhiteString(pod.Table),
+				color.RedString(pod.IndexColumn),
+				color.YellowString(pod.CheckObject),
+				color.BlueString(dataResultRows(pod)),
+				color.GreenString(differences),
+				color.YellowString(pod.Datafix),
+			}
+			if showFixed {
+				row = append(row, color.GreenString(fixedValueForDatafixTablePod(pod)))
+			}
+			return row
+		}
 
 		switch {
 		case hasMappings && hasColumnsInfo:
-			table.AddRow("Schema", "Table", "IndexColumn", "CheckObject", "Rows", "Diffs", "Datafix", "Mapping", "Columns")
+			addDataHeader("Mapping", "Columns")
 			for _, pod := range terminalPods {
 				differences := resolveEffectiveDiffs(pod)
 				mappingInfo := "-"
@@ -803,10 +829,12 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 				if columnsInfo == "" {
 					columnsInfo = "-"
 				}
-				table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.IndexColumn), color.YellowString(pod.CheckObject), color.BlueString(dataResultRows(pod)), color.GreenString(differences), color.YellowString(pod.Datafix), color.CyanString(mappingInfo), color.MagentaString(columnsInfo))
+				row := baseDataRow(pod, differences)
+				row = append(row, color.CyanString(mappingInfo), color.MagentaString(columnsInfo))
+				table.AddRow(row...)
 			}
 		case hasMappings:
-			table.AddRow("Schema", "Table", "IndexColumn", "CheckObject", "Rows", "Diffs", "Datafix", "Mapping")
+			addDataHeader("Mapping")
 			for _, pod := range terminalPods {
 				differences := resolveEffectiveDiffs(pod)
 				mappingInfo := "-"
@@ -818,23 +846,27 @@ func CheckResultOut(m *inputArg.ConfigParameter) {
 						mappingInfo = fmt.Sprintf("Schema: %s:%s", pod.Schema, destSchema)
 					}
 				}
-				table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.IndexColumn), color.YellowString(pod.CheckObject), color.BlueString(dataResultRows(pod)), color.GreenString(differences), color.YellowString(pod.Datafix), color.CyanString(mappingInfo))
+				row := baseDataRow(pod, differences)
+				row = append(row, color.CyanString(mappingInfo))
+				table.AddRow(row...)
 			}
 		case hasColumnsInfo:
-			table.AddRow("Schema", "Table", "IndexColumn", "CheckObject", "Rows", "Diffs", "Datafix", "Columns")
+			addDataHeader("Columns")
 			for _, pod := range terminalPods {
 				differences := resolveEffectiveDiffs(pod)
 				columnsInfo := pod.ColumnsInfo
 				if columnsInfo == "" {
 					columnsInfo = "-"
 				}
-				table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.IndexColumn), color.YellowString(pod.CheckObject), color.BlueString(dataResultRows(pod)), color.GreenString(differences), color.YellowString(pod.Datafix), color.MagentaString(columnsInfo))
+				row := baseDataRow(pod, differences)
+				row = append(row, color.MagentaString(columnsInfo))
+				table.AddRow(row...)
 			}
 		default:
-			table.AddRow("Schema", "Table", "IndexColumn", "CheckObject", "Rows", "Diffs", "Datafix")
+			addDataHeader()
 			for _, pod := range terminalPods {
 				differences := resolveEffectiveDiffs(pod)
-				table.AddRow(color.RedString(pod.Schema), color.WhiteString(pod.Table), color.RedString(pod.IndexColumn), color.YellowString(pod.CheckObject), color.BlueString(dataResultRows(pod)), color.GreenString(differences), color.YellowString(pod.Datafix))
+				table.AddRow(baseDataRow(pod, differences)...)
 			}
 		}
 		fmt.Println(table)

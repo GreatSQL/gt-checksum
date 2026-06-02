@@ -108,7 +108,9 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanFixSQLItem, logThreadSeq int64)
 			return nil
 		}
 		if sp.datafixType == "table" {
-			writeOptimizedSqlChunk(optimized, sp.datafixType, nil, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
+			if err := writeOptimizedSqlChunk(optimized, sp.datafixType, nil, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum); err != nil {
+				sp.markDatafixTableError(fmt.Sprintf("Failed to apply DELETE fixsql for %s.%s", sp.schema, sp.table), err)
+			}
 			markItemsWritten(batch)
 			return nil
 		}
@@ -128,7 +130,9 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanFixSQLItem, logThreadSeq int64)
 			return nil
 		}
 		if sp.datafixType == "table" {
-			writeOptimizedSqlChunk(optimized, sp.datafixType, nil, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
+			if err := writeOptimizedSqlChunk(optimized, sp.datafixType, nil, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum); err != nil {
+				sp.markDatafixTableError(fmt.Sprintf("Failed to apply INSERT fixsql for %s.%s", sp.schema, sp.table), err)
+			}
 			markItemsWritten(batch)
 			return nil
 		}
@@ -148,7 +152,9 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanFixSQLItem, logThreadSeq int64)
 			return nil
 		}
 		if sp.datafixType == "table" {
-			writeOptimizedSqlChunk(sqls, sp.datafixType, nil, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum)
+			if err := writeOptimizedSqlChunk(sqls, sp.datafixType, nil, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum); err != nil {
+				sp.markDatafixTableError(fmt.Sprintf("Failed to apply UPDATE fixsql for %s.%s", sp.schema, sp.table), err)
+			}
 			markItemsWritten(batch)
 			return nil
 		}
@@ -268,6 +274,10 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanFixSQLItem, logThreadSeq int64)
 	}
 
 	// 无论是否有差异，都添加到结果中
+	sp.pods.Fixed = sp.fixedValueForDatafixTable()
+	if shouldSkipFixedForNoDiff(*sp.pods) {
+		sp.pods.Fixed = "skipped"
+	}
 	logStageMemory("fixsql-write-end", logThreadSeq, sp.schema, sp.table)
 	measuredDataPods = append(measuredDataPods, *sp.pods)
 }

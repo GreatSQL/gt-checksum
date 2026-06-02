@@ -153,11 +153,11 @@ Total execution time: 0.11s
 ```bash
 $ cat gt-checksum-result-20260323195530.csv
 
-RunID,CheckTime,CheckObject,Schema,Table,ObjectName,ObjectType,IndexColumn,Rows,Diffs,Datafix,Mapping,Definer,Columns
-20260323195530,2026-03-23 19:55:31,data,sbtest,sbtest2,sbtest2,table,id,4999,yes,file,,,
+RunID,CheckTime,CheckObject,Schema,Table,ObjectName,ObjectType,IndexColumn,Rows,Diffs,Datafix,Fixed,Mapping,Definer,Columns
+20260323195530,2026-03-23 19:55:31,data,sbtest,sbtest2,sbtest2,table,id,4999,yes,file,,,,
 ```
 
-全列校验时最后一列 `Columns` 为空；当启用 `columns` 子集校验时，这一列会显示本次实际参与比对的列计划。
+全列校验时最后一列 `Columns` 为空；当启用 `columns` 子集校验时，这一列会显示本次实际参与比对的列计划。`Fixed` 用于展示 `datafix=table` 在线修复 SQL 的执行状态：无差异且两端行数一致时为 `skipped`，修复 SQL 无报错时为 `yes`，任一修复执行错误时为 `no`；非适用场景为空。
 
 如需只在终端显示差异行，可配置 `terminalResultMode=abnormal`（CSV 仍输出完整结果）：
 

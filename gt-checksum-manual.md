@@ -310,8 +310,8 @@ testdb  orders  id           data         1000,1000    yes    file     Schema: t
 对应的 CSV 行示例：
 
 ```text
-RunID,CheckTime,CheckObject,Schema,Table,ObjectName,ObjectType,IndexColumn,Rows,Diffs,Datafix,Mapping,Definer,Columns
-20260403153000,2026-04-03 15:30:01,data,testdb,orders,orders,table,id,"1000,1000",yes,file,Schema: testdb.orders:archive.orders_archive,,"testdb.orders.amount:archive.orders_archive.total_amount,testdb.orders.status:archive.orders_archive.order_status"
+RunID,CheckTime,CheckObject,Schema,Table,ObjectName,ObjectType,IndexColumn,Rows,Diffs,Datafix,Fixed,Mapping,Definer,Columns
+20260403153000,2026-04-03 15:30:01,data,testdb,orders,orders,table,id,"1000,1000",yes,file,,Schema: testdb.orders:archive.orders_archive,,"testdb.orders.amount:archive.orders_archive.total_amount,testdb.orders.status:archive.orders_archive.order_status"
 ```
 
 #### columns 功能回归测试
@@ -863,6 +863,7 @@ gt_phase1_mariadb105 t_mariadb_feature_pack      struct       warn-only  file
 | `Rows` | 行数（`DDL-yes` 时为空） |
 | `Diffs` | 差异状态：`yes` / `no` / `DDL-yes` / `warn-only` / `collation-mapped` |
 | `Datafix` | 修复方式：`file` / `table` |
+| `Fixed` | `datafix=table` 在线修复 SQL 执行状态：无差异且两端行数一致时为 `skipped`，修复 SQL 无报错为 `yes`，任一修复执行错误为 `no`；非适用场景为空 |
 | `Mapping` | schema/table 映射说明（无映射时为空） |
 | `Definer` | routine / trigger 场景下的 DEFINER |
 | `Columns` | 仅在 `columns` 子集校验模式下非空，显示本次实际参与比对的列计划；全列模式下为空 |
@@ -907,9 +908,9 @@ import csv, sys
 with open('result/gt-checksum-result-20260323195530.csv', encoding='utf-8-sig') as f:
     for row in csv.reader(f): print(row)
 " | head -3
-['RunID', 'CheckTime', 'CheckObject', 'Schema', 'Table', 'ObjectName', 'ObjectType', 'IndexColumn', 'Rows', 'Diffs', 'Datafix', 'Mapping', 'Definer', 'Columns']
-['20260323195530', '2026-03-23 19:55:31', 'data', 'sbtest', 'sbtest1', 'sbtest1', 'table', 'id', '10000', 'no', 'file', '', '', '']
-['20260323195530', '2026-03-23 19:55:31', 'data', 'sbtest', 'sbtest2', 'sbtest2', 'table', 'id', '4999', 'yes', 'file', '', '', '']
+['RunID', 'CheckTime', 'CheckObject', 'Schema', 'Table', 'ObjectName', 'ObjectType', 'IndexColumn', 'Rows', 'Diffs', 'Datafix', 'Fixed', 'Mapping', 'Definer', 'Columns']
+['20260323195530', '2026-03-23 19:55:31', 'data', 'sbtest', 'sbtest1', 'sbtest1', 'table', 'id', '10000', 'no', 'file', '', '', '', '']
+['20260323195530', '2026-03-23 19:55:31', 'data', 'sbtest', 'sbtest2', 'sbtest2', 'table', 'id', '4999', 'yes', 'file', '', '', '', '']
 ```
 
 终端只显示有差异的行：

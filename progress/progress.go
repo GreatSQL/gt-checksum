@@ -58,6 +58,7 @@ type ChecksumTableResult struct {
 	Rows        string `json:"rows"`
 	Diffs       string `json:"diffs"`
 	Datafix     string `json:"datafix"`
+	Fixed       string `json:"fixed,omitempty"`
 	MappingInfo string `json:"mapping_info,omitempty"`
 	ColumnsInfo string `json:"columns_info,omitempty"`
 }

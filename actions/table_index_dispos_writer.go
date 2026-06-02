@@ -122,7 +122,9 @@ func (w *sqlRollingWriter) write(sqls []string) error {
 			continue
 		}
 		part := sqls[:n]
-		writeOptimizedSqlChunk(part, w.datafixType, w.current, w.ddrive, w.djdbc, w.logThread, w.fixTrxNum)
+		if err := writeOptimizedSqlChunk(part, w.datafixType, w.current, w.ddrive, w.djdbc, w.logThread, w.fixTrxNum); err != nil {
+			return err
+		}
 		w.currentCnt += len(part)
 		w.currentB += estimateSqlBytes(part)
 		sqls = sqls[n:]
@@ -320,11 +322,11 @@ func optimizeSqlStatements(sqls []string, fixTrxNum int, isUniqueKey bool, delet
 	return finalSqls
 }
 
-func writeOptimizedSqlChunk(sqls []string, datafixType string, sfile *os.File, ddrive string, djdbc string, logThreadSeq int64, fixTrxNum int) {
+func writeOptimizedSqlChunk(sqls []string, datafixType string, sfile *os.File, ddrive string, djdbc string, logThreadSeq int64, fixTrxNum int) error {
 	if len(sqls) == 0 {
-		return
+		return nil
 	}
-	ApplyDataFixWithTrxNumOptimizedInput(sqls, datafixType, sfile, ddrive, djdbc, logThreadSeq, fixTrxNum)
+	return ApplyDataFixWithTrxNumOptimizedInput(sqls, datafixType, sfile, ddrive, djdbc, logThreadSeq, fixTrxNum)
 }
 
 // processBatch 批量处理SQL语句，根据类型排序后写入文件
@@ -333,7 +335,9 @@ func processBatch(sqls []string, datafixType string, sfile *os.File, ddrive stri
 		return
 	}
 	finalSqls := optimizeSqlStatements(sqls, fixTrxNum, isUniqueKey, deleteSqlSize, insertSqlSize)
-	writeOptimizedSqlChunk(finalSqls, datafixType, sfile, ddrive, djdbc, logThreadSeq, fixTrxNum)
+	if err := writeOptimizedSqlChunk(finalSqls, datafixType, sfile, ddrive, djdbc, logThreadSeq, fixTrxNum); err != nil {
+		global.Wlog.Error(fmt.Sprintf("DEBUG_BATCH_WRITE_%d: failed to write SQL batch: %v", logThreadSeq, err))
+	}
 	global.Wlog.Debugf("DEBUG_BATCH_WRITE_%d: Wrote %d SQL statements to file, DELETE=%d, INSERT=%d\n",
 		logThreadSeq, len(finalSqls), len(sqls), len(finalSqls))
 }

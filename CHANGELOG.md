@@ -9,6 +9,7 @@
 - [功能新增]: 新增 `maxRollRowNum` 参数（默认值 10000），单表待修复行数超过该阈值时不生成回滚SQL，避免大表回滚文件过大；目标端表为空时始终生成 `TRUNCATE TABLE` 回滚SQL（忽略本参数）。
 - [功能新增]: 新增 SSL 加密连接支持，支持源端和目标端独立配置 SSL 参数（`srcSslCa/srcSslCert/srcSslKey/srcSslMode、dstSslCa/dstSslCert/dstSslKey/dstSslMode`），支持 `DISABLED/PREFERRED/REQUIRED/VERIFY_CA/VERIFY_IDENTITY` 五种模式。
 - [功能新增]: repairDB 工具新增目标端 SSL 连接配置支持（`dstSslCa/dstSslCert/dstSslKey/dstSslMode`）。
+- [功能新增]: gt-checksum 在 `checkObject=data` 且 `datafix=table` 时，终端与 CSV 结果新增 `Fixed` 修复状态列，用于报告在线修复 SQL 是否执行、跳过或发生报错。
 - [性能优化]: 断点续传模式下，估算行数和精确行数（COUNT(*)）写入进度文件缓存，续传时直接读取缓存，避免重复扫描全表，减少续传启动开销。
 - [性能优化]: 优化数据校验行数统计流程，count/sample/index/no-index 场景下源端与目标端行数改为并行查询，减少等待时间，并补充连接获取失败日志。
 - [功能优化]: 优化断点续传在 `datafix=file` 场景下的 fixsql/rollsql 处理，续传时保留已完整提交的事务并清理不完整内容，避免重复生成修复SQL。
@@ -36,6 +37,7 @@
 - [问题修复]: 修复 `global.Wlog` 空指针检查，避免日志初始化前调用 `Debug/Warn` 等方法导致 panic。
 - [问题修复]: 修复 Oracle `NUMBER(19,0)` 类型映射精度阈值（从 18 调整为 19），并新增 `tinyint(1)` ↔ `bit(1)` 类型等价映射。
 - [测试完善]: 新增无索引表 `datafix=table` 回归测试，覆盖在线修复批次不应被跳过的场景。
+- [测试完善]: 新增 `datafix=table` 修复状态回归测试，覆盖终端 `Fixed` 列、CSV `Fixed` 列、断点结果映射和修复错误标记。
 - [测试完善]: 新增 MySQL/Oracle 权限预检回归测试，覆盖源/目标角色、`data/struct/routine/trigger` 模式、通配符映射、版本化例程权限和 GRANT 建议输出。
 - [测试完善]: 新增 repairDB duplicate key 拆分重试回归测试，覆盖 multi-values INSERT 部分重复、非重复错误中断、行号定位和复杂 values 拆分场景。
 - [测试完善]: 新增 repairDB 中断处理回归测试，覆盖停止调度新文件、重复中断信号以及已开始 SQL 文件不被取消等场景。
