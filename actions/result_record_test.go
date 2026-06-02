@@ -149,6 +149,33 @@ func TestNormalizePodToRecord_dataModeBasic(t *testing.T) {
 	}
 }
 
+func TestNormalizePodToRecord_datafixTableFixed(t *testing.T) {
+	m := mockConfig("20260323120000", "all")
+	pod := Pod{Schema: "db1", Table: "orders", CheckObject: "data", DIFFS: "yes", Rows: "10,9", Datafix: "table", Fixed: "yes"}
+	rec := normalizePodToRecord(m, pod, "2026-03-23 12:00:00")
+	if rec.Fixed != "yes" {
+		t.Errorf("Fixed = %q, want yes", rec.Fixed)
+	}
+}
+
+func TestNormalizePodToRecord_datafixTableNoDiffRowsEqualSkipped(t *testing.T) {
+	m := mockConfig("20260323120000", "all")
+	pod := Pod{Schema: "db1", Table: "orders", CheckObject: "data", DIFFS: "no", Rows: "10,10", Datafix: "table", Fixed: "yes"}
+	rec := normalizePodToRecord(m, pod, "2026-03-23 12:00:00")
+	if rec.Fixed != "skipped" {
+		t.Errorf("Fixed = %q, want skipped", rec.Fixed)
+	}
+}
+
+func TestNormalizePodToRecord_nonTableFixedEmpty(t *testing.T) {
+	m := mockConfig("20260323120000", "all")
+	pod := Pod{Schema: "db1", Table: "orders", CheckObject: "data", DIFFS: "yes", Rows: "10,9", Datafix: "file", Fixed: "yes"}
+	rec := normalizePodToRecord(m, pod, "2026-03-23 12:00:00")
+	if rec.Fixed != "" {
+		t.Errorf("Fixed = %q, want empty for datafix=file", rec.Fixed)
+	}
+}
+
 func TestNormalizePodToRecord_DDLYesRowsEmpty(t *testing.T) {
 	m := mockConfig("20260323120000", "all")
 	pod := Pod{Schema: "db1", Table: "t1", CheckObject: "data", DIFFS: "DDL-yes", Rows: "500"}
@@ -185,6 +212,18 @@ func TestNormalizePodToRecord_triggerNoTableField(t *testing.T) {
 	}
 	if rec.ObjectType != "trigger" {
 		t.Errorf("ObjectType = %q, want trigger", rec.ObjectType)
+	}
+}
+
+func TestChecksumTableResultFixedMapping(t *testing.T) {
+	pod := Pod{Schema: "sbtest", Table: "t1", IndexColumn: "id", CheckObject: "data", Rows: "10,9", DIFFS: "yes", Datafix: "table", Fixed: "no"}
+	result := podToChecksumTableResult(pod)
+	if result.Fixed != "no" {
+		t.Fatalf("ChecksumTableResult.Fixed = %q, want no", result.Fixed)
+	}
+	roundTrip := checksumTableResultToPod(result)
+	if roundTrip.Fixed != "no" {
+		t.Fatalf("round-trip Pod.Fixed = %q, want no", roundTrip.Fixed)
 	}
 }
 
@@ -230,7 +269,7 @@ func TestPrependChecksumProgressResults(t *testing.T) {
 	previous := []progress.ChecksumTableResult{
 		{Schema: "sbtest", Table: "t9", IndexColumn: "id", CheckObject: "data", Rows: "0,0", Diffs: "no", Datafix: "file"},
 		{Schema: "sbtest", Table: "t7", IndexColumn: "c1,c2,c3,c4", CheckObject: "data", Rows: "6,6", Diffs: "no", Datafix: "file"},
-		{Schema: "sbtest", Table: "t2", IndexColumn: "id", CheckObject: "data", Rows: "100000000,99972787", Diffs: "yes", Datafix: "file"},
+		{Schema: "sbtest", Table: "t2", IndexColumn: "id", CheckObject: "data", Rows: "100000000,99972787", Diffs: "yes", Datafix: "table", Fixed: "yes"},
 	}
 
 	PrependChecksumProgressResults(previous)
@@ -244,7 +283,7 @@ func TestPrependChecksumProgressResults(t *testing.T) {
 			t.Fatalf("row %d table = %s, want %s", i, measuredDataPods[i].Table, want)
 		}
 	}
-	if measuredDataPods[2].Rows != "100000000,99972787" || measuredDataPods[2].DIFFS != "yes" {
+	if measuredDataPods[2].Rows != "100000000,99972787" || measuredDataPods[2].DIFFS != "yes" || measuredDataPods[2].Fixed != "yes" {
 		t.Fatalf("previous t2 result not preserved: %+v", measuredDataPods[2])
 	}
 }

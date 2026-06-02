@@ -300,6 +300,25 @@ func TestGetExactRowCount_OracleShowActualRowsOnUsesCountQuery(t *testing.T) {
 	}
 }
 
+func TestDatafixTableStatusValues(t *testing.T) {
+	sp := &SchedulePlan{datafixType: "table"}
+	if got := sp.fixedValueForDatafixTable(); got != "yes" {
+		t.Fatalf("fixedValueForDatafixTable() = %q, want yes before errors", got)
+	}
+	sp.markDatafixTableError("unit-test repair error", fmt.Errorf("repair failed"))
+	if got := sp.fixedValueForDatafixTable(); got != "no" {
+		t.Fatalf("fixedValueForDatafixTable() = %q, want no after error", got)
+	}
+}
+
+func TestDatafixFileStatusValueEmpty(t *testing.T) {
+	sp := &SchedulePlan{datafixType: "file"}
+	sp.markDatafixTableError("unit-test repair error", fmt.Errorf("repair failed"))
+	if got := sp.fixedValueForDatafixTable(); got != "" {
+		t.Fatalf("fixedValueForDatafixTable() = %q, want empty for datafix=file", got)
+	}
+}
+
 func TestNoIndexDatafixTableAppliesRepairBatch(t *testing.T) {
 	tests := []struct {
 		name        string

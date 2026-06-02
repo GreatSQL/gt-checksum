@@ -165,7 +165,8 @@ func TestChecksumProgress_MarkCompletedWithResult(t *testing.T) {
 		CheckObject: "data",
 		Rows:        "100000000,99972787",
 		Diffs:       "yes",
-		Datafix:     "file",
+		Datafix:     "table",
+		Fixed:       "yes",
 	}
 	if err := p.MarkCompletedWithResult("sbtest.t2", &result); err != nil {
 		t.Fatalf("MarkCompletedWithResult failed: %v", err)
