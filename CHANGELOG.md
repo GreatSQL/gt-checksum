@@ -12,6 +12,8 @@
 - [功能新增]: gt-checksum 在 `checkObject=data` 且 `datafix=table` 时，终端与 CSV 结果新增 `Fixed` 修复状态列，用于报告在线修复 SQL 是否执行、跳过或发生报错。
 - [性能优化]: 断点续传模式下，估算行数和精确行数（COUNT(*)）写入进度文件缓存，续传时直接读取缓存，避免重复扫描全表，减少续传启动开销。
 - [性能优化]: 优化数据校验行数统计流程，count/sample/index/no-index 场景下源端与目标端行数改为并行查询，减少等待时间，并补充连接获取失败日志。
+- [功能优化]: 优化非 data 对象修复安全策略，`checkObject=struct/routine/trigger` 配置 `datafix=table` 时不直接在线修改目标对象，改为强制导出 fix SQL 文件供人工审核；`fixFileDir` 未配置时使用默认目录 `fixsql`。
+- [功能优化]: 优化 `tables`/`ignoreTables` 通配与映射规则的权限预检，保留原始 `tables` 规则并支持 `db.*`、`db.t%`、`srcdb.*:dstdb.*` 按源端/目标端角色压缩检查，源端元数据为空时输出可参考的 `GRANT SELECT` 建议。
 - [功能优化]: 优化断点续传在 `datafix=file` 场景下的 fixsql/rollsql 处理，续传时保留已完整提交的事务并清理不完整内容，避免重复生成修复SQL。
 - [功能优化]: 优化 COLLATE 修复逻辑，当存在 `dTypeMapping` 规则覆盖时，自动生成列级 `MODIFY COLUMN` SQL（同时包含 collation 和类型映射），而非表级 `CONVERT TO` SQL。
 - [功能优化]: 优化 utf8mb4 默认 collation 漂移检测（如 `utf8mb4_general_ci` ↔ `utf8mb4_0900_ai_ci`），返回 `WarnOnly` 以简化修复 SQL，仅生成一条表级 `CONVERT TO` 语句。
@@ -21,6 +23,8 @@
 - [功能优化]: 优化 MySQL `routine` 权限预检，按 MySQL 8.0.20+ `SHOW_ROUTINE`、8.0.0-8.0.19 全局 `SELECT`、MySQL 5.6/5.7 与 MariaDB `mysql.proc` 读取路径分别给出授权建议。
 - [功能优化]: 优化 `checkObject=data` 表级权限预检，区分源端和目标端角色；源端仅检查只读权限，目标端在 `datafix=table` 时继续检查在线修复所需的写权限。
 - [功能优化]: 优化 MySQL 全局权限预检，普通 `checkObject=data` 数据校验不再强制要求未实际使用的 `REPLICATION CLIENT` 权限，仅在 binlog/增量读取等需要复制状态的路径中条件化检查。
+- [问题修复]: 修复目标端表元数据不可见且权限不足时可能被误判为缺表并生成建表修复 SQL 的问题；现在会先执行目标端权限预检并提示 `Insufficient access permission to target table`。
+- [问题修复]: 优化 `checkObject=data` 表存在性不一致处理，源端或目标端表缺失时标记为 `DDL-yes` 并跳过数据校验，提示使用 `checkObject=struct` 检查和修复表结构。
 - [问题修复]: 修复无索引表在 `datafix=table` 场景下只生成修复语句但未在线执行的问题；现在差异数据会按目标端执行 `DELETE`/`INSERT` 修复，避免再次校验仍持续报差异。
 - [问题修复]: 修复 `checkObject=data` 且 `datafix=table` 时 MySQL 目标端表级权限预检误要求 `ALTER` 的问题；现在 data 模式仅检查 `SELECT/INSERT/DELETE`，`ALTER` 归属 `struct`/DDL 修复权限集合。
 - [问题修复]: 优化全局/表级权限预检缺失权限日志，按源端/目标端分别输出必需权限、缺失权限和可执行 GRANT 授权语句，避免 MySQL 5.6→8.0 等场景下排障信息混淆。
@@ -36,6 +40,7 @@
 - [问题修复]: 修复 MySQL 数值列生成 INSERT 修复 SQL 时被写成字符串字面量的问题，BIGINT/DECIMAL/DOUBLE 等列会按合法数值字面量输出。
 - [问题修复]: 修复 `global.Wlog` 空指针检查，避免日志初始化前调用 `Debug/Warn` 等方法导致 panic。
 - [问题修复]: 修复 Oracle `NUMBER(19,0)` 类型映射精度阈值（从 18 调整为 19），并新增 `tinyint(1)` ↔ `bit(1)` 类型等价映射。
+- [测试完善]: 新增 `tables` 通配权限预检、目标表不可见、非 data 对象强制导出 fix SQL、源端元数据为空 GRANT 提示等回归测试。
 - [测试完善]: 新增无索引表 `datafix=table` 回归测试，覆盖在线修复批次不应被跳过的场景。
 - [测试完善]: 新增 `datafix=table` 修复状态回归测试，覆盖终端 `Fixed` 列、CSV `Fixed` 列、断点结果映射和修复错误标记。
 - [测试完善]: 新增 MySQL/Oracle 权限预检回归测试，覆盖源/目标角色、`data/struct/routine/trigger` 模式、通配符映射、版本化例程权限和 GRANT 建议输出。

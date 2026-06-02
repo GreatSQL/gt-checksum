@@ -14,7 +14,7 @@ $ gt-checksum -c ./gc.conf
 
 ## 数据库授权
 
-运行 gt-checksum 工具前，建议创建相应的专属数据库账户，并至少授予以下几个权限。当前权限预检会按 `checkObject` 和源端/目标端角色区分：`data` 模式源端只检查只读权限，目标端根据 `datafix=table` 检查在线修复权限；`struct` 在线修复会提前检查结构修复权限；MySQL 侧 `routine/trigger` 会按对象定义读取权限进行预检。
+运行 gt-checksum 工具前，建议创建相应的专属数据库账户，并至少授予以下几个权限。当前权限预检会按 `checkObject` 和源端/目标端角色区分：`data` 模式源端只检查只读权限，目标端根据 `datafix=table` 检查在线修复权限；`struct` 配置 `datafix=table` 时会提前检查结构修复权限；MySQL 侧 `routine/trigger` 会按对象定义读取权限进行预检。对于 `db.*`、`db.t%`、`srcdb.*:dstdb.*` 等通配或映射规则，程序会按源端/目标端角色压缩权限检查目标，并在日志中输出可参考的 GRANT 建议。
   
 - MySQL端
 
@@ -75,7 +75,7 @@ $ gt-checksum -c ./gc.conf
 | checkObject | MySQL 所需权限（名称 / 来源 / 说明） | Oracle 所需权限（名称 / 来源 / 说明） | 版本差异与说明 |
 |---|---|---|---|
 | `data` | 1) `SESSION_VARIABLES_ADMIN`（MySQL 8.0及以上系统权限，程序启动时检查）<br>2) 源端：`SELECT`（对象权限，表/库/全局任一层级可覆盖）<br>3) 目标端：`SELECT`；若 `datafix=table` 再要求 `INSERT`、`DELETE`（对象权限），不再要求 `ALTER`<br>4) `REPLICATION CLIENT` 仅在启用 binlog/增量读取或需要执行 `SHOW MASTER STATUS` 获取复制状态时条件化检查 | 1) `SELECT ANY DICTIONARY`（系统权限，程序启动时检查）<br>2) 源端：`SELECT` 或 `SELECT ANY TABLE`<br>3) 目标端：`SELECT` 或 `SELECT ANY TABLE`；若 `datafix=table` 再要求 `INSERT`、`DELETE`（对象权限）或 `INSERT ANY TABLE`、`DELETE ANY TABLE`（系统权限） | MySQL 5.7 无 `SESSION_VARIABLES_ADMIN`；普通 `data` 校验不再强制要求 `REPLICATION CLIENT`。Oracle 12c+ 存在 `READ` 对象权限，但当前实现按 `SELECT` 语义检查。 |
-| `struct` | `datafix=file` 时不强制执行表级权限预检；`datafix=table` 在线执行结构修复时，源端需 `SELECT`，目标端需 `SELECT`、`ALTER`（表/库/全局授权均可覆盖）。结构比对会读取 `INFORMATION_SCHEMA.COLUMNS`、`INFORMATION_SCHEMA.STATISTICS`、`INFORMATION_SCHEMA.PARTITIONS`、`INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS` 等。**若校验对象中包含视图（VIEW），还需额外授予 `SHOW VIEW` 权限**（MySQL 5.7+）。 | `datafix=file` 时不强制执行表级权限预检；`datafix=table` 时建议源端具备 `SELECT`/`SELECT ANY TABLE`，目标端具备 `SELECT`、`ALTER` 或 `SELECT ANY TABLE`、`ALTER ANY TABLE`。结构比对会读取 `DBA_TAB_COLUMNS`、`DBA_COL_COMMENTS`、`USER_CONSTRAINTS`、`ALL_TABLES`，并调用 `DBMS_METADATA.GET_DDL('TABLE',...)`。 | 当前实现中，`checkObject=struct` 已合并执行表结构、索引、分区、外键检查；VIEW 专项支持仅限 MySQL→MySQL 场景。 |
+| `struct` | `datafix=file` 时不强制执行表级权限预检；`datafix=table` 会提前按结构修复路径检查权限（源端需 `SELECT`，目标端需 `SELECT`、`ALTER`，表/库/全局授权均可覆盖），但非 `data` 对象实际修复会强制导出 fix SQL 文件供人工审核，不直接在线修改目标对象。结构比对会读取 `INFORMATION_SCHEMA.COLUMNS`、`INFORMATION_SCHEMA.STATISTICS`、`INFORMATION_SCHEMA.PARTITIONS`、`INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS` 等。**若校验对象中包含视图（VIEW），还需额外授予 `SHOW VIEW` 权限**（MySQL 5.7+）。 | `datafix=file` 时不强制执行表级权限预检；`datafix=table` 时建议源端具备 `SELECT`/`SELECT ANY TABLE`，目标端具备 `SELECT`、`ALTER` 或 `SELECT ANY TABLE`、`ALTER ANY TABLE`。结构比对会读取 `DBA_TAB_COLUMNS`、`DBA_COL_COMMENTS`、`USER_CONSTRAINTS`、`ALL_TABLES`，并调用 `DBMS_METADATA.GET_DDL('TABLE',...)`。 | 当前实现中，`checkObject=struct` 已合并执行表结构、索引、分区、外键检查；VIEW 专项支持仅限 MySQL→MySQL 场景。 |
 | `routine` | 会预检例程定义可见性：MySQL 8.0.20+ 需 `SHOW_ROUTINE` 或全局 `SELECT`；MySQL 8.0.0-8.0.19 需全局 `SELECT`；MySQL 5.6/5.7 与 MariaDB 需全局 `SELECT`、`SELECT ON mysql.*` 或 `SELECT ON mysql.proc`。通过后读取 `INFORMATION_SCHEMA.PARAMETERS`、`INFORMATION_SCHEMA.ROUTINES`。 | 当前不强制执行表级权限预检；读取 `ALL_PROCEDURES`，并调用 `DBMS_METADATA.GET_DDL('PROCEDURE'/'FUNCTION',...)`。建议具备 `SELECT ANY DICTIONARY` 与 `DBMS_METADATA` 访问能力。 | MySQL 8.0.20+ 引入 `SHOW_ROUTINE` 权限语义更清晰；低版本需用全局或 `mysql.proc` 读取权限覆盖。 |
 | `trigger` | 会预检从 `tables` 参数提取出的 `schema.*` 的 `TRIGGER` 权限；通过后读取 `INFORMATION_SCHEMA.TRIGGERS`，并执行 `SHOW CREATE TRIGGER`。 | 当前不强制执行表级权限预检；读取 `ALL_TRIGGERS`，并调用 `DBMS_METADATA.GET_DDL('TRIGGER',...)`。建议具备 `SELECT ANY DICTIONARY` 与元数据访问能力。 | Oracle 11g/12c/19c/23c 在 `ALL_TRIGGERS` 视图语义上基本一致（返回当前用户可访问对象）。 |
 
@@ -85,6 +85,8 @@ $ gt-checksum -c ./gc.conf
 2. 表级/对象级权限预检按模式执行：`data` 会区分源端和目标端；`struct` 仅在 `datafix=table` 时检查在线结构修复权限；MySQL `trigger/routine` 会在比较前检查触发器或例程定义读取权限，避免权限不足时误判为空对象。
 3. 缺失权限日志会按源端/目标端分别输出必需权限、缺失权限和建议 GRANT 语句；终端只显示概括性提示时，请打开 debug 日志确认具体缺失项。
 4. 当源端为 `MariaDB`、目标端为 `MySQL 8.0/8.4` 且 `checkObject=data` 时，当前版本会跳过源端 `MariaDB` 的全局权限预检查，不再要求 `SESSION_VARIABLES_ADMIN` 或 `REPLICATION CLIENT` 形式的 `MySQL` 权限名称；源端表级权限只检查 `SELECT`，目标端 `MySQL` 侧继续按数据校验/修复路径检查相应权限。
+5. `tables` 使用 `db.*`、`db.t%`、`srcdb.*:dstdb.*` 等通配或映射规则时，权限预检会保留原始 `tables` 规则，并按源端/目标端角色压缩为合适的 schema/table 粒度检查目标。
+6. 若源端元数据查询为空，日志会提示检查 `tables` 配置和源端 `SELECT` 权限，并尽量给出 `GRANT SELECT ON ...` 示例；若目标端表元数据不可见且目标账号缺少必要权限，程序会拒绝将其当作缺表处理，终端提示 `Insufficient access permission to target table`。
 
 ## 快速使用案例
 
@@ -199,15 +201,15 @@ sbtest  F1              Function        no      no
 gt-checksum: tables option 'sbtest.t*' uses unsupported wildcard '*'; use '%' instead, e.g. sbtest.t%
 ```
 
-该检查同时覆盖映射规则的目标侧（如 `db1.t%:db2.t*` 中的 `db2.t*`）以及 `ignoreTables` 参数。
+该检查同时覆盖映射规则的目标侧（如 `db1.t%:db2.t*` 中的 `db2.t*`）以及 `ignoreTables` 参数。权限预检会保留原始 `tables` 规则；例如 `db.*`、`db.t%`、`srcdb.*:dstdb.*` 会分别按源端/目标端对象范围检查 `SELECT` 或修复所需权限。
 
-**表不存在时的输出行为**：当 `tables` 指定的表在源端或两端均不存在时，程序会在结果表格中输出一行对应记录，`Diffs=yes`、`Datafix=file`，`CheckObject` 列显示用户实际配置的校验模式（`data` 或 `struct`），不再硬编码为 `struct`。
+**表不存在时的输出行为**：当 `checkObject=data` 发现源端或目标端表缺失（含两端均缺失）时，程序会在结果表格中保留对应记录，标记 `Diffs=DDL-yes` 并跳过该表的数据校验，提示改用 `checkObject=struct` 检查和修复表结构。若目标端表元数据不可见且目标端账号缺少必要权限，程序会先报权限错误，不再把它误判为缺表并生成建表修复 SQL。
 
 ### `checkObject=data` 的前置条件
 
 1. 源端与目标端 `srcDSN`、`dstDSN` 中的 `charset` 参数必须一致；如果两端字符集不一致，程序会在启动阶段直接退出，避免出现数据校验结果失真或修复后乱码的问题。
 2. 当源端为 `MariaDB` 时，仅支持 `MariaDB 10.x+ -> MySQL 8.0/8.4` 的数据校验/修复路径；其他 `MariaDB` 组合仍会在启动阶段直接拒绝执行。
-3. 当数据校验前发现表结构不一致时，程序不会继续做该表的数据比对，而是保留结果并将 `Diffs` 标记为 `DDL-yes`。如果需要进一步修复表结构，请改用 `checkObject=struct`。
+3. 当数据校验前发现源端/目标端表存在性不一致或表结构不一致时，程序不会继续做该表的数据比对，而是保留结果并将 `Diffs` 标记为 `DDL-yes`。如果需要进一步修复表结构，请改用 `checkObject=struct`。
 4. **连接池容量**：`data` 模式下，程序内部同时运行 `queryTableDataSeparate`（checksum 比较）与 `AbnormalDataDispos`（差异处理）两条并发 pipeline，各自最多占用 `parallelThds` 个连接，单侧峰值约为 `parallelThds*2 + 2`。程序自动按 `parallelThds*2 + 4`（最低 8）设置单侧连接池下限，请确保数据库 `max_connections` 足以承载 `(parallelThds*2 + 4) * 2`（源端+目标端）个连接。`struct`/`routine`/`trigger` 模式单侧固定为 3 个连接，与 `parallelThds` 无关。
 
 ### `columns` 只校验部分字段与修复
@@ -528,7 +530,8 @@ SET character_set_client = DEFAULT;
 |---|---|---|---|
 | `mariaDBJSONTargetType` | `JSON` / `LONGTEXT` / `TEXT` | `JSON` | 控制 `MariaDB JSON` alias 在 `MariaDB -> MySQL 8.0/8.4` 结构迁移时的目标列类型。`JSON` 语义最接近；`LONGTEXT` 适合作为兼容性保底；`TEXT` 当前已实现但未纳入发布级实库基线。 |
 | `dTypeMappingFile` | 文件路径 | 空 | 用户自定义数据类型映射规则文件路径，支持 YAML（`.yaml`/`.yml`）或 JSON（`.json`）格式。不设置则使用内置默认映射规则。规则采用 first-match 语义：文件中先定义的规则优先生效。支持三种迁移场景：`oracle_to_mysql` / `mysql_upgrade` / `mariadb_to_mysql`。详见下方 [dTypeMapping 数据类型映射规则](#dtype-mapping-数据类型映射规则) 章节。 |
-| `datafix` | `file` / `table` | `file` | `checkObject=struct` 场景建议固定为 `file`，先生成 fix SQL 供 DBA 审查，再使用 `repairDB` 回放。 |
+| `datafix` | `file` / `table` | `file` | `checkObject=struct` 场景建议固定为 `file`；若配置为 `table`，当前版本也会强制导出 fix SQL 文件供 DBA 审查，不直接在线修改目标对象。 |
+| `fixFileDir` | 目录路径 | `fixsql` | 修复 SQL 输出目录；在 `datafix=file` 以及 `checkObject!=data && datafix=table` 的强制导出场景生效，每个对象按 `type.schema.object.sql` 命名。 |
 | `requirePK` | `ON` / `OFF` | `OFF` | 仅在 `checkObject=struct` 模式下生效。`ON` 时为无主键表自动添加 `my_row_id` 隐藏列（需同时满足：无主键、无 NOT NULL 唯一索引、目标端未启用 `sql_generate_invisible_primary_key`）。适用于 MySQL 单机实例迁移到 MGR 环境的场景。 |
 
 ### SSL 连接参数
@@ -767,6 +770,8 @@ mariaDBJSONTargetType = LONGTEXT
 
 ### 结构迁移标准操作步骤
 
+安全起见，`checkObject=struct`（以及 routine/trigger 等非 data 对象）不会因 `datafix=table` 直接在线修改目标对象；程序会导出 fix SQL 文件，交由 DBA 审查后再通过 `repairDB` 或人工方式回放。
+
 建议按以下步骤执行 `checkObject=struct`：
 
 1. 首轮 compare：执行 `gt-checksum -c ...` 生成 fix SQL 与 advisory SQL；
@@ -800,7 +805,7 @@ gt_checksum  tb_emp6               data               DDL-yes  file
 说明如下：
 
 1. `Diffs=DDL-yes` 表示当前表存在 DDL 差异，当前轮次不会继续做数据比对。
-2. `Rows` 列固定显示为空值，这是预期行为，用于避免列差异信息过长时破坏终端表格布局。
+2. 对普通列/索引/分区结构差异，`Rows` 列通常为空，用于避免列差异信息过长时破坏终端表格布局；对表存在性不一致，`Rows` 可能显示 `table missing on source/target/both` 等原因。
 3. 若需查看具体差异字段，请检查运行日志；日志中会记录 `Extra=[...]`、`Missing=[...]` 等详细信息。
 
 当结构 compare 已收敛，但仍保留明确可解释的残余风险时，结果会显示为 `warn-only`。例如：
