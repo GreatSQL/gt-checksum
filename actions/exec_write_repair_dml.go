@@ -147,7 +147,12 @@ func (rs repairSqlStruct) execRepairSql(sqlstr []string, dbType string, logThrea
 					return err
 				}
 			} else {
-				if _, err = conn.ExecContext(ctx, i); err != nil {
+				if dbType == "mysql" {
+					err = execRepairStatementWithDupKeySplit(ctx, conn, i, logThreadSeq, "single transaction")
+				} else {
+					_, err = conn.ExecContext(ctx, i)
+				}
+				if err != nil {
 					vlog = fmt.Sprintf("(%d) Failed to prepare dataFix SQL: %s. Error: %s. Starting rollback", logThreadSeq, i, err)
 					global.Wlog.Error(vlog)
 					conn.ExecContext(ctx, "ROLLBACK")
@@ -189,7 +194,13 @@ func (rs repairSqlStruct) execRepairSql(sqlstr []string, dbType string, logThrea
 						return err
 					}
 				} else {
-					if _, err = conn.ExecContext(ctx, sql); err != nil {
+					if dbType == "mysql" {
+						location := fmt.Sprintf("batch %d-%d statement %d", i+1, end, j+1)
+						err = execRepairStatementWithDupKeySplit(ctx, conn, sql, logThreadSeq, location)
+					} else {
+						_, err = conn.ExecContext(ctx, sql)
+					}
+					if err != nil {
 						vlog = fmt.Sprintf("(%d) Failed to execute repair SQL: %s. Error: %s. Starting rollback for batch %d-%d", logThreadSeq, sql, err, i+1, end)
 						global.Wlog.Error(vlog)
 						conn.ExecContext(ctx, "ROLLBACK")
