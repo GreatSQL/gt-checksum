@@ -17,14 +17,14 @@ MySQL DBA经常使用 **pt-table-checksum** 和 **pt-table-sync** 进行数据�
 
 - **[功能新增]** 新增断点续传能力，`gt-checksum` 数据校验和 `repairDB` 可通过 `resume=ON/ASK` 在异常退出后继续执行；`gt-checksum` 会校验旧断点和多个 running 进度文件，`repairDB` 中断时会等待已开始文件完成，避免续传重放半执行文件。
 - **[功能新增]** 新增 `dTypeMappingFile` 参数，支持用户自定义数据类型映射规则（YAML/JSON），覆盖 `oracle_to_mysql`、`mysql_upgrade`、`mariadb_to_mysql` 三种迁移场景，支持 `schema/table/column` 级别精细化控制。
-- **[功能新增]** 新增反向回滚SQL生成能力，通过 `genRollSQL/maxRollRowNum/rollFileDir` 等参数控制，支持为修复SQL自动生成对应的回滚语句，便于修复出错时快速回退。
+- **[功能新增]** 新增反向回滚SQL生成能力，通过 `genRollSQL/maxRollRowNum/rollFileDir` 等参数控制，在 `checkObject=data` 且 `datafix=file/table` 时可为修复SQL自动生成对应的回滚语句；`datafix=table` 在线修复也会同步写出 rollback SQL，后续可使用 `repairDB ./rollsql` 快速回退。
 - **[功能新增]** 新增 SSL 加密连接支持，源端和目标端可独立配置 SSL 参数，支持五种模式（`DISABLED/PREFERRED/REQUIRED/VERIFY_CA/VERIFY_IDENTITY`）。
 - **[功能优化]** 完善权限预检与修复安全策略：区分源端/目标端角色，支持通配/映射规则压缩检查；目标端表不可见时先提示权限不足，非 `data` 对象自动导出 fix SQL。
 - **[功能优化]** 优化 COLLATE 修复逻辑，当存在 `dTypeMapping` 规则覆盖时自动生成列级 MODIFY COLUMN SQL，而非表级 CONVERT TO SQL。
 - **[性能优化]** 断点续传模式下，行数统计（估算值和精确 COUNT(*)）写入进度文件缓存，续传时直接读取，避免重复扫描大表；源端和目标端行数改为并行查询，减少等待时间。
 - **[性能优化]** 优化数据校验行数统计流程，源端和目标端行数改为并行查询；同时改进无主键表 DELETE 修复逻辑，避免 NULL 值导致的语句生成错误。
-- **[问题修复]** 修复无索引表在 `datafix=table` 下未在线执行 `DELETE`/`INSERT` 的问题，避免再次校验仍持续报差异。
-- **[问题修复]** 修复 `repairDB` 执行 multi-values INSERT 遇到 `Duplicate entry` 时整条语句失败的问题；现在会在内存中拆成单行 INSERT 重试，重复行记录 `[DUPKEY-SPLIT]` 日志并跳过，不改写原 SQL 文件。
+- **[问题修复]** 修复无索引表在 `datafix=table` 下未在线执行 `DELETE`/`INSERT` 的问题，避免再次校验仍持续报差异；同时在线修复按 `DELETE → INSERT/UPDATE` 顺序执行，降低同批差异主键或唯一键重复冲突风险。
+- **[问题修复]** 修复 `repairDB` 执行 multi-values INSERT 遇到 `Duplicate entry` 时整条语句失败的问题；`repairDB` 受 `splitInsertOnDupKey` 控制，`gt-checksum` 在线修复路径也会在 MySQL 重复键时自动拆分重试并记录 `[DUPKEY-SPLIT]`，当前无独立开关。
 - **[问题修复]** 修复 Oracle NUMBER(19,0) 类型映射精度阈值、tinyint(1) ↔ bit(1) 类型等价映射，以及 MySQL 数值列 INSERT 修复 SQL 字面量输出问题。
 - **[问题修复]** 修复 global.Wlog 空指针检查，避免日志初始化前 panic。
 
@@ -184,6 +184,12 @@ $ ./repairDB ./fixsql && cat ./repairDB.log
 2026/01/29 15:45:22 repairDB executed successfully
 ```
 这就表示完成修复，可以再次执行数据校验，确认数据一致性。
+
+如果启用了 `genRollSQL=ON` 或指定表名列表，程序会把反向回滚 SQL 写入 `rollFileDir`（默认 `rollsql`）。该能力适用于 `checkObject=data` 下的 `datafix=file` 和 `datafix=table`：前者在生成 fixsql 的同时生成 rollsql，后者在在线修复目标端的同时生成 rollsql。需要撤销本次修复时，可在确认目标端无业务并发写入且 rollback SQL 与实际修复范围一致后执行：
+
+```bash
+$ ./repairDB ./rollsql
+```
 
 **注意**：由于是并行执行数据修复工作，修复过程中可能产生事务死锁冲突。`repairDB` 在检测到 MySQL deadlock（Error 1213）时，会自动对当前失败的事务块（`BEGIN ... COMMIT`）执行重试，最多重试 3 次；而不会重试整个 SQL 文件，从而降低主键重复冲突风险。建议修复结束后检查 `repairDB.log`：若死锁在 3 次重试内已恢复，可直接再次执行校验；若仍有未恢复死锁或其他错误，再手动处理对应 SQL 文件。
 

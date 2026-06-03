@@ -5,13 +5,14 @@
 - [功能新增]: 新增 `progress` 包，提供公共的进度文件读写能力，支持原子写入（tmpfile + rename）和并发安全（sync.Mutex）。
 - [功能新增]: 新增 `dTypeMappingFile` 参数，支持用户自定义数据类型映射规则文件（YAML/JSON 格式），支持 `oracle_to_mysql`、`mysql_upgrade`、`mariadb_to_mysql` 三种迁移场景，支持 `schema/table/column` 级别的精细化映射规则，支持 `nullable`、`unsigned`、`autoinc`、`default` 等属性覆盖。
 - [功能新增]: 新增 `--preview-dtype-mapping` CLI 参数，用于预览数据类型映射规则表后退出，便于调试和验证规则配置。
-- [功能新增]: 新增反向回滚SQL生成能力，支持通过 `genRollSQL` 参数（ON/OFF/自定义表名）控制是否为修复SQL生成对应的回滚语句（`INSERT` 的回滚为 `DELETE`，`DELETE` 的回滚为 `INSERT`），支持有主键/无主键表，回滚SQL文件存储在 `rollFileDir` 目录下，仅在 `datafix=file` 且 `checkObject=data` 时生效。
-- [功能新增]: 新增 `maxRollRowNum` 参数（默认值 10000），单表待修复行数超过该阈值时不生成回滚SQL，避免大表回滚文件过大；目标端表为空时始终生成 `TRUNCATE TABLE` 回滚SQL（忽略本参数）。
+- [功能新增]: 新增反向回滚SQL生成能力，支持通过 `genRollSQL` 参数（ON/OFF/自定义表名）控制是否为修复SQL生成对应的回滚语句（`INSERT` 的回滚为 `DELETE`，`DELETE` 的回滚为 `INSERT`），支持有主键/无主键表，回滚SQL文件存储在 `rollFileDir` 目录下，在 `checkObject=data` 且 `datafix=file/table` 时生效；`datafix=table` 在线修复时会同步写出 rollback SQL，便于后续使用 `repairDB ./rollsql` 回退。
+- [功能新增]: 新增 `maxRollRowNum` 参数（默认值 10000），单表待修复行数超过该阈值时不生成回滚SQL，避免大表回滚文件过大；校验开始前目标端整表为空时始终生成 `TRUNCATE TABLE` 回滚SQL（忽略本参数）。
 - [功能新增]: 新增 SSL 加密连接支持，支持源端和目标端独立配置 SSL 参数（`srcSslCa/srcSslCert/srcSslKey/srcSslMode、dstSslCa/dstSslCert/dstSslKey/dstSslMode`），支持 `DISABLED/PREFERRED/REQUIRED/VERIFY_CA/VERIFY_IDENTITY` 五种模式。
 - [功能新增]: repairDB 工具新增目标端 SSL 连接配置支持（`dstSslCa/dstSslCert/dstSslKey/dstSslMode`）。
 - [功能新增]: gt-checksum 在 `checkObject=data` 且 `datafix=table` 时，终端与 CSV 结果新增 `Fixed` 修复状态列，用于报告在线修复 SQL 是否执行、跳过或发生报错。
 - [性能优化]: 断点续传模式下，估算行数和精确行数（COUNT(*)）写入进度文件缓存，续传时直接读取缓存，避免重复扫描全表，减少续传启动开销。
 - [性能优化]: 优化数据校验行数统计流程，count/sample/index/no-index 场景下源端与目标端行数改为并行查询，减少等待时间，并补充连接获取失败日志。
+- [功能优化]: 优化 `datafix=table` 在线修复执行顺序，先执行 `DELETE`，再执行 `INSERT/UPDATE`，降低同批差异中主键或唯一键重复冲突风险。
 - [功能优化]: 优化非 data 对象修复安全策略，`checkObject=struct/routine/trigger` 配置 `datafix=table` 时不直接在线修改目标对象，改为强制导出 fix SQL 文件供人工审核；`fixFileDir` 未配置时使用默认目录 `fixsql`。
 - [功能优化]: 优化 `tables`/`ignoreTables` 通配与映射规则的权限预检，保留原始 `tables` 规则并支持 `db.*`、`db.t%`、`srcdb.*:dstdb.*` 按源端/目标端角色压缩检查，源端元数据为空时输出可参考的 `GRANT SELECT` 建议。
 - [功能优化]: 优化断点续传在 `datafix=file` 场景下的 fixsql/rollsql 处理，续传时保留已完整提交的事务并清理不完整内容，避免重复生成修复SQL。
@@ -23,6 +24,9 @@
 - [功能优化]: 优化 MySQL `routine` 权限预检，按 MySQL 8.0.20+ `SHOW_ROUTINE`、8.0.0-8.0.19 全局 `SELECT`、MySQL 5.6/5.7 与 MariaDB `mysql.proc` 读取路径分别给出授权建议。
 - [功能优化]: 优化 `checkObject=data` 表级权限预检，区分源端和目标端角色；源端仅检查只读权限，目标端在 `datafix=table` 时继续检查在线修复所需的写权限。
 - [功能优化]: 优化 MySQL 全局权限预检，普通 `checkObject=data` 数据校验不再强制要求未实际使用的 `REPLICATION CLIENT` 权限，仅在 binlog/增量读取等需要复制状态的路径中条件化检查。
+- [问题修复]: 修复 gt-checksum 在线执行 multi-values `INSERT` 修复 SQL 遇到 `Duplicate entry` 时整批失败的问题；现在会拆分为单行 `INSERT` 重试，重复行记录 `[DUPKEY-SPLIT]` 日志并跳过。
+- [问题修复]: 修复回滚SQL writer 启动时序竞态，避免部分校验路径差异处理 goroutine 早于 rollback channel 初始化导致 rollback SQL 漏生成。
+- [问题修复]: 修复无索引表回滚 `TRUNCATE TABLE` 生成条件，只有校验开始前目标端整表为空时才生成，避免因单个 chunk 目标端为空被误判为整表可截断。
 - [问题修复]: 修复目标端表元数据不可见且权限不足时可能被误判为缺表并生成建表修复 SQL 的问题；现在会先执行目标端权限预检并提示 `Insufficient access permission to target table`。
 - [问题修复]: 优化 `checkObject=data` 表存在性不一致处理，源端或目标端表缺失时标记为 `DDL-yes` 并跳过数据校验，提示使用 `checkObject=struct` 检查和修复表结构。
 - [问题修复]: 修复无索引表在 `datafix=table` 场景下只生成修复语句但未在线执行的问题；现在差异数据会按目标端执行 `DELETE`/`INSERT` 修复，避免再次校验仍持续报差异。
@@ -40,6 +44,7 @@
 - [问题修复]: 修复 MySQL 数值列生成 INSERT 修复 SQL 时被写成字符串字面量的问题，BIGINT/DECIMAL/DOUBLE 等列会按合法数值字面量输出。
 - [问题修复]: 修复 `global.Wlog` 空指针检查，避免日志初始化前调用 `Debug/Warn` 等方法导致 panic。
 - [问题修复]: 修复 Oracle `NUMBER(19,0)` 类型映射精度阈值（从 18 调整为 19），并新增 `tinyint(1)` ↔ `bit(1)` 类型等价映射。
+- [测试完善]: 新增 gt-checksum 在线修复 duplicate key 拆分、`datafix=table` 执行顺序、rollback writer 文件模式/启动时序、无索引表 rollback `TRUNCATE` 条件等回归测试。
 - [测试完善]: 新增 `tables` 通配权限预检、目标表不可见、非 data 对象强制导出 fix SQL、源端元数据为空 GRANT 提示等回归测试。
 - [测试完善]: 新增无索引表 `datafix=table` 回归测试，覆盖在线修复批次不应被跳过的场景。
 - [测试完善]: 新增 `datafix=table` 修复状态回归测试，覆盖终端 `Fixed` 列、CSV `Fixed` 列、断点结果映射和修复错误标记。
@@ -50,4 +55,4 @@
 - [测试完善]: 新增断点续传进度文件、陈旧断点确认、多 running 进度文件和 fixsql 截断回归测试，覆盖进度读写、结果目录推导、已完成对象跳过、不完整事务截断等场景。
 - [测试完善]: 新增 `dtype_mapping` 单元测试，覆盖多种映射场景、条件表达式、对象级别匹配及边界情况。
 - [测试完善]: 新增 `schema_tab_struct_advisory`、`schema_tab_struct_column_existence`、`schema_tab_struct_struct`、`schema_tab_struct_util` 等多个单元测试，提升 struct 校验与修复逻辑的测试覆盖率。
-- [测试完善]: 新增回滚SQL生成相关的单元测试，覆盖 `rollback_sql_util.go` 和 `mergeDuplicateDeleteLimits` 函数的各种场景。
+- [测试完善]: 新增回滚SQL生成相关的单元测试，覆盖 `rollback_sql_util.go`、rollback rolling writer、TRUNCATE rollback 文件格式、repairDB rollback 文件阶段分类和 `mergeDuplicateDeleteLimits` 函数的各种场景。

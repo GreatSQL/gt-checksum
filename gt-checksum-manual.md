@@ -587,13 +587,13 @@ dstSslMode = VERIFY_CA
 
 ### 回滚SQL参数
 
-v4.0.0 新增反向回滚SQL生成功能。当 `datafix=file` 且 `checkObject=data` 时，可在生成修复SQL的同时，自动生成对应的反向回滚SQL，便于修复操作出错时快速回退。
+v4.0.0 新增反向回滚SQL生成功能。当 `checkObject=data` 且 `datafix=file/table` 时，可在生成修复SQL文件或在线修复目标端的同时，自动生成对应的反向回滚SQL，便于修复操作出错时快速回退。
 
 | 参数名 | 可选值 | 默认值 | 说明 |
 |---|---|---|---|
 | `genRollSQL` | `ON` / `OFF` / 自定义表名 | `OFF` | 是否生成反向回滚SQL。`ON`：对所有表生成；`OFF`：不生成（默认）；自定义：指定目标端表名（支持逗号分隔多个，支持 `%` 通配符），例如 `genRollSQL="gt_checksum.test1, gt_checksum.test%"` |
-| `maxRollRowNum` | 正整数 | `10000` | 单表待修复行数超过该值时不生成回滚SQL，避免大表回滚文件过大。特殊情况：目标端表为空时，始终生成 `TRUNCATE TABLE` 回滚SQL（忽略本参数） |
-| `rollFileDir` | 目录路径 | `rollsql` | 回滚SQL文件存储目录，仅在 `datafix=file` 且 `genRollSQL` 非 `OFF` 时生效 |
+| `maxRollRowNum` | 正整数 | `10000` | 单表待修复行数超过该值时不生成回滚SQL，避免大表回滚文件过大。特殊情况：校验开始前目标端整表为空时，始终生成 `TRUNCATE TABLE` 回滚SQL（忽略本参数） |
+| `rollFileDir` | 目录路径 | `rollsql` | 回滚SQL文件存储目录，仅在 `checkObject=data`、`datafix=file/table` 且 `genRollSQL` 非 `OFF` 时生效 |
 
 **回滚SQL生成规则**：
 
@@ -602,25 +602,41 @@ v4.0.0 新增反向回滚SQL生成功能。当 `datafix=file` 且 `checkObject=d
 | `INSERT`（源端有、目标端无） | `DELETE` | 删除被插入的行 |
 | `DELETE`（目标端有、源端无） | `INSERT` | 重新插入被删除的行 |
 | `UPDATE`（值不同） | `DELETE 新行 + INSERT 旧行` | 恢复目标端原始值 |
-| 目标端为空（全量插入） | `TRUNCATE TABLE` | 每表只生成一次，清空目标端 |
+| 校验开始前目标端整表为空（全量插入） | `TRUNCATE TABLE` | 每表只生成一次，清空目标端；不会因单个 chunk 目标端为空触发 |
 
 **注意事项**：
-1. 仅在 `datafix=file` 且 `checkObject=data` 时生效，其他模式下忽略。
-2. 对于无主键/唯一键的表，相同 WHERE 条件的多条 DELETE 回滚语句会自动合并 LIMIT 值。
-3. 回滚SQL文件命名格式：`rollsql/table.<schema>.<table>.rollback-<TYPE>-<seq>.sql`。
-4. 回滚SQL文件使用与修复SQL相同的事务管理和分片策略。
-5. 回滚SQL文件亦可支持调用 repairDB 工具完成自动回滚。
+1. 仅在 `checkObject=data` 且 `datafix=file/table` 时生效，`checkObject=struct/routine/trigger` 不生成 data rollback SQL。
+2. `datafix=table` 在线修复时，rollback SQL 只写入 `rollFileDir` 文件，不会在 gt-checksum 修复过程中被执行。
+3. 对于无主键/唯一键的表，相同 WHERE 条件的多条 DELETE 回滚语句会自动合并 LIMIT 值。
+4. 回滚SQL文件命名格式：`rollsql/table.<schema>.<table>.rollback-<TYPE>-<seq>.sql`。
+5. 回滚SQL文件使用与修复SQL相同的 session preamble、事务管理和分片策略，可直接通过 `repairDB ./rollsql` 执行。
+6. rollback SQL 是“本次修复前目标端状态”的反向脚本，不等同于数据库时间点恢复；修复执行失败、目标端有业务并发写入或修复范围被人工修改时，执行前必须人工审计。
+7. `TRUNCATE TABLE` rollback 文件仅在校验开始前确认目标端整表为空时生成；文件也会写入 preamble 和事务边界，但 MySQL `TRUNCATE` 本身是 DDL 且会隐式提交，执行前需特别验证执行顺序和业务语义。
 
 **使用示例**：
 
 ```ini
-; 为所有表生成回滚SQL
+; 生成 fixsql 文件的同时为所有表生成回滚SQL
+checkObject = data
+datafix = file
+genRollSQL = ON
+rollFileDir = ./rollsql
+
+; 在线修复目标端，同时把本次修复对应的回滚SQL写入 rollsql
+checkObject = data
+datafix = table
 genRollSQL = ON
 rollFileDir = ./rollsql
 
 ; 仅对指定表生成回滚SQL
 genRollSQL = "mydb.users, mydb.orders%"
 maxRollRowNum = 5000
+```
+
+需要撤销本次修复时，可复用现有 repairDB 执行 rollback 目录：
+
+```bash
+./repairDB ./rollsql
 ```
 
 ### dTypeMapping 数据类型映射规则
@@ -832,6 +848,12 @@ gt_phase1_mariadb105 t_mariadb_feature_pack      struct       warn-only  file
 - `SET INNODB_LOCK_WAIT_TIMEOUT=1073741824`
 
 对于仅在 `MySQL 8.0` 中支持的 `sql_require_primary_key` 与 `sql_generate_invisible_primary_key`，程序会使用 **MySQL versioned comments** 包裹；因此同一套 fix SQL 可以兼容 `MySQL 5.6/5.7/8.0/8.4`，低版本实例会自动忽略不支持的 `session` 变量设置。
+
+### `datafix=table` 在线修复执行顺序
+
+当 `checkObject=data` 且 `datafix=table` 时，`gt-checksum` 会直接在目标端执行本次差异对应的修复 SQL。为降低同一批差异中主键或唯一键冲突风险，当前版本会先执行 `DELETE`，再执行暂存的 `INSERT/UPDATE`；无索引表也遵循同样的 `DELETE → INSERT → UPDATE` 顺序。
+
+在 MySQL 在线修复路径中，若 multi-values `INSERT` 因 `Duplicate entry` 失败，程序会在内存中拆分为单行 `INSERT` 重试；仍然重复的行会记录 `[DUPKEY-SPLIT]` 日志并跳过，其他行继续执行。若遇到非重复键错误，则保持原有失败行为并标记本次在线修复失败。该逻辑仅作用于 `gt-checksum` 在线修复路径，不受 `repairDB` 的 `splitInsertOnDupKey` 参数控制。
 
 ### MariaDB 源端权限检查说明
 
@@ -1243,7 +1265,7 @@ CSV 文件使用 UTF-8 BOM 编码，可直接用 Excel 或 WPS 打开，无需�
 |-------|------|-------|------|
 | dstDSN | string | 无 | 目标数据库连接字符串，格式为 `mysql|user:password@tcp(host:port)/db?params` |
 | parallelThds | int | 4 | 并行执行SQL文件的线程数 |
-| fixFileDir | string | fixsql | 存放修复SQL文件的目录 |
+| fixFileDir | string | fixsql | 存放待执行 SQL 文件的目录；执行 rollback 时可通过位置参数指定 `./rollsql` 覆盖该目录 |
 | logbin | string | ON | 控制修复时是否写入 binlog；`OFF` 时每条连接执行 `SET sql_log_bin=0`，需要 SUPER 或 SESSION_VARIABLES_ADMIN 权限 |
 | splitInsertOnDupKey | string | ON | 控制 multi-values INSERT 遇到 `Duplicate entry` 时是否自动拆分为单行 INSERT 重试；`OFF` 时保留整条语句失败 |
 | resultFile | string | 空 | 自定义 CSV 报告输出路径；留空时自动使用默认路径格式 `result/repairDB-result-<timestamp>.csv`；命令行参数 `--result-file` 优先级高于此配置项 |
@@ -1256,7 +1278,7 @@ CSV 文件使用 UTF-8 BOM 编码，可直接用 Excel 或 WPS 打开，无需�
 ### 执行流程
 
 1. 读取配置文件或命令行参数（命令行参数只能指定 fixsql 所在目录，不支持指定其他参数）；
-2. 扫描指定目录下的所有 `.sql` 文件，并按对象类型分为六个阶段（DELETE / TABLE / VIEW / ROUTINE / TRIGGER / UNKNOWN）；
+2. 扫描指定目录下的所有 `.sql` 文件（可为普通 `fixsql` 目录，也可为 `rollsql` 回滚目录），并按对象类型分为六个阶段（DELETE / TABLE / VIEW / ROUTINE / TRIGGER / UNKNOWN）；
 3. 若启用 `resume`，读取 `<fixFileDir>/.repairDB-progress.json`，跳过已经成功执行的 SQL 文件；
 4. 打印各阶段文件数量汇总；若存在 UNKNOWN 文件，额外打印 Warn 日志；
 5. 按 DELETE→TABLE→VIEW→ROUTINE→TRIGGER→UNKNOWN 顺序逐阶段执行；每个阶段单独建立连接池、执行完成后关闭；
@@ -1295,7 +1317,7 @@ CSV 文件使用 UTF-8 BOM 编码，可直接用 Excel 或 WPS 打开，无需�
 
 3. **事务管理**：按SQL执行单元处理事务。`BEGIN ... COMMIT` 内的语句作为一个事务块执行，失败时回滚该事务块；普通语句按语句级执行。
 
-4. **执行顺序**：按六阶段固定顺序执行：DELETE→TABLE→VIEW→ROUTINE→TRIGGER→UNKNOWN。DELETE 阶段优先清理旧数据；TABLE 阶段采用随机 shuffle 降低同表锁争用；VIEW/ROUTINE/TRIGGER/UNKNOWN 阶段使用稳定排序以保证审计可读性和确定性回放。无法识别前缀的文件进入 UNKNOWN 阶段最后执行，并打印 Warn 提示。
+4. **执行顺序**：按六阶段固定顺序执行：DELETE→TABLE→VIEW→ROUTINE→TRIGGER→UNKNOWN。DELETE 阶段优先清理旧数据；TABLE 阶段采用随机 shuffle 降低同表锁争用；VIEW/ROUTINE/TRIGGER/UNKNOWN 阶段使用稳定排序以保证审计可读性和确定性回放。无法识别前缀的文件进入 UNKNOWN 阶段最后执行，并打印 Warn 提示。执行 `repairDB ./rollsql` 时，`rollback-DELETE` 文件进入 DELETE 阶段，`rollback-INSERT` 与 `rollback-TRUNCATE` 文件进入 TABLE 阶段；普通 DML rollback 会先删除本次修复插入的新行，再插回本次修复删除的旧行。
 
 5. **错误处理**：遇到死锁错误（Error 1213）时会自动重试当前失败事务块，最多 3 次；若仍失败或遇到非死锁错误，则停止并输出错误信息。
 
@@ -1532,7 +1554,7 @@ result=PARTIAL_SUCCESS continue_on_error=true
 - 当表校验结果仅存在partition定义不一致时，报告Diffs=yes，但生成的fixSQL中的SQL语句是被注释的，不会被repairDB执行，需要DBA手动调整修复，避免误操作导致数据丢失。在 Oracle→MySQL 场景下，分区比对行为有所不同：仅做存在性比对并输出 advisory 告警，不生成任何分区修复 SQL，原因是 Oracle 与 MySQL 的分区语法差异过大，不适合自动转换；DBA 需根据 advisory 输出手动在目标端重建分区定义。
   - **v3.0.0 增强**：当为无主键分区表添加 `my_row_id` 时（`requirePK=ON`），程序会自动提取分区列并生成包含分区列的主键定义，确保修复 SQL 符合 MySQL 分区表主键约束（分区表主键必须包含分区列）。
 
-- 为了安全起见，当设置checkObject=data之外的其他值时，即便同时设置datafix=table，也不会直接在线完成修复，需要改成datafix=file，生成fix SQL后再由DBA手动完成。
+- 为了安全起见，当设置 `checkObject=data` 之外的其他值时，即便同时设置 `datafix=table`，程序也不会直接在线完成修复，而是强制导出 fix SQL 文件，生成后再由 DBA 审查并手动执行。
 
 - 当设置 `checkObject=trigger` 或 `routine` 时，如果连接数据库的账号没有相应的权限而无法读取到元数据，会导致检查结果不完整。当前版本在 charset 元数据查询失败时会输出 `Warn` 级别日志，但仍需先授予相应权限才能确保结果准确。
 
