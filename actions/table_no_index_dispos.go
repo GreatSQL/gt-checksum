@@ -398,6 +398,108 @@ func shouldApplyNoIndexFixBatch(datafixType string) bool {
 	return datafixType == "file" || datafixType == "table"
 }
 
+func (sp *SchedulePlan) fixSqlExecTableModeOrdered(sqlStrExec <-chan string, logThreadSeq int64) {
+	maxFileSizeBytes := int64(sp.fixTrxSize) * 1024 * 1024
+	if maxFileSizeBytes <= 0 {
+		maxFileSizeBytes = 4 * 1024 * 1024
+	}
+	maxStmtPerBatch := sp.fixTrxNum
+	if maxStmtPerBatch <= 0 {
+		maxStmtPerBatch = 1000
+	}
+	stageBatchBytes := maxFileSizeBytes
+	if stageBatchBytes > 32*1024*1024 {
+		stageBatchBytes = 32 * 1024 * 1024
+	}
+
+	deleteStage := newTableModeSQLStage("NOINDEX-DELETE")
+	insertStage := newTableModeSQLStage("NOINDEX-INSERT")
+	updateStage := newTableModeSQLStage("NOINDEX-UPDATE")
+	defer deleteStage.cleanup(logThreadSeq)
+	defer insertStage.cleanup(logThreadSeq)
+	defer updateStage.cleanup(logThreadSeq)
+
+	stageBatch := func(stage *tableModeSQLStage, sqlType string, batch []string) {
+		if len(batch) == 0 {
+			return
+		}
+		stagedSQL := batch
+		if sqlType != "UPDATE" {
+			stagedSQL = optimizeSqlStatements(batch, sp.fixTrxNum, false, sp.deleteSqlSize, sp.insertSqlSize)
+		}
+		if err := stage.stageSQLs(stagedSQL); err != nil {
+			sp.markDatafixTableError(fmt.Sprintf("Failed to stage no-index %s fixsql for %s.%s", sqlType, sp.schema, sp.table), err)
+		}
+	}
+	executeStage := func(stage *tableModeSQLStage, sqlType string) {
+		if stage == nil || stage.path == "" {
+			return
+		}
+		handler := func(sqls []string) error {
+			if err := writeOptimizedSqlChunk(sqls, sp.datafixType, nil, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum); err != nil {
+				sp.markDatafixTableError(fmt.Sprintf("Failed to apply staged no-index %s fixsql for %s.%s", sqlType, sp.schema, sp.table), err)
+			}
+			return nil
+		}
+		if err := stage.execute(maxStmtPerBatch, stageBatchBytes, handler); err != nil {
+			sp.markDatafixTableError(fmt.Sprintf("Failed to read staged no-index %s fixsql for %s.%s", sqlType, sp.schema, sp.table), err)
+		}
+	}
+
+	deleteBatch := make([]string, 0, maxStmtPerBatch)
+	insertBatch := make([]string, 0, maxStmtPerBatch)
+	updateBatch := make([]string, 0, maxStmtPerBatch)
+	var deleteBatchBytes, insertBatchBytes, updateBatchBytes int64
+	flushDelete := func() {
+		stageBatch(deleteStage, "DELETE", deleteBatch)
+		deleteBatch = deleteBatch[:0]
+		deleteBatchBytes = 0
+	}
+	flushInsert := func() {
+		stageBatch(insertStage, "INSERT", insertBatch)
+		insertBatch = insertBatch[:0]
+		insertBatchBytes = 0
+	}
+	flushUpdate := func() {
+		stageBatch(updateStage, "UPDATE", updateBatch)
+		updateBatch = updateBatch[:0]
+		updateBatchBytes = 0
+	}
+
+	for sql := range sqlStrExec {
+		sqlType := detectFixSQLType(sql)
+		sqlBytes := int64(len(sql) + 1)
+		switch sqlType {
+		case "DELETE":
+			if len(deleteBatch) > 0 && (len(deleteBatch) >= maxStmtPerBatch || deleteBatchBytes+sqlBytes > stageBatchBytes) {
+				flushDelete()
+			}
+			deleteBatch = append(deleteBatch, sql)
+			deleteBatchBytes += sqlBytes
+		case "INSERT":
+			if len(insertBatch) > 0 && (len(insertBatch) >= maxStmtPerBatch || insertBatchBytes+sqlBytes > stageBatchBytes) {
+				flushInsert()
+			}
+			insertBatch = append(insertBatch, sql)
+			insertBatchBytes += sqlBytes
+		case "UPDATE":
+			if len(updateBatch) > 0 && (len(updateBatch) >= maxStmtPerBatch || updateBatchBytes+sqlBytes > stageBatchBytes) {
+				flushUpdate()
+			}
+			updateBatch = append(updateBatch, sql)
+			updateBatchBytes += sqlBytes
+		}
+	}
+	flushDelete()
+	flushInsert()
+	flushUpdate()
+
+	// 无索引表 table 模式也采用 repairDB 式阶段顺序，避免并发批次中 INSERT 抢在 DELETE 前执行。
+	executeStage(deleteStage, "DELETE")
+	executeStage(insertStage, "INSERT")
+	executeStage(updateStage, "UPDATE")
+}
+
 /*
 Perform MD5 verification on different data rows and remove duplicate values
 */
@@ -417,6 +519,10 @@ func (sp *SchedulePlan) FixSqlExec(sqlStrExec <-chan string, logThreadSeq int64)
 	}
 	tableFileName := fmt.Sprintf("%s/table.%s.%s.sql",
 		sp.datafixSql, fixFileNameEncode(noIdxFixSchema), fixFileNameEncode(sp.getDestTableName()))
+	if sp.datafixType == "table" {
+		sp.fixSqlExecTableModeOrdered(sqlStrExec, logThreadSeq)
+		return
+	}
 	writeToFile := func(sqls []string) error {
 		fileMu.Lock()
 		defer fileMu.Unlock()
@@ -558,7 +664,7 @@ func (sp *SchedulePlan) QueryTableData(beginSeq uint64, chunkSeq uint64, chanrow
 /*
 Perform MD5 verification on query strings, process differences if strings don't match
 */
-func (sp *SchedulePlan) QueryDataCheckSum(stt, dtt string, md5chan chan<- map[string]string, FileOpen FileOperate, chunkSeq uint64, logThreadSeq int64) {
+func (sp *SchedulePlan) QueryDataCheckSum(stt, dtt string, md5chan chan<- map[string]string, FileOpen FileOperate, chunkSeq uint64, logThreadSeq int64, targetTableInitiallyEmpty bool) {
 	var (
 		vlog string
 		aa   = &CheckSumTypeStruct{}
@@ -599,22 +705,27 @@ func (sp *SchedulePlan) QueryDataCheckSum(stt, dtt string, md5chan chan<- map[st
 		vlog = fmt.Sprintf("(%d) MD5 checksum mismatch in round %d for table without index %s", logThreadSeq, chunkSeq, displayTableName)
 		global.Wlog.Debug(vlog)
 
-		// rollback SQL：检查目标端是否为空，如果为空则生成 TRUNCATE 回滚（每表只写一次）
-		// 与有索引表逻辑保持一致（table_index_dispos_abnormal.go:364-369）
-		if sp.rollCC != nil && matchRollSQLTarget(sp.genRollSQL, sp.schema, sp.table) {
+		// rollback SQL：只有在校验开始前已确认目标端整表为空时，才生成 TRUNCATE 回滚。
+		// 不能用当前 chunk 的 dtt 为空来代表整张目标表为空，否则目标端非空但某个 chunk 无数据时会误生成整表 TRUNCATE。
+		if sp.rollCC != nil && targetTableInitiallyEmpty && matchRollSQLTarget(sp.genRollSQL, sp.schema, sp.table) {
 			destRows := strings.Split(dtt, "/*go actions rowData*/")
-			isTargetEmpty := true
+			isChunkTargetEmpty := true
 			for _, row := range destRows {
 				if row != "" {
-					isTargetEmpty = false
+					isChunkTargetEmpty = false
 					break
 				}
 			}
-			if isTargetEmpty {
-				tableKey := sp.schema + "." + sp.table
+			if isChunkTargetEmpty {
+				destSchema := sp.destSchema
+				if destSchema == "" {
+					destSchema = sp.schema
+				}
+				destTable := sp.getDestTableName()
+				tableKey := destSchema + "." + destTable
 				if _, loaded := sp.rollTruncateOnce.LoadOrStore(tableKey, true); !loaded {
-					sp.rollCC <- fmt.Sprintf("TRUNCATE TABLE `%s`.`%s`;", sp.schema, sp.table)
-					global.Wlog.Debugf("(%d) Generated TRUNCATE rollback SQL for empty target table %s.%s", logThreadSeq, sp.schema, sp.table)
+					sendRollback(sp.rollCC, fmt.Sprintf("TRUNCATE TABLE `%s`.`%s`;", destSchema, destTable))
+					global.Wlog.Debugf("(%d) Generated TRUNCATE rollback SQL for empty target table %s.%s", logThreadSeq, destSchema, destTable)
 				}
 			}
 		}
@@ -717,6 +828,35 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 		}
 	}
 
+	var sourceExactCount, targetExactCount int64
+	var sourceCountExact, targetCountExact bool
+	exactCached := false
+	loadExactRowStats := func() {
+		if exactCached {
+			return
+		}
+		if sp.ChecksumProgress != nil {
+			if cSrc, cDst, sExact, dExact, ok := sp.ChecksumProgress.GetTableExactRowStats(schemaTable); ok {
+				sourceExactCount, targetExactCount = cSrc, cDst
+				sourceCountExact, targetCountExact = sExact, dExact
+				exactCached = true
+				global.Wlog.Info(fmt.Sprintf("(%d) [RESUME] Using cached exact row stats for %s: source=%d, dest=%d", logThreadSeq, schemaTable, sourceExactCount, targetExactCount))
+			}
+		}
+		if !exactCached {
+			sourceExactCount, sourceCountExact, targetExactCount, targetCountExact = sp.getExactRowCountsParallel(sp.sourceSchema, sp.table, sp.destSchema, sp.getDestTableName(), logThreadSeq)
+			if sp.ChecksumProgress != nil {
+				_ = sp.ChecksumProgress.SetTableExactRowStats(schemaTable, sourceExactCount, targetExactCount, sourceCountExact, targetCountExact)
+			}
+			exactCached = true
+		}
+	}
+	targetTableInitiallyEmpty := false
+	if sp.shouldGenerateRollbackSQL() {
+		loadExactRowStats()
+		targetTableInitiallyEmpty = targetCountExact && targetExactCount == 0
+	}
+
 	// Determine resume offset: skip chunks already completed in a previous run.
 	if sp.ChecksumProgress != nil {
 		resumeOffset := sp.ChecksumProgress.GetSafeResumeOffset(schemaTable)
@@ -764,16 +904,7 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 	//Read files based on deduplicated data to find differences
 	dataFixC := sp.noIndexTableAbdataRead(uniqMD5C, logThreadSeq)
 	// 必须在 DataFixSql 之前设置 rollCC，否则 DataFixSql goroutine 处理数据时 sp.rollCC 为 nil
-	var rollDone chan struct{}
-	if matchRollSQLTarget(sp.genRollSQL, sp.schema, sp.table) && sp.datafixType == "file" {
-		rollCC := make(chanString, sp.mqQueueDepth)
-		sp.rollCC = rollCC
-		rollDone = make(chan struct{})
-		go func() {
-			sp.RollbackDispos(rollCC, int64(logThreadSeq))
-			close(rollDone)
-		}()
-	}
+	rollDone := sp.startRollbackDispos(sp.mqQueueDepth, int64(logThreadSeq))
 	sqlStrExec := sp.DataFixSql(dataFixC, &pods, logThreadSeq)
 
 	FileOper := FileOperate{File: sp.file, BufSize: 1024 * 4 * 1024, fileName: sp.TmpFileName}
@@ -810,7 +941,7 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 			} else {
 				tableRow <- dlength
 			}
-			sp.QueryDataCheckSum(stt, dtt, md5Chan, FileOper, Cycles, logThreadSeq)
+			sp.QueryDataCheckSum(stt, dtt, md5Chan, FileOper, Cycles, logThreadSeq, targetTableInitiallyEmpty)
 			// Mark this chunk as completed for break-resume.
 			if sp.ChecksumProgress != nil {
 				if err := sp.ChecksumProgress.MarkChunkCompleted(schemaTable, int64(chunkBeginSeq)); err != nil {
@@ -836,23 +967,7 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 	}
 	//Output verification result information
 	// 查询精确行数：resume 模式下优先使用缓存，避免重复 COUNT(*) 扫描
-	var sourceExactCount, targetExactCount int64
-	var sourceCountExact, targetCountExact bool
-	exactCached := false
-	if sp.ChecksumProgress != nil {
-		if cSrc, cDst, sExact, dExact, ok := sp.ChecksumProgress.GetTableExactRowStats(schemaTable); ok {
-			sourceExactCount, targetExactCount = cSrc, cDst
-			sourceCountExact, targetCountExact = sExact, dExact
-			exactCached = true
-			global.Wlog.Info(fmt.Sprintf("(%d) [RESUME] Using cached exact row stats for %s: source=%d, dest=%d", logThreadSeq, schemaTable, sourceExactCount, targetExactCount))
-		}
-	}
-	if !exactCached {
-		sourceExactCount, sourceCountExact, targetExactCount, targetCountExact = sp.getExactRowCountsParallel(sp.sourceSchema, sp.table, sp.destSchema, sp.getDestTableName(), logThreadSeq)
-		if sp.ChecksumProgress != nil {
-			_ = sp.ChecksumProgress.SetTableExactRowStats(schemaTable, sourceExactCount, targetExactCount, sourceCountExact, targetCountExact)
-		}
-	}
+	loadExactRowStats()
 	if !sourceCountExact {
 		global.Wlog.Warn(fmt.Sprintf("(%d) Source row count for %s.%s is not exact, fallback value=%d", logThreadSeq, sp.schema, sp.table, sourceExactCount))
 		if sourceExactCount == 0 && barTableRow > 0 {

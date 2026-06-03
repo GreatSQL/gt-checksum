@@ -1,6 +1,7 @@
 package actions
 
 import (
+	"bufio"
 	"fmt"
 	"gt-checksum/global"
 	"os"
@@ -8,6 +9,107 @@ import (
 	"strings"
 	"sync"
 )
+
+type tableModeSQLStage struct {
+	sqlType       string
+	path          string
+	file          *os.File
+	writer        *bufio.Writer
+	countsByChunk map[int64]int
+}
+
+func newTableModeSQLStage(sqlType string) *tableModeSQLStage {
+	return &tableModeSQLStage{
+		sqlType:       sqlType,
+		countsByChunk: make(map[int64]int),
+	}
+}
+
+func (s *tableModeSQLStage) ensureFile() error {
+	if s.file != nil {
+		return nil
+	}
+	file, err := os.CreateTemp("", "gt-checksum-datafix-table-*.sql")
+	if err != nil {
+		return err
+	}
+	s.path = file.Name()
+	s.file = file
+	s.writer = bufio.NewWriterSize(file, 4*1024*1024)
+	return nil
+}
+
+func (s *tableModeSQLStage) stageSQLs(sqls []string) error {
+	if len(sqls) == 0 {
+		return nil
+	}
+	if err := s.ensureFile(); err != nil {
+		return err
+	}
+	for _, sql := range sqls {
+		if strings.TrimSpace(sql) == "" {
+			continue
+		}
+		if _, err := s.writer.WriteString(sql + "\n"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *tableModeSQLStage) stage(batch []fixSQLItem, sqls []string) error {
+	if err := s.stageSQLs(sqls); err != nil {
+		return err
+	}
+	for _, item := range batch {
+		if item.ChunkSeq >= 0 {
+			s.countsByChunk[item.ChunkSeq]++
+		}
+	}
+	return nil
+}
+
+func (s *tableModeSQLStage) close() error {
+	if s == nil || s.file == nil {
+		return nil
+	}
+	if s.writer != nil {
+		if err := s.writer.Flush(); err != nil {
+			return err
+		}
+	}
+	if err := s.file.Close(); err != nil {
+		return err
+	}
+	s.file = nil
+	s.writer = nil
+	return nil
+}
+
+func (s *tableModeSQLStage) execute(maxStmt int, maxBytes int64, handler func([]string) error) error {
+	if s == nil || s.path == "" {
+		return nil
+	}
+	if err := s.close(); err != nil {
+		return err
+	}
+	return processSQLStageFile(s.path, maxStmt, maxBytes, handler)
+}
+
+func (s *tableModeSQLStage) cleanup(logThreadSeq int64) {
+	if s == nil {
+		return
+	}
+	if err := s.close(); err != nil && global.Wlog != nil {
+		global.Wlog.Warn(fmt.Sprintf("(%d) Failed to close staged %s fixsql file: %v", logThreadSeq, s.sqlType, err))
+	}
+	if s.path == "" {
+		return
+	}
+	if err := os.Remove(s.path); err != nil && !os.IsNotExist(err) && global.Wlog != nil {
+		global.Wlog.Warn(fmt.Sprintf("(%d) Failed to remove staged %s fixsql file %s: %v", logThreadSeq, s.sqlType, s.path, err))
+	}
+}
 
 func (sp *SchedulePlan) DataFixDispos(fixSQL chanFixSQLItem, logThreadSeq int64) {
 	var (
@@ -48,6 +150,18 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanFixSQLItem, logThreadSeq int64)
 			markChunkIfSafe(item.ChunkSeq)
 		}
 	}
+	markCountsWritten := func(counts map[int64]int) {
+		for chunkSeq, count := range counts {
+			if chunkSeq < 0 || count <= 0 {
+				continue
+			}
+			pendingSQLByChunk[chunkSeq] -= count
+			if pendingSQLByChunk[chunkSeq] < 0 {
+				pendingSQLByChunk[chunkSeq] = 0
+			}
+			markChunkIfSafe(chunkSeq)
+		}
+	}
 	itemsToSQL := func(items []fixSQLItem) []string {
 		sqls := make([]string, 0, len(items))
 		for _, item := range items {
@@ -85,8 +199,15 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanFixSQLItem, logThreadSeq int64)
 		deleteWriter *sqlRollingWriter
 		insertWriter *sqlRollingWriter
 		updateWriter *sqlRollingWriter
+		insertStage  *tableModeSQLStage
+		updateStage  *tableModeSQLStage
 	)
-	if sp.datafixType != "table" {
+	if sp.datafixType == "table" {
+		insertStage = newTableModeSQLStage("INSERT")
+		updateStage = newTableModeSQLStage("UPDATE")
+		defer insertStage.cleanup(logThreadSeq)
+		defer updateStage.cleanup(logThreadSeq)
+	} else {
 		deleteWriter = sp.newSQLRollingWriter("DELETE", maxStmtPerFile, maxFileSizeBytes, logThreadSeq)
 		insertWriter = sp.newSQLRollingWriter("INSERT", maxStmtPerFile, maxFileSizeBytes, logThreadSeq)
 		updateWriter = sp.newSQLRollingWriter("UPDATE", maxStmtPerFile, maxFileSizeBytes, logThreadSeq)
@@ -130,10 +251,10 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanFixSQLItem, logThreadSeq int64)
 			return nil
 		}
 		if sp.datafixType == "table" {
-			if err := writeOptimizedSqlChunk(optimized, sp.datafixType, nil, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum); err != nil {
-				sp.markDatafixTableError(fmt.Sprintf("Failed to apply INSERT fixsql for %s.%s", sp.schema, sp.table), err)
+			if err := insertStage.stage(batch, optimized); err != nil {
+				sp.markDatafixTableError(fmt.Sprintf("Failed to stage INSERT fixsql for %s.%s", sp.schema, sp.table), err)
+				markItemsWritten(batch)
 			}
-			markItemsWritten(batch)
 			return nil
 		}
 		beforeSeq := insertWriter.FileSeq()
@@ -152,10 +273,10 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanFixSQLItem, logThreadSeq int64)
 			return nil
 		}
 		if sp.datafixType == "table" {
-			if err := writeOptimizedSqlChunk(sqls, sp.datafixType, nil, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum); err != nil {
-				sp.markDatafixTableError(fmt.Sprintf("Failed to apply UPDATE fixsql for %s.%s", sp.schema, sp.table), err)
+			if err := updateStage.stage(batch, sqls); err != nil {
+				sp.markDatafixTableError(fmt.Sprintf("Failed to stage UPDATE fixsql for %s.%s", sp.schema, sp.table), err)
+				markItemsWritten(batch)
 			}
-			markItemsWritten(batch)
 			return nil
 		}
 		if err := updateWriter.write(sqls); err != nil {
@@ -208,6 +329,21 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanFixSQLItem, logThreadSeq int64)
 		updateBatch = updateBatch[:0]
 		updateBatchBytes = 0
 	}
+	executeTableStage := func(stage *tableModeSQLStage, sqlType string) {
+		if stage == nil || stage.path == "" {
+			return
+		}
+		handler := func(sqls []string) error {
+			if err := writeOptimizedSqlChunk(sqls, sp.datafixType, nil, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum); err != nil {
+				sp.markDatafixTableError(fmt.Sprintf("Failed to apply staged %s fixsql for %s.%s", sqlType, sp.schema, sp.table), err)
+			}
+			return nil
+		}
+		if err := stage.execute(stageBatchStmt, stageBatchBytes, handler); err != nil {
+			sp.markDatafixTableError(fmt.Sprintf("Failed to read staged %s fixsql for %s.%s", sqlType, sp.schema, sp.table), err)
+		}
+		markCountsWritten(stage.countsByChunk)
+	}
 
 	for item := range fixSQL {
 		if item.Done {
@@ -249,6 +385,12 @@ func (sp *SchedulePlan) DataFixDispos(fixSQL chanFixSQLItem, logThreadSeq int64)
 	flushDelete()
 	flushInsert()
 	flushUpdate()
+	if sp.datafixType == "table" {
+		// Mirror repairDB's phase order: apply all DELETE statements before any
+		// table-stage INSERT/UPDATE statements to avoid duplicate-key conflicts.
+		executeTableStage(insertStage, "INSERT")
+		executeTableStage(updateStage, "UPDATE")
+	}
 	for chunkSeq := range doneChunks {
 		markChunkIfSafe(chunkSeq)
 	}
@@ -428,7 +570,9 @@ func (sp *SchedulePlan) RollbackDispos(rollCC chanString, logThreadSeq int64) {
 		sqlBytes := int64(len(v) + 1)
 		switch sqlType {
 		case "TRUNCATE":
-			// Write TRUNCATE to a dedicated file (one-shot, not rolling)
+			// TRUNCATE rollback uses a dedicated file but still goes through the
+			// normal file writer so repairDB can execute it with session preamble
+			// and explicit transaction boundaries.
 			truncatePath := fmt.Sprintf("%s/table.%s.%s.rollback-TRUNCATE-1.sql",
 				sp.rollSqlDir,
 				fixFileNameEncode(func() string {
@@ -443,8 +587,12 @@ func (sp *SchedulePlan) RollbackDispos(rollCC chanString, logThreadSeq int64) {
 				sp.getErr(fmt.Sprintf("Failed to open rollback TRUNCATE file for %s.%s", sp.schema, sp.table), err)
 				continue
 			}
-			fmt.Fprintln(f, v)
-			f.Close()
+			if err := writeOptimizedSqlChunk([]string{v}, "file", f, sp.ddrive, sp.djdbc, logThreadSeq, sp.fixTrxNum); err != nil {
+				sp.getErr(fmt.Sprintf("Failed writing rollback TRUNCATE for %s.%s", sp.schema, sp.table), err)
+			}
+			if err := f.Close(); err != nil {
+				sp.getErr(fmt.Sprintf("Failed to close rollback TRUNCATE file for %s.%s", sp.schema, sp.table), err)
+			}
 			truncateCount++
 		case "INSERT":
 			if len(insertBatch) > 0 && (len(insertBatch) >= stageBatchStmt || insertBatchBytes+sqlBytes > stageBatchBytes) {

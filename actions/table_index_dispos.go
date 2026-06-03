@@ -468,16 +468,7 @@ func (sp *SchedulePlan) doIndexDataCheck() {
 
 	// 必须在 AbnormalDataDispos goroutine 启动之前设置 rollCC，
 	// 否则 goroutine 内部读取 sp.rollCC 时可能看到 nil（竞态）。
-	var rollDone chan struct{}
-	if matchRollSQLTarget(sp.genRollSQL, sp.schema, sp.table) && sp.datafixType == "file" {
-		rollCC := make(chanString, queueDepth)
-		sp.rollCC = rollCC
-		rollDone = make(chan struct{})
-		go func() {
-			sp.RollbackDispos(rollCC, logThreadSeq)
-			close(rollDone)
-		}()
-	}
+	rollDone := sp.startRollbackDispos(queueDepth, logThreadSeq)
 	go sp.AbnormalDataDispos(diffQueryData, fixSQL, logThreadSeq)
 	sp.DataFixDispos(fixSQL, logThreadSeq)
 	if rollDone != nil {

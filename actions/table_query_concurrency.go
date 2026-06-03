@@ -113,6 +113,9 @@ func (sp *SchedulePlan) markDatafixTableError(context string, err error) {
 	status.mu.Lock()
 	status.failed = true
 	status.mu.Unlock()
+	if global.Wlog == nil {
+		return
+	}
 	if context == "" {
 		global.Wlog.Error(fmt.Sprintf("datafix=table repair failed: %v", err))
 		return

@@ -360,7 +360,7 @@ func (sp *SchedulePlan) newRollbackSQLRollingWriter(sqlType string, maxStmtPerFi
 		startSeq = sp.resumeFixFileSeqs["rollback-"+sqlType]
 	}
 	return &sqlRollingWriter{
-		datafixType:  sp.datafixType,
+		datafixType:  "file",
 		ddrive:       sp.ddrive,
 		djdbc:        sp.djdbc,
 		logThread:    logThreadSeq,

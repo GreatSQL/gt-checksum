@@ -37,6 +37,38 @@ func matchRollSQLTarget(genRollSQL, schema, table string) bool {
 	return false
 }
 
+func (sp *SchedulePlan) shouldGenerateRollbackSQL() bool {
+	if sp == nil {
+		return false
+	}
+	if strings.ToLower(strings.TrimSpace(sp.checkObject)) != "data" {
+		return false
+	}
+	datafixType := strings.ToLower(strings.TrimSpace(sp.datafixType))
+	if datafixType != "file" && datafixType != "table" {
+		return false
+	}
+	if strings.TrimSpace(sp.rollSqlDir) == "" {
+		return false
+	}
+	return matchRollSQLTarget(sp.genRollSQL, sp.schema, sp.table)
+}
+
+func (sp *SchedulePlan) startRollbackDispos(queueDepth int, logThreadSeq int64) chan struct{} {
+	if !sp.shouldGenerateRollbackSQL() {
+		sp.rollCC = nil
+		return nil
+	}
+	rollCC := make(chanString, queueDepth)
+	sp.rollCC = rollCC
+	rollDone := make(chan struct{})
+	go func() {
+		sp.RollbackDispos(rollCC, logThreadSeq)
+		close(rollDone)
+	}()
+	return rollDone
+}
+
 // rollbackDeleteToInsert converts a DELETE fix SQL into a rollback INSERT statement.
 // It parses the WHERE clause of the DELETE to extract column-value pairs and reconstructs
 // an INSERT INTO statement. This handles pri/uni (no LIMIT) and mul (with LIMIT) formats.

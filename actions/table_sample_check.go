@@ -109,7 +109,7 @@ func (sp *SchedulePlan) sampSingleTableCheckProcessing(chanrowCount int, logThre
 			} else {
 				tableRow <- dlength
 			}
-			sp.QueryDataCheckSum(stt, dtt, md5Chan, FileOper, Cycles, logThreadSeq)
+			sp.QueryDataCheckSum(stt, dtt, md5Chan, FileOper, Cycles, logThreadSeq, false)
 			vlog = fmt.Sprintf("(%d) Completed MD5 checksum round %d for table without index %s.%s", logThreadSeq, Cycles, sp.schema, sp.table)
 			global.Wlog.Debug(vlog)
 		}(Cycles, beginSeq)
@@ -374,18 +374,10 @@ func (sp *SchedulePlan) DoSampleDataCheck() {
 		}()
 
 		go sp.queryTableDataSeparate(selectSql, make(chanMap), diffQueryData, tableColumn, scheduleCount, logThreadSeq)
+		// 必须在 AbnormalDataDispos goroutine 启动之前设置 rollCC，
+		// 否则 goroutine 内部读取 sp.rollCC 时可能看到 nil（竞态）。
+		rollDone := sp.startRollbackDispos(queueDepth, logThreadSeq)
 		go sp.AbnormalDataDispos(diffQueryData, fixSQL, logThreadSeq)
-		// 若需要生成回滚 SQL，创建 rollCC channel 并启动 RollbackDispos goroutine
-		var rollDone chan struct{}
-		if matchRollSQLTarget(sp.genRollSQL, sp.schema, sp.table) && sp.datafixType == "file" {
-			rollCC := make(chanString, queueDepth)
-			sp.rollCC = rollCC
-			rollDone = make(chan struct{})
-			go func() {
-				sp.RollbackDispos(rollCC, logThreadSeq)
-				close(rollDone)
-			}()
-		}
 		sp.DataFixDispos(fixSQL, logThreadSeq)
 		if rollDone != nil {
 			<-rollDone

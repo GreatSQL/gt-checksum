@@ -616,7 +616,10 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 		rc.SecondaryL.RepairV.MaxRollRowNum = 10000
 	}
 
-	if rc.SecondaryL.RepairV.Datafix == "file" && rc.SecondaryL.RepairV.GenRollSQL != "OFF" {
+	prepareRollFileDir := strings.EqualFold(rc.SecondaryL.RulesV.CheckObject, "data") &&
+		(strings.EqualFold(rc.SecondaryL.RepairV.Datafix, "file") || strings.EqualFold(rc.SecondaryL.RepairV.Datafix, "table")) &&
+		!strings.EqualFold(rc.SecondaryL.RepairV.GenRollSQL, "OFF")
+	if prepareRollFileDir {
 		rollFileDirValue := getLastConfigValue("rollFileDir")
 		if rollFileDirValue != "" {
 			rc.SecondaryL.RepairV.RollFileDir = rollFileDirValue
