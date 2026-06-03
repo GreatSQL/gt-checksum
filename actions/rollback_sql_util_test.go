@@ -300,3 +300,78 @@ func TestMatchRollSQLTarget(t *testing.T) {
 		}
 	}
 }
+
+func TestSchedulePlanShouldGenerateRollbackSQL(t *testing.T) {
+	tests := []struct {
+		name string
+		sp   SchedulePlan
+		want bool
+	}{
+		{
+			name: "datafix file enabled",
+			sp: SchedulePlan{
+				checkObject: "data",
+				datafixType: "file",
+				rollSqlDir:  "rollsql",
+				genRollSQL:  "ON",
+				schema:      "gt_checksum",
+				table:       "t1",
+			},
+			want: true,
+		},
+		{
+			name: "datafix table enabled",
+			sp: SchedulePlan{
+				checkObject: "data",
+				datafixType: "table",
+				rollSqlDir:  "rollsql",
+				genRollSQL:  "ON",
+				schema:      "gt_checksum",
+				table:       "t1",
+			},
+			want: true,
+		},
+		{
+			name: "check object not data",
+			sp: SchedulePlan{
+				checkObject: "struct",
+				datafixType: "table",
+				rollSqlDir:  "rollsql",
+				genRollSQL:  "ON",
+				schema:      "gt_checksum",
+				table:       "t1",
+			},
+			want: false,
+		},
+		{
+			name: "rollback dir empty",
+			sp: SchedulePlan{
+				checkObject: "data",
+				datafixType: "table",
+				genRollSQL:  "ON",
+				schema:      "gt_checksum",
+				table:       "t1",
+			},
+			want: false,
+		},
+		{
+			name: "custom target mismatch",
+			sp: SchedulePlan{
+				checkObject: "data",
+				datafixType: "table",
+				rollSqlDir:  "rollsql",
+				genRollSQL:  "gt_checksum.t2",
+				schema:      "gt_checksum",
+				table:       "t1",
+			},
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.sp.shouldGenerateRollbackSQL(); got != tt.want {
+				t.Fatalf("shouldGenerateRollbackSQL() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

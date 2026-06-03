@@ -338,3 +338,53 @@ func TestNoIndexDatafixTableAppliesRepairBatch(t *testing.T) {
 		})
 	}
 }
+
+func TestNoIndexTruncateRollbackRequiresTableLevelEmptyTarget(t *testing.T) {
+	origWlog := global.Wlog
+	global.Wlog = golog.NewWlog(filepath.Join(t.TempDir(), "no-index-rollback.log"), "debug")
+	defer func() { global.Wlog = origWlog }()
+
+	sp := &SchedulePlan{
+		rollCC:     make(chanString, 1),
+		genRollSQL: "ON",
+		schema:     "src",
+		table:      "t1",
+		destSchema: "dst",
+		destTable:  "t2",
+	}
+	md5Chan := make(chan map[string]string, 4)
+
+	sp.QueryDataCheckSum("1", "", md5Chan, FileOperate{}, 1, 1, false)
+	select {
+	case got := <-sp.rollCC:
+		t.Fatalf("unexpected TRUNCATE rollback for non-empty target table: %s", got)
+	default:
+	}
+}
+
+func TestNoIndexTruncateRollbackUsesTargetMapping(t *testing.T) {
+	origWlog := global.Wlog
+	global.Wlog = golog.NewWlog(filepath.Join(t.TempDir(), "no-index-rollback.log"), "debug")
+	defer func() { global.Wlog = origWlog }()
+
+	sp := &SchedulePlan{
+		rollCC:     make(chanString, 1),
+		genRollSQL: "ON",
+		schema:     "src",
+		table:      "t1",
+		destSchema: "dst",
+		destTable:  "t2",
+	}
+	md5Chan := make(chan map[string]string, 4)
+
+	sp.QueryDataCheckSum("1", "", md5Chan, FileOperate{}, 1, 1, true)
+	select {
+	case got := <-sp.rollCC:
+		want := "TRUNCATE TABLE `dst`.`t2`;"
+		if got != want {
+			t.Fatalf("TRUNCATE rollback = %q, want %q", got, want)
+		}
+	default:
+		t.Fatal("expected TRUNCATE rollback when target table is initially empty")
+	}
+}

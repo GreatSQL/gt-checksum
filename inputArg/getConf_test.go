@@ -72,3 +72,123 @@ func TestGetConfig_StructDatafixTableUsesDefaultFixFileDir(t *testing.T) {
 		t.Fatalf("expected default forced fix SQL directory to be created: %v", err)
 	}
 }
+
+func TestGetConfig_DataDatafixTableGenRollSQLPreparesRollFileDir(t *testing.T) {
+	workDir := t.TempDir()
+	rollDir := workDir + "/custom-rollsql"
+	configPath := workDir + "/gc.conf"
+	config := strings.Join([]string{
+		"srcDSN=mysql|user:pass@tcp(127.0.0.1:3306)/information_schema?charset=utf8mb4",
+		"dstDSN=mysql|user:pass@tcp(127.0.0.1:3307)/information_schema?charset=utf8mb4",
+		"tables=gt_checksum.*",
+		"checkObject=data",
+		"datafix=table",
+		"genRollSQL=ON",
+		"rollFileDir=" + rollDir,
+		"resume=OFF",
+	}, "\n") + "\n"
+	if err := os.WriteFile(configPath, []byte(config), 0644); err != nil {
+		t.Fatalf("failed to write temp config: %v", err)
+	}
+
+	rc := &ConfigParameter{Config: configPath}
+	rc.GetConfig()
+
+	if rc.SecondaryL.RepairV.RollFileDir != rollDir {
+		t.Fatalf("RollFileDir = %q, want %q", rc.SecondaryL.RepairV.RollFileDir, rollDir)
+	}
+	if _, err := os.Stat(rollDir); err != nil {
+		t.Fatalf("expected rollback SQL directory to be created: %v", err)
+	}
+}
+
+func TestGetConfig_DataDatafixTableGenRollSQLOffSkipsRollFileDir(t *testing.T) {
+	workDir := t.TempDir()
+	rollDir := workDir + "/custom-rollsql"
+	configPath := workDir + "/gc.conf"
+	config := strings.Join([]string{
+		"srcDSN=mysql|user:pass@tcp(127.0.0.1:3306)/information_schema?charset=utf8mb4",
+		"dstDSN=mysql|user:pass@tcp(127.0.0.1:3307)/information_schema?charset=utf8mb4",
+		"tables=gt_checksum.*",
+		"checkObject=data",
+		"datafix=table",
+		"genRollSQL=OFF",
+		"rollFileDir=" + rollDir,
+		"resume=OFF",
+	}, "\n") + "\n"
+	if err := os.WriteFile(configPath, []byte(config), 0644); err != nil {
+		t.Fatalf("failed to write temp config: %v", err)
+	}
+
+	rc := &ConfigParameter{Config: configPath}
+	rc.GetConfig()
+
+	if rc.SecondaryL.RepairV.RollFileDir != "" {
+		t.Fatalf("RollFileDir = %q, want empty when genRollSQL=OFF", rc.SecondaryL.RepairV.RollFileDir)
+	}
+	if _, err := os.Stat(rollDir); !os.IsNotExist(err) {
+		t.Fatalf("rollback SQL directory should not be created when genRollSQL=OFF, stat err=%v", err)
+	}
+}
+
+func TestGetConfig_StructDatafixTableGenRollSQLSkipsRollFileDir(t *testing.T) {
+	workDir := t.TempDir()
+	fixDir := workDir + "/custom-fixsql"
+	rollDir := workDir + "/custom-rollsql"
+	configPath := workDir + "/gc.conf"
+	config := strings.Join([]string{
+		"srcDSN=mysql|user:pass@tcp(127.0.0.1:3306)/information_schema?charset=utf8mb4",
+		"dstDSN=mysql|user:pass@tcp(127.0.0.1:3307)/information_schema?charset=utf8mb4",
+		"tables=gt_checksum.*",
+		"checkObject=struct",
+		"datafix=table",
+		"fixFileDir=" + fixDir,
+		"genRollSQL=ON",
+		"rollFileDir=" + rollDir,
+		"resume=OFF",
+	}, "\n") + "\n"
+	if err := os.WriteFile(configPath, []byte(config), 0644); err != nil {
+		t.Fatalf("failed to write temp config: %v", err)
+	}
+
+	rc := &ConfigParameter{Config: configPath}
+	rc.GetConfig()
+
+	if rc.SecondaryL.RepairV.RollFileDir != "" {
+		t.Fatalf("RollFileDir = %q, want empty for checkObject=struct", rc.SecondaryL.RepairV.RollFileDir)
+	}
+	if _, err := os.Stat(rollDir); !os.IsNotExist(err) {
+		t.Fatalf("rollback SQL directory should not be created for checkObject=struct, stat err=%v", err)
+	}
+}
+
+func TestGetConfig_DataDatafixFileGenRollSQLStillPreparesRollFileDir(t *testing.T) {
+	workDir := t.TempDir()
+	fixDir := workDir + "/custom-fixsql"
+	rollDir := workDir + "/custom-rollsql"
+	configPath := workDir + "/gc.conf"
+	config := strings.Join([]string{
+		"srcDSN=mysql|user:pass@tcp(127.0.0.1:3306)/information_schema?charset=utf8mb4",
+		"dstDSN=mysql|user:pass@tcp(127.0.0.1:3307)/information_schema?charset=utf8mb4",
+		"tables=gt_checksum.*",
+		"checkObject=data",
+		"datafix=file",
+		"fixFileDir=" + fixDir,
+		"genRollSQL=ON",
+		"rollFileDir=" + rollDir,
+		"resume=OFF",
+	}, "\n") + "\n"
+	if err := os.WriteFile(configPath, []byte(config), 0644); err != nil {
+		t.Fatalf("failed to write temp config: %v", err)
+	}
+
+	rc := &ConfigParameter{Config: configPath}
+	rc.GetConfig()
+
+	if rc.SecondaryL.RepairV.RollFileDir != rollDir {
+		t.Fatalf("RollFileDir = %q, want %q", rc.SecondaryL.RepairV.RollFileDir, rollDir)
+	}
+	if _, err := os.Stat(rollDir); err != nil {
+		t.Fatalf("expected rollback SQL directory to be created for datafix=file: %v", err)
+	}
+}

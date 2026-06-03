@@ -133,6 +133,22 @@ func TestDetectObjectStage(t *testing.T) {
 // classifySQLFiles
 // ---------------------------------------------------------------------------
 
+func TestDetectObjectStage_RollbackFiles(t *testing.T) {
+	cases := []struct {
+		path string
+		want string
+	}{
+		{"rollsql/table.db1.t1.rollback-DELETE-1.sql", "DELETE"},
+		{"rollsql/table.db1.t1.rollback-INSERT-1.sql", "TABLE"},
+		{"rollsql/table.db1.t1.rollback-TRUNCATE-1.sql", "TABLE"},
+	}
+	for _, tc := range cases {
+		if got := detectObjectStage(tc.path); got != tc.want {
+			t.Errorf("detectObjectStage(%q) = %q, want %q", tc.path, got, tc.want)
+		}
+	}
+}
+
 func TestClassifySQLFiles_Mixed(t *testing.T) {
 	input := []string{
 		"table.db1.t1.sql",
@@ -234,6 +250,39 @@ func TestBuildExecutionStages_ShuffleFlags(t *testing.T) {
 		if s.Shuffle != wantShuffle {
 			t.Errorf("stage %q: Shuffle=%v, want %v", s.Name, s.Shuffle, wantShuffle)
 		}
+	}
+}
+
+func TestBuildExecutionStages_RollbackFiles(t *testing.T) {
+	input := []string{
+		"rollsql/table.db1.t1.rollback-INSERT-1.sql",
+		"rollsql/table.db1.t1.rollback-DELETE-1.sql",
+		"rollsql/table.db1.t1.rollback-TRUNCATE-1.sql",
+	}
+	cf := classifySQLFiles(input)
+	stages := buildExecutionStages(cf)
+
+	if len(stages) != 2 {
+		t.Fatalf("stage count=%d, want 2", len(stages))
+	}
+	if stages[0].Name != "DELETE" {
+		t.Fatalf("first rollback stage=%q, want DELETE", stages[0].Name)
+	}
+	if stages[1].Name != "TABLE" {
+		t.Fatalf("second rollback stage=%q, want TABLE", stages[1].Name)
+	}
+	if len(stages[0].Files) != 1 || stages[0].Files[0] != "rollsql/table.db1.t1.rollback-DELETE-1.sql" {
+		t.Fatalf("DELETE stage files=%v, want rollback DELETE file", stages[0].Files)
+	}
+	if !stages[1].Shuffle {
+		t.Fatal("TABLE rollback stage should retain existing shuffle behavior")
+	}
+	wantTableFiles := []string{
+		"rollsql/table.db1.t1.rollback-INSERT-1.sql",
+		"rollsql/table.db1.t1.rollback-TRUNCATE-1.sql",
+	}
+	if !sliceEqual(sortedCopy(stages[1].Files), sortedCopy(wantTableFiles)) {
+		t.Fatalf("TABLE stage files=%v, want %v", stages[1].Files, wantTableFiles)
 	}
 }
 
