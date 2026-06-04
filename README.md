@@ -19,7 +19,7 @@ MySQL DBA经常使用 **pt-table-checksum** 和 **pt-table-sync** 进行数据�
 - **[功能新增]** 新增 `dTypeMappingFile` 参数，支持用户自定义数据类型映射规则（YAML/JSON），覆盖 `oracle_to_mysql`、`mysql_upgrade`、`mariadb_to_mysql` 三种迁移场景，支持 `schema/table/column` 级别精细化控制。
 - **[功能新增]** 新增反向回滚SQL生成能力，通过 `genRollSQL/maxRollRowNum/rollFileDir` 等参数控制，在 `checkObject=data` 且 `datafix=file/table` 时可为修复SQL自动生成对应的回滚语句；`datafix=table` 在线修复也会同步写出 rollback SQL，后续可使用 `repairDB ./rollsql` 快速回退。
 - **[功能新增]** 新增 SSL 加密连接支持，源端和目标端可独立配置 SSL 参数，支持五种模式（`DISABLED/PREFERRED/REQUIRED/VERIFY_CA/VERIFY_IDENTITY`）。
-- **[功能优化]** 完善权限预检与修复安全策略：区分源端/目标端角色，支持通配/映射规则压缩检查；目标端表不可见时先提示权限不足，非 `data` 对象自动导出 fix SQL。
+- **[功能优化]** 完善权限预检与修复安全策略：区分源端/目标端角色，支持通配/映射规则压缩检查；指定库表不可见或匹配为空时提示检查权限并给出 `SHOW GRANTS` / `GRANT SELECT` 建议，目标端表不可见时先提示权限不足，非 `data` 对象自动导出 fix SQL。
 - **[功能优化]** 优化 COLLATE 修复逻辑，当存在 `dTypeMapping` 规则覆盖时自动生成列级 MODIFY COLUMN SQL，而非表级 CONVERT TO SQL。
 - **[性能优化]** 断点续传模式下，行数统计（估算值和精确 COUNT(*)）写入进度文件缓存，续传时直接读取，避免重复扫描大表；源端和目标端行数改为并行查询，减少等待时间。
 - **[性能优化]** 优化数据校验行数统计流程，源端和目标端行数改为并行查询；同时改进无主键表 DELETE 修复逻辑，避免 NULL 值导致的语句生成错误。

@@ -14,7 +14,7 @@ $ gt-checksum -c ./gc.conf
 
 ## 数据库授权
 
-运行 gt-checksum 工具前，建议创建相应的专属数据库账户，并至少授予以下几个权限。当前权限预检会按 `checkObject` 和源端/目标端角色区分：`data` 模式源端只检查只读权限，目标端根据 `datafix=table` 检查在线修复权限；`struct` 配置 `datafix=table` 时会提前检查结构修复权限；MySQL 侧 `routine/trigger` 会按对象定义读取权限进行预检。对于 `db.*`、`db.t%`、`srcdb.*:dstdb.*` 等通配或映射规则，程序会按源端/目标端角色压缩权限检查目标，并在日志中输出可参考的 GRANT 建议。
+运行 gt-checksum 工具前，建议创建相应的专属数据库账户，并至少授予以下几个权限。当前权限预检会按 `checkObject` 和源端/目标端角色区分：`data` 模式源端只检查只读权限，目标端根据 `datafix=table` 检查在线修复权限；`struct` 配置 `datafix=table` 时会提前检查结构修复权限；MySQL 侧 `routine/trigger` 会按对象定义读取权限进行预检。对于 `db.*`、`db.t%`、`srcdb.*:dstdb.*` 等通配或映射规则，程序会按源端/目标端角色压缩权限检查目标；当指定对象元数据不可见或匹配结果为空时，日志会提示使用 `SHOW GRANTS` 检查账号权限，并输出可参考的 `GRANT SELECT` 建议。
   
 - MySQL端
 
@@ -86,7 +86,7 @@ $ gt-checksum -c ./gc.conf
 3. 缺失权限日志会按源端/目标端分别输出必需权限、缺失权限和建议 GRANT 语句；终端只显示概括性提示时，请打开 debug 日志确认具体缺失项。
 4. 当源端为 `MariaDB`、目标端为 `MySQL 8.0/8.4` 且 `checkObject=data` 时，当前版本会跳过源端 `MariaDB` 的全局权限预检查，不再要求 `SESSION_VARIABLES_ADMIN` 或 `REPLICATION CLIENT` 形式的 `MySQL` 权限名称；源端表级权限只检查 `SELECT`，目标端 `MySQL` 侧继续按数据校验/修复路径检查相应权限。
 5. `tables` 使用 `db.*`、`db.t%`、`srcdb.*:dstdb.*` 等通配或映射规则时，权限预检会保留原始 `tables` 规则，并按源端/目标端角色压缩为合适的 schema/table 粒度检查目标。
-6. 若源端元数据查询为空，日志会提示检查 `tables` 配置和源端 `SELECT` 权限，并尽量给出 `GRANT SELECT ON ...` 示例；若目标端表元数据不可见且目标账号缺少必要权限，程序会拒绝将其当作缺表处理，终端提示 `Insufficient access permission to target table`。
+6. 若源端元数据查询为空，或源端仍能看到其他库表但 `tables=db.*` / `tables=db.t%` 指定对象匹配结果为空，日志会提示检查 `tables` 配置、对象是否存在以及源端 `SELECT` 权限，并给出 `SHOW GRANTS FOR CURRENT_USER()`、`SHOW GRANTS FOR '<user>'@'<host>'` 检查建议和 `GRANT SELECT ON ...` 授权示例；若目标端表元数据不可见且目标账号缺少必要权限，程序会拒绝将其当作缺表处理，终端提示 `Insufficient access permission to target table`。
 
 ## 快速使用案例
 

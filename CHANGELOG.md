@@ -36,14 +36,16 @@
 - [功能优化]: 新增 `mergeDuplicateDeleteLimits` 函数，合并相同 `WHERE` 条件的多条 `DELETE LIMIT` 语句，将重复语句的 `LIMIT` 值累加为一条，减少回滚SQL文件数量。
 - [功能优化]: refactor(repairDB): 拆分 `main.go` 为多文件模块化结构（`config/executor/lock/plan/sql_parser/stage/stats/types`）。
 - [功能优化]: refactor(oracle_random_data_load): 拆分 `main.go` 为多文件模块化结构（`config/generator/schema/types/util/worker`）。
-- [问题修复]: 修复 repairDB 执行 multi-values INSERT 时遇到 `Duplicate entry` 会导致整条语句失败的问题；现在会在内存中拆分为单行 INSERT 重试，重复行记录日志并跳过，其他行继续执行。
 - [功能优化]: repairDB 新增 `splitInsertOnDupKey` 参数（ON/OFF，默认 ON），可控制上述 Duplicate key 自动拆分重试行为；设置为 OFF 时保留整条 INSERT 失败。
+- [问题修复]: 修复 `tables=db.*` 指向账号无权限读取的库且源端仍可见其他库表时只提示 `No tables to check` 的问题；日志会提示可能缺少 `SELECT` 权限，并给出 `SHOW GRANTS` 检查和 `GRANT SELECT` 授权建议。
+- [问题修复]: 修复 repairDB 执行 multi-values INSERT 时遇到 `Duplicate entry` 会导致整条语句失败的问题；现在会在内存中拆分为单行 INSERT 重试，重复行记录日志并跳过，其他行继续执行。
 - [问题修复]: 修复 repairDB 收到中断信号时可能取消正在执行 SQL 文件的问题；现在会停止调度新文件并等待已开始文件完成，避免文件级续传重放半执行文件。
 - [问题修复]: 修复断点续传在 `datafix=file` 场景下误把正在校验中的 chunk 当作已完成的问题，避免续跑后重复生成 fixsql 或出现先删后插未完整写回的风险。
 - [问题修复]: 修复断点续传删除最后一个不完整 INSERT 文件时回滚范围过大的问题，避免续传后生成多余 fixsql。
 - [问题修复]: 修复 MySQL 数值列生成 INSERT 修复 SQL 时被写成字符串字面量的问题，BIGINT/DECIMAL/DOUBLE 等列会按合法数值字面量输出。
 - [问题修复]: 修复 `global.Wlog` 空指针检查，避免日志初始化前调用 `Debug/Warn` 等方法导致 panic。
 - [问题修复]: 修复 Oracle `NUMBER(19,0)` 类型映射精度阈值（从 18 调整为 19），并新增 `tinyint(1)` ↔ `bit(1)` 类型等价映射。
+- [测试完善]: 新增源端元数据非空但指定库表不可见的权限预检回归测试，覆盖 `tables=sbtest.*` 权限不足诊断提示。
 - [测试完善]: 新增 gt-checksum 在线修复 duplicate key 拆分、`datafix=table` 执行顺序、rollback writer 文件模式/启动时序、无索引表 rollback `TRUNCATE` 条件等回归测试。
 - [测试完善]: 新增 `tables` 通配权限预检、目标表不可见、非 data 对象强制导出 fix SQL、源端元数据为空 GRANT 提示等回归测试。
 - [测试完善]: 新增无索引表 `datafix=table` 回归测试，覆盖在线修复批次不应被跳过的场景。

@@ -234,14 +234,14 @@ func main() {
 	} else {
 		// 对于其他类型的检查，使用正常的表过滤逻辑
 		if tableList, err = schemaTableInstance.SchemaTableFilter(3, 4); err != nil {
-			fmt.Println(fmt.Sprintf("gt-checksum: No tables to check. Check %s for details or set logLevel=debug", m.SecondaryL.LogV.LogFile))
+			fmt.Println(fmt.Sprintf("gt-checksum: No tables to check. Check whether tables is correct, whether the selected objects exist, and whether the current DB user has privileges on them. See %s for SHOW GRANTS / GRANT SELECT suggestions or set logLevel=debug", m.SecondaryL.LogV.LogFile))
 			os.Exit(1)
 		}
 		if len(tableList) == 0 {
 			if ignoredSummary := schemaTableInstance.IgnoredMatchedTablesSummary(); ignoredSummary != "" {
 				fmt.Println(fmt.Sprintf("gt-checksum: No tables to check. Matched tables were filtered by ignoreTables: %s. Check %s for details or adjust ignoreTables", ignoredSummary, m.SecondaryL.LogV.LogFile))
 			} else {
-				fmt.Println(fmt.Sprintf("gt-checksum: No tables to check. Check %s for details or set logLevel=debug", m.SecondaryL.LogV.LogFile))
+				fmt.Println(fmt.Sprintf("gt-checksum: No tables to check. Check whether tables is correct, whether the selected objects exist, and whether the current DB user has privileges on them. See %s for SHOW GRANTS / GRANT SELECT suggestions or set logLevel=debug", m.SecondaryL.LogV.LogFile))
 			}
 			os.Exit(1)
 		}
@@ -266,7 +266,7 @@ func main() {
 		checksumStart := time.Now()
 		if err = schemaTableInstance.Struct(tableList, 5, 6); err != nil {
 			if errors.Is(err, global.ErrNoValidTables) {
-				fmt.Println("gt-checksum: No tables to check. Check ./gt-checksum.log for details or set logLevel=debug")
+				fmt.Println("gt-checksum: No tables to check. Check whether tables is correct, whether the selected objects exist, and whether the current DB user has privileges on them. See ./gt-checksum.log for SHOW GRANTS / GRANT SELECT suggestions or set logLevel=debug")
 				os.Exit(1)
 			}
 			global.Wlog.Error(fmt.Sprintf("Table structure verification failed: %v", err))

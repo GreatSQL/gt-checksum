@@ -414,6 +414,22 @@ func sourceMetadataPrivilegeGrantHints(targets []string) []string {
 	return hints
 }
 
+func (stcls *schemaTable) logSourceMetadataPrivilegeHint(tc dbExec.TableColumnNameStruct, reason string, logThreadSeq1, logThreadSeq2 int64) bool {
+	privilegeHintTargets := sourceMetadataPrivilegeHintTargets(stcls.accessPriTablePatterns())
+	grantHints := sourceMetadataPrivilegeGrantHints(privilegeHintTargets)
+	if !strings.EqualFold(stcls.sourceDrive, "mysql") || len(grantHints) == 0 {
+		return false
+	}
+
+	vlog := fmt.Sprintf("(%d) %s for tables={%s}. If these objects exist, the current source user may lack SELECT privilege on the selected schema/table, so INFORMATION_SCHEMA.TABLES returns no visible rows. Check grants with SHOW GRANTS FOR CURRENT_USER(); or SHOW GRANTS FOR '<user>'@'<host>'; suggested source GRANT examples: %s", logThreadSeq1, reason, stcls.accessPriTablePatterns(), strings.Join(grantHints, " "))
+	global.Wlog.Error(vlog)
+	if _, accessErr := schemaTableFilterTableAccessPriCheck(tc, stcls.sourceDB, privilegeHintTargets, stcls.checkRules.CheckObject, stcls.datafix, "source", logThreadSeq2); accessErr != nil {
+		vlog = fmt.Sprintf("(%d) Source table privilege precheck for invisible metadata failed (non-fatal): %v", logThreadSeq1, accessErr)
+		global.Wlog.Warn(vlog)
+	}
+	return true
+}
+
 // extractCandidateSchemas returns the distinct schema names present in the
 // DatabaseNameList key set (format: "schema/*schema&table*/table").
 // The result is used to constrain the ObjectTypeMap metadata query to only the
@@ -502,18 +518,10 @@ func (stcls *schemaTable) SchemaTableFilter(logThreadSeq1, logThreadSeq2 int64) 
 
 	// 判断源库是否为空
 	if len(dbCheckNameList) == 0 {
-		privilegeHintTargets := sourceMetadataPrivilegeHintTargets(stcls.table)
-		grantHints := sourceMetadataPrivilegeGrantHints(privilegeHintTargets)
-		if strings.EqualFold(stcls.sourceDrive, "mysql") && len(grantHints) > 0 {
-			vlog = fmt.Sprintf("(%d) Source metadata of srcDSN {%s} is empty for tables={%s}. If these objects exist, the current source user may lack SELECT privilege on the selected schema/table; suggested source GRANT examples: %s", logThreadSeq1, stcls.sourceDrive, stcls.table, strings.Join(grantHints, " "))
-			global.Wlog.Error(vlog)
-			if _, accessErr := schemaTableFilterTableAccessPriCheck(tc, stcls.sourceDB, privilegeHintTargets, stcls.checkRules.CheckObject, stcls.datafix, "source", logThreadSeq2); accessErr != nil {
-				vlog = fmt.Sprintf("(%d) Source table privilege precheck for empty metadata failed (non-fatal): %v", logThreadSeq1, accessErr)
-				global.Wlog.Warn(vlog)
-			}
+		if stcls.logSourceMetadataPrivilegeHint(tc, fmt.Sprintf("Source metadata of srcDSN {%s} is empty", stcls.sourceDrive), logThreadSeq1, logThreadSeq2) {
 			return f, nil
 		}
-		vlog = fmt.Sprintf("(%d) Databases of srcDSN {%s} is empty for tables={%s}. Please check whether the \"tables\" option is correct and whether the current source user has privileges to read the selected objects metadata.", logThreadSeq1, stcls.sourceDrive, stcls.table)
+		vlog = fmt.Sprintf("(%d) Databases of srcDSN {%s} is empty for tables={%s}. Please check whether the \"tables\" option is correct and whether the current source user has privileges to read the selected objects metadata.", logThreadSeq1, stcls.sourceDrive, stcls.accessPriTablePatterns())
 		global.Wlog.Error(vlog)
 		return f, nil
 	}
@@ -966,6 +974,10 @@ func (stcls *schemaTable) SchemaTableFilter(logThreadSeq1, logThreadSeq2 int64) 
 			vlog = fmt.Sprintf("(%d) data mode: skipped %d VIEW object(s), %d object(s) remain.", logThreadSeq1, skipped, len(f))
 			global.Wlog.Info(vlog)
 		}
+	}
+
+	if len(f) == 0 && stcls.IgnoredMatchedTablesSummary() == "" {
+		stcls.logSourceMetadataPrivilegeHint(tc, "No source tables matched the selected metadata", logThreadSeq1, logThreadSeq2)
 	}
 
 	vlog = fmt.Sprintf("(%d) Obtain schema.table %s success, num [%d].", logThreadSeq1, f, len(f))
