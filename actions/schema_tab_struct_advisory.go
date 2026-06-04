@@ -168,6 +168,156 @@ func alterTableMergeKey(tableExpr string) string {
 	return strings.ToLower(key)
 }
 
+func (stcls *schemaTable) shouldApplyTruncateBeforeAlter() bool {
+	if stcls == nil {
+		return false
+	}
+	if !strings.EqualFold(stcls.truncateBeforeAlter, "ON") {
+		return false
+	}
+	if !strings.EqualFold(stcls.checkRules.CheckObject, "struct") {
+		return false
+	}
+	if objType := strings.TrimSpace(stcls.fixFileObjectType); objType != "" && !strings.EqualFold(objType, "table") {
+		return false
+	}
+	return true
+}
+
+func truncateBeforeAlterAutoIncrementKey(schema, table string) string {
+	return alterTableMergeKey(fmt.Sprintf("`%s`.`%s`", schema, table))
+}
+
+func (stcls *schemaTable) rememberTruncateBeforeAlterAutoIncrement(destSchema, destTable string, nextValue int64, logThreadSeq int64) {
+	if !stcls.shouldApplyTruncateBeforeAlter() {
+		return
+	}
+	if stcls.truncateBeforeAlterAutoIncrementMap == nil {
+		stcls.truncateBeforeAlterAutoIncrementMap = make(map[string]int64)
+	}
+	key := truncateBeforeAlterAutoIncrementKey(destSchema, destTable)
+	stcls.truncateBeforeAlterAutoIncrementMap[key] = nextValue
+	if global.Wlog != nil {
+		global.Wlog.Debug(fmt.Sprintf("(%d) Remembered source AUTO_INCREMENT=%d for %s.%s because truncateBeforeAlter=ON", logThreadSeq, nextValue, destSchema, destTable))
+	}
+}
+
+func canInlineAutoIncrementForTruncateAlterClause(stmt, clause string) bool {
+	if isAutoIncrementOnlyStatement(stmt) || isMyRowIDVisibilityStatement(stmt) {
+		return false
+	}
+	upperClause := strings.ToUpper(strings.TrimSpace(clause))
+	partitionOperations := []string{
+		"ADD PARTITION", "DROP PARTITION", "REORGANIZE PARTITION", "COALESCE PARTITION",
+		"EXCHANGE PARTITION", "TRUNCATE PARTITION", "REMOVE PARTITIONING",
+		"ANALYZE PARTITION", "CHECK PARTITION", "OPTIMIZE PARTITION", "REBUILD PARTITION", "REPAIR PARTITION",
+	}
+	for _, op := range partitionOperations {
+		if strings.Contains(upperClause, op) {
+			return false
+		}
+	}
+	return true
+}
+
+func (stcls *schemaTable) mergeAutoIncrementForTruncateBeforeAlter(sqls []string, logThreadSeq int64) []string {
+	if len(sqls) == 0 || !stcls.shouldApplyTruncateBeforeAlter() {
+		return sqls
+	}
+
+	targetIndexByTable := make(map[string]int)
+	autoClauseByTable := make(map[string]string)
+	autoIndexByTable := make(map[string][]int)
+
+	for idx, stmt := range sqls {
+		tableExpr, clause, ok := parseAlterTableStatement(stmt)
+		if !ok {
+			continue
+		}
+		key := alterTableMergeKey(tableExpr)
+		if isAutoIncrementOnlyStatement(stmt) {
+			autoClauseByTable[key] = clause
+			autoIndexByTable[key] = append(autoIndexByTable[key], idx)
+			continue
+		}
+		if _, exists := targetIndexByTable[key]; !exists && canInlineAutoIncrementForTruncateAlterClause(stmt, clause) {
+			targetIndexByTable[key] = idx
+		}
+	}
+	if len(targetIndexByTable) == 0 {
+		return sqls
+	}
+	for key := range targetIndexByTable {
+		if _, exists := autoClauseByTable[key]; exists {
+			continue
+		}
+		if nextValue, exists := stcls.truncateBeforeAlterAutoIncrementMap[key]; exists {
+			autoClauseByTable[key] = fmt.Sprintf("AUTO_INCREMENT=%d", nextValue)
+		}
+	}
+	if len(autoClauseByTable) == 0 {
+		return sqls
+	}
+
+	skippedAutoIndexes := make(map[int]bool)
+	for key, indexes := range autoIndexByTable {
+		if _, ok := targetIndexByTable[key]; !ok {
+			continue
+		}
+		for _, idx := range indexes {
+			skippedAutoIndexes[idx] = true
+		}
+	}
+	merged := make([]string, 0, len(sqls)-len(skippedAutoIndexes))
+	for idx, stmt := range sqls {
+		if skippedAutoIndexes[idx] {
+			continue
+		}
+		tableExpr, clause, ok := parseAlterTableStatement(stmt)
+		if !ok {
+			merged = append(merged, stmt)
+			continue
+		}
+		key := alterTableMergeKey(tableExpr)
+		if targetIdx, exists := targetIndexByTable[key]; exists && targetIdx == idx {
+			stmt = fmt.Sprintf("ALTER TABLE %s %s, %s;", tableExpr, strings.TrimSpace(clause), autoClauseByTable[key])
+			if global.Wlog != nil {
+				global.Wlog.Debug(fmt.Sprintf("(%d) Inlined AUTO_INCREMENT into ALTER TABLE %s because truncateBeforeAlter=ON", logThreadSeq, tableExpr))
+			}
+		}
+		merged = append(merged, stmt)
+	}
+	return merged
+}
+
+func (stcls *schemaTable) prependTruncateBeforeAlter(sqls []string, logThreadSeq int64) []string {
+	if len(sqls) == 0 || !stcls.shouldApplyTruncateBeforeAlter() {
+		return sqls
+	}
+
+	withTruncate := make([]string, 0, len(sqls)+1)
+	truncatedTables := make(map[string]bool)
+	for _, stmt := range sqls {
+		tableExpr, _, ok := parseAlterTableStatement(stmt)
+		if ok {
+			key := alterTableMergeKey(tableExpr)
+			if !truncatedTables[key] {
+				truncateSQL := fmt.Sprintf("TRUNCATE TABLE %s;", tableExpr)
+				withTruncate = append(withTruncate, truncateSQL)
+				truncatedTables[key] = true
+				if global.Wlog != nil {
+					global.Wlog.Debug(fmt.Sprintf("(%d) Inserted truncateBeforeAlter SQL before ALTER TABLE %s", logThreadSeq, tableExpr))
+				}
+			}
+		}
+		withTruncate = append(withTruncate, stmt)
+	}
+	if len(truncatedTables) == 0 {
+		return sqls
+	}
+	return withTruncate
+}
+
 // mergeAlterTableStatements merges ALTER TABLE statements targeting the same table.
 // It supports non-contiguous ALTER statements and keeps non-ALTER SQL ordering intact.
 // Special handling: my_row_id VISIBLE/INVISIBLE operations and AUTO_INCREMENT-only operations are never merged with other operations.

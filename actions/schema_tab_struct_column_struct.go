@@ -264,142 +264,118 @@ func (stcls *schemaTable) reconcileColumnDiffs(
 	}
 
 	for k1, v1 := range cm.sourceColumnSlice {
-			lastcolumn := ""
-			var alterColumnData []string
-			if k1 == 0 {
-				lastcolumn = cm.sourceColumnSlice[k1]
-			} else {
-				// 向前查找第一个在目标端存在的字段作为 lastcolumn
-				// 避免当前字段之前有缺失字段时，生成多余的 MODIFY 语句
-				lastcolumn = cm.sourceColumnSlice[k1-1]
-				for i := k1 - 1; i >= 0; i-- {
-					candidateCol := cm.sourceColumnSlice[i]
-					// 注意：destColumnMap 的键是大写的，需要转换后再查找
-					candidateColUpper := strings.ToUpper(candidateCol)
-					if _, existsInDest := cm.destColumnMap[candidateColUpper]; existsInDest {
-						lastcolumn = candidateCol
-						break
-					}
+		lastcolumn := ""
+		var alterColumnData []string
+		if k1 == 0 {
+			lastcolumn = cm.sourceColumnSlice[k1]
+		} else {
+			// 向前查找第一个在目标端存在的字段作为 lastcolumn
+			// 避免当前字段之前有缺失字段时，生成多余的 MODIFY 语句
+			lastcolumn = cm.sourceColumnSlice[k1-1]
+			for i := k1 - 1; i >= 0; i-- {
+				candidateCol := cm.sourceColumnSlice[i]
+				// 注意：destColumnMap 的键是大写的，需要转换后再查找
+				candidateColUpper := strings.ToUpper(candidateCol)
+				if _, existsInDest := cm.destColumnMap[candidateColUpper]; existsInDest {
+					lastcolumn = candidateCol
+					break
 				}
 			}
-			// 始终使用src作为修复规则
-			alterColumnData = cm.sourceColumnMap[v1]
-			if _, ok := cm.destColumnMap[v1]; ok {
-				// 直接使用strict模式，删除了永远不会执行的loose分支
-				// 使用固定值：ScheckMod=strict
-				// 严格比较列的所有属性
-				tableAbnormalBool := false
+		}
+		// 始终使用src作为修复规则
+		alterColumnData = cm.sourceColumnMap[v1]
+		if _, ok := cm.destColumnMap[v1]; ok {
+			// 直接使用strict模式，删除了永远不会执行的loose分支
+			// 使用固定值：ScheckMod=strict
+			// 严格比较列的所有属性
+			tableAbnormalBool := false
 
-				// 比较列类型
-				sourceType := ""
-				destType := ""
-				if len(cm.sourceColumnMap[v1]) > 0 {
-					sourceType = cm.sourceColumnMap[v1][0]
-				}
-				if len(cm.destColumnMap[v1]) > 0 {
-					destType = cm.destColumnMap[v1][0]
-				}
+			// 比较列类型
+			sourceType := ""
+			destType := ""
+			if len(cm.sourceColumnMap[v1]) > 0 {
+				sourceType = cm.sourceColumnMap[v1][0]
+			}
+			if len(cm.destColumnMap[v1]) > 0 {
+				destType = cm.destColumnMap[v1][0]
+			}
 
-				sourceOriginalColName := cm.getSourceOriginalColumnName(v1)
-				destOriginalColName := cm.getDestOriginalColumnName(v1)
-				repairColumnName := destOriginalColName
-				if strings.TrimSpace(repairColumnName) == "" {
-					repairColumnName = sourceOriginalColName
-				}
-				var sourceCanonical schemacompat.CanonicalColumn
-				var destCanonical schemacompat.CanonicalColumn
-				if sms.useCanonicalCompare {
-					if sms.isOracleToMySQL {
-						sourceCanonical = schemacompat.CanonicalizeOracleColumnForComparison(
-							sourceOriginalColName,
-							cm.sourceColumnMap[v1],
-							stcls.destVersionInfo(),
-							stcls.schema, stcls.table,
-						)
-					} else {
-						sourceCanonical = schemacompat.CanonicalizeColumnForComparison(
-							sourceOriginalColName,
-							cm.sourceColumnMap[v1],
-							stcls.sourceVersionInfo(),
-							stcls.destVersionInfo(),
-							sms.sourceColumnDefinitions[sourceOriginalColName],
-							stcls.checkRules.MariaDBJSONTargetType,
-							stcls.schema, stcls.table,
-						)
-					}
-					destCanonical = schemacompat.CanonicalizeColumnForComparison(
-						destOriginalColName,
-						cm.destColumnMap[v1],
+			sourceOriginalColName := cm.getSourceOriginalColumnName(v1)
+			destOriginalColName := cm.getDestOriginalColumnName(v1)
+			repairColumnName := destOriginalColName
+			if strings.TrimSpace(repairColumnName) == "" {
+				repairColumnName = sourceOriginalColName
+			}
+			var sourceCanonical schemacompat.CanonicalColumn
+			var destCanonical schemacompat.CanonicalColumn
+			if sms.useCanonicalCompare {
+				if sms.isOracleToMySQL {
+					sourceCanonical = schemacompat.CanonicalizeOracleColumnForComparison(
+						sourceOriginalColName,
+						cm.sourceColumnMap[v1],
 						stcls.destVersionInfo(),
+						stcls.schema, stcls.table,
+					)
+				} else {
+					sourceCanonical = schemacompat.CanonicalizeColumnForComparison(
+						sourceOriginalColName,
+						cm.sourceColumnMap[v1],
 						stcls.sourceVersionInfo(),
-						sms.destColumnDefinitions[destOriginalColName],
+						stcls.destVersionInfo(),
+						sms.sourceColumnDefinitions[sourceOriginalColName],
 						stcls.checkRules.MariaDBJSONTargetType,
-						destSchema, stcls.destTable,
+						stcls.schema, stcls.table,
 					)
 				}
+				destCanonical = schemacompat.CanonicalizeColumnForComparison(
+					destOriginalColName,
+					cm.destColumnMap[v1],
+					stcls.destVersionInfo(),
+					stcls.sourceVersionInfo(),
+					sms.destColumnDefinitions[destOriginalColName],
+					stcls.checkRules.MariaDBJSONTargetType,
+					destSchema, stcls.destTable,
+				)
+			}
 
-				// 打印调试信息
-				vlog = fmt.Sprintf("(%d) %s Column %s type comparison: source=%s, dest=%s", logThreadSeq, event, repairColumnName, sourceType, destType)
-				global.Wlog.Debug(vlog)
+			// 打印调试信息
+			vlog = fmt.Sprintf("(%d) %s Column %s type comparison: source=%s, dest=%s", logThreadSeq, event, repairColumnName, sourceType, destType)
+			global.Wlog.Debug(vlog)
 
-				// 比较列类型
-				if sms.useCanonicalCompare {
-					var decision schemacompat.CompatibilityDecision
-					if sms.isOracleToMySQL {
-						decision = schemacompat.DecideOracleToMySQLTypeCompatibility(sourceCanonical, destCanonical)
+			// 比较列类型
+			if sms.useCanonicalCompare {
+				var decision schemacompat.CompatibilityDecision
+				if sms.isOracleToMySQL {
+					decision = schemacompat.DecideOracleToMySQLTypeCompatibility(sourceCanonical, destCanonical)
+				} else {
+					decision = schemacompat.DecideColumnDefinitionCompatibility(sourceCanonical, destCanonical)
+				}
+				if decision.IsMismatch() {
+					if shouldDeferPartitionKeyColumnRepair(cm.partitionExpressions, decision, sourceOriginalColName, destOriginalColName) {
+						vlog = fmt.Sprintf("(%d) %s Column %s definition mismatch requires manual review because it participates in the partition expression: source=%s, dest=%s, reason=%s",
+							logThreadSeq, event, repairColumnName, sourceType, destType, decision.Reason)
+						global.Wlog.Warn(vlog)
+						sms.columnRiskDifferent = true
+						sms.columnAdvisorySuggestions = append(sms.columnAdvisorySuggestions, schemacompat.ConstraintRepairSuggestion{
+							ConstraintName: repairColumnName,
+							Kind:           "PARTITION KEY COLUMN",
+							Level:          schemacompat.ConstraintRepairLevelAdvisoryOnly,
+							Reason:         fmt.Sprintf("partition key column requires manual review: %s", decision.Reason),
+						})
+					} else if decision.State == schemacompat.CompatibilityWarnOnly {
+						vlog = fmt.Sprintf("(%d) %s Column %s definition warning: source=%s, dest=%s, reason=%s",
+							logThreadSeq, event, repairColumnName, sourceType, destType, decision.Reason)
+						global.Wlog.Warn(vlog)
+						sms.columnRiskDifferent = true
+						sms.columnAdvisorySuggestions = append(sms.columnAdvisorySuggestions, schemacompat.ConstraintRepairSuggestion{
+							ConstraintName: repairColumnName,
+							Kind:           "COLUMN ATTRIBUTE",
+							Level:          schemacompat.ConstraintRepairLevelAdvisoryOnly,
+							Reason:         decision.Reason,
+						})
 					} else {
-						decision = schemacompat.DecideColumnDefinitionCompatibility(sourceCanonical, destCanonical)
-					}
-					if decision.IsMismatch() {
-						if shouldDeferPartitionKeyColumnRepair(cm.partitionExpressions, decision, sourceOriginalColName, destOriginalColName) {
-							vlog = fmt.Sprintf("(%d) %s Column %s definition mismatch requires manual review because it participates in the partition expression: source=%s, dest=%s, reason=%s",
-								logThreadSeq, event, repairColumnName, sourceType, destType, decision.Reason)
-							global.Wlog.Warn(vlog)
-							sms.columnRiskDifferent = true
-							sms.columnAdvisorySuggestions = append(sms.columnAdvisorySuggestions, schemacompat.ConstraintRepairSuggestion{
-								ConstraintName: repairColumnName,
-								Kind:           "PARTITION KEY COLUMN",
-								Level:          schemacompat.ConstraintRepairLevelAdvisoryOnly,
-								Reason:         fmt.Sprintf("partition key column requires manual review: %s", decision.Reason),
-							})
-						} else if decision.State == schemacompat.CompatibilityWarnOnly {
-							vlog = fmt.Sprintf("(%d) %s Column %s definition warning: source=%s, dest=%s, reason=%s",
-								logThreadSeq, event, repairColumnName, sourceType, destType, decision.Reason)
-							global.Wlog.Warn(vlog)
-							sms.columnRiskDifferent = true
-							sms.columnAdvisorySuggestions = append(sms.columnAdvisorySuggestions, schemacompat.ConstraintRepairSuggestion{
-								ConstraintName: repairColumnName,
-								Kind:           "COLUMN ATTRIBUTE",
-								Level:          schemacompat.ConstraintRepairLevelAdvisoryOnly,
-								Reason:         decision.Reason,
-							})
-						} else {
-							// 检查 dTypeMapping 规则是否覆盖了该类型转换（如 CHAR→VARCHAR）
-							// 若覆盖则视为已知可接受的迁移转换，跳过 diff 标记
-							if !sms.isOracleToMySQL && schemacompat.GlobalDTypeMappingRules != nil {
-								var dtRules []schemacompat.TypeMappingRule
-								if stcls.isMariaDBToMySQL() {
-									dtRules = schemacompat.GlobalDTypeMappingRules.DTypeMapping.MariaDBToMySQL
-								} else {
-									dtRules = schemacompat.GlobalDTypeMappingRules.DTypeMapping.MySQLUpgrade
-								}
-								sourceNullable := sourceCanonical.Nullable
-								if schemacompat.IsDTypeMappingCoveredTransition(dtRules, sourceType, destType, sourceNullable, sourceOriginalColName, sourceCanonical.AutoIncrement, stcls.schema, stcls.table) {
-									vlog = fmt.Sprintf("(%d) %s Column %s type transition %s->%s covered by dTypeMapping rule, skipping diff",
-										logThreadSeq, event, repairColumnName, sourceType, destType)
-									global.Wlog.Debug(vlog)
-									goto skipTypeMismatch
-								}
-							}
-							tableAbnormalBool = true
-							vlog = fmt.Sprintf("(%d) %s Column %s definition mismatch: source=%s, dest=%s, reason=%s",
-								logThreadSeq, event, repairColumnName, sourceType, destType, decision.Reason)
-							global.Wlog.Warn(vlog)
-						skipTypeMismatch:
-						}
-					} else if decision.State == schemacompat.CompatibilityNormalizedEqual {
-						// 即使 source/dest 规范化后相等，也需检查 dTypeMapping 规则是否要求不同的目标类型
-						dtypeMismatch := false
+						// 检查 dTypeMapping 规则是否覆盖了该类型转换（如 CHAR→VARCHAR）
+						// 若覆盖则视为已知可接受的迁移转换，跳过 diff 标记
 						if !sms.isOracleToMySQL && schemacompat.GlobalDTypeMappingRules != nil {
 							var dtRules []schemacompat.TypeMappingRule
 							if stcls.isMariaDBToMySQL() {
@@ -407,427 +383,366 @@ func (stcls *schemaTable) reconcileColumnDiffs(
 							} else {
 								dtRules = schemacompat.GlobalDTypeMappingRules.DTypeMapping.MySQLUpgrade
 							}
-							ctx := schemacompat.BuildMappingContext(sourceType, sourceCanonical.Nullable, sourceOriginalColName, sourceCanonical.AutoIncrement, stcls.schema, stcls.table)
-							if mappedType, _, matched := schemacompat.MatchUserRule(dtRules, ctx); matched {
-								mappedBase := strings.ToUpper(strings.Fields(mappedType)[0])
-								if idx2 := strings.IndexByte(mappedBase, '('); idx2 >= 0 {
-									mappedBase = mappedBase[:idx2]
-								}
-								destBase := strings.ToUpper(strings.Fields(destType)[0])
-								if idx2 := strings.IndexByte(destBase, '('); idx2 >= 0 {
-									destBase = destBase[:idx2]
-								}
-								if mappedBase != destBase {
-									dtypeMismatch = true
-									tableAbnormalBool = true
-									vlog = fmt.Sprintf("(%d) %s Column %s type mismatch (dTypeMapping rule requires %s but dest is %s): source=%s, dest=%s",
-										logThreadSeq, event, repairColumnName, mappedType, destType, sourceType, destType)
-									global.Wlog.Warn(vlog)
-								}
-							}
-						}
-						if !dtypeMismatch {
-							vlog = fmt.Sprintf("(%d) %s Column %s definition normalized-equal: source=%s, dest=%s, reason=%s",
-								logThreadSeq, event, repairColumnName, sourceType, destType, decision.Reason)
-							global.Wlog.Debug(vlog)
-						}
-					}
-				} else if sourceType != destType {
-					tableAbnormalBool = true
-					vlog = fmt.Sprintf("(%d) %s Column %s type mismatch: source=%s, dest=%s", logThreadSeq, event, repairColumnName, sourceType, destType)
-					global.Wlog.Warn(vlog)
-				}
-
-				// 比较字符集
-				sourceCharset := ""
-				destCharset := ""
-				if len(cm.sourceColumnMap[v1]) > 1 {
-					sourceCharset = cm.sourceColumnMap[v1][1]
-				}
-				if len(cm.destColumnMap[v1]) > 1 {
-					destCharset = cm.destColumnMap[v1][1]
-				}
-
-				// 如果两者都不为空或null，则比较
-				if (sourceCharset != "null" && sourceCharset != "") ||
-					(destCharset != "null" && destCharset != "") {
-					if sms.useCanonicalCompare {
-						var decision schemacompat.CompatibilityDecision
-						if sms.isOracleToMySQL {
-							decision = schemacompat.DecideOracleToMySQLCharsetCompatibility(sourceCanonical, destCanonical)
-						} else {
-							decision = schemacompat.DecideColumnCharsetCompatibility(sourceCanonical, destCanonical)
-						}
-						if shouldDeferPartitionKeyColumnRepair(cm.partitionExpressions, decision, sourceOriginalColName, destOriginalColName) {
-							vlog = fmt.Sprintf("(%d) %s Column %s charset mismatch requires manual review because it participates in the partition expression: source=%s, dest=%s, reason=%s",
-								logThreadSeq, event, repairColumnName, sourceCharset, destCharset, decision.Reason)
-							global.Wlog.Warn(vlog)
-							sms.columnRiskDifferent = true
-							sms.columnAdvisorySuggestions = append(sms.columnAdvisorySuggestions, schemacompat.ConstraintRepairSuggestion{
-								ConstraintName: repairColumnName,
-								Kind:           "PARTITION KEY COLUMN",
-								Level:          schemacompat.ConstraintRepairLevelAdvisoryOnly,
-								Reason:         fmt.Sprintf("partition key column requires manual review: %s", decision.Reason),
-							})
-						} else if decision.IsMismatch() {
-							tableAbnormalBool = true
-							vlog = fmt.Sprintf("(%d) %s Column %s charset mismatch: source=%s, dest=%s, reason=%s",
-								logThreadSeq, event, repairColumnName, sourceCharset, destCharset, decision.Reason)
-							global.Wlog.Warn(vlog)
-						} else if decision.State == schemacompat.CompatibilityNormalizedEqual {
-							vlog = fmt.Sprintf("(%d) %s Column %s charset normalized-equal: source=%s, dest=%s, reason=%s",
-								logThreadSeq, event, repairColumnName, sourceCharset, destCharset, decision.Reason)
-							global.Wlog.Debug(vlog)
-						}
-					} else if sourceCharset != destCharset {
-						tableAbnormalBool = true
-						vlog = fmt.Sprintf("(%d) %s Column %s charset mismatch: source=%s, dest=%s",
-							logThreadSeq, event, repairColumnName, sourceCharset, destCharset)
-						global.Wlog.Warn(vlog)
-					}
-				}
-
-				// 比较排序规则
-				sourceCollation := ""
-				destCollation := ""
-				if len(cm.sourceColumnMap[v1]) > 2 {
-					sourceCollation = cm.sourceColumnMap[v1][2]
-				}
-				if len(cm.destColumnMap[v1]) > 2 {
-					destCollation = cm.destColumnMap[v1][2]
-				}
-
-				// 如果两者都不为空或null，则比较
-				if (sourceCollation != "null" && sourceCollation != "") ||
-					(destCollation != "null" && destCollation != "") {
-					if sms.useCanonicalCompare {
-						var decision schemacompat.CompatibilityDecision
-						if sms.isOracleToMySQL {
-							decision = schemacompat.DecideOracleToMySQLCollationCompatibility(sourceCanonical, destCanonical)
-						} else {
-							decision = schemacompat.DecideColumnCollationCompatibility(sourceCanonical, destCanonical)
-						}
-						// MariaDB→MySQL：非 MariaDB 特有的 collation 在 MySQL 中合法存在，视为真实差异
-						if decision.State == schemacompat.CompatibilityWarnOnly && stcls.isMariaDBToMySQL() {
-							if _, isMappable := schemacompat.MapMariaDBCollationToMySQL(sourceCollation); !isMappable {
-								decision.State = schemacompat.CompatibilityUnsupported
-								decision.Reason = fmt.Sprintf("cross-platform collation mismatch: source=%s is valid in MySQL but differs from target=%s",
-									sourceCollation, destCollation)
-							}
-						}
-						if shouldDeferPartitionKeyColumnRepair(cm.partitionExpressions, decision, sourceOriginalColName, destOriginalColName) {
-							vlog = fmt.Sprintf("(%d) %s Column %s collation mismatch requires manual review because it participates in the partition expression: source=%s, dest=%s, reason=%s",
-								logThreadSeq, event, repairColumnName, sourceCollation, destCollation, decision.Reason)
-							global.Wlog.Warn(vlog)
-							sms.columnRiskDifferent = true
-							sms.columnAdvisorySuggestions = append(sms.columnAdvisorySuggestions, schemacompat.ConstraintRepairSuggestion{
-								ConstraintName: repairColumnName,
-								Kind:           "PARTITION KEY COLUMN",
-								Level:          schemacompat.ConstraintRepairLevelAdvisoryOnly,
-								Reason:         fmt.Sprintf("partition key column requires manual review: %s", decision.Reason),
-							})
-						} else if decision.State == schemacompat.CompatibilityWarnOnly {
-							vlog = fmt.Sprintf("(%d) %s Column %s collation warning: source=%s, dest=%s, reason=%s",
-								logThreadSeq, event, repairColumnName, sourceCollation, destCollation, decision.Reason)
-							global.Wlog.Warn(vlog)
-							// 如果该列已因类型/定义差异被标记为 tableAbnormalBool=true，
-							// 后续会生成包含正确 charset/collation 的 MODIFY，无需重复加入 collation repair candidates
-							if tableAbnormalBool {
-								vlog = fmt.Sprintf("(%d) %s Column %s collation drift skipped from repair candidates: already covered by definition mismatch repair",
-									logThreadSeq, event, repairColumnName)
+							sourceNullable := sourceCanonical.Nullable
+							if schemacompat.IsDTypeMappingCoveredTransition(dtRules, sourceType, destType, sourceNullable, sourceOriginalColName, sourceCanonical.AutoIncrement, stcls.schema, stcls.table) {
+								vlog = fmt.Sprintf("(%d) %s Column %s type transition %s->%s covered by dTypeMapping rule, skipping diff",
+									logThreadSeq, event, repairColumnName, sourceType, destType)
 								global.Wlog.Debug(vlog)
-							} else {
-								sms.columnCollationRepairCandidates = append(sms.columnCollationRepairCandidates, columnCollationRepairCandidate{
-									ColumnName:       repairColumnName,
-									ColumnSeq:        k1,
-									LastColumn:       cm.getTargetPositionColumnName(lastcolumn),
-									SourceAttrs:      append([]string(nil), alterColumnData...),
-									SourceDefinition: sms.sourceColumnDefinitions[sourceOriginalColName],
-									SourceCharset:    sourceCharset,
-									SourceCollation:  sourceCollation,
-									DestCharset:      destCharset,
-									DestCollation:    destCollation,
-									Reason:           decision.Reason,
-								})
+								goto skipTypeMismatch
 							}
-						} else if decision.IsMismatch() {
-							tableAbnormalBool = true
-							vlog = fmt.Sprintf("(%d) %s Column %s collation mismatch: source=%s, dest=%s, reason=%s",
-								logThreadSeq, event, repairColumnName, sourceCollation, destCollation, decision.Reason)
-							global.Wlog.Warn(vlog)
-						} else if decision.State == schemacompat.CompatibilityNormalizedEqual {
-							vlog = fmt.Sprintf("(%d) %s Column %s collation normalized-equal: source=%s, dest=%s, reason=%s",
-								logThreadSeq, event, repairColumnName, sourceCollation, destCollation, decision.Reason)
-							global.Wlog.Debug(vlog)
 						}
-					} else if sourceCollation != destCollation {
 						tableAbnormalBool = true
-						vlog = fmt.Sprintf("(%d) %s Column %s collation mismatch: source=%s, dest=%s",
-							logThreadSeq, event, repairColumnName, sourceCollation, destCollation)
+						vlog = fmt.Sprintf("(%d) %s Column %s definition mismatch: source=%s, dest=%s, reason=%s",
+							logThreadSeq, event, repairColumnName, sourceType, destType, decision.Reason)
 						global.Wlog.Warn(vlog)
+					skipTypeMismatch:
 					}
-				}
-
-				// 比较是否允许NULL
-				sourceIsNull := ""
-				destIsNull := ""
-				if len(cm.sourceColumnMap[v1]) > 3 {
-					sourceIsNull = cm.sourceColumnMap[v1][3]
-				}
-				if len(cm.destColumnMap[v1]) > 3 {
-					destIsNull = cm.destColumnMap[v1][3]
-				}
-
-				nullMismatch := false
-				if sms.useCanonicalCompare {
-					// Oracle 返回 Y/N，MySQL 返回 YES/NO；canonical 层已统一为 bool，直接比较
-					nullMismatch = sourceCanonical.Nullable != destCanonical.Nullable
-				} else {
-					nullMismatch = sourceIsNull != destIsNull
-				}
-				if nullMismatch {
-					// 检查字段是否是分区字段且目标端不允许 NULL
-					// 如果是分区字段且目标端不允许 NULL，则这是合理的约束，不应该生成修复 SQL
-					isPartitionKeyColumn := partitionExpressionsReferenceColumn(cm.partitionExpressions, sourceOriginalColName, destOriginalColName)
-					if isPartitionKeyColumn && destIsNull == "NO" {
-						// 分区字段且目标端不允许 NULL，这是合理的约束
-						vlog = fmt.Sprintf("(%d) %s Column %s NULL constraint mismatch is expected for partition key column: source=%s, dest=%s (no fix needed)",
-							logThreadSeq, event, repairColumnName, sourceIsNull, destIsNull)
-						global.Wlog.Info(vlog)
-					} else {
-						tableAbnormalBool = true
-						vlog = fmt.Sprintf("(%d) %s Column %s NULL constraint mismatch: source=%s, dest=%s",
-							logThreadSeq, event, repairColumnName, sourceIsNull, destIsNull)
-						global.Wlog.Warn(vlog)
-					}
-				}
-
-				// 比较默认值
-				sourceDefault := ""
-				destDefault := ""
-				if len(cm.sourceColumnMap[v1]) > 4 {
-					sourceDefault = cm.sourceColumnMap[v1][4]
-				}
-				if len(cm.destColumnMap[v1]) > 4 {
-					destDefault = cm.destColumnMap[v1][4]
-				}
-
-				// 如果两者都不为null，则比较
-				if sourceDefault != "null" && destDefault != "null" {
-					if sms.useCanonicalCompare {
-						var decision schemacompat.CompatibilityDecision
-						if stcls.isOracleToMySQL() {
-							// Oracle→MySQL uses dedicated comparison so that
-							// seq.NEXTVAL-cleared defaults become WarnOnly
-							// instead of Unsupported.
-							decision = schemacompat.DecideOracleToMySQLDefaultCompatibility(sourceCanonical, destCanonical)
+				} else if decision.State == schemacompat.CompatibilityNormalizedEqual {
+					// 即使 source/dest 规范化后相等，也需检查 dTypeMapping 规则是否要求不同的目标类型
+					dtypeMismatch := false
+					if !sms.isOracleToMySQL && schemacompat.GlobalDTypeMappingRules != nil {
+						var dtRules []schemacompat.TypeMappingRule
+						if stcls.isMariaDBToMySQL() {
+							dtRules = schemacompat.GlobalDTypeMappingRules.DTypeMapping.MariaDBToMySQL
 						} else {
-							decision = schemacompat.DecideColumnDefaultCompatibility(sourceCanonical, destCanonical)
+							dtRules = schemacompat.GlobalDTypeMappingRules.DTypeMapping.MySQLUpgrade
 						}
-						if decision.IsMismatch() {
-							tableAbnormalBool = true
-							vlog = fmt.Sprintf("(%d) %s Column %s default value mismatch: source=%s, dest=%s, reason=%s",
-								logThreadSeq, event, repairColumnName, sourceDefault, destDefault, decision.Reason)
-							global.Wlog.Warn(vlog)
-						} else if decision.State == schemacompat.CompatibilityNormalizedEqual {
-							vlog = fmt.Sprintf("(%d) %s Column %s default value normalized-equal: source=%s, dest=%s, reason=%s",
-								logThreadSeq, event, repairColumnName, sourceDefault, destDefault, decision.Reason)
-							global.Wlog.Debug(vlog)
-						}
-					} else if sourceDefault != destDefault {
-						tableAbnormalBool = true
-						vlog = fmt.Sprintf("(%d) %s Column %s default value mismatch: source=%s, dest=%s",
-							logThreadSeq, event, repairColumnName, sourceDefault, destDefault)
-						global.Wlog.Warn(vlog)
-					}
-				}
-
-				// 仅在 MySQL -> MySQL 场景比较列注释
-				if stcls.isMySQLToMySQL() {
-					sourceComment := ""
-					destComment := ""
-					if len(cm.sourceColumnMap[v1]) > 5 {
-						sourceComment = normalizeMetadataComment(cm.sourceColumnMap[v1][5])
-					}
-					if len(cm.destColumnMap[v1]) > 5 {
-						destComment = normalizeMetadataComment(cm.destColumnMap[v1][5])
-					}
-					if sourceComment != destComment {
-						tableAbnormalBool = true
-						vlog = fmt.Sprintf("(%d) %s Column %s comment mismatch: source=%q, dest=%q",
-							logThreadSeq, event, repairColumnName, sourceComment, destComment)
-						global.Wlog.Warn(vlog)
-					}
-				}
-
-				// 比较列顺序
-				// 注意：当添加一个自增列作为主键并使用FIRST关键字时，其他列的顺序自然会被调整
-				// 因此需要检查是否有添加自增列的操作，如果有，跳过因为这个原因导致的列顺序不匹配
-				hasAutoIncrementPrimaryKeyAdd := false
-				for _, alterOp := range sms.alterSlice {
-					if strings.Contains(strings.ToUpper(alterOp), "ADD COLUMN") &&
-						strings.Contains(strings.ToUpper(alterOp), "AUTO_INCREMENT") &&
-						strings.Contains(strings.ToUpper(alterOp), "PRIMARY KEY") &&
-						strings.Contains(strings.ToUpper(alterOp), "FIRST") {
-						hasAutoIncrementPrimaryKeyAdd = true
-						break
-					}
-				}
-
-				// 检查序列号不匹配是否由前面的 ADD COLUMN 操作导致
-				// 如果当前字段之前有缺失的字段（已生成 ADD COLUMN），则后续字段的序列号会自然偏移
-				// 此时不应该生成 MODIFY COLUMN 语句
-				sequenceMismatchCausedByAddColumn := false
-				if !hasAutoIncrementPrimaryKeyAdd && !hasMyRowIDOffset && cm.sourceColumnSeq[v1] != cm.destColumnSeq[v1] {
-					// 统计当前字段之前有多少个 ADD COLUMN 操作
-					// 使用预先记录的 missingColumnsInDest，避免因循环中删除 destColumnMap 元素导致的误判
-					addColumnCountBeforeCurrent := 0
-					for i := 0; i < k1; i++ {
-						if missingColumnsInDest[i] {
-							addColumnCountBeforeCurrent++
+						ctx := schemacompat.BuildMappingContext(sourceType, sourceCanonical.Nullable, sourceOriginalColName, sourceCanonical.AutoIncrement, stcls.schema, stcls.table)
+						if mappedType, _, matched := schemacompat.MatchUserRule(dtRules, ctx); matched {
+							mappedBase := strings.ToUpper(strings.Fields(mappedType)[0])
+							if idx2 := strings.IndexByte(mappedBase, '('); idx2 >= 0 {
+								mappedBase = mappedBase[:idx2]
+							}
+							destBase := strings.ToUpper(strings.Fields(destType)[0])
+							if idx2 := strings.IndexByte(destBase, '('); idx2 >= 0 {
+								destBase = destBase[:idx2]
+							}
+							if mappedBase != destBase {
+								dtypeMismatch = true
+								tableAbnormalBool = true
+								vlog = fmt.Sprintf("(%d) %s Column %s type mismatch (dTypeMapping rule requires %s but dest is %s): source=%s, dest=%s",
+									logThreadSeq, event, repairColumnName, mappedType, destType, sourceType, destType)
+								global.Wlog.Warn(vlog)
+							}
 						}
 					}
-
-					// 如果序列号差异正好等于前面缺失字段的数量，说明序列号不匹配是由 ADD COLUMN 导致的
-					expectedDestSeq := cm.sourceColumnSeq[v1] - addColumnCountBeforeCurrent
-					vlog = fmt.Sprintf("(%d) %s Column %s sequence check: source=%d, dest=%d, addColumnCountBefore=%d, expected=%d",
-						logThreadSeq, event, repairColumnName, cm.sourceColumnSeq[v1], cm.destColumnSeq[v1], addColumnCountBeforeCurrent, expectedDestSeq)
-					global.Wlog.Debug(vlog)
-					if expectedDestSeq == cm.destColumnSeq[v1] && addColumnCountBeforeCurrent > 0 {
-						sequenceMismatchCausedByAddColumn = true
-						vlog = fmt.Sprintf("(%d) %s Column %s sequence mismatch caused by %d ADD COLUMN operations before it (source=%d, dest=%d, expected=%d), will be auto-fixed by ADD COLUMN",
-							logThreadSeq, event, repairColumnName, addColumnCountBeforeCurrent, cm.sourceColumnSeq[v1], cm.destColumnSeq[v1], expectedDestSeq)
+					if !dtypeMismatch {
+						vlog = fmt.Sprintf("(%d) %s Column %s definition normalized-equal: source=%s, dest=%s, reason=%s",
+							logThreadSeq, event, repairColumnName, sourceType, destType, decision.Reason)
 						global.Wlog.Debug(vlog)
 					}
 				}
+			} else if sourceType != destType {
+				tableAbnormalBool = true
+				vlog = fmt.Sprintf("(%d) %s Column %s type mismatch: source=%s, dest=%s", logThreadSeq, event, repairColumnName, sourceType, destType)
+				global.Wlog.Warn(vlog)
+			}
 
-				if !hasAutoIncrementPrimaryKeyAdd && !hasMyRowIDOffset && !sequenceMismatchCausedByAddColumn && cm.sourceColumnSeq[v1] != cm.destColumnSeq[v1] {
-					tableAbnormalBool = true
-					vlog = fmt.Sprintf("(%d) %s Column %s sequence mismatch: source=%d, dest=%d",
-						logThreadSeq, event, repairColumnName, cm.sourceColumnSeq[v1], cm.destColumnSeq[v1])
-					global.Wlog.Warn(vlog)
-				} else if hasMyRowIDOffset && cm.sourceColumnSeq[v1] != cm.destColumnSeq[v1] {
-					// 如果是因为 my_row_id 导致的列顺序偏移，记录日志但不标记为异常
-					vlog = fmt.Sprintf("(%d) %s Column %s sequence mismatch caused by my_row_id offset (source=%d, dest=%d), will be fixed by repositioning my_row_id",
-						logThreadSeq, event, repairColumnName, cm.sourceColumnSeq[v1], cm.destColumnSeq[v1])
-					global.Wlog.Debug(vlog)
-				}
-				if tableAbnormalBool {
-					sourceOriginalColName := cm.getSourceOriginalColumnName(v1)
-					repairColumnName := cm.getDestOriginalColumnName(v1)
-					if strings.TrimSpace(repairColumnName) == "" {
-						repairColumnName = sourceOriginalColName
+			// 比较字符集
+			sourceCharset := ""
+			destCharset := ""
+			if len(cm.sourceColumnMap[v1]) > 1 {
+				sourceCharset = cm.sourceColumnMap[v1][1]
+			}
+			if len(cm.destColumnMap[v1]) > 1 {
+				destCharset = cm.destColumnMap[v1][1]
+			}
+
+			// 如果两者都不为空或null，则比较
+			if (sourceCharset != "null" && sourceCharset != "") ||
+				(destCharset != "null" && destCharset != "") {
+				if sms.useCanonicalCompare {
+					var decision schemacompat.CompatibilityDecision
+					if sms.isOracleToMySQL {
+						decision = schemacompat.DecideOracleToMySQLCharsetCompatibility(sourceCanonical, destCanonical)
+					} else {
+						decision = schemacompat.DecideColumnCharsetCompatibility(sourceCanonical, destCanonical)
 					}
-					originalLastColumn := cm.getTargetPositionColumnName(lastcolumn)
-					repairAttrs := append([]string(nil), alterColumnData...)
-					// 保存原始源端类型，供 applyDTypeMappingOverrides 规则匹配使用
-					// BuildTargetColumnRepairPlan 可能将 repairAttrs[0] 从源类型改写为目标类型（如 char→varchar），
-					// 若用改写后的类型匹配 source_type 规则会失败，因此必须在改写前保存。
-					originalSourceType := ""
-					if len(repairAttrs) > 0 {
-						originalSourceType = repairAttrs[0]
-					}
-					if sms.useCanonicalCompare {
-						var repairPlan schemacompat.ColumnRepairPlan
-						if sms.isOracleToMySQL {
-							repairPlan = schemacompat.BuildOracleToMySQLRepairPlan(
-								sourceOriginalColName,
-								repairAttrs,
-								stcls.destVersionInfo(),
-								stcls.schema, stcls.table,
-							)
-						} else {
-							repairPlan = schemacompat.BuildTargetColumnRepairPlan(
-								sourceOriginalColName,
-								repairAttrs,
-								stcls.sourceVersionInfo(),
-								stcls.destVersionInfo(),
-								sms.sourceColumnDefinitions[sourceOriginalColName],
-								stcls.checkRules.MariaDBJSONTargetType,
-								stcls.schema, stcls.table,
-							)
-						}
-						if len(repairAttrs) < 6 {
-							for len(repairAttrs) < 6 {
-								repairAttrs = append(repairAttrs, "null")
-							}
-						}
-						if strings.TrimSpace(repairPlan.Type) != "" {
-							repairAttrs[0] = repairPlan.Type
-						}
-						if strings.TrimSpace(repairPlan.Charset) != "" {
-							repairAttrs[1] = repairPlan.Charset
-						}
-						if strings.TrimSpace(repairPlan.Collation) != "" {
-							repairAttrs[2] = repairPlan.Collation
-						}
-						if repairPlan.UseDirectDefinition {
-							if len(repairAttrs) < 7 {
-								repairAttrs = append(repairAttrs, repairPlan.DirectDefinition)
-							} else {
-								repairAttrs[6] = repairPlan.DirectDefinition
-							}
-						}
-					}
-					// Oracle nullable 格式（N/Y）规范化为 MySQL 格式（NO/YES）
-					// Oracle 返回 N 表示 NOT NULL，但 FixAlterColumnSqlDispos 只识别 "NO"
-					if sms.isOracleToMySQL && len(repairAttrs) > 3 {
-						switch strings.ToUpper(strings.TrimSpace(repairAttrs[3])) {
-						case "N":
-							repairAttrs[3] = "NO"
-						case "Y":
-							repairAttrs[3] = "YES"
-						}
-					}
-					// 应用 dTypeMapping 覆盖属性（nullable/default）到修复 SQL
-					applyDTypeMappingOverrides(repairAttrs, sourceOriginalColName, sms.isOracleToMySQL, stcls.isMariaDBToMySQL(), originalSourceType, stcls.schema, stcls.table)
-					// 检查目标表是否存在主键
-					if mysqlDataFix, ok := cm.dbf.DataAbnormalFix().(*mysql.MysqlDataAbnormalFixStruct); ok {
-						mysqlDataFix.CheckDestTableHasPrimaryKey(stcls.destDB, logThreadSeq)
-					}
-					modifySql := cm.dbf.DataAbnormalFix().FixAlterColumnSqlDispos("modify", repairAttrs, k1, originalLastColumn, repairColumnName, logThreadSeq)
-					if suggestion, gated := stcls.buildColumnShrinkAdvisory(destSchema, stcls.destTable, repairColumnName, sourceCanonical, destCanonical, modifySql); gated {
-						vlog = fmt.Sprintf("(%d) %s Column %s modify repair downgraded to advisory-only by shrink safety gate: %s", logThreadSeq, event, repairColumnName, suggestion.Reason)
+					if shouldDeferPartitionKeyColumnRepair(cm.partitionExpressions, decision, sourceOriginalColName, destOriginalColName) {
+						vlog = fmt.Sprintf("(%d) %s Column %s charset mismatch requires manual review because it participates in the partition expression: source=%s, dest=%s, reason=%s",
+							logThreadSeq, event, repairColumnName, sourceCharset, destCharset, decision.Reason)
 						global.Wlog.Warn(vlog)
 						sms.columnRiskDifferent = true
-						sms.columnAdvisorySuggestions = append(sms.columnAdvisorySuggestions, suggestion)
-					} else {
-						vlog = fmt.Sprintf("(%d) %s The column name of column %s of the source and target table %s.%s:[%s.%s] is the same, but the definition of the column is inconsistent, and a modify statement is generated, and the modification statement is {%v}", logThreadSeq, event, repairColumnName, stcls.schema, stcls.table, destSchema, stcls.table, modifySql)
+						sms.columnAdvisorySuggestions = append(sms.columnAdvisorySuggestions, schemacompat.ConstraintRepairSuggestion{
+							ConstraintName: repairColumnName,
+							Kind:           "PARTITION KEY COLUMN",
+							Level:          schemacompat.ConstraintRepairLevelAdvisoryOnly,
+							Reason:         fmt.Sprintf("partition key column requires manual review: %s", decision.Reason),
+						})
+					} else if decision.IsMismatch() {
+						tableAbnormalBool = true
+						vlog = fmt.Sprintf("(%d) %s Column %s charset mismatch: source=%s, dest=%s, reason=%s",
+							logThreadSeq, event, repairColumnName, sourceCharset, destCharset, decision.Reason)
 						global.Wlog.Warn(vlog)
-						sms.alterSlice = append(sms.alterSlice, modifySql)
+					} else if decision.State == schemacompat.CompatibilityNormalizedEqual {
+						vlog = fmt.Sprintf("(%d) %s Column %s charset normalized-equal: source=%s, dest=%s, reason=%s",
+							logThreadSeq, event, repairColumnName, sourceCharset, destCharset, decision.Reason)
+						global.Wlog.Debug(vlog)
+					}
+				} else if sourceCharset != destCharset {
+					tableAbnormalBool = true
+					vlog = fmt.Sprintf("(%d) %s Column %s charset mismatch: source=%s, dest=%s",
+						logThreadSeq, event, repairColumnName, sourceCharset, destCharset)
+					global.Wlog.Warn(vlog)
+				}
+			}
+
+			// 比较排序规则
+			sourceCollation := ""
+			destCollation := ""
+			if len(cm.sourceColumnMap[v1]) > 2 {
+				sourceCollation = cm.sourceColumnMap[v1][2]
+			}
+			if len(cm.destColumnMap[v1]) > 2 {
+				destCollation = cm.destColumnMap[v1][2]
+			}
+
+			// 如果两者都不为空或null，则比较
+			if (sourceCollation != "null" && sourceCollation != "") ||
+				(destCollation != "null" && destCollation != "") {
+				if sms.useCanonicalCompare {
+					var decision schemacompat.CompatibilityDecision
+					if sms.isOracleToMySQL {
+						decision = schemacompat.DecideOracleToMySQLCollationCompatibility(sourceCanonical, destCanonical)
+					} else {
+						decision = schemacompat.DecideColumnCollationCompatibility(sourceCanonical, destCanonical)
+					}
+					// MariaDB→MySQL：非 MariaDB 特有的 collation 在 MySQL 中合法存在，视为真实差异
+					if decision.State == schemacompat.CompatibilityWarnOnly && stcls.isMariaDBToMySQL() {
+						if _, isMappable := schemacompat.MapMariaDBCollationToMySQL(sourceCollation); !isMappable {
+							decision.State = schemacompat.CompatibilityUnsupported
+							decision.Reason = fmt.Sprintf("cross-platform collation mismatch: source=%s is valid in MySQL but differs from target=%s",
+								sourceCollation, destCollation)
+						}
+					}
+					if shouldDeferPartitionKeyColumnRepair(cm.partitionExpressions, decision, sourceOriginalColName, destOriginalColName) {
+						vlog = fmt.Sprintf("(%d) %s Column %s collation mismatch requires manual review because it participates in the partition expression: source=%s, dest=%s, reason=%s",
+							logThreadSeq, event, repairColumnName, sourceCollation, destCollation, decision.Reason)
+						global.Wlog.Warn(vlog)
+						sms.columnRiskDifferent = true
+						sms.columnAdvisorySuggestions = append(sms.columnAdvisorySuggestions, schemacompat.ConstraintRepairSuggestion{
+							ConstraintName: repairColumnName,
+							Kind:           "PARTITION KEY COLUMN",
+							Level:          schemacompat.ConstraintRepairLevelAdvisoryOnly,
+							Reason:         fmt.Sprintf("partition key column requires manual review: %s", decision.Reason),
+						})
+					} else if decision.State == schemacompat.CompatibilityWarnOnly {
+						vlog = fmt.Sprintf("(%d) %s Column %s collation warning: source=%s, dest=%s, reason=%s",
+							logThreadSeq, event, repairColumnName, sourceCollation, destCollation, decision.Reason)
+						global.Wlog.Warn(vlog)
+						// 如果该列已因类型/定义差异被标记为 tableAbnormalBool=true，
+						// 后续会生成包含正确 charset/collation 的 MODIFY，无需重复加入 collation repair candidates
+						if tableAbnormalBool {
+							vlog = fmt.Sprintf("(%d) %s Column %s collation drift skipped from repair candidates: already covered by definition mismatch repair",
+								logThreadSeq, event, repairColumnName)
+							global.Wlog.Debug(vlog)
+						} else {
+							sms.columnCollationRepairCandidates = append(sms.columnCollationRepairCandidates, columnCollationRepairCandidate{
+								ColumnName:       repairColumnName,
+								ColumnSeq:        k1,
+								LastColumn:       cm.getTargetPositionColumnName(lastcolumn),
+								SourceAttrs:      append([]string(nil), alterColumnData...),
+								SourceDefinition: sms.sourceColumnDefinitions[sourceOriginalColName],
+								SourceCharset:    sourceCharset,
+								SourceCollation:  sourceCollation,
+								DestCharset:      destCharset,
+								DestCollation:    destCollation,
+								Reason:           decision.Reason,
+							})
+						}
+					} else if decision.IsMismatch() {
+						tableAbnormalBool = true
+						vlog = fmt.Sprintf("(%d) %s Column %s collation mismatch: source=%s, dest=%s, reason=%s",
+							logThreadSeq, event, repairColumnName, sourceCollation, destCollation, decision.Reason)
+						global.Wlog.Warn(vlog)
+					} else if decision.State == schemacompat.CompatibilityNormalizedEqual {
+						vlog = fmt.Sprintf("(%d) %s Column %s collation normalized-equal: source=%s, dest=%s, reason=%s",
+							logThreadSeq, event, repairColumnName, sourceCollation, destCollation, decision.Reason)
+						global.Wlog.Debug(vlog)
+					}
+				} else if sourceCollation != destCollation {
+					tableAbnormalBool = true
+					vlog = fmt.Sprintf("(%d) %s Column %s collation mismatch: source=%s, dest=%s",
+						logThreadSeq, event, repairColumnName, sourceCollation, destCollation)
+					global.Wlog.Warn(vlog)
+				}
+			}
+
+			// 比较是否允许NULL
+			sourceIsNull := ""
+			destIsNull := ""
+			if len(cm.sourceColumnMap[v1]) > 3 {
+				sourceIsNull = cm.sourceColumnMap[v1][3]
+			}
+			if len(cm.destColumnMap[v1]) > 3 {
+				destIsNull = cm.destColumnMap[v1][3]
+			}
+
+			nullMismatch := false
+			if sms.useCanonicalCompare {
+				// Oracle 返回 Y/N，MySQL 返回 YES/NO；canonical 层已统一为 bool，直接比较
+				nullMismatch = sourceCanonical.Nullable != destCanonical.Nullable
+			} else {
+				nullMismatch = sourceIsNull != destIsNull
+			}
+			if nullMismatch {
+				// 检查字段是否是分区字段且目标端不允许 NULL
+				// 如果是分区字段且目标端不允许 NULL，则这是合理的约束，不应该生成修复 SQL
+				isPartitionKeyColumn := partitionExpressionsReferenceColumn(cm.partitionExpressions, sourceOriginalColName, destOriginalColName)
+				if isPartitionKeyColumn && destIsNull == "NO" {
+					// 分区字段且目标端不允许 NULL，这是合理的约束
+					vlog = fmt.Sprintf("(%d) %s Column %s NULL constraint mismatch is expected for partition key column: source=%s, dest=%s (no fix needed)",
+						logThreadSeq, event, repairColumnName, sourceIsNull, destIsNull)
+					global.Wlog.Info(vlog)
+				} else {
+					tableAbnormalBool = true
+					vlog = fmt.Sprintf("(%d) %s Column %s NULL constraint mismatch: source=%s, dest=%s",
+						logThreadSeq, event, repairColumnName, sourceIsNull, destIsNull)
+					global.Wlog.Warn(vlog)
+				}
+			}
+
+			// 比较默认值
+			sourceDefault := ""
+			destDefault := ""
+			if len(cm.sourceColumnMap[v1]) > 4 {
+				sourceDefault = cm.sourceColumnMap[v1][4]
+			}
+			if len(cm.destColumnMap[v1]) > 4 {
+				destDefault = cm.destColumnMap[v1][4]
+			}
+
+			// 如果两者都不为null，则比较
+			if sourceDefault != "null" && destDefault != "null" {
+				if sms.useCanonicalCompare {
+					var decision schemacompat.CompatibilityDecision
+					if stcls.isOracleToMySQL() {
+						// Oracle→MySQL uses dedicated comparison so that
+						// seq.NEXTVAL-cleared defaults become WarnOnly
+						// instead of Unsupported.
+						decision = schemacompat.DecideOracleToMySQLDefaultCompatibility(sourceCanonical, destCanonical)
+					} else {
+						decision = schemacompat.DecideColumnDefaultCompatibility(sourceCanonical, destCanonical)
+					}
+					if decision.IsMismatch() {
+						tableAbnormalBool = true
+						vlog = fmt.Sprintf("(%d) %s Column %s default value mismatch: source=%s, dest=%s, reason=%s",
+							logThreadSeq, event, repairColumnName, sourceDefault, destDefault, decision.Reason)
+						global.Wlog.Warn(vlog)
+					} else if decision.State == schemacompat.CompatibilityNormalizedEqual {
+						vlog = fmt.Sprintf("(%d) %s Column %s default value normalized-equal: source=%s, dest=%s, reason=%s",
+							logThreadSeq, event, repairColumnName, sourceDefault, destDefault, decision.Reason)
+						global.Wlog.Debug(vlog)
+					}
+				} else if sourceDefault != destDefault {
+					tableAbnormalBool = true
+					vlog = fmt.Sprintf("(%d) %s Column %s default value mismatch: source=%s, dest=%s",
+						logThreadSeq, event, repairColumnName, sourceDefault, destDefault)
+					global.Wlog.Warn(vlog)
+				}
+			}
+
+			// 仅在 MySQL -> MySQL 场景比较列注释
+			if stcls.isMySQLToMySQL() {
+				sourceComment := ""
+				destComment := ""
+				if len(cm.sourceColumnMap[v1]) > 5 {
+					sourceComment = normalizeMetadataComment(cm.sourceColumnMap[v1][5])
+				}
+				if len(cm.destColumnMap[v1]) > 5 {
+					destComment = normalizeMetadataComment(cm.destColumnMap[v1][5])
+				}
+				if sourceComment != destComment {
+					tableAbnormalBool = true
+					vlog = fmt.Sprintf("(%d) %s Column %s comment mismatch: source=%q, dest=%q",
+						logThreadSeq, event, repairColumnName, sourceComment, destComment)
+					global.Wlog.Warn(vlog)
+				}
+			}
+
+			// 比较列顺序
+			// 注意：当添加一个自增列作为主键并使用FIRST关键字时，其他列的顺序自然会被调整
+			// 因此需要检查是否有添加自增列的操作，如果有，跳过因为这个原因导致的列顺序不匹配
+			hasAutoIncrementPrimaryKeyAdd := false
+			for _, alterOp := range sms.alterSlice {
+				if strings.Contains(strings.ToUpper(alterOp), "ADD COLUMN") &&
+					strings.Contains(strings.ToUpper(alterOp), "AUTO_INCREMENT") &&
+					strings.Contains(strings.ToUpper(alterOp), "PRIMARY KEY") &&
+					strings.Contains(strings.ToUpper(alterOp), "FIRST") {
+					hasAutoIncrementPrimaryKeyAdd = true
+					break
+				}
+			}
+
+			// 检查序列号不匹配是否由前面的 ADD COLUMN 操作导致
+			// 如果当前字段之前有缺失的字段（已生成 ADD COLUMN），则后续字段的序列号会自然偏移
+			// 此时不应该生成 MODIFY COLUMN 语句
+			sequenceMismatchCausedByAddColumn := false
+			if !hasAutoIncrementPrimaryKeyAdd && !hasMyRowIDOffset && cm.sourceColumnSeq[v1] != cm.destColumnSeq[v1] {
+				// 统计当前字段之前有多少个 ADD COLUMN 操作
+				// 使用预先记录的 missingColumnsInDest，避免因循环中删除 destColumnMap 元素导致的误判
+				addColumnCountBeforeCurrent := 0
+				for i := 0; i < k1; i++ {
+					if missingColumnsInDest[i] {
+						addColumnCountBeforeCurrent++
 					}
 				}
-				delete(cm.destColumnMap, v1)
-			} else {
-				var position int
-				// 使用固定值：ScheckOrder=yes，总是使用源列的实际位置
-				position = k1
-				// Use the source identifier for ADD COLUMN and the current target
-				// identifier for positional clauses when available.
-				originalColName := cm.getSourceOriginalColumnName(v1)
+
+				// 如果序列号差异正好等于前面缺失字段的数量，说明序列号不匹配是由 ADD COLUMN 导致的
+				expectedDestSeq := cm.sourceColumnSeq[v1] - addColumnCountBeforeCurrent
+				vlog = fmt.Sprintf("(%d) %s Column %s sequence check: source=%d, dest=%d, addColumnCountBefore=%d, expected=%d",
+					logThreadSeq, event, repairColumnName, cm.sourceColumnSeq[v1], cm.destColumnSeq[v1], addColumnCountBeforeCurrent, expectedDestSeq)
+				global.Wlog.Debug(vlog)
+				if expectedDestSeq == cm.destColumnSeq[v1] && addColumnCountBeforeCurrent > 0 {
+					sequenceMismatchCausedByAddColumn = true
+					vlog = fmt.Sprintf("(%d) %s Column %s sequence mismatch caused by %d ADD COLUMN operations before it (source=%d, dest=%d, expected=%d), will be auto-fixed by ADD COLUMN",
+						logThreadSeq, event, repairColumnName, addColumnCountBeforeCurrent, cm.sourceColumnSeq[v1], cm.destColumnSeq[v1], expectedDestSeq)
+					global.Wlog.Debug(vlog)
+				}
+			}
+
+			if !hasAutoIncrementPrimaryKeyAdd && !hasMyRowIDOffset && !sequenceMismatchCausedByAddColumn && cm.sourceColumnSeq[v1] != cm.destColumnSeq[v1] {
+				tableAbnormalBool = true
+				vlog = fmt.Sprintf("(%d) %s Column %s sequence mismatch: source=%d, dest=%d",
+					logThreadSeq, event, repairColumnName, cm.sourceColumnSeq[v1], cm.destColumnSeq[v1])
+				global.Wlog.Warn(vlog)
+			} else if hasMyRowIDOffset && cm.sourceColumnSeq[v1] != cm.destColumnSeq[v1] {
+				// 如果是因为 my_row_id 导致的列顺序偏移，记录日志但不标记为异常
+				vlog = fmt.Sprintf("(%d) %s Column %s sequence mismatch caused by my_row_id offset (source=%d, dest=%d), will be fixed by repositioning my_row_id",
+					logThreadSeq, event, repairColumnName, cm.sourceColumnSeq[v1], cm.destColumnSeq[v1])
+				global.Wlog.Debug(vlog)
+			}
+			if tableAbnormalBool {
+				sourceOriginalColName := cm.getSourceOriginalColumnName(v1)
+				repairColumnName := cm.getDestOriginalColumnName(v1)
+				if strings.TrimSpace(repairColumnName) == "" {
+					repairColumnName = sourceOriginalColName
+				}
 				originalLastColumn := cm.getTargetPositionColumnName(lastcolumn)
-				repairAttrs := append([]string(nil), cm.sourceColumnMap[v1]...)
+				repairAttrs := append([]string(nil), alterColumnData...)
 				// 保存原始源端类型，供 applyDTypeMappingOverrides 规则匹配使用
-				originalSourceTypeAdd := ""
+				// BuildTargetColumnRepairPlan 可能将 repairAttrs[0] 从源类型改写为目标类型（如 char→varchar），
+				// 若用改写后的类型匹配 source_type 规则会失败，因此必须在改写前保存。
+				originalSourceType := ""
 				if len(repairAttrs) > 0 {
-					originalSourceTypeAdd = repairAttrs[0]
+					originalSourceType = repairAttrs[0]
 				}
 				if sms.useCanonicalCompare {
 					var repairPlan schemacompat.ColumnRepairPlan
 					if sms.isOracleToMySQL {
 						repairPlan = schemacompat.BuildOracleToMySQLRepairPlan(
-							originalColName,
+							sourceOriginalColName,
 							repairAttrs,
 							stcls.destVersionInfo(),
 							stcls.schema, stcls.table,
 						)
 					} else {
 						repairPlan = schemacompat.BuildTargetColumnRepairPlan(
-							originalColName,
+							sourceOriginalColName,
 							repairAttrs,
 							stcls.sourceVersionInfo(),
 							stcls.destVersionInfo(),
-							sms.sourceColumnDefinitions[originalColName],
+							sms.sourceColumnDefinitions[sourceOriginalColName],
 							stcls.checkRules.MariaDBJSONTargetType,
 							stcls.schema, stcls.table,
 						)
@@ -855,6 +770,7 @@ func (stcls *schemaTable) reconcileColumnDiffs(
 					}
 				}
 				// Oracle nullable 格式（N/Y）规范化为 MySQL 格式（NO/YES）
+				// Oracle 返回 N 表示 NOT NULL，但 FixAlterColumnSqlDispos 只识别 "NO"
 				if sms.isOracleToMySQL && len(repairAttrs) > 3 {
 					switch strings.ToUpper(strings.TrimSpace(repairAttrs[3])) {
 					case "N":
@@ -864,26 +780,110 @@ func (stcls *schemaTable) reconcileColumnDiffs(
 					}
 				}
 				// 应用 dTypeMapping 覆盖属性（nullable/default）到修复 SQL
-				applyDTypeMappingOverrides(repairAttrs, originalColName, sms.isOracleToMySQL, stcls.isMariaDBToMySQL(), originalSourceTypeAdd, stcls.schema, stcls.table)
+				applyDTypeMappingOverrides(repairAttrs, sourceOriginalColName, sms.isOracleToMySQL, stcls.isMariaDBToMySQL(), originalSourceType, stcls.schema, stcls.table)
 				// 检查目标表是否存在主键
 				if mysqlDataFix, ok := cm.dbf.DataAbnormalFix().(*mysql.MysqlDataAbnormalFixStruct); ok {
 					mysqlDataFix.CheckDestTableHasPrimaryKey(stcls.destDB, logThreadSeq)
 				}
-				addSql := cm.dbf.DataAbnormalFix().FixAlterColumnSqlDispos("add", repairAttrs, position, originalLastColumn, originalColName, logThreadSeq)
-				vlog = fmt.Sprintf("(%d) %s Missing column %s in %s.%s - ADD: %v", logThreadSeq, event, originalColName, destSchema, stcls.table, addSql)
-				global.Wlog.Warn(vlog)
-				sms.alterSlice = append(sms.alterSlice, addSql)
-
-				// 检测新添加的列是否具有 AUTO_INCREMENT 属性
-				if hasAutoIncrementColumnAttribute(repairAttrs) {
-					sms.addedAutoIncrementColumn = true
-					vlog = fmt.Sprintf("(%d) %s Detected AUTO_INCREMENT attribute in added column %s for %s.%s", logThreadSeq, event, originalColName, destSchema, stcls.table)
-					global.Wlog.Debug(vlog)
+				modifySql := cm.dbf.DataAbnormalFix().FixAlterColumnSqlDispos("modify", repairAttrs, k1, originalLastColumn, repairColumnName, logThreadSeq)
+				if suggestion, gated := stcls.buildColumnShrinkAdvisory(destSchema, stcls.destTable, repairColumnName, sourceCanonical, destCanonical, modifySql); gated {
+					vlog = fmt.Sprintf("(%d) %s Column %s modify repair downgraded to advisory-only by shrink safety gate: %s", logThreadSeq, event, repairColumnName, suggestion.Reason)
+					global.Wlog.Warn(vlog)
+					sms.columnRiskDifferent = true
+					sms.columnAdvisorySuggestions = append(sms.columnAdvisorySuggestions, suggestion)
+				} else {
+					vlog = fmt.Sprintf("(%d) %s The column name of column %s of the source and target table %s.%s:[%s.%s] is the same, but the definition of the column is inconsistent, and a modify statement is generated, and the modification statement is {%v}", logThreadSeq, event, repairColumnName, stcls.schema, stcls.table, destSchema, stcls.table, modifySql)
+					global.Wlog.Warn(vlog)
+					sms.alterSlice = append(sms.alterSlice, modifySql)
 				}
-
-				delete(cm.destColumnMap, v1)
 			}
+			delete(cm.destColumnMap, v1)
+		} else {
+			var position int
+			// 使用固定值：ScheckOrder=yes，总是使用源列的实际位置
+			position = k1
+			// Use the source identifier for ADD COLUMN and the current target
+			// identifier for positional clauses when available.
+			originalColName := cm.getSourceOriginalColumnName(v1)
+			originalLastColumn := cm.getTargetPositionColumnName(lastcolumn)
+			repairAttrs := append([]string(nil), cm.sourceColumnMap[v1]...)
+			// 保存原始源端类型，供 applyDTypeMappingOverrides 规则匹配使用
+			originalSourceTypeAdd := ""
+			if len(repairAttrs) > 0 {
+				originalSourceTypeAdd = repairAttrs[0]
+			}
+			if sms.useCanonicalCompare {
+				var repairPlan schemacompat.ColumnRepairPlan
+				if sms.isOracleToMySQL {
+					repairPlan = schemacompat.BuildOracleToMySQLRepairPlan(
+						originalColName,
+						repairAttrs,
+						stcls.destVersionInfo(),
+						stcls.schema, stcls.table,
+					)
+				} else {
+					repairPlan = schemacompat.BuildTargetColumnRepairPlan(
+						originalColName,
+						repairAttrs,
+						stcls.sourceVersionInfo(),
+						stcls.destVersionInfo(),
+						sms.sourceColumnDefinitions[originalColName],
+						stcls.checkRules.MariaDBJSONTargetType,
+						stcls.schema, stcls.table,
+					)
+				}
+				if len(repairAttrs) < 6 {
+					for len(repairAttrs) < 6 {
+						repairAttrs = append(repairAttrs, "null")
+					}
+				}
+				if strings.TrimSpace(repairPlan.Type) != "" {
+					repairAttrs[0] = repairPlan.Type
+				}
+				if strings.TrimSpace(repairPlan.Charset) != "" {
+					repairAttrs[1] = repairPlan.Charset
+				}
+				if strings.TrimSpace(repairPlan.Collation) != "" {
+					repairAttrs[2] = repairPlan.Collation
+				}
+				if repairPlan.UseDirectDefinition {
+					if len(repairAttrs) < 7 {
+						repairAttrs = append(repairAttrs, repairPlan.DirectDefinition)
+					} else {
+						repairAttrs[6] = repairPlan.DirectDefinition
+					}
+				}
+			}
+			// Oracle nullable 格式（N/Y）规范化为 MySQL 格式（NO/YES）
+			if sms.isOracleToMySQL && len(repairAttrs) > 3 {
+				switch strings.ToUpper(strings.TrimSpace(repairAttrs[3])) {
+				case "N":
+					repairAttrs[3] = "NO"
+				case "Y":
+					repairAttrs[3] = "YES"
+				}
+			}
+			// 应用 dTypeMapping 覆盖属性（nullable/default）到修复 SQL
+			applyDTypeMappingOverrides(repairAttrs, originalColName, sms.isOracleToMySQL, stcls.isMariaDBToMySQL(), originalSourceTypeAdd, stcls.schema, stcls.table)
+			// 检查目标表是否存在主键
+			if mysqlDataFix, ok := cm.dbf.DataAbnormalFix().(*mysql.MysqlDataAbnormalFixStruct); ok {
+				mysqlDataFix.CheckDestTableHasPrimaryKey(stcls.destDB, logThreadSeq)
+			}
+			addSql := cm.dbf.DataAbnormalFix().FixAlterColumnSqlDispos("add", repairAttrs, position, originalLastColumn, originalColName, logThreadSeq)
+			vlog = fmt.Sprintf("(%d) %s Missing column %s in %s.%s - ADD: %v", logThreadSeq, event, originalColName, destSchema, stcls.table, addSql)
+			global.Wlog.Warn(vlog)
+			sms.alterSlice = append(sms.alterSlice, addSql)
+
+			// 检测新添加的列是否具有 AUTO_INCREMENT 属性
+			if hasAutoIncrementColumnAttribute(repairAttrs) {
+				sms.addedAutoIncrementColumn = true
+				vlog = fmt.Sprintf("(%d) %s Detected AUTO_INCREMENT attribute in added column %s for %s.%s", logThreadSeq, event, originalColName, destSchema, stcls.table)
+				global.Wlog.Debug(vlog)
+			}
+
+			delete(cm.destColumnMap, v1)
 		}
+	}
 
 	// 在处理完所有列差异后，检查是否需要添加 my_row_id
 	if stcls.isMySQLToMySQL() {
@@ -1175,6 +1175,14 @@ func (stcls *schemaTable) buildCharsetAdvisory(
 		}
 	}
 
+	if sourceMeta.AutoIncrement.Valid && !shouldSkipAutoIncrementCheck && !(sms.droppedAutoIncrementColumn && !sms.addedAutoIncrementColumn) {
+		destTableName := stcls.destTable
+		if strings.TrimSpace(destTableName) == "" {
+			destTableName = stcls.table
+		}
+		stcls.rememberTruncateBeforeAlterAutoIncrement(destSchema, destTableName, sourceMeta.AutoIncrement.Int64, logThreadSeq)
+	}
+
 	fixValue, needsFix := resolveMySQLTableAutoIncrementFixValue(sourceMeta.AutoIncrement, destMeta.AutoIncrement)
 	if needsFix && !sms.droppedAutoIncrementColumn && !shouldSkipAutoIncrementCheck {
 		result.tableAutoIncrementDifferent = true
@@ -1224,8 +1232,8 @@ func (stcls *schemaTable) buildCharsetAdvisory(
 }
 
 type structRiskEvaluation struct {
-	abnormalKey string
-	newKey      string
+	abnormalKey         string
+	newKey              string
 	shouldWriteAdvisory bool
 }
 

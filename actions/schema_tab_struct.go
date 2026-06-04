@@ -62,6 +62,7 @@ type schemaTable struct {
 	caseSensitiveObjectName string
 	datafix                 string
 	datafixSql              string
+	truncateBeforeAlter     string
 	fixFileObjectType       string // 文件名中的对象类型前缀，如 "table"/"view"/"trigger"/"routine"
 	djdbc                   string
 	checkRules              inputArg.RulesS
@@ -71,6 +72,9 @@ type schemaTable struct {
 	skipIndexCheckTables []string
 	// 列修复操作映射表，用于合并列和索引操作
 	columnRepairMap map[string][]string
+	// truncateBeforeAlterAutoIncrementMap records source AUTO_INCREMENT values
+	// that must be restored after TRUNCATE TABLE resets target sequences.
+	truncateBeforeAlterAutoIncrementMap map[string]int64
 	// Captures tables removed by ignoreTables for better diagnostics.
 	ignoredMatchedTables []string
 	// Keep per-run struct diff state on the schemaTable instance so repeated or
@@ -329,28 +333,30 @@ func SchemaTableInit(m *inputArg.ConfigParameter) *schemaTable {
 	}
 
 	return &schemaTable{
-		ignoreTable:              m.SecondaryL.SchemaV.IgnoreTables,
-		table:                    m.SecondaryL.SchemaV.Tables,
-		rawTables:                m.SecondaryL.SchemaV.Tables,
-		sourceDrive:              m.SecondaryL.DsnsV.SrcDrive,
-		destDrive:                m.SecondaryL.DsnsV.DestDrive,
-		sourceVersion:            sourceVersion,
-		destVersion:              destVersion,
-		sourceDB:                 sdb,
-		destDB:                   ddb,
-		caseSensitiveObjectName:  m.SecondaryL.SchemaV.CaseSensitiveObjectName,
-		datafix:                  m.SecondaryL.RepairV.Datafix,
-		datafixSql:               m.SecondaryL.RepairV.FixFileDir,
-		djdbc:                    m.SecondaryL.DsnsV.DestJdbc,
-		checkRules:               m.SecondaryL.RulesV,
-		tableMappings:            tableMappings,
-		columnRepairMap:          make(map[string][]string),
-		indexDiffsMap:            make(map[string]bool),
-		partitionDiffsMap:        make(map[string]bool),
-		foreignKeyDiffsMap:       make(map[string]bool),
-		structWarnOnlyDiffsMap:   make(map[string]bool),
-		structCollationMappedMap: make(map[string]bool),
-		columnPlan:               m.ColumnPlan,
+		ignoreTable:                         m.SecondaryL.SchemaV.IgnoreTables,
+		table:                               m.SecondaryL.SchemaV.Tables,
+		rawTables:                           m.SecondaryL.SchemaV.Tables,
+		sourceDrive:                         m.SecondaryL.DsnsV.SrcDrive,
+		destDrive:                           m.SecondaryL.DsnsV.DestDrive,
+		sourceVersion:                       sourceVersion,
+		destVersion:                         destVersion,
+		sourceDB:                            sdb,
+		destDB:                              ddb,
+		caseSensitiveObjectName:             m.SecondaryL.SchemaV.CaseSensitiveObjectName,
+		datafix:                             m.SecondaryL.RepairV.Datafix,
+		datafixSql:                          m.SecondaryL.RepairV.FixFileDir,
+		truncateBeforeAlter:                 m.SecondaryL.RepairV.TruncateBeforeAlter,
+		djdbc:                               m.SecondaryL.DsnsV.DestJdbc,
+		checkRules:                          m.SecondaryL.RulesV,
+		tableMappings:                       tableMappings,
+		columnRepairMap:                     make(map[string][]string),
+		truncateBeforeAlterAutoIncrementMap: make(map[string]int64),
+		indexDiffsMap:                       make(map[string]bool),
+		partitionDiffsMap:                   make(map[string]bool),
+		foreignKeyDiffsMap:                  make(map[string]bool),
+		structWarnOnlyDiffsMap:              make(map[string]bool),
+		structCollationMappedMap:            make(map[string]bool),
+		columnPlan:                          m.ColumnPlan,
 	}
 }
 
@@ -405,6 +411,8 @@ func (stcls *schemaTable) writeFixSql(sqls []string, logThreadSeq int64) error {
 	// Merge ALTER TABLE statements for the same table (including non-contiguous ones)
 	// to reduce metadata lock overhead and shorten DDL execution time.
 	sqls = mergeAlterTableStatements(sqls, logThreadSeq)
+	sqls = stcls.mergeAutoIncrementForTruncateBeforeAlter(sqls, logThreadSeq)
+	sqls = stcls.prependTruncateBeforeAlter(sqls, logThreadSeq)
 	effectiveDatafix := stcls.effectiveFixSQLDatafix(logThreadSeq)
 
 	// 执行模式：仅 checkObject=data 允许直接在目标库执行。
