@@ -1,4 +1,5 @@
 ## 4.0.0
+- [功能新增]: gt-checksum 新增 `truncateBeforeAlter` 参数（ON/OFF，默认 OFF），仅支持 `checkObject=struct`；开启后会在 base table 修复 SQL 的首个可执行 `ALTER TABLE` 前生成一次 `TRUNCATE TABLE`，并尽量把已读取的源端 `AUTO_INCREMENT` 值合并到后续 `ALTER` 中恢复序列，用于目标端数据可丢弃的大表结构修复场景。
 - [功能新增]: 新增断点续传（break-resume）功能，支持 gt-checksum 数据校验和 repairDB 在异常退出后从上次中断位置继续执行，避免重复校验或修复已完成的表/文件。
 - [功能新增]: gt-checksum 新增 `resume` 参数（OFF/ON/ASK），控制断点续传行为。OFF=不续传（默认），ON=自动续传，ASK=启动时询问用户。进度文件保存在 `result` 目录下，文件名为 `gt-checksum-progress-<日期>.json`，记录最近一次进度写入的 `end_time`；若断点超过 1 小时，续传前会提示用户确认。
 - [功能新增]: repairDB 新增 `resume` 参数（OFF/ON/ASK），控制断点续传行为。进度文件保存在 `fixFileDir` 目录下，文件名为 `.repairDB-progress.json`。
@@ -45,6 +46,7 @@
 - [问题修复]: 修复 MySQL 数值列生成 INSERT 修复 SQL 时被写成字符串字面量的问题，BIGINT/DECIMAL/DOUBLE 等列会按合法数值字面量输出。
 - [问题修复]: 修复 `global.Wlog` 空指针检查，避免日志初始化前调用 `Debug/Warn` 等方法导致 panic。
 - [问题修复]: 修复 Oracle `NUMBER(19,0)` 类型映射精度阈值（从 18 调整为 19），并新增 `tinyint(1)` ↔ `bit(1)` 类型等价映射。
+- [测试完善]: 新增 `truncateBeforeAlter` 配置解析、参数校验、TRUNCATE 注入、`AUTO_INCREMENT` 恢复、`writeFixSql` 顺序以及 struct-column 回归用例覆盖，验证默认关闭、非 struct 模式拒绝、view/routine/trigger 排除和 ALTER 前置顺序。
 - [测试完善]: 新增源端元数据非空但指定库表不可见的权限预检回归测试，覆盖 `tables=sbtest.*` 权限不足诊断提示。
 - [测试完善]: 新增 gt-checksum 在线修复 duplicate key 拆分、`datafix=table` 执行顺序、rollback writer 文件模式/启动时序、无索引表 rollback `TRUNCATE` 条件等回归测试。
 - [测试完善]: 新增 `tables` 通配权限预检、目标表不可见、非 data 对象强制导出 fix SQL、源端元数据为空 GRANT 提示等回归测试。

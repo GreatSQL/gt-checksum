@@ -75,7 +75,7 @@ $ gt-checksum -c ./gc.conf
 | checkObject | MySQL 所需权限（名称 / 来源 / 说明） | Oracle 所需权限（名称 / 来源 / 说明） | 版本差异与说明 |
 |---|---|---|---|
 | `data` | 1) `SESSION_VARIABLES_ADMIN`（MySQL 8.0及以上系统权限，程序启动时检查）<br>2) 源端：`SELECT`（对象权限，表/库/全局任一层级可覆盖）<br>3) 目标端：`SELECT`；若 `datafix=table` 再要求 `INSERT`、`DELETE`（对象权限），不再要求 `ALTER`<br>4) `REPLICATION CLIENT` 仅在启用 binlog/增量读取或需要执行 `SHOW MASTER STATUS` 获取复制状态时条件化检查 | 1) `SELECT ANY DICTIONARY`（系统权限，程序启动时检查）<br>2) 源端：`SELECT` 或 `SELECT ANY TABLE`<br>3) 目标端：`SELECT` 或 `SELECT ANY TABLE`；若 `datafix=table` 再要求 `INSERT`、`DELETE`（对象权限）或 `INSERT ANY TABLE`、`DELETE ANY TABLE`（系统权限） | MySQL 5.7 无 `SESSION_VARIABLES_ADMIN`；普通 `data` 校验不再强制要求 `REPLICATION CLIENT`。Oracle 12c+ 存在 `READ` 对象权限，但当前实现按 `SELECT` 语义检查。 |
-| `struct` | `datafix=file` 时不强制执行表级权限预检；`datafix=table` 会提前按结构修复路径检查权限（源端需 `SELECT`，目标端需 `SELECT`、`ALTER`，表/库/全局授权均可覆盖），但非 `data` 对象实际修复会强制导出 fix SQL 文件供人工审核，不直接在线修改目标对象。结构比对会读取 `INFORMATION_SCHEMA.COLUMNS`、`INFORMATION_SCHEMA.STATISTICS`、`INFORMATION_SCHEMA.PARTITIONS`、`INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS` 等。**若校验对象中包含视图（VIEW），还需额外授予 `SHOW VIEW` 权限**（MySQL 5.7+）。 | `datafix=file` 时不强制执行表级权限预检；`datafix=table` 时建议源端具备 `SELECT`/`SELECT ANY TABLE`，目标端具备 `SELECT`、`ALTER` 或 `SELECT ANY TABLE`、`ALTER ANY TABLE`。结构比对会读取 `DBA_TAB_COLUMNS`、`DBA_COL_COMMENTS`、`USER_CONSTRAINTS`、`ALL_TABLES`，并调用 `DBMS_METADATA.GET_DDL('TABLE',...)`。 | 当前实现中，`checkObject=struct` 已合并执行表结构、索引、分区、外键检查；VIEW 专项支持仅限 MySQL→MySQL 场景。 |
+| `struct` | `datafix=file` 时不强制执行表级权限预检；`datafix=table` 会提前按结构修复路径检查权限（源端需 `SELECT`，目标端需 `SELECT`、`ALTER`，表/库/全局授权均可覆盖），但非 `data` 对象实际修复会强制导出 fix SQL 文件供人工审核，不直接在线修改目标对象。若启用 `truncateBeforeAlter=ON`，回放生成的 fix SQL 还需具备执行 `TRUNCATE TABLE` 所需权限（MySQL/MariaDB 通常为 `DROP`）。结构比对会读取 `INFORMATION_SCHEMA.COLUMNS`、`INFORMATION_SCHEMA.STATISTICS`、`INFORMATION_SCHEMA.PARTITIONS`、`INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS` 等。**若校验对象中包含视图（VIEW），还需额外授予 `SHOW VIEW` 权限**（MySQL 5.7+）。 | `datafix=file` 时不强制执行表级权限预检；`datafix=table` 时建议源端具备 `SELECT`/`SELECT ANY TABLE`，目标端具备 `SELECT`、`ALTER` 或 `SELECT ANY TABLE`、`ALTER ANY TABLE`。若启用 `truncateBeforeAlter=ON` 并回放 MySQL-family 目标端 fix SQL，还需确认执行 `TRUNCATE TABLE` 的等价权限。结构比对会读取 `DBA_TAB_COLUMNS`、`DBA_COL_COMMENTS`、`USER_CONSTRAINTS`、`ALL_TABLES`，并调用 `DBMS_METADATA.GET_DDL('TABLE',...)`。 | 当前实现中，`checkObject=struct` 已合并执行表结构、索引、分区、外键检查；VIEW 专项支持仅限 MySQL→MySQL 场景。 |
 | `routine` | 会预检例程定义可见性：MySQL 8.0.20+ 需 `SHOW_ROUTINE` 或全局 `SELECT`；MySQL 8.0.0-8.0.19 需全局 `SELECT`；MySQL 5.6/5.7 与 MariaDB 需全局 `SELECT`、`SELECT ON mysql.*` 或 `SELECT ON mysql.proc`。通过后读取 `INFORMATION_SCHEMA.PARAMETERS`、`INFORMATION_SCHEMA.ROUTINES`。 | 当前不强制执行表级权限预检；读取 `ALL_PROCEDURES`，并调用 `DBMS_METADATA.GET_DDL('PROCEDURE'/'FUNCTION',...)`。建议具备 `SELECT ANY DICTIONARY` 与 `DBMS_METADATA` 访问能力。 | MySQL 8.0.20+ 引入 `SHOW_ROUTINE` 权限语义更清晰；低版本需用全局或 `mysql.proc` 读取权限覆盖。 |
 | `trigger` | 会预检从 `tables` 参数提取出的 `schema.*` 的 `TRIGGER` 权限；通过后读取 `INFORMATION_SCHEMA.TRIGGERS`，并执行 `SHOW CREATE TRIGGER`。 | 当前不强制执行表级权限预检；读取 `ALL_TRIGGERS`，并调用 `DBMS_METADATA.GET_DDL('TRIGGER',...)`。建议具备 `SELECT ANY DICTIONARY` 与元数据访问能力。 | Oracle 11g/12c/19c/23c 在 `ALL_TRIGGERS` 视图语义上基本一致（返回当前用户可访问对象）。 |
 
@@ -532,6 +532,7 @@ SET character_set_client = DEFAULT;
 | `dTypeMappingFile` | 文件路径 | 空 | 用户自定义数据类型映射规则文件路径，支持 YAML（`.yaml`/`.yml`）或 JSON（`.json`）格式。不设置则使用内置默认映射规则。规则采用 first-match 语义：文件中先定义的规则优先生效。支持三种迁移场景：`oracle_to_mysql` / `mysql_upgrade` / `mariadb_to_mysql`。详见下方 [dTypeMapping 数据类型映射规则](#dtype-mapping-数据类型映射规则) 章节。 |
 | `datafix` | `file` / `table` | `file` | `checkObject=struct` 场景建议固定为 `file`；若配置为 `table`，当前版本也会强制导出 fix SQL 文件供 DBA 审查，不直接在线修改目标对象。 |
 | `fixFileDir` | 目录路径 | `fixsql` | 修复 SQL 输出目录；在 `datafix=file` 以及 `checkObject!=data && datafix=table` 的强制导出场景生效，每个对象按 `type.schema.object.sql` 命名。 |
+| `truncateBeforeAlter` | `ON` / `OFF` | `OFF` | 仅在 `checkObject=struct` 模式下生效。`ON` 时，对 base table 修复 SQL 中每张表的首个可执行 `ALTER TABLE` 前生成一次 `TRUNCATE TABLE <同一表表达式>`；不作用于 `CREATE TABLE`、`DROP TABLE`、VIEW、ROUTINE、TRIGGER 或注释/advisory SQL。程序会尽量把已读取的源端 `AUTO_INCREMENT` 值合并到后续 `ALTER` 中恢复序列。开启后执行 fix SQL 会清空目标表数据，需确认目标端数据可丢弃；执行账号还需具备 `TRUNCATE TABLE` 所需权限（MySQL/MariaDB 通常为 `DROP`）。 |
 | `requirePK` | `ON` / `OFF` | `OFF` | 仅在 `checkObject=struct` 模式下生效。`ON` 时为无主键表自动添加 `my_row_id` 隐藏列（需同时满足：无主键、无 NOT NULL 唯一索引、目标端未启用 `sql_generate_invisible_primary_key`）。适用于 MySQL 单机实例迁移到 MGR 环境的场景。 |
 
 ### SSL 连接参数
@@ -787,6 +788,17 @@ mariaDBJSONTargetType = LONGTEXT
 ### 结构迁移标准操作步骤
 
 安全起见，`checkObject=struct`（以及 routine/trigger 等非 data 对象）不会因 `datafix=table` 直接在线修改目标对象；程序会导出 fix SQL 文件，交由 DBA 审查后再通过 `repairDB` 或人工方式回放。
+
+如配置 `truncateBeforeAlter=ON`，生成的 base table fix SQL 会在首个 `ALTER TABLE` 前额外写入 `TRUNCATE TABLE`。该语句会清空目标表数据、通常伴随 DDL 隐式提交，并可能受外键引用约束影响而执行失败；程序会尽量将已读取的源端 `AUTO_INCREMENT` 值合并到后续可执行 `ALTER` 中恢复序列，但仍需人工审查。执行账号还需具备 `TRUNCATE TABLE` 所需权限（MySQL/MariaDB 通常为 `DROP`）。仅应在目标端数据确认可丢弃、已完成备份/回滚预案审查，并确认权限满足后使用。
+
+典型配置示例：
+
+```ini
+checkObject = struct
+datafix = file
+fixFileDir = ./fixsql-struct-truncate
+truncateBeforeAlter = ON
+```
 
 建议按以下步骤执行 `checkObject=struct`：
 
