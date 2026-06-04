@@ -86,18 +86,23 @@ type LogS struct {
 	LogLevel string
 }
 type RepairS struct {
-	Datafix         string
-	FixTrxNum       int
-	FixTrxSize      int
-	InsertSqlSize   int
-	DeleteSqlSize   int
-	FixFileDir      string
+	Datafix       string
+	FixTrxNum     int
+	FixTrxSize    int
+	InsertSqlSize int
+	DeleteSqlSize int
+	FixFileDir    string
 	// ExtraRowsSyncToSource controls whether target-only rows (rows present in the target
 	// but absent in the source) are deleted when columns mode is active.
 	// ON  = generate DELETE fix SQL for target-only rows
 	// OFF = advisory-only (default)
 	// Only valid when the columns parameter is set.
 	ExtraRowsSyncToSource string
+	// TruncateBeforeAlter controls whether to emit TRUNCATE TABLE before ALTER TABLE repair SQL.
+	// ON  = emit TRUNCATE TABLE before the first eligible base-table ALTER in struct fix SQL
+	// OFF = do not emit truncate (default)
+	// Only valid when checkObject=struct.
+	TruncateBeforeAlter string // ON | OFF
 	// GenRollSQL controls rollback SQL generation: ON/OFF/comma-separated table list (supports % wildcard).
 	// Default: OFF
 	GenRollSQL    string
@@ -130,9 +135,9 @@ type ConfigParameter struct {
 	LogThreadSeq        int64
 	NoIndexTableTmpFile string
 	// RunID is a stable identifier for this run, generated once at startup (format: YYYYMMDDHHmmss).
-	RunID                string
-	CliResultExport      string
-	CliResultFile        string
+	RunID                 string
+	CliResultExport       string
+	CliResultFile         string
 	CliTerminalResultMode string
 	// ColumnPlan is populated during startup from SchemaV.Columns.
 	// nil means full-table compare mode (columns parameter not set).

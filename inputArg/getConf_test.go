@@ -192,3 +192,46 @@ func TestGetConfig_DataDatafixFileGenRollSQLStillPreparesRollFileDir(t *testing.
 		t.Fatalf("expected rollback SQL directory to be created for datafix=file: %v", err)
 	}
 }
+
+func TestGetConfig_TruncateBeforeAlterDefaultAndNormalization(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want string
+	}{
+		{name: "default off", want: "OFF"},
+		{name: "upper on", line: "truncateBeforeAlter=ON", want: "ON"},
+		{name: "lower on", line: "truncateBeforeAlter=on", want: "ON"},
+		{name: "lower off", line: "truncateBeforeAlter=off", want: "OFF"},
+		{name: "invalid passed through", line: "truncateBeforeAlter=maybe", want: "MAYBE"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			workDir := t.TempDir()
+			configPath := workDir + "/gc.conf"
+			lines := []string{
+				"srcDSN=mysql|user:pass@tcp(127.0.0.1:3306)/information_schema?charset=utf8mb4",
+				"dstDSN=mysql|user:pass@tcp(127.0.0.1:3307)/information_schema?charset=utf8mb4",
+				"tables=gt_checksum.*",
+				"checkObject=data",
+				"datafix=table",
+				"resume=OFF",
+			}
+			if tt.line != "" {
+				lines = append(lines, tt.line)
+			}
+			config := strings.Join(lines, "\n") + "\n"
+			if err := os.WriteFile(configPath, []byte(config), 0644); err != nil {
+				t.Fatalf("failed to write temp config: %v", err)
+			}
+
+			rc := &ConfigParameter{Config: configPath}
+			rc.GetConfig()
+
+			if rc.SecondaryL.RepairV.TruncateBeforeAlter != tt.want {
+				t.Fatalf("TruncateBeforeAlter = %q, want %q", rc.SecondaryL.RepairV.TruncateBeforeAlter, tt.want)
+			}
+		})
+	}
+}

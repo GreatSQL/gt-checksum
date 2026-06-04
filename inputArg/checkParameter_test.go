@@ -2,6 +2,41 @@ package inputArg
 
 import "testing"
 
+func TestNormalizeTruncateBeforeAlter(t *testing.T) {
+	tests := []struct {
+		name        string
+		value       string
+		checkObject string
+		want        string
+		wantErr     bool
+	}{
+		{name: "default off", checkObject: "data", want: "OFF"},
+		{name: "on struct", value: "ON", checkObject: "struct", want: "ON"},
+		{name: "lowercase on struct", value: "on", checkObject: "STRUCT", want: "ON"},
+		{name: "off data", value: "OFF", checkObject: "data", want: "OFF"},
+		{name: "invalid value", value: "YES", checkObject: "struct", wantErr: true},
+		{name: "on data rejected", value: "ON", checkObject: "data", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := normalizeTruncateBeforeAlter(tt.value, tt.checkObject)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("normalizeTruncateBeforeAlter(%q, %q) expected error", tt.value, tt.checkObject)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("normalizeTruncateBeforeAlter(%q, %q) unexpected error: %v", tt.value, tt.checkObject, err)
+			}
+			if got != tt.want {
+				t.Fatalf("normalizeTruncateBeforeAlter(%q, %q) = %q, want %q", tt.value, tt.checkObject, got, tt.want)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // tablePatternHasUnsupportedStar
 //

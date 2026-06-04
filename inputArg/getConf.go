@@ -424,6 +424,18 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 		rc.SecondaryL.RepairV.ExtraRowsSyncToSource = extraRowsSyncValue
 	}
 
+	// truncateBeforeAlter 参数：struct 模式下是否在首个 ALTER TABLE 前生成 TRUNCATE TABLE
+	truncateBeforeAlterValue := strings.ToUpper(strings.TrimSpace(getLastConfigValue("truncateBeforeAlter")))
+	switch truncateBeforeAlterValue {
+	case "", "OFF":
+		rc.SecondaryL.RepairV.TruncateBeforeAlter = "OFF"
+	case "ON":
+		rc.SecondaryL.RepairV.TruncateBeforeAlter = "ON"
+	default:
+		// pass through as-is; checkPar will reject it with a clear error
+		rc.SecondaryL.RepairV.TruncateBeforeAlter = truncateBeforeAlterValue
+	}
+
 	// requirePK 参数：struct 模式下是否为无主键表添加 my_row_id 隐藏列
 	requirePKValue := strings.ToUpper(strings.TrimSpace(getLastConfigValue("requirePK")))
 	if requirePKValue == "" {

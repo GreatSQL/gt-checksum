@@ -25,6 +25,20 @@ func tablePatternHasUnsupportedStar(schemaTablePart string) bool {
 	return strings.Contains(tableNamePart, "*") && tableNamePart != "*"
 }
 
+func normalizeTruncateBeforeAlter(value, checkObject string) (string, error) {
+	normalized := strings.ToUpper(strings.TrimSpace(value))
+	if normalized == "" {
+		normalized = "OFF"
+	}
+	if normalized != "ON" && normalized != "OFF" {
+		return "", fmt.Errorf("truncateBeforeAlter must be ON or OFF")
+	}
+	if normalized == "ON" && strings.ToLower(strings.TrimSpace(checkObject)) != "struct" {
+		return "", fmt.Errorf("truncateBeforeAlter=ON requires checkObject=struct")
+	}
+	return normalized, nil
+}
+
 // 判断库表配置参数是否存在非法参数
 func (rc *ConfigParameter) rexPat(rex *regexp.Regexp, rexStr string) {
 	illegalParameterStatus := false
@@ -148,6 +162,28 @@ func (rc *ConfigParameter) checkPar() {
 		os.Exit(1)
 	}
 	vlog = fmt.Sprintf("(%d) [%s] result export: resultExport=%s terminalResultMode=%s runID=%s.", rc.LogThreadSeq, Event, rc.SecondaryL.RulesV.ResultExport, rc.SecondaryL.RulesV.TerminalResultMode, rc.RunID)
+	global.Wlog.Debug(vlog)
+
+	vlog = fmt.Sprintf("(%d) [%s] start init check object values.", rc.LogThreadSeq, Event)
+	global.Wlog.Debug(vlog)
+	rc.SecondaryL.RulesV.CheckObject = strings.ToLower(strings.TrimSpace(rc.SecondaryL.RulesV.CheckObject))
+	if rc.SecondaryL.RulesV.CheckObject == "proc" || rc.SecondaryL.RulesV.CheckObject == "func" {
+		originalValue := rc.SecondaryL.RulesV.CheckObject
+		rc.SecondaryL.RulesV.CheckObject = "data"
+		vlog = fmt.Sprintf("(%d) [%s] checkObject value '%s' is deprecated. Using default value 'data' instead. Consider using 'routine' for checking stored procedures and functions.", rc.LogThreadSeq, Event, originalValue)
+		global.Wlog.Info(vlog)
+		fmt.Printf("Warning: checkObject value '%s' is deprecated. Using default value 'data' instead. Consider using 'routine' for checking stored procedures and functions.\n", originalValue)
+	}
+
+	truncateBeforeAlter, truncateBeforeAlterErr := normalizeTruncateBeforeAlter(rc.SecondaryL.RepairV.TruncateBeforeAlter, rc.SecondaryL.RulesV.CheckObject)
+	if truncateBeforeAlterErr != nil {
+		fmt.Println(fmt.Sprintf("gt-checksum: %v. Check %s or set logLevel=debug for details", truncateBeforeAlterErr, rc.SecondaryL.LogV.LogFile))
+		vlog = fmt.Sprintf("(%d) [%s] option \"truncateBeforeAlter\" is invalid: %v.", rc.LogThreadSeq, Event, truncateBeforeAlterErr)
+		global.Wlog.Error(vlog)
+		os.Exit(1)
+	}
+	rc.SecondaryL.RepairV.TruncateBeforeAlter = truncateBeforeAlter
+	vlog = fmt.Sprintf("(%d) [%s] TruncateBeforeAlter=%s", rc.LogThreadSeq, Event, rc.SecondaryL.RepairV.TruncateBeforeAlter)
 	global.Wlog.Debug(vlog)
 
 	tmpDbc := dbExec.DBConnStruct{DBDevice: rc.SecondaryL.DsnsV.SrcDrive, JDBC: rc.SecondaryL.DsnsV.SrcJdbc}
