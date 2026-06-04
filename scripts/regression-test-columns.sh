@@ -22,6 +22,10 @@
 #                         并非启用 Oracle 数据源参与校验
 #   --help                显示帮助
 #
+# v4.0.0 覆盖：
+#   TC-09                 datafix=table 在线修复输出 Fixed 列
+#   TC-10                 resume=ON 时 progress 记录 fixed 状态
+#
 # 示例:
 #   bash scripts/regression-test-columns.sh --src-port=3406 --dst-port=3408
 #   bash scripts/regression-test-columns.sh --src-port=3406 --dst-port=3408 \
@@ -260,7 +264,7 @@ reinit_target() {
 # ============================================================
 
 # 生成 gt-checksum.conf（含可选 columns 参数）
-# 参数：src_port dst_port case_dir tables columns extra_rows_sync check_no_index
+# 参数：src_port dst_port case_dir tables columns extra_rows_sync check_no_index [datafix] [resume] [result_export] [result_file] [roll_file_dir] [extra_config]
 generate_checksum_config() {
     local src_port="$1"
     local dst_port="$2"
@@ -269,6 +273,12 @@ generate_checksum_config() {
     local columns="${5:-}"
     local extra_rows_sync="${6:-OFF}"
     local check_no_index="${7:-no}"
+    local datafix="${8:-file}"
+    local resume="${9:-OFF}"
+    local result_export="${10:-}"
+    local result_file="${11:-}"
+    local roll_file_dir="${12:-}"
+    local extra_config="${13:-}"
 
     # requirePK 逻辑：只校验部分列的场景（有 columns 参数）不启用 requirePK
     local require_pk="ON"
@@ -287,7 +297,7 @@ chunkSize=1000
 queueSize=20
 checkObject=data
 memoryLimit=3000
-datafix=file
+datafix=${datafix}
 fixFileDir=${case_dir}/fixsql
 logFile=${case_dir}/gt-checksum.log
 logLevel=debug
@@ -299,6 +309,12 @@ EOF
     if [[ -n "$columns" ]]; then
         echo "columns=${columns}" >> "${case_dir}/gt-checksum.conf"
     fi
+    [[ "$resume" != "OFF" ]] && echo "resume=${resume}" >> "${case_dir}/gt-checksum.conf"
+    [[ -n "$result_export" ]] && echo "resultExport=${result_export}" >> "${case_dir}/gt-checksum.conf"
+    [[ -n "$result_file" ]] && echo "resultFile=${result_file}" >> "${case_dir}/gt-checksum.conf"
+    [[ -n "$roll_file_dir" ]] && echo "rollFileDir=${roll_file_dir}" >> "${case_dir}/gt-checksum.conf"
+    [[ -n "$extra_config" ]] && printf '%s\n' "$extra_config" >> "${case_dir}/gt-checksum.conf"
+    return 0
 }
 
 # 生成 Oracle srcDSN 配置（TC-ORA-01）
@@ -604,13 +620,152 @@ run_single_case() {
     fi
 }
 
+fixed_csv_has_valid_values() {
+    local csv_file="$1"
+    if command -v python3 >/dev/null 2>&1; then
+        python3 - "$csv_file" <<'PY'
+import csv
+import sys
+
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8-sig", newline="") as f:
+    rows = list(csv.reader(f))
+if not rows or "Fixed" not in rows[0]:
+    sys.exit(1)
+idx = rows[0].index("Fixed")
+valid = {"", "yes", "no", "skipped"}
+for row in rows[1:]:
+    value = row[idx].strip().lower() if idx < len(row) else ""
+    if value not in valid:
+        sys.exit(1)
+sys.exit(0)
+PY
+        return $?
+    fi
+
+    # fallback：仅校验表头存在。CSV 中 Rows/Columns 可能包含逗号，awk -F',' 无法可靠解析值列。
+    grep -qi 'Fixed' "$csv_file"
+}
+
+run_datafix_table_case() {
+    local case_id="$1"
+    local tables="$2"
+    local columns="$3"
+    local extra_rows_sync="${4:-OFF}"
+    local check_no_index="${5:-no}"
+    local resume="${6:-OFF}"
+
+    local case_dir="${ARTIFACTS_DIR}/cases/${case_id}"
+    local result_file="${case_dir}/checksum-result.csv"
+    mkdir -p "${case_dir}/fixsql"
+
+    reinit_target
+
+    generate_checksum_config \
+        "$SRC_PORT" "$DST_PORT" "$case_dir" \
+        "$tables" "$columns" "$extra_rows_sync" "$check_no_index" \
+        "table" "$resume" "csv" "$result_file" "" "terminalResultMode=all"
+
+    local round1_output="${case_dir}/round1-output.txt" ec=0 final_verdict="PASS" diffs_summary=""
+    run_with_timeout "$CASE_TIMEOUT" \
+        "$GT_CHECKSUM" -c "${case_dir}/gt-checksum.conf" \
+        > "$round1_output" 2>&1 || ec=$?
+
+    if [[ -f "${case_dir}/gt-checksum.log" ]]; then
+        cp "${case_dir}/gt-checksum.log" \
+           "${case_dir}/round1-gt-checksum.log" 2>/dev/null || true
+    fi
+
+    if [[ $ec -eq 124 ]]; then
+        final_verdict="TIMEOUT"
+    elif [[ $ec -ne 0 ]]; then
+        final_verdict="ERROR"
+        log_error "  [${case_id}] datafix=table 执行异常退出 (exit=${ec})"
+    elif [[ ! -f "$result_file" ]]; then
+        final_verdict="FAIL"
+        log_error "  [${case_id}] 未生成 result CSV: ${result_file}"
+    elif ! grep -qi 'Fixed' "$round1_output" 2>/dev/null; then
+        final_verdict="FAIL"
+        log_error "  [${case_id}] 终端输出未包含 Fixed 列"
+    elif ! fixed_csv_has_valid_values "$result_file"; then
+        final_verdict="FAIL"
+        log_error "  [${case_id}] CSV Fixed 列不存在或存在非法取值"
+    fi
+
+    if [[ "$final_verdict" == "PASS" && "$resume" != "OFF" ]]; then
+        local progress_files
+        progress_files=$(find "$case_dir" -name 'gt-checksum-progress-*.json' -type f 2>/dev/null)
+        if [[ -z "$progress_files" ]]; then
+            final_verdict="FAIL"
+            log_error "  [${case_id}] resume=${resume} 未生成 progress 文件"
+        else
+            local progress_has_fixed=false progress_file
+            while IFS= read -r progress_file; do
+                if grep -qi 'fixed' "$progress_file"; then
+                    progress_has_fixed=true
+                    break
+                fi
+            done <<< "$progress_files"
+            if ! $progress_has_fixed; then
+                final_verdict="FAIL"
+                log_error "  [${case_id}] progress 文件未记录 fixed 字段"
+            fi
+        fi
+    fi
+
+    if [[ "$final_verdict" == "PASS" ]]; then
+        local verify_dir="${case_dir}/verify"
+        local verify_result_file="${verify_dir}/checksum-result.csv"
+        mkdir -p "${verify_dir}/fixsql"
+        generate_checksum_config \
+            "$SRC_PORT" "$DST_PORT" "$verify_dir" \
+            "$tables" "$columns" "$extra_rows_sync" "$check_no_index" \
+            "file" "OFF" "csv" "$verify_result_file" "" "terminalResultMode=all"
+
+        local round2_output="${verify_dir}/round2-output.txt" round2_ec=0
+        run_with_timeout "$CASE_TIMEOUT" \
+            "$GT_CHECKSUM" -c "${verify_dir}/gt-checksum.conf" \
+            > "$round2_output" 2>&1 || round2_ec=$?
+        diffs_summary="$(parse_diffs_from_output "$round2_output")"
+        local eval_result
+        eval_result="$(evaluate_diffs "$diffs_summary")"
+        if [[ $round2_ec -eq 124 ]]; then
+            final_verdict="TIMEOUT"
+        elif [[ $round2_ec -ne 0 ]]; then
+            final_verdict="ERROR"
+            log_error "  [${case_id}] 二次校验异常退出 (exit=${round2_ec})"
+        elif [[ "$eval_result" != "PASS" ]]; then
+            final_verdict="FAIL"
+            log_error "  [${case_id}] datafix=table 后二次校验未收敛或无输出: ${diffs_summary:-—} (eval=${eval_result})"
+        fi
+    fi
+
+    echo "${case_id}|${final_verdict}|2|${diffs_summary}" \
+        >> "${ARTIFACTS_DIR}/results.csv"
+    echo "$final_verdict" > "${case_dir}/verdict"
+
+    TOTAL=$((TOTAL + 1))
+    case "$final_verdict" in
+        PASS)    PASSED=$((PASSED + 1)) ;;
+        FAIL|UNEXPECTED) FAILED=$((FAILED + 1)) ;;
+        ERROR)   ERRORS=$((ERRORS + 1)) ;;
+        TIMEOUT) TIMEOUTS=$((TIMEOUTS + 1)) ;;
+    esac
+
+    if [[ "$final_verdict" == "PASS" ]]; then
+        log_info "  [${case_id}] PASS (Fixed/result CSV/progress checks passed)"
+    else
+        log_error "  [${case_id}] ${final_verdict}"
+    fi
+}
+
 # ============================================================
 # SECTION 10: Oracle stub 错误处理测例（负向用例）
 # columns 模式产品约束：不支持任何一端为 Oracle。
 # 本用例使用 oracle srcDSN 触发 gt-checksum，验证程序会非零退出且错误消息可识别。
 # ============================================================
 run_oracle_stub_case() {
-    local case_id="TC-ORA-01-cols-oracle-stub-error"
+    local case_id="TC-ORA-01-cols-oracle-stub"
     local case_dir="${ARTIFACTS_DIR}/cases/${case_id}"
     mkdir -p "${case_dir}/fixsql"
 
@@ -726,6 +881,8 @@ print_test_cases() {
     printf "%-40s %-18s %s\n" "TC-06-cols-no-pk-ddl-yes"        "ERROR-EXPECTED" "无主键表→非零退出（预期行为）"
     printf "%-40s %-18s %s\n" "TC-07-cols-target-only-extra"    "PASS"           "target-only 行+extraRowsSyncToSource"
     printf "%-40s %-18s %s\n" "TC-08-cols-simple-multi-col"     "PASS"           "简单语法多字段 columns=score,note"
+    printf "%-40s %-18s %s\n" "TC-09-cols-datafix-table-fixed"   "PASS"           "v4.0.0 datafix=table 输出 Fixed 列"
+    printf "%-40s %-18s %s\n" "TC-10-cols-datafix-table-resume-progress" "PASS"     "v4.0.0 resume=ON progress fixed 状态"
     if [[ "$ENABLE_ORACLE" == "true" ]]; then
     printf "%-40s %-18s %s\n" "TC-ORA-01-cols-oracle-stub"      "ERROR-EXPECTED" "Oracle srcDSN stub 错误处理"
     fi
@@ -842,6 +999,24 @@ main() {
         "${DB_SCHEMA}.product" \
         "score,note" \
         "OFF" "no" "PASS"
+
+    # TC-09: datafix=table 输出 Fixed 列
+    log_info ""
+    log_info "--- TC-09: datafix=table 输出 Fixed 列 ---"
+    run_datafix_table_case \
+        "TC-09-cols-datafix-table-fixed" \
+        "${DB_SCHEMA}.order_data" \
+        "${DB_SCHEMA}.order_data.order_id:${DB_SCHEMA}.order_data.order_id,${DB_SCHEMA}.order_data.amount:${DB_SCHEMA}.order_data.amount" \
+        "OFF" "no" "OFF"
+
+    # TC-10: resume=ON progress fixed 状态
+    log_info ""
+    log_info "--- TC-10: resume=ON progress fixed 状态 ---"
+    run_datafix_table_case \
+        "TC-10-cols-datafix-table-resume-progress" \
+        "${DB_SCHEMA}.product" \
+        "score,note" \
+        "OFF" "no" "ON"
 
     # TC-ORA-01: Oracle stub 错误处理（需 --enable-oracle）
     if [[ "$ENABLE_ORACLE" == "true" ]]; then

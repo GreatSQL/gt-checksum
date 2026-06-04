@@ -8,12 +8,14 @@
 # 覆盖清单（Step 0 ①-⑤、⑧、⑨；⑥⑦ Oracle 在 regression-test-oracle.sh --with-scenarios）：
 #   TC-ST-01  双端存在、无差异
 #   TC-ST-02  目标缺表（期望生成 CREATE TABLE 并修复收敛）
-#   TC-ST-03  源缺表  （期望生成 DROP   TABLE 并修复收敛）
+#   TC-ST-03  源缺表  （v4.0.0 源端对象不可见诊断，预期非零退出）
 #   TC-ST-04  列增/删/类型变更
 #   TC-ST-05a 列名大小写差异（caseSensitiveObjectName=yes）
 #   TC-ST-05b 列名大小写差异（caseSensitiveObjectName=no，视为一致）
 #   TC-ST-08  不支持特性 advisory（generated column / CHECK）
 #   TC-ST-09  columnPlan 列映射豁免（data 预检）
+#   TC-ST-10  dTypeMappingFile preview smoke
+#   TC-ST-11  非 data 对象 datafix=table 强制导出 fix SQL
 #
 # 用法:
 #   bash scripts/regression-test-struct-column.sh --src-port=3406 --dst-port=3408
@@ -179,6 +181,10 @@ reinit_all() {
 # ============================================================
 generate_config() {
     local case_dir="$1" mode="$2" tables="$3" case_sensitive="$4" columns="${5:-}"
+    local datafix="${6:-file}"
+    local resume="${7:-OFF}"
+    local dtype_mapping_file="${8:-}"
+    local extra_config="${9:-}"
 
     # requirePK 逻辑：只校验部分列的场景（有 columns 参数）不启用 requirePK
     local require_pk="ON"
@@ -197,7 +203,7 @@ chunkSize=1000
 queueSize=20
 checkObject=${mode}
 memoryLimit=3000
-datafix=file
+datafix=${datafix}
 fixFileDir=${case_dir}/fixsql
 logFile=${case_dir}/gt-checksum.log
 logLevel=debug
@@ -205,10 +211,36 @@ logbin=ON
 requirePK=${require_pk}
 EOF
     [[ -n "$columns" ]] && echo "columns=${columns}" >> "${case_dir}/gt-checksum.conf"
+    [[ "$resume" != "OFF" ]] && echo "resume=${resume}" >> "${case_dir}/gt-checksum.conf"
+    [[ -n "$dtype_mapping_file" ]] && echo "dTypeMappingFile=${dtype_mapping_file}" >> "${case_dir}/gt-checksum.conf"
+    [[ -n "$extra_config" ]] && printf '%s\n' "$extra_config" >> "${case_dir}/gt-checksum.conf"
+
     cat > "${case_dir}/repairDB.conf" <<EOF
 dstDSN=mysql|${DB_USER}:${DB_PASS}@tcp(${DB_HOST}:${DST_PORT})/information_schema?charset=utf8mb4
 parallelThds=4
 fixFileDir=${case_dir}/fixsql
+resume=${resume}
+EOF
+}
+
+write_dtype_mapping_file() {
+    local mapping_file="$1"
+    cat > "${mapping_file}" <<'EOF'
+dTypeMapping:
+  oracle_to_mysql:
+    - source_type: NUMBER
+      target_type: BIGINT
+      condition: "p <= 19 and s = 0"
+      description: "struct-column preview integer mapping"
+  mysql_upgrade:
+    - source_type: CHAR
+      target_type: VARCHAR
+      object: gt_checksum_sc.t_col_diff.c_varchar
+      description: "struct-column preview scoped char mapping"
+  mariadb_to_mysql:
+    - source_type: JSON
+      target_type: JSON
+      description: "struct-column preview json mapping"
 EOF
 }
 
@@ -225,7 +257,7 @@ parse_diffs_from_output() {
         | grep -iE "$filter" \
         | grep -vE '^\[|^Initializing|^Opening|^Checking|^gt-checksum|^$|^Schema' \
         | awk '{for(i=1;i<=NF;i++){v=tolower($i);if(v=="yes"||v=="no"||v=="warn-only"||v=="collation-mapped"||v=="ddl-yes"){print $i;break}}}' \
-        | sort -u | paste -sd',' -
+        | sort -u | paste -sd',' - || true
 }
 
 fixsql_is_advisory_only() {
@@ -239,18 +271,32 @@ fixsql_is_advisory_only() {
 }
 
 evaluate_diffs() {
-    local diffs_csv="$1"
+    local diffs_csv="$1" mode="${2:-}"
     [[ -z "$diffs_csv" ]] && { echo "NO_OUTPUT"; return; }
     local has_yes=false
+    local has_ddl_yes=false
     IFS=',' read -ra arr <<< "$diffs_csv"
     for v in "${arr[@]}"; do
         v="$(echo "$v" | tr -d '[:space:]')"
         case "$v" in
             no|warn-only|collation-mapped) ;;
-            yes|DDL-yes|*) has_yes=true ;;
+            DDL-yes)
+                if [[ "$mode" == "data" ]]; then
+                    has_ddl_yes=true
+                else
+                    has_yes=true
+                fi
+                ;;
+            yes|*) has_yes=true ;;
         esac
     done
-    $has_yes && echo "NEEDS_REPAIR" || echo "PASS"
+    if $has_yes; then
+        echo "NEEDS_REPAIR"
+    elif $has_ddl_yes; then
+        echo "PASS-DDL"
+    else
+        echo "PASS"
+    fi
 }
 
 # ============================================================
@@ -278,13 +324,18 @@ run_struct_case() {
 
         if [[ $ec -eq 124 ]]; then final="TIMEOUT"; break; fi
         diffs="$(parse_diffs_from_output "$out" "$mode")"
-        local eval; eval="$(evaluate_diffs "$diffs")"
+        local eval; eval="$(evaluate_diffs "$diffs" "$mode")"
 
         case "$eval" in
-            PASS) final="PASS"; break ;;
+            PASS|PASS-DDL) final="$eval"; break ;;
             NO_OUTPUT)
                 if [[ $ec -ne 0 ]]; then
-                    final="ERROR"; log_error "  [${case_id}] exit=${ec} 无输出"
+                    if [[ "$expected" == "ERROR-EXPECTED" ]]; then
+                        final="ERROR-EXPECTED"
+                        log_info "  [${case_id}] exit=${ec} 无输出（预期行为）"
+                    else
+                        final="ERROR"; log_error "  [${case_id}] exit=${ec} 无输出"
+                    fi
                 else
                     final="PASS"; log_warn "  [${case_id}] exit=0 无 Diffs 行"
                 fi
@@ -324,11 +375,109 @@ run_struct_case() {
 
     TOTAL=$((TOTAL + 1))
     case "$final" in
-        PASS|PASS-ADVISORY) PASSED=$((PASSED + 1));   log_info  "  [${case_id}] ${final} (rounds=${round})" ;;
+        PASS|PASS-DDL|PASS-ADVISORY) PASSED=$((PASSED + 1));   log_info  "  [${case_id}] ${final} (rounds=${round})" ;;
         FAIL|UNEXPECTED)    FAILED=$((FAILED + 1));   log_error "  [${case_id}] ${final} (rounds=${round}, diffs=${diffs:-—})" ;;
         ERROR)              ERRORS=$((ERRORS + 1));   log_error "  [${case_id}] ERROR" ;;
         TIMEOUT)            TIMEOUTS=$((TIMEOUTS + 1)); log_error "  [${case_id}] TIMEOUT" ;;
         ERROR-EXPECTED)     log_info "  [${case_id}] ERROR-EXPECTED（不计失败）" ;;
+    esac
+}
+
+run_dtype_preview_case() {
+    local case_id="TC-ST-10-dtype-preview"
+    local case_dir="${ARTIFACTS_DIR}/cases/${case_id}"
+    mkdir -p "${case_dir}/fixsql"
+
+    local mapping_file="${case_dir}/dtype-mapping.yaml"
+    write_dtype_mapping_file "${mapping_file}"
+    generate_config "$case_dir" "struct" "${DB_SCHEMA}.t_col_diff" "yes" "" "file" "OFF" "$mapping_file"
+
+    local out="${case_dir}/preview-output.txt" ec=0 final="PASS"
+    run_with_timeout "$CASE_TIMEOUT" \
+        "$GT_CHECKSUM" -c "${case_dir}/gt-checksum.conf" --preview-dtype-mapping \
+        > "$out" 2>&1 || ec=$?
+
+    if [[ $ec -eq 124 ]]; then
+        final="TIMEOUT"
+    elif [[ $ec -ne 0 ]]; then
+        final="ERROR"
+    elif ! grep -qiE '\[dTypeMapping\]|source_type|target_type' "$out"; then
+        final="FAIL"
+        log_error "  [${case_id}] preview 输出未包含 dTypeMapping 标记"
+    fi
+
+    echo "${case_id}|${final}|1|preview" >> "${ARTIFACTS_DIR}/results.csv"
+    echo "$final" > "${case_dir}/verdict"
+
+    TOTAL=$((TOTAL + 1))
+    case "$final" in
+        PASS)    PASSED=$((PASSED + 1)); log_info  "  [${case_id}] PASS" ;;
+        FAIL)    FAILED=$((FAILED + 1)); log_error "  [${case_id}] FAIL" ;;
+        ERROR)   ERRORS=$((ERRORS + 1)); log_error "  [${case_id}] ERROR (exit=${ec})" ;;
+        TIMEOUT) TIMEOUTS=$((TIMEOUTS + 1)); log_error "  [${case_id}] TIMEOUT" ;;
+    esac
+}
+
+run_struct_datafix_table_safe_case() {
+    local case_id="TC-ST-11-struct-datafix-table-safe"
+    local case_dir="${ARTIFACTS_DIR}/cases/${case_id}"
+    mkdir -p "${case_dir}/fixsql"
+
+    reinit_all
+    generate_config "$case_dir" "struct" "${DB_SCHEMA}.t_col_diff" "yes" "" "table" "OFF" ""
+
+    local out="${case_dir}/round1-output.txt" ec=0 final="PASS" diffs=""
+    run_with_timeout "$CASE_TIMEOUT" \
+        "$GT_CHECKSUM" -c "${case_dir}/gt-checksum.conf" > "$out" 2>&1 || ec=$?
+    [[ -f "${case_dir}/gt-checksum.log" ]] && \
+        cp "${case_dir}/gt-checksum.log" "${case_dir}/round1-gt-checksum.log" 2>/dev/null || true
+
+    if [[ $ec -eq 124 ]]; then
+        final="TIMEOUT"
+    elif [[ $ec -ne 0 ]]; then
+        final="ERROR"
+    else
+        diffs="$(parse_diffs_from_output "$out" "struct")"
+        local nfx
+        nfx=$(find "${case_dir}/fixsql" -name "*.sql" -type f 2>/dev/null | wc -l | tr -d ' ')
+        if [[ "$nfx" -eq 0 ]]; then
+            final="FAIL"
+            log_error "  [${case_id}] datafix=table(struct) 未导出 fixsql"
+        elif ! grep -qiE 'force exporting fix SQL|does not directly repair target objects' "$out" "${case_dir}/gt-checksum.log" 2>/dev/null; then
+            final="FAIL"
+            log_error "  [${case_id}] 未检测到非 data 对象 datafix=table 安全提示"
+        else
+            run_with_timeout "$CASE_TIMEOUT" \
+                "$REPAIR_DB" -f -conf "${case_dir}/repairDB.conf" \
+                > "${case_dir}/round1-repair.txt" 2>&1 || final="ERROR"
+
+            if [[ "$final" == "PASS" ]]; then
+                rm -rf "${case_dir}/fixsql"; mkdir -p "${case_dir}/fixsql"
+                local verify_out="${case_dir}/round2-output.txt" verify_ec=0
+                run_with_timeout "$CASE_TIMEOUT" \
+                    "$GT_CHECKSUM" -c "${case_dir}/gt-checksum.conf" \
+                    > "$verify_out" 2>&1 || verify_ec=$?
+                diffs="$(parse_diffs_from_output "$verify_out" "struct")"
+                local eval; eval="$(evaluate_diffs "$diffs" "struct")"
+                if [[ $verify_ec -eq 124 ]]; then
+                    final="TIMEOUT"
+                elif [[ $verify_ec -ne 0 || "$eval" != "PASS" ]]; then
+                    final="FAIL"
+                    log_error "  [${case_id}] repairDB 后复核未收敛: diffs=${diffs:-—} exit=${verify_ec}"
+                fi
+            fi
+        fi
+    fi
+
+    echo "${case_id}|${final}|2|${diffs}" >> "${ARTIFACTS_DIR}/results.csv"
+    echo "$final" > "${case_dir}/verdict"
+
+    TOTAL=$((TOTAL + 1))
+    case "$final" in
+        PASS)    PASSED=$((PASSED + 1)); log_info  "  [${case_id}] PASS" ;;
+        FAIL)    FAILED=$((FAILED + 1)); log_error "  [${case_id}] FAIL" ;;
+        ERROR)   ERRORS=$((ERRORS + 1)); log_error "  [${case_id}] ERROR" ;;
+        TIMEOUT) TIMEOUTS=$((TIMEOUTS + 1)); log_error "  [${case_id}] TIMEOUT" ;;
     esac
 }
 
@@ -365,12 +514,14 @@ print_test_cases() {
     printf "%-28s %-16s %s\n" "-------" "----" "----"
     printf "%-28s %-16s %s\n" "TC-ST-01" "PASS"          "双端存在、无差异"
     printf "%-28s %-16s %s\n" "TC-ST-02" "PASS"          "目标缺表→生成 CREATE TABLE 并收敛"
-    printf "%-28s %-16s %s\n" "TC-ST-03" "PASS"          "源缺表→生成 DROP TABLE 并收敛"
+    printf "%-28s %-16s %s\n" "TC-ST-03" "ERROR-EXPECTED" "源缺表→源端对象不可见诊断（预期非零退出）"
     printf "%-28s %-16s %s\n" "TC-ST-04" "PASS"          "列增/删/类型变更→修复收敛"
     printf "%-28s %-16s %s\n" "TC-ST-05a" "PASS"         "列名大小写（敏感=yes）→ RENAME 收敛"
     printf "%-28s %-16s %s\n" "TC-ST-05b" "PASS"         "列名大小写（敏感=no）→ 视为一致"
-    printf "%-28s %-16s %s\n" "TC-ST-08"  "PASS-ADVISORY" "generated/CHECK advisory-only"
-    printf "%-28s %-16s %s\n" "TC-ST-09"  "PASS"         "columnPlan 列映射豁免（data 预检）"
+    printf "%-28s %-16s %s\n" "TC-ST-08"  "PASS"         "generated/CHECK warn-only 或修复后收敛"
+    printf "%-28s %-16s %s\n" "TC-ST-09"  "PASS-DDL"     "columnPlan 列映射豁免（data 预检 DDL-yes 显式暴露）"
+    printf "%-28s %-16s %s\n" "TC-ST-10"  "PASS"         "dTypeMappingFile preview smoke"
+    printf "%-28s %-16s %s\n" "TC-ST-11"  "PASS"         "非 data 对象 datafix=table 强制导出 fix SQL"
 }
 
 main() {
@@ -404,9 +555,9 @@ main() {
     log_info ""; log_info "--- TC-ST-02: 目标缺表→CREATE TABLE 修复 ---"
     run_struct_case "TC-ST-02" "struct" "${DB_SCHEMA}.t_missing_dst" "yes" "" "PASS"
 
-    # TC-ST-03 源缺表
-    log_info ""; log_info "--- TC-ST-03: 源缺表→DROP TABLE 修复 ---"
-    run_struct_case "TC-ST-03" "struct" "${DB_SCHEMA}.t_missing_src" "yes" "" "PASS"
+    # TC-ST-03 源缺表：v4.0.0 会输出源端对象不可见/权限诊断并非零退出
+    log_info ""; log_info "--- TC-ST-03: 源缺表→源端对象不可见诊断（预期非零退出） ---"
+    run_struct_case "TC-ST-03" "struct" "${DB_SCHEMA}.t_missing_src" "yes" "" "ERROR-EXPECTED"
 
     # TC-ST-04 列增/删/类型
     log_info ""; log_info "--- TC-ST-04: 列增/删/类型变更 ---"
@@ -419,15 +570,23 @@ main() {
     log_info ""; log_info "--- TC-ST-05b: 大小写敏感=no → 视为一致 ---"
     run_struct_case "TC-ST-05b" "struct" "${DB_SCHEMA}.t_case" "no" "" "PASS"
 
-    # TC-ST-08 advisory
-    log_info ""; log_info "--- TC-ST-08: generated/CHECK advisory ---"
-    run_struct_case "TC-ST-08" "struct" "${DB_SCHEMA}.t_advisory" "yes" "" "PASS-ADVISORY"
+    # TC-ST-08 generated/CHECK warn-only 或修复后收敛
+    log_info ""; log_info "--- TC-ST-08: generated/CHECK warn-only 或修复后收敛 ---"
+    run_struct_case "TC-ST-08" "struct" "${DB_SCHEMA}.t_advisory" "yes" "" "PASS"
 
     # TC-ST-09 data columnPlan 豁免
     log_info ""; log_info "--- TC-ST-09: columnPlan 列映射豁免 (data) ---"
     run_struct_case "TC-ST-09" "data" "${DB_SCHEMA}.t_plan" "yes" \
         "${DB_SCHEMA}.t_plan.id:${DB_SCHEMA}.t_plan.id,${DB_SCHEMA}.t_plan.val:${DB_SCHEMA}.t_plan.val" \
-        "PASS"
+        "PASS-DDL"
+
+    # TC-ST-10 dTypeMappingFile preview
+    log_info ""; log_info "--- TC-ST-10: dTypeMappingFile preview smoke ---"
+    run_dtype_preview_case
+
+    # TC-ST-11 非 data 对象 datafix=table 安全策略
+    log_info ""; log_info "--- TC-ST-11: struct + datafix=table 强制导出 fix SQL ---"
+    run_struct_datafix_table_safe_case
 
     log_info ""; log_info "=== 全部测例执行完毕 ==="
     generate_report

@@ -18,6 +18,7 @@
 #   --max-rounds=N            最大修复轮次（默认 3）
 #   --dry-run                 仅打印测试矩阵，不执行
 #   --final-repair            回归完成后对目标库做一次完整修复闭环
+#   --with-v4-cases           常规矩阵后追加 v4.0.0 data 专项 smoke
 #   --artifacts-dir=PATH      自定义输出目录
 #   --help                    显示帮助
 # =============================================================================
@@ -54,7 +55,6 @@ TARGETS=(
     "mysql80:3406:mysql"
     "mysql84:3408:mysql"
     "mariadb105:3407:mariadb"
-    "mariadb105:3407:mariadb"
     "mariadb106:3410:mariadb"
     "mariadb1011:3409:mariadb"
     "mariadb123:3412:mariadb"
@@ -83,6 +83,7 @@ SKIP_INIT=false
 SKIP_BUILD=false
 DRY_RUN=false
 FINAL_REPAIR=false
+WITH_V4_CASES=false
 FILTER_SRC=""
 FILTER_DST=""
 FILTER_MODE=""
@@ -113,6 +114,7 @@ parse_arguments() {
             --skip-build)   SKIP_BUILD=true ;;
             --dry-run)      DRY_RUN=true ;;
             --final-repair) FINAL_REPAIR=true ;;
+            --with-v4-cases) WITH_V4_CASES=true ;;
             --timeout=*)    CASE_TIMEOUT="${1#--timeout=}" ;;
             --max-rounds=*) MAX_REPAIR_ROUNDS="${1#--max-rounds=}" ;;
             --artifacts-dir=*) ARTIFACTS_DIR="${1#--artifacts-dir=}" ;;
@@ -511,6 +513,298 @@ EOF
 }
 
 # ============================================================
+# SECTION 8-B: v4.0.0 专项配置与执行
+# ============================================================
+print_v4_feature_cases() {
+    echo ""
+    echo "v4.0.0 feature smoke cases (--with-v4-cases):"
+    printf "%-42s %s\n" "CASE" "SCENARIO"
+    printf "%-42s %s\n" "----" "--------"
+    printf "%-42s %s\n" "TC-V4-01-resume-on-datafix-file" "resume=ON + datafix=file progress smoke"
+    printf "%-42s %s\n" "TC-V4-02-rollsql-datafix-file" "datafix=file + genRollSQL rollsql generation"
+    printf "%-42s %s\n" "TC-V4-03-rollsql-datafix-table-fixed" "datafix=table + genRollSQL + Fixed CSV"
+    printf "%-42s %s\n" "TC-V4-04-repairdb-split-dry-run" "repairDB splitInsertOnDupKey ON/OFF dry-run"
+}
+
+select_v4_data_entry() {
+    local entry mode src_label src_port dst_label dst_port
+    # 优先选择 MySQL 8.0/8.4 目标端，覆盖 Fixed/result CSV/rollsql 等 v4 可见输出。
+    for entry in "$@"; do
+        IFS=':' read -r src_label src_port dst_label dst_port mode <<< "$entry"
+        if [[ "$mode" == "data" && ( "$dst_label" == "mysql80" || "$dst_label" == "mysql84" ) ]]; then
+            echo "$entry"
+            return 0
+        fi
+    done
+    for entry in "$@"; do
+        IFS=':' read -r src_label src_port dst_label dst_port mode <<< "$entry"
+        if [[ "$mode" == "data" ]]; then
+            echo "$entry"
+            return 0
+        fi
+    done
+    return 1
+}
+
+generate_v4_gt_checksum_config() {
+    local src_port="$1" dst_port="$2" case_dir="$3" datafix="$4" resume="$5"
+    local gen_roll="${6:-OFF}" roll_dir="${7:-}" result_file="${8:-}"
+
+    cat > "${case_dir}/gt-checksum.conf" <<EOF
+srcDSN=mysql|${DB_USER}:${DB_PASS}@tcp(${DB_HOST}:${src_port})/information_schema?charset=utf8mb4
+dstDSN=mysql|${DB_USER}:${DB_PASS}@tcp(${DB_HOST}:${dst_port})/information_schema?charset=utf8mb4
+tables=${DB_SCHEMA}.*
+checkNoIndexTable=yes
+caseSensitiveObjectName=yes
+parallelThds=2
+chunkSize=1000
+queueSize=20
+checkObject=data
+memoryLimit=3000
+datafix=${datafix}
+fixFileDir=${case_dir}/fixsql
+logFile=${case_dir}/gt-checksum.log
+logLevel=debug
+logbin=ON
+requirePK=ON
+resultExport=csv
+resultFile=${result_file:-${case_dir}/checksum-result.csv}
+EOF
+    [[ "$resume" != "OFF" ]] && echo "resume=${resume}" >> "${case_dir}/gt-checksum.conf"
+    if [[ "$gen_roll" != "OFF" ]]; then
+        echo "genRollSQL=${gen_roll}" >> "${case_dir}/gt-checksum.conf"
+        echo "maxRollRowNum=10000" >> "${case_dir}/gt-checksum.conf"
+        echo "rollFileDir=${roll_dir}" >> "${case_dir}/gt-checksum.conf"
+    fi
+}
+
+generate_v4_repairdb_config() {
+    local dst_port="$1" conf_file="$2" fix_dir="$3" split_mode="${4:-ON}" resume="${5:-OFF}"
+
+    cat > "$conf_file" <<EOF
+dstDSN=mysql|${DB_USER}:${DB_PASS}@tcp(${DB_HOST}:${dst_port})/information_schema?charset=utf8mb4
+parallelThds=4
+fixFileDir=${fix_dir}
+logbin=ON
+splitInsertOnDupKey=${split_mode}
+resume=${resume}
+EOF
+}
+
+csv_has_fixed_column() {
+    local csv_file="$1"
+    [[ -f "$csv_file" ]] || return 1
+    awk -F',' 'NR==1 { for (i=1; i<=NF; i++) { gsub(/^[ \t\"\r]+|[ \t\"\r]+$/, "", $i); if (tolower($i)=="fixed") found=1 } exit(found ? 0 : 1) }' "$csv_file"
+}
+
+progress_file_count() {
+    local case_dir="$1"
+    find "$case_dir" -name 'gt-checksum-progress-*.json' -type f 2>/dev/null | wc -l | tr -d ' '
+}
+
+record_v4_case_result() {
+    local case_id="$1" verdict="$2" rounds="$3" diffs="${4:-}"
+    echo "${case_id}|${verdict}|${rounds}|${diffs}" >> "${ARTIFACTS_DIR}/results.csv"
+    TOTAL=$((TOTAL + 1))
+    case "$verdict" in
+        PASS|PASS-DDL)    PASSED=$((PASSED + 1)); log_info  "  [${case_id}] ${verdict}" ;;
+        FAIL)    FAILED=$((FAILED + 1)); log_error "  [${case_id}] FAIL" ;;
+        ERROR)   ERRORS=$((ERRORS + 1)); log_error "  [${case_id}] ERROR" ;;
+        TIMEOUT) TIMEOUTS=$((TIMEOUTS + 1)); log_error "  [${case_id}] TIMEOUT" ;;
+        SKIP)    log_warn "  [${case_id}] SKIP" ;;
+    esac
+}
+
+run_v4_file_repair_case() {
+    local case_id="$1" src_label="$2" src_port="$3" dst_label="$4" dst_port="$5" resume="$6" gen_roll="$7"
+    local case_dir="${ARTIFACTS_DIR}/cases/${case_id}"
+    local roll_dir="${case_dir}/rollsql"
+    mkdir -p "${case_dir}/fixsql" "$roll_dir"
+
+    reinit_target "$dst_label" "$dst_port"
+    generate_v4_gt_checksum_config "$src_port" "$dst_port" "$case_dir" "file" "$resume" "$gen_roll" "$roll_dir" "${case_dir}/checksum-result.csv"
+    generate_v4_repairdb_config "$dst_port" "${case_dir}/repairDB.conf" "${case_dir}/fixsql" "ON" "$resume"
+
+    local out="${case_dir}/round1-output.txt" gt_exit=0 verdict="PASS" diffs=""
+    run_with_timeout "$CASE_TIMEOUT" \
+        "$GT_CHECKSUM" -c "${case_dir}/gt-checksum.conf" > "$out" 2>&1 || gt_exit=$?
+    [[ -f "${case_dir}/gt-checksum.log" ]] && cp "${case_dir}/gt-checksum.log" "${case_dir}/round1-gt-checksum.log" 2>/dev/null || true
+
+    if [[ $gt_exit -eq 124 ]]; then
+        record_v4_case_result "$case_id" "TIMEOUT" 1 ""
+        return
+    elif [[ $gt_exit -ne 0 ]]; then
+        log_error "  [${case_id}] gt-checksum exit=${gt_exit}"
+        record_v4_case_result "$case_id" "ERROR" 1 ""
+        return
+    fi
+
+    diffs="$(parse_diffs_from_output "$out" "data")"
+    local eval; eval="$(evaluate_diffs "$diffs" "$src_label" "data")"
+    if [[ "$eval" == "NEEDS_REPAIR" ]]; then
+        local fixsql_count
+        fixsql_count=$(find "${case_dir}/fixsql" -name "*.sql" -type f 2>/dev/null | wc -l | tr -d ' ')
+        if [[ "$fixsql_count" -eq 0 ]]; then
+            log_error "  [${case_id}] Diffs=yes 但未生成 fixsql"
+            record_v4_case_result "$case_id" "FAIL" 1 "$diffs"
+            return
+        fi
+        if [[ "$gen_roll" != "OFF" ]]; then
+            local roll_count
+            roll_count=$(find "$roll_dir" -name "*.sql" -type f 2>/dev/null | wc -l | tr -d ' ')
+            if [[ "$roll_count" -eq 0 ]]; then
+                log_error "  [${case_id}] genRollSQL=${gen_roll} 但未生成 rollsql"
+                record_v4_case_result "$case_id" "FAIL" 1 "$diffs"
+                return
+            fi
+        fi
+        run_with_timeout "$CASE_TIMEOUT" \
+            "$REPAIR_DB" -f -conf "${case_dir}/repairDB.conf" \
+            > "${case_dir}/round1-repair-output.txt" 2>&1 || verdict="ERROR"
+    elif [[ "$eval" == "NO_OUTPUT" ]]; then
+        log_error "  [${case_id}] 无可解析 data Diffs 输出"
+        record_v4_case_result "$case_id" "FAIL" 1 "$diffs"
+        return
+    fi
+
+    if [[ "$verdict" == "PASS" && "$resume" != "OFF" ]]; then
+        if [[ "$(progress_file_count "$case_dir")" -eq 0 ]]; then
+            log_error "  [${case_id}] resume=${resume} 未生成 progress 文件"
+            record_v4_case_result "$case_id" "FAIL" 1 "$diffs"
+            return
+        fi
+    fi
+
+    if [[ "$verdict" == "PASS" ]]; then
+        local verify_dir="${case_dir}/verify"
+        mkdir -p "${verify_dir}/fixsql"
+        generate_v4_gt_checksum_config "$src_port" "$dst_port" "$verify_dir" "file" "OFF" "OFF" "" "${verify_dir}/checksum-result.csv"
+        local verify_out="${verify_dir}/output.txt" verify_exit=0
+        run_with_timeout "$CASE_TIMEOUT" \
+            "$GT_CHECKSUM" -c "${verify_dir}/gt-checksum.conf" \
+            > "$verify_out" 2>&1 || verify_exit=$?
+        diffs="$(parse_diffs_from_output "$verify_out" "data")"
+        local verify_eval; verify_eval="$(evaluate_diffs "$diffs" "$src_label" "data")"
+        if [[ $verify_exit -eq 124 ]]; then
+            verdict="TIMEOUT"
+        elif [[ $verify_exit -ne 0 || "$verify_eval" == "NEEDS_REPAIR" ]]; then
+            log_error "  [${case_id}] 修复后复核未收敛: diffs=${diffs:-—} exit=${verify_exit}"
+            verdict="FAIL"
+        fi
+    fi
+
+    record_v4_case_result "$case_id" "$verdict" 2 "$diffs"
+}
+
+run_v4_table_repair_case() {
+    local case_id="$1" src_label="$2" src_port="$3" dst_label="$4" dst_port="$5"
+    local case_dir="${ARTIFACTS_DIR}/cases/${case_id}"
+    local roll_dir="${case_dir}/rollsql"
+    local result_file="${case_dir}/checksum-result.csv"
+    mkdir -p "${case_dir}/fixsql" "$roll_dir"
+
+    reinit_target "$dst_label" "$dst_port"
+    generate_v4_gt_checksum_config "$src_port" "$dst_port" "$case_dir" "table" "ON" "ON" "$roll_dir" "$result_file"
+
+    local out="${case_dir}/round1-output.txt" gt_exit=0 verdict="PASS" diffs=""
+    run_with_timeout "$CASE_TIMEOUT" \
+        "$GT_CHECKSUM" -c "${case_dir}/gt-checksum.conf" > "$out" 2>&1 || gt_exit=$?
+    [[ -f "${case_dir}/gt-checksum.log" ]] && cp "${case_dir}/gt-checksum.log" "${case_dir}/round1-gt-checksum.log" 2>/dev/null || true
+
+    if [[ $gt_exit -eq 124 ]]; then
+        record_v4_case_result "$case_id" "TIMEOUT" 1 ""
+        return
+    elif [[ $gt_exit -ne 0 ]]; then
+        log_error "  [${case_id}] gt-checksum exit=${gt_exit}"
+        record_v4_case_result "$case_id" "ERROR" 1 ""
+        return
+    fi
+
+    if ! csv_has_fixed_column "$result_file"; then
+        log_error "  [${case_id}] datafix=table 未生成带 Fixed 列的 CSV"
+        record_v4_case_result "$case_id" "FAIL" 1 ""
+        return
+    fi
+    if ! grep -qi 'Fixed' "$out"; then
+        log_error "  [${case_id}] datafix=table 终端输出未包含 Fixed 列"
+        record_v4_case_result "$case_id" "FAIL" 1 ""
+        return
+    fi
+
+    local roll_count
+    roll_count=$(find "$roll_dir" -name "*.sql" -type f 2>/dev/null | wc -l | tr -d ' ')
+    if [[ "$roll_count" -eq 0 ]]; then
+        log_error "  [${case_id}] datafix=table + genRollSQL 未生成 rollsql"
+        record_v4_case_result "$case_id" "FAIL" 1 ""
+        return
+    fi
+
+    local verify_dir="${case_dir}/verify"
+    mkdir -p "${verify_dir}/fixsql"
+    generate_v4_gt_checksum_config "$src_port" "$dst_port" "$verify_dir" "file" "OFF" "OFF" "" "${verify_dir}/checksum-result.csv"
+    local verify_out="${verify_dir}/output.txt" verify_exit=0
+    run_with_timeout "$CASE_TIMEOUT" \
+        "$GT_CHECKSUM" -c "${verify_dir}/gt-checksum.conf" \
+        > "$verify_out" 2>&1 || verify_exit=$?
+    diffs="$(parse_diffs_from_output "$verify_out" "data")"
+    local verify_eval; verify_eval="$(evaluate_diffs "$diffs" "$src_label" "data")"
+    if [[ $verify_exit -eq 124 ]]; then
+        verdict="TIMEOUT"
+    elif [[ $verify_exit -ne 0 || "$verify_eval" == "NEEDS_REPAIR" ]]; then
+        log_error "  [${case_id}] 在线修复后复核未收敛: diffs=${diffs:-—} exit=${verify_exit}"
+        verdict="FAIL"
+    fi
+
+    record_v4_case_result "$case_id" "$verdict" 2 "$diffs"
+}
+
+run_v4_repairdb_split_dry_run_case() {
+    local case_id="TC-V4-04-repairdb-split-dry-run" dst_port="$1"
+    local verdict="PASS" split_mode
+
+    for split_mode in ON OFF; do
+        local case_dir="${ARTIFACTS_DIR}/cases/${case_id}-${split_mode}"
+        local fix_dir="${case_dir}/fixsql"
+        mkdir -p "$fix_dir"
+        cat > "${fix_dir}/table.${DB_SCHEMA}.v4_split.INSERT-1.sql" <<EOF
+SET NAMES utf8mb4;
+BEGIN;
+INSERT INTO \`${DB_SCHEMA}\`.\`v4_split\` (\`id\`, \`name\`) VALUES (1, 'dup'), (1, 'dup-again'), (2, 'ok');
+COMMIT;
+EOF
+        generate_v4_repairdb_config "$dst_port" "${case_dir}/repairDB.conf" "$fix_dir" "$split_mode" "ON"
+        local out="${case_dir}/dry-run.out"
+        (cd "$case_dir" && "$REPAIR_DB" -dry-run -conf "${case_dir}/repairDB.conf" > "$out" 2>&1) || verdict="ERROR"
+        if [[ "$verdict" == "PASS" ]] && ! grep -qiE 'Dry-run|dry-run|Stage classification|统计' "$out"; then
+            log_error "  [${case_id}] splitInsertOnDupKey=${split_mode} dry-run 输出未匹配预期"
+            verdict="FAIL"
+        fi
+    done
+
+    record_v4_case_result "$case_id" "$verdict" 1 "dry-run"
+}
+
+run_v4_feature_cases() {
+    local -a matrix_entries=("$@")
+    local selected
+    if ! selected="$(select_v4_data_entry "${matrix_entries[@]}")"; then
+        log_warn "未找到可用于 v4.0.0 专项的 data 矩阵用例，跳过 --with-v4-cases"
+        return
+    fi
+
+    IFS=':' read -r src_label src_port dst_label dst_port _mode <<< "$selected"
+    log_info "=================================================================="
+    log_info " v4.0.0 专项 smoke (--with-v4-cases)"
+    log_info " Representative pair: ${src_label}:${src_port} -> ${dst_label}:${dst_port}"
+    log_info "=================================================================="
+
+    run_v4_file_repair_case "TC-V4-01-resume-on-datafix-file" "$src_label" "$src_port" "$dst_label" "$dst_port" "ON" "OFF"
+    run_v4_file_repair_case "TC-V4-02-rollsql-datafix-file" "$src_label" "$src_port" "$dst_label" "$dst_port" "OFF" "ON"
+    run_v4_table_repair_case "TC-V4-03-rollsql-datafix-table-fixed" "$src_label" "$src_port" "$dst_label" "$dst_port"
+    run_v4_repairdb_split_dry_run_case "$dst_port"
+}
+
+# ============================================================
 # SECTION 9: 输出解析与结果判定
 # ============================================================
 
@@ -526,13 +820,12 @@ parse_diffs_from_output() {
 
     case "$mode" in
         data)
-            # 列：Schema Table IndexColumn CheckObject Rows Diffs Datafix
-            # 匹配包含 "data" 的行，取倒数第2列
+            # datafix=table 会在 v4.0.0 终端表中追加 Fixed 列，不能再依赖倒数列位置。
             diffs_values=$(echo "$clean" \
                 | grep -iE '\bdata\b' \
                 | grep -vE '^\[|^Initializing|^Opening|^Checking|^gt-checksum|^$|^Schema' \
-                | awk 'NF>=7 {print $(NF-1)}' \
-                | grep -iE '^(yes|no|warn-only|collation-mapped|DDL-yes)$' || true)
+                | awk '{for(i=1;i<=NF;i++){v=tolower($i);if(v=="yes"||v=="no"||v=="warn-only"||v=="collation-mapped"||v=="ddl-yes"){print $i;break}}}' \
+                || true)
             ;;
         struct)
             # 列：Schema Table CheckObject Diffs Datafix
@@ -612,6 +905,7 @@ fixsql_is_view_advisory_only() {
 evaluate_diffs() {
     local diffs_csv="$1"
     local src_label="$2"
+    local mode="${3:-}"
 
     if [[ -z "$diffs_csv" ]]; then
         echo "NO_OUTPUT"
@@ -621,6 +915,7 @@ evaluate_diffs() {
     IFS=',' read -ra diffs_array <<< "$diffs_csv"
 
     local has_yes=false
+    local has_ddl_yes=false
 
     for diff_val in "${diffs_array[@]}"; do
         diff_val="$(echo "$diff_val" | tr -d '[:space:]')"
@@ -634,7 +929,16 @@ evaluate_diffs() {
                 # MariaDB 12.3 的 collation-mapped 符合预期；
                 # 其他 MariaDB 版本如果出现也视为可接受（uca1400 映射）
                 ;;
-            yes|DDL-yes)
+            DDL-yes)
+                # data 模式下 DDL-yes 是结构预检/无索引等不可由 DML 修复的状态；
+                # 独立返回 PASS-DDL，避免混入普通 PASS 且在报告中显式暴露。
+                if [[ "$mode" == "data" ]]; then
+                    has_ddl_yes=true
+                else
+                    has_yes=true
+                fi
+                ;;
+            yes)
                 has_yes=true
                 ;;
             *)
@@ -646,6 +950,8 @@ evaluate_diffs() {
 
     if $has_yes; then
         echo "NEEDS_REPAIR"
+    elif $has_ddl_yes; then
+        echo "PASS-DDL"
     else
         echo "PASS"
     fi
@@ -709,11 +1015,11 @@ run_single_test_case() {
 
         # 判定
         local verdict
-        verdict="$(evaluate_diffs "$diffs_summary" "$src_label")"
+        verdict="$(evaluate_diffs "$diffs_summary" "$src_label" "$mode")"
 
         case "$verdict" in
-            PASS)
-                final_verdict="PASS"
+            PASS|PASS-DDL)
+                final_verdict="$verdict"
                 break
                 ;;
             NO_OUTPUT)
@@ -841,7 +1147,7 @@ run_final_repair() {
                 local diffs
                 diffs="$(parse_diffs_from_output "${repair_dir}/round${round}-output.txt" "$mode")"
                 local verdict
-                verdict="$(evaluate_diffs "$diffs" "$src_label")"
+                verdict="$(evaluate_diffs "$diffs" "$src_label" "$mode")"
 
                 if [[ "$verdict" == "PASS" ]]; then
                     log_info "  ${mode}: Diffs=no (round ${round})"
@@ -938,8 +1244,9 @@ generate_report() {
         awk -F'|' '
         {
             case_id = $1; verdict = $2
-            # 解析 src 和 dst-mode
+            # 解析 src 和 dst-mode；v4 专项用例不是矩阵 case，跳过交叉矩阵汇总
             n = index(case_id, "-to-")
+            if (n == 0) next
             src = substr(case_id, 1, n-1)
             dst_mode = substr(case_id, n+4)
 
@@ -1031,11 +1338,9 @@ main() {
     # 前置检查
     check_prerequisites
 
-    # 编译
-    build_binaries
-
-    # 连通性检查（dry-run 跳过）
+    # 编译与连通性检查（dry-run 仅打印矩阵，不构建、不连接数据库）
     if [[ "$DRY_RUN" != "true" ]]; then
+        build_binaries
         check_connectivity
     fi
 
@@ -1065,6 +1370,9 @@ main() {
         done
         echo ""
         echo "Total: ${total_cases} cases"
+        if [[ "$WITH_V4_CASES" == "true" ]]; then
+            print_v4_feature_cases
+        fi
         exit 0
     fi
 
@@ -1092,13 +1400,18 @@ main() {
         verdict="$(cat "${ARTIFACTS_DIR}/cases/${case_id}/verdict" 2>/dev/null || echo "ERROR")"
 
         case "$verdict" in
-            PASS)              PASSED=$((PASSED + 1));   log_info  "[${case_num}/${total_cases}] PASS" ;;
+            PASS|PASS-DDL)              PASSED=$((PASSED + 1));   log_info  "[${case_num}/${total_cases}] ${verdict}" ;;
             PASS-ADVISORY)     PASSED=$((PASSED + 1));   log_info  "[${case_num}/${total_cases}] PASS-ADVISORY (VIEW advisory diffs)" ;;
             FAIL)              FAILED=$((FAILED + 1));   log_error "[${case_num}/${total_cases}] FAIL" ;;
             TIMEOUT)           TIMEOUTS=$((TIMEOUTS + 1)); log_error "[${case_num}/${total_cases}] TIMEOUT" ;;
             *)                 ERRORS=$((ERRORS + 1));   log_error "[${case_num}/${total_cases}] ERROR: ${verdict}" ;;
         esac
     done
+
+    # v4.0.0 专项 smoke（可选）
+    if [[ "$WITH_V4_CASES" == "true" ]]; then
+        run_v4_feature_cases "${test_matrix[@]}"
+    fi
 
     # 最终修复（可选）
     if [[ "$FINAL_REPAIR" == "true" ]]; then
