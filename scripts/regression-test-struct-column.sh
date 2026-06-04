@@ -16,6 +16,8 @@
 #   TC-ST-09  columnPlan 列映射豁免（data 预检）
 #   TC-ST-10  dTypeMappingFile preview smoke
 #   TC-ST-11  非 data 对象 datafix=table 强制导出 fix SQL
+#   TC-ST-12a truncateBeforeAlter=ON：首个 ALTER 前生成 TRUNCATE
+#   TC-ST-12b truncateBeforeAlter=OFF：默认安全关闭，不生成 TRUNCATE
 #
 # 用法:
 #   bash scripts/regression-test-struct-column.sh --src-port=3406 --dst-port=3408
@@ -481,6 +483,71 @@ run_struct_datafix_table_safe_case() {
     esac
 }
 
+run_truncate_before_alter_case() {
+    local case_id="$1" truncate_flag="$2" expect_truncate="$3"
+    local case_dir="${ARTIFACTS_DIR}/cases/${case_id}"
+    mkdir -p "${case_dir}/fixsql"
+
+    reinit_all
+    generate_config "$case_dir" "struct" "${DB_SCHEMA}.t_col_diff" "yes" "" "file" "OFF" "" "truncateBeforeAlter=${truncate_flag}"
+
+    local out="${case_dir}/round1-output.txt" ec=0 final="PASS" diffs=""
+    run_with_timeout "$CASE_TIMEOUT" \
+        "$GT_CHECKSUM" -c "${case_dir}/gt-checksum.conf" > "$out" 2>&1 || ec=$?
+    [[ -f "${case_dir}/gt-checksum.log" ]] && \
+        cp "${case_dir}/gt-checksum.log" "${case_dir}/round1-gt-checksum.log" 2>/dev/null || true
+
+    if [[ $ec -eq 124 ]]; then
+        final="TIMEOUT"
+    elif [[ $ec -ne 0 ]]; then
+        final="ERROR"
+    else
+        diffs="$(parse_diffs_from_output "$out" "struct")"
+        local sql_file=""
+        sql_file=$(find "${case_dir}/fixsql" -name "table.*.t_col_diff.sql" -type f 2>/dev/null | sort | head -n 1 || true)
+        if [[ -z "$sql_file" ]]; then
+            final="FAIL"
+            log_error "  [${case_id}] 未生成 t_col_diff fix SQL 文件"
+        else
+            local truncate_pattern='TRUNCATE TABLE `gt_checksum_sc`.`t_col_diff`;'
+            local alter_pattern='ALTER TABLE `gt_checksum_sc`.`t_col_diff`'
+            local truncate_count
+            truncate_count=$(grep -F -c "$truncate_pattern" "$sql_file" || true)
+            if [[ "$expect_truncate" == "yes" ]]; then
+                if [[ "$truncate_count" -ne 1 ]]; then
+                    final="FAIL"
+                    log_error "  [${case_id}] TRUNCATE 出现次数=${truncate_count}，期望 1"
+                elif ! grep -F -q "$alter_pattern" "$sql_file"; then
+                    final="FAIL"
+                    log_error "  [${case_id}] 未找到 ALTER TABLE 语句"
+                else
+                    local truncate_line alter_line
+                    truncate_line=$(grep -n -F "$truncate_pattern" "$sql_file" | head -n 1 | cut -d: -f1)
+                    alter_line=$(grep -n -F "$alter_pattern" "$sql_file" | head -n 1 | cut -d: -f1)
+                    if [[ "$truncate_line" -ge "$alter_line" ]]; then
+                        final="FAIL"
+                        log_error "  [${case_id}] TRUNCATE 行号 ${truncate_line} 未位于 ALTER 行号 ${alter_line} 之前"
+                    fi
+                fi
+            elif [[ "$truncate_count" -ne 0 ]]; then
+                final="FAIL"
+                log_error "  [${case_id}] truncateBeforeAlter=OFF 时不应生成 TRUNCATE"
+            fi
+        fi
+    fi
+
+    echo "${case_id}|${final}|1|${diffs:-truncateBeforeAlter=${truncate_flag}}" >> "${ARTIFACTS_DIR}/results.csv"
+    echo "$final" > "${case_dir}/verdict"
+
+    TOTAL=$((TOTAL + 1))
+    case "$final" in
+        PASS)    PASSED=$((PASSED + 1)); log_info  "  [${case_id}] PASS" ;;
+        FAIL)    FAILED=$((FAILED + 1)); log_error "  [${case_id}] FAIL" ;;
+        ERROR)   ERRORS=$((ERRORS + 1)); log_error "  [${case_id}] ERROR (exit=${ec})" ;;
+        TIMEOUT) TIMEOUTS=$((TIMEOUTS + 1)); log_error "  [${case_id}] TIMEOUT" ;;
+    esac
+}
+
 # ============================================================
 # SECTION 8: 报告
 # ============================================================
@@ -522,6 +589,8 @@ print_test_cases() {
     printf "%-28s %-16s %s\n" "TC-ST-09"  "PASS-DDL"     "columnPlan 列映射豁免（data 预检 DDL-yes 显式暴露）"
     printf "%-28s %-16s %s\n" "TC-ST-10"  "PASS"         "dTypeMappingFile preview smoke"
     printf "%-28s %-16s %s\n" "TC-ST-11"  "PASS"         "非 data 对象 datafix=table 强制导出 fix SQL"
+    printf "%-28s %-16s %s\n" "TC-ST-12a" "PASS"         "truncateBeforeAlter=ON 首个 ALTER 前生成 TRUNCATE"
+    printf "%-28s %-16s %s\n" "TC-ST-12b" "PASS"         "truncateBeforeAlter=OFF 不生成 TRUNCATE"
 }
 
 main() {
@@ -587,6 +656,13 @@ main() {
     # TC-ST-11 非 data 对象 datafix=table 安全策略
     log_info ""; log_info "--- TC-ST-11: struct + datafix=table 强制导出 fix SQL ---"
     run_struct_datafix_table_safe_case
+
+    # TC-ST-12 truncateBeforeAlter 输出策略
+    log_info ""; log_info "--- TC-ST-12a: truncateBeforeAlter=ON 首个 ALTER 前生成 TRUNCATE ---"
+    run_truncate_before_alter_case "TC-ST-12a" "ON" "yes"
+
+    log_info ""; log_info "--- TC-ST-12b: truncateBeforeAlter=OFF 不生成 TRUNCATE ---"
+    run_truncate_before_alter_case "TC-ST-12b" "OFF" "no"
 
     log_info ""; log_info "=== 全部测例执行完毕 ==="
     generate_report

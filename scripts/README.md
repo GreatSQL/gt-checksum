@@ -6,7 +6,7 @@
 | --- | --- | --- | --- |
 | `regression-test.sh` | MySQL/MariaDB 多版本互测 | MySQL 5.6/5.7/8.0/8.4、MariaDB 10.0/10.5/10.6/10.11/12.3 交叉组合 | `data` / `struct` / `trigger` / `routine`，可选 `--with-v4-cases` |
 | `regression-test-columns.sh` | `columns` 选项（列级校验）功能回归 | 任意一对 MySQL 实例 | `data`，包含 columns 核心用例与 v4.0.0 `datafix=table` / `Fixed` smoke |
-| `regression-test-struct-column.sh` | struct-column / `TableColumnNameCheck` 专项回归 | 任意一对 MySQL 实例 | `struct` / `data`，包含类型映射 preview 与非 data 在线修复安全策略 |
+| `regression-test-struct-column.sh` | struct-column / `TableColumnNameCheck` 专项回归 | 任意一对 MySQL 实例 | `struct` / `data`，包含类型映射 preview、非 data 在线修复安全策略与 `truncateBeforeAlter` 输出检查 |
 | `regression-test-oracle.sh` | Oracle → MySQL 异构校验 | Oracle 11g/19c → MySQL 8.0/8.4 | `struct` / `data`，`--with-scenarios` 执行异构专项场景 |
 | `struct-migration-test-baseline.sh` | 快速基线与非 DB smoke | 无需数据库 | v4.0.0 关键包测试、编译、dtype mapping preview、repairDB dry-run 配置解析 |
 
@@ -161,7 +161,7 @@ bash scripts/regression-test-columns.sh --dry-run
 
 ## 3. `regression-test-struct-column.sh` —— struct-column 专项回归
 
-**适用场景**：验证 `TableColumnNameCheck` 相关结构检查、列名大小写、advisory、columnPlan data 预检、源端对象不可见诊断，以及 v4.0.0 `dTypeMappingFile` preview 与非 data 对象在线修复安全策略。
+**适用场景**：验证 `TableColumnNameCheck` 相关结构检查、列名大小写、advisory、columnPlan data 预检、源端对象不可见诊断，以及 v4.0.0 `dTypeMappingFile` preview、非 data 对象在线修复安全策略与 `truncateBeforeAlter` fix SQL 输出策略。
 
 ### 必填参数
 
@@ -185,6 +185,8 @@ bash scripts/regression-test-columns.sh --dry-run
 | TC-ST-09 | PASS-DDL | columnPlan 列映射豁免，data 预检 `DDL-yes` 显式暴露 |
 | TC-ST-10-dtype-preview | PASS | 生成临时 `dTypeMappingFile` 并执行 `--preview-dtype-mapping` |
 | TC-ST-11-struct-datafix-table-safe | PASS | `checkObject=struct,datafix=table` 强制导出 fix SQL，再由 repairDB 修复 |
+| TC-ST-12a | PASS | `truncateBeforeAlter=ON` 时断言首个 `ALTER TABLE` 前生成一次 `TRUNCATE TABLE` |
+| TC-ST-12b | PASS | `truncateBeforeAlter=OFF` 时断言默认安全关闭，不生成 `TRUNCATE TABLE` |
 
 ---
 

@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"gt-checksum/inputArg"
 	"gt-checksum/schemacompat"
 )
 
@@ -69,6 +70,167 @@ func TestBuildConstraintAdvisoryLines_Empty(t *testing.T) {
 	if lines != nil {
 		t.Errorf("空建议应返回 nil，got %v", lines)
 	}
+}
+
+// ---------- prependTruncateBeforeAlter ----------
+
+func truncateBeforeAlterSchemaTable(flag, checkObject, objType string) *schemaTable {
+	return &schemaTable{
+		truncateBeforeAlter: flag,
+		fixFileObjectType:   objType,
+		checkRules: inputArg.RulesS{
+			CheckObject: checkObject,
+		},
+	}
+}
+
+func assertSQLsEqual(t *testing.T, got, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("SQL count = %d, want %d\ngot:\n%s\nwant:\n%s", len(got), len(want), strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("SQL[%d] = %q, want %q\ngot:\n%s\nwant:\n%s", i, got[i], want[i], strings.Join(got, "\n"), strings.Join(want, "\n"))
+		}
+	}
+}
+
+func TestPrependTruncateBeforeAlter_InsertsBeforeFirstAlter(t *testing.T) {
+	st := truncateBeforeAlterSchemaTable("ON", "struct", "")
+	sqls := []string{
+		"-- advisory only",
+		"ALTER TABLE `gt_checksum`.`t1` ADD COLUMN `c1` int;",
+	}
+
+	got := st.prependTruncateBeforeAlter(sqls, 1)
+	want := []string{
+		"-- advisory only",
+		"TRUNCATE TABLE `gt_checksum`.`t1`;",
+		"ALTER TABLE `gt_checksum`.`t1` ADD COLUMN `c1` int;",
+	}
+	assertSQLsEqual(t, got, want)
+}
+
+func TestPrependTruncateBeforeAlter_OnlyOncePerTable(t *testing.T) {
+	st := truncateBeforeAlterSchemaTable("ON", "struct", "table")
+	sqls := []string{
+		"ALTER TABLE `gt_checksum`.`t1` ADD COLUMN `c1` int;",
+		"CREATE TABLE `gt_checksum`.`new_t` (`id` int);",
+		"ALTER TABLE `gt_checksum`.`t1` ADD INDEX `idx_c1` (`c1`);",
+		"ALTER TABLE `gt_checksum`.`t2` DROP COLUMN `c2`;",
+	}
+
+	got := st.prependTruncateBeforeAlter(sqls, 1)
+	want := []string{
+		"TRUNCATE TABLE `gt_checksum`.`t1`;",
+		"ALTER TABLE `gt_checksum`.`t1` ADD COLUMN `c1` int;",
+		"CREATE TABLE `gt_checksum`.`new_t` (`id` int);",
+		"ALTER TABLE `gt_checksum`.`t1` ADD INDEX `idx_c1` (`c1`);",
+		"TRUNCATE TABLE `gt_checksum`.`t2`;",
+		"ALTER TABLE `gt_checksum`.`t2` DROP COLUMN `c2`;",
+	}
+	assertSQLsEqual(t, got, want)
+}
+
+func TestPrependTruncateBeforeAlter_SkipsWhenDisabledOrNotBaseTableStruct(t *testing.T) {
+	sqls := []string{"ALTER TABLE `gt_checksum`.`t1` ADD COLUMN `c1` int;"}
+	tests := []struct {
+		name        string
+		flag        string
+		checkObject string
+		objType     string
+	}{
+		{name: "off", flag: "OFF", checkObject: "struct"},
+		{name: "data mode", flag: "ON", checkObject: "data"},
+		{name: "view file", flag: "ON", checkObject: "struct", objType: "view"},
+		{name: "routine file", flag: "ON", checkObject: "struct", objType: "routine"},
+		{name: "trigger file", flag: "ON", checkObject: "struct", objType: "trigger"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			st := truncateBeforeAlterSchemaTable(tt.flag, tt.checkObject, tt.objType)
+			got := st.prependTruncateBeforeAlter(sqls, 1)
+			assertSQLsEqual(t, got, sqls)
+		})
+	}
+}
+
+func TestPrependTruncateBeforeAlter_SkipsNonAlterStatements(t *testing.T) {
+	st := truncateBeforeAlterSchemaTable("ON", "struct", "")
+	sqls := []string{
+		"CREATE TABLE `gt_checksum`.`t1` (`id` int);",
+		"DROP TABLE `gt_checksum`.`old_t`;",
+		"-- ALTER TABLE `gt_checksum`.`t1` ADD COLUMN `c1` int;",
+	}
+
+	got := st.prependTruncateBeforeAlter(sqls, 1)
+	assertSQLsEqual(t, got, sqls)
+}
+
+func TestPrependTruncateBeforeAlter_InsertsBeforePartitionAlter(t *testing.T) {
+	st := truncateBeforeAlterSchemaTable("ON", "struct", "")
+	sqls := []string{"ALTER TABLE `gt_checksum`.`pt` REORGANIZE PARTITION pmax INTO (PARTITION p2026 VALUES LESS THAN (2027));"}
+
+	got := st.prependTruncateBeforeAlter(sqls, 1)
+	want := []string{
+		"TRUNCATE TABLE `gt_checksum`.`pt`;",
+		"ALTER TABLE `gt_checksum`.`pt` REORGANIZE PARTITION pmax INTO (PARTITION p2026 VALUES LESS THAN (2027));",
+	}
+	assertSQLsEqual(t, got, want)
+}
+
+func TestMergeAutoIncrementForTruncateBeforeAlter_InlinesIntoFirstAlter(t *testing.T) {
+	st := truncateBeforeAlterSchemaTable("ON", "struct", "table")
+	sqls := []string{
+		"ALTER TABLE `gt_checksum`.`indext` MODIFY COLUMN `商品描述` varchar(200) DEFAULT NULL, ADD INDEX `idx_6`(`v_abs_price`);",
+		"ALTER TABLE `gt_checksum`.`indext` AUTO_INCREMENT=914246706;",
+	}
+
+	merged := st.mergeAutoIncrementForTruncateBeforeAlter(sqls, 1)
+	got := st.prependTruncateBeforeAlter(merged, 1)
+	want := []string{
+		"TRUNCATE TABLE `gt_checksum`.`indext`;",
+		"ALTER TABLE `gt_checksum`.`indext` MODIFY COLUMN `商品描述` varchar(200) DEFAULT NULL, ADD INDEX `idx_6`(`v_abs_price`), AUTO_INCREMENT=914246706;",
+	}
+	assertSQLsEqual(t, got, want)
+}
+
+func TestMergeAutoIncrementForTruncateBeforeAlter_UsesRememberedSourceValue(t *testing.T) {
+	st := truncateBeforeAlterSchemaTable("ON", "struct", "table")
+	st.rememberTruncateBeforeAlterAutoIncrement("gt_checksum", "indext", 914246706, 1)
+	sqls := []string{
+		"ALTER TABLE `gt_checksum`.`indext` MODIFY COLUMN `商品描述` varchar(200) DEFAULT NULL;",
+	}
+
+	got := st.mergeAutoIncrementForTruncateBeforeAlter(sqls, 1)
+	want := []string{
+		"ALTER TABLE `gt_checksum`.`indext` MODIFY COLUMN `商品描述` varchar(200) DEFAULT NULL, AUTO_INCREMENT=914246706;",
+	}
+	assertSQLsEqual(t, got, want)
+}
+
+func TestMergeAutoIncrementForTruncateBeforeAlter_SkipsWhenDisabled(t *testing.T) {
+	st := truncateBeforeAlterSchemaTable("OFF", "struct", "table")
+	sqls := []string{
+		"ALTER TABLE `gt_checksum`.`indext` MODIFY COLUMN `商品描述` varchar(200) DEFAULT NULL;",
+		"ALTER TABLE `gt_checksum`.`indext` AUTO_INCREMENT=914246706;",
+	}
+
+	got := st.mergeAutoIncrementForTruncateBeforeAlter(sqls, 1)
+	assertSQLsEqual(t, got, sqls)
+}
+
+func TestMergeAutoIncrementForTruncateBeforeAlter_SkipsPartitionAlter(t *testing.T) {
+	st := truncateBeforeAlterSchemaTable("ON", "struct", "table")
+	sqls := []string{
+		"ALTER TABLE `gt_checksum`.`pt` REORGANIZE PARTITION pmax INTO (PARTITION p2026 VALUES LESS THAN (2027));",
+		"ALTER TABLE `gt_checksum`.`pt` AUTO_INCREMENT=100;",
+	}
+
+	got := st.mergeAutoIncrementForTruncateBeforeAlter(sqls, 1)
+	assertSQLsEqual(t, got, sqls)
 }
 
 // ---------- mergeAlterTableStatements COLLATE 优化 ----------

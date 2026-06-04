@@ -371,6 +371,128 @@ func TestWriteFixSql_StructDatafixTableForcesFixFile(t *testing.T) {
 	}
 }
 
+func TestWriteFixSql_TruncateBeforeAlterOnWritesBeforeAlter(t *testing.T) {
+	origWlog := global.Wlog
+	global.Wlog = golog.NewWlog(t.TempDir()+"/truncate-before-alter-on.log", "error")
+	defer func() { global.Wlog = origWlog }()
+
+	fixDir := t.TempDir()
+	stcls := &schemaTable{
+		schema:              "gt_checksum",
+		table:               "truncate_before_alter_write_on",
+		datafix:             "file",
+		datafixSql:          fixDir,
+		truncateBeforeAlter: "ON",
+		checkRules:          inputArg.RulesS{CheckObject: "struct"},
+		djdbc:               "user:pass@tcp(127.0.0.1:3306)/information_schema?charset=utf8mb4",
+	}
+	sqls := []string{
+		"ALTER TABLE `gt_checksum`.`truncate_before_alter_write_on` ADD COLUMN `c1` int;",
+		"ALTER TABLE `gt_checksum`.`truncate_before_alter_write_on` ADD INDEX `idx_c1` (`c1`);",
+	}
+
+	if err := stcls.writeFixSql(sqls, 1); err != nil {
+		t.Fatalf("writeFixSql returned %v, want nil", err)
+	}
+
+	contentBytes, err := os.ReadFile(fixDir + "/table.gt_checksum.truncate_before_alter_write_on.sql")
+	if err != nil {
+		t.Fatalf("failed to read generated fix file: %v", err)
+	}
+	content := string(contentBytes)
+	truncateSQL := "TRUNCATE TABLE `gt_checksum`.`truncate_before_alter_write_on`;"
+	alterPrefix := "ALTER TABLE `gt_checksum`.`truncate_before_alter_write_on`"
+	if strings.Count(content, truncateSQL) != 1 {
+		t.Fatalf("fix file content = %q, want exactly one %q", content, truncateSQL)
+	}
+	truncateIndex := strings.Index(content, truncateSQL)
+	alterIndex := strings.Index(content, alterPrefix)
+	if alterIndex < 0 {
+		t.Fatalf("fix file content = %q, want ALTER TABLE statement", content)
+	}
+	if truncateIndex < 0 || truncateIndex > alterIndex {
+		t.Fatalf("TRUNCATE should appear before ALTER, content = %q", content)
+	}
+}
+
+func TestWriteFixSql_TruncateBeforeAlterRestoresRememberedAutoIncrement(t *testing.T) {
+	origWlog := global.Wlog
+	global.Wlog = golog.NewWlog(t.TempDir()+"/truncate-before-alter-autoinc.log", "error")
+	defer func() { global.Wlog = origWlog }()
+
+	fixDir := t.TempDir()
+	stcls := &schemaTable{
+		schema:              "gt_checksum",
+		table:               "indext",
+		datafix:             "file",
+		datafixSql:          fixDir,
+		truncateBeforeAlter: "ON",
+		checkRules:          inputArg.RulesS{CheckObject: "struct"},
+		djdbc:               "user:pass@tcp(127.0.0.1:3306)/information_schema?charset=utf8mb4",
+	}
+	stcls.rememberTruncateBeforeAlterAutoIncrement("gt_checksum", "indext", 914246706, 1)
+	sqls := []string{
+		"ALTER TABLE `gt_checksum`.`indext` MODIFY COLUMN `商品描述` varchar(200) DEFAULT NULL;",
+		"ALTER TABLE `gt_checksum`.`indext` ADD INDEX `idx_6`(`v_abs_price`);",
+	}
+
+	if err := stcls.writeFixSql(sqls, 1); err != nil {
+		t.Fatalf("writeFixSql returned %v, want nil", err)
+	}
+
+	contentBytes, err := os.ReadFile(fixDir + "/table.gt_checksum.indext.sql")
+	if err != nil {
+		t.Fatalf("failed to read generated fix file: %v", err)
+	}
+	content := string(contentBytes)
+	truncateSQL := "TRUNCATE TABLE `gt_checksum`.`indext`;"
+	if strings.Count(content, truncateSQL) != 1 {
+		t.Fatalf("fix file content = %q, want exactly one %q", content, truncateSQL)
+	}
+	if strings.Count(content, "AUTO_INCREMENT=914246706") != 1 {
+		t.Fatalf("fix file content = %q, want one AUTO_INCREMENT restore clause", content)
+	}
+	if !strings.Contains(content, "ADD INDEX `idx_6`(`v_abs_price`), AUTO_INCREMENT=914246706;") {
+		t.Fatalf("fix file content = %q, want AUTO_INCREMENT merged into the main ALTER TABLE", content)
+	}
+	if strings.Contains(content, "ALTER TABLE `gt_checksum`.`indext` AUTO_INCREMENT=914246706;") {
+		t.Fatalf("fix file content = %q, want no standalone AUTO_INCREMENT ALTER", content)
+	}
+}
+
+func TestWriteFixSql_TruncateBeforeAlterOffDoesNotWriteTruncate(t *testing.T) {
+	origWlog := global.Wlog
+	global.Wlog = golog.NewWlog(t.TempDir()+"/truncate-before-alter-off.log", "error")
+	defer func() { global.Wlog = origWlog }()
+
+	fixDir := t.TempDir()
+	stcls := &schemaTable{
+		schema:     "gt_checksum",
+		table:      "truncate_before_alter_write_off",
+		datafix:    "file",
+		datafixSql: fixDir,
+		checkRules: inputArg.RulesS{CheckObject: "struct"},
+		djdbc:      "user:pass@tcp(127.0.0.1:3306)/information_schema?charset=utf8mb4",
+	}
+	stmt := "ALTER TABLE `gt_checksum`.`truncate_before_alter_write_off` ADD COLUMN `c1` int;"
+
+	if err := stcls.writeFixSql([]string{stmt}, 1); err != nil {
+		t.Fatalf("writeFixSql returned %v, want nil", err)
+	}
+
+	contentBytes, err := os.ReadFile(fixDir + "/table.gt_checksum.truncate_before_alter_write_off.sql")
+	if err != nil {
+		t.Fatalf("failed to read generated fix file: %v", err)
+	}
+	content := string(contentBytes)
+	if strings.Contains(content, "TRUNCATE TABLE") {
+		t.Fatalf("fix file content = %q, want no TRUNCATE TABLE when truncateBeforeAlter is OFF", content)
+	}
+	if !strings.Contains(content, stmt) {
+		t.Fatalf("fix file content = %q, want ALTER TABLE statement", content)
+	}
+}
+
 func TestWriteFixSql_DataDatafixTableKeepsDirectExecution(t *testing.T) {
 	origWlog := global.Wlog
 	global.Wlog = golog.NewWlog(t.TempDir()+"/data-table.log", "error")
