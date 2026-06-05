@@ -9,20 +9,20 @@
 
 ## 简介
 
-MySQL DBA经常使用 **pt-table-checksum** 和 **pt-table-sync** 进行数据校验及修复，但这两个工具并不支持MySQL MGR架构，以及国内常见的上云下云业务场景，还有MySQL、Oracle间的异构数据库等多种场景。
+MySQL DBA 经常使用 **pt-table-checksum** 和 **pt-table-sync** 进行数据校验及修复，但这类工具在 MySQL MGR、高可用多节点、企业上云下云、跨版本升级、MariaDB/MySQL 兼容迁移、Oracle -> MySQL 异构迁移等场景下存在覆盖不足或使用成本较高的问题。
 
-因此，我们开发了 **gt-checksum** 工具，旨在支持更多业务场景并解决现有痛点。
+**gt-checksum** 是 GreatSQL 社区开源的数据库校验及修复工具，面向 MySQL-family（MySQL/Percona/GreatSQL/MariaDB 等）和 Oracle 等数据库，支持数据、表结构、存储程序、触发器等对象的差异校验，并可按场景生成修复 SQL 或执行在线修复。
+
+当前版本进一步增强了长任务可恢复性与修复可审计能力，支持断点续传、反向回滚 SQL、自定义数据类型映射、SSL 加密连接、CSV 结果导出以及结构修复辅助参数等能力，适合用于迁移验收、升级校验、主从/组复制一致性检查和定期巡检等场景。
 
 ## v4.0.0 关键变化
 
-- **[功能新增]** 新增断点续传能力，`gt-checksum` 数据校验和 `repairDB` 可通过 `resume=ON/ASK` 在异常退出后继续执行；`gt-checksum` 会校验旧断点和多个 running 进度文件，`repairDB` 中断时会等待已开始文件完成，避免续传重放半执行
- 件。
-- **[功能新增]** 新增 `dTypeMappingFile` 参数，支持用户自定义数据类型映射规则（YAML/JSON），覆盖 `oracle_to_mysql`、`mysql_upgrade`、`mariadb_to_mysql` 三种迁移场景，支持 `schema/table/column` 级别精细化控制。
+- **[功能新增]** 新增断点续传能力，`gt-checksum` 数据校验和 `repairDB` 可通过 `resume=ON/ASK` 在异常退出后继续执行；`gt-checksum` 会校验旧断点和多个 running 进度文件，`repairDB` 中断时会等待已开始文件完成，避免续传重放半执行文件。
+- **[功能新增]** 新增 `dTypeMappingFile` 参数，支持用户自定义数据类型映射规则（YAML/JSON），覆盖 `oracle_to_mysql`、`mysql_upgrade`、`mariadb_to_mysql` 三种迁移场景，支持 `schema/table/column` 级别精细化控制；可通过 `--preview-dtype-mapping` 预览最终映射规则表后退出，便于调试。
 - **[功能新增]** 新增反向回滚SQL生成能力，通过 `genRollSQL/maxRollRowNum/rollFileDir` 等参数控制，在 `checkObject=data` 且 `datafix=file/table` 时可为修复SQL自动生成对应的回滚语句；`datafix=table` 在线修复也会同步写出 rollback SQL，后续可使用 `repairDB ./rollsql` 快速回退。
-- **[功能新增]** 新增 `truncateBeforeAlter` 结构修复辅助参数；后者可在 `checkObject=struct` 的 base table 首个 `ALTER TABLE` 前生成 `TRUNCATE TABLE`，默认关闭，仅适合目标端数据可丢弃场景。
+- **[功能新增]** 新增 `truncateBeforeAlter` 结构修复辅助参数；该参数可在 `checkObject=struct` 的 base table 首个 `ALTER TABLE` 前生成 `TRUNCATE TABLE`，默认关闭，仅适合目标端数据可丢弃场景。
 - **[功能新增]** 新增 SSL 加密连接支持，源端和目标端可独立配置 SSL 参数，支持五种模式（`DISABLED/PREFERRED/REQUIRED/VERIFY_CA/VERIFY_IDENTITY`）。
-- **[功能优化]** 完善权限预检与修复安全策略：区分源端/目标端角色，支持通配/映射规则压缩检查；指定库表不可见或匹配为空时提示检查权限并给出 `SHOW GRANTS` / `GRANT SELECT` 建议，目标端表不可见时先提示权限不足，非 `data` 对象自
- 导出 fix SQL。
+- **[功能优化]** 完善权限预检与修复安全策略：区分源端/目标端角色，支持通配/映射规则压缩检查；指定库表不可见或匹配为空时提示检查权限并给出 `SHOW GRANTS` / `GRANT SELECT` 建议，目标端表不可见时先提示权限不足；非 `data` 对象即使配置 `datafix=table` 也会强制导出 fix SQL，不直接在线修改目标对象。
 - **[功能优化]** 优化 COLLATE 修复逻辑，当存在 `dTypeMapping` 规则覆盖时自动生成列级 MODIFY COLUMN SQL，而非表级 CONVERT TO SQL。
 - **[性能优化]** 断点续传模式下，行数统计（估算值和精确 COUNT(*)）写入进度文件缓存，续传时直接读取，避免重复扫描大表；源端和目标端行数改为并行查询，减少等待时间。
 - **[性能优化]** 优化数据校验行数统计流程，源端和目标端行数改为并行查询；同时改进无主键表 DELETE 修复逻辑，避免 NULL 值导致的语句生成错误。
@@ -33,14 +33,14 @@ MySQL DBA经常使用 **pt-table-checksum** 和 **pt-table-sync** 进行数据�
 更多详细变化详见 [CHANGELOG](./CHANGELOG.md)。
 
 **gt-checksum** 支持以下几种常见业务需求场景：
-1. **MySQL主从复制**：当主从复制中断较长时间后才发现，主从间数据差异太大。此时通常选择重建整个从库，如果利用 **pt-table-checksum**、**pt-table-sync** 先校验后修复，这个过程通常特别久，时间代价太大。而 **gt-checksum** 工作效率更高，可以更快校验出主从间数据差异并修复，这个过程时间代价小很多。
-2. **MySQL MGR组复制**：MySQL MGR因故报错运行异常或某个节点异常退出时，在恢复时一般要先检查各节点间数据一致性，这时通常选择其中一个节点作为主节点，其余从节点直接复制数据重建，整个过程要特别久，时间代价大。在这种场景下选择使用 **gt-checksum** 效率更高。
-3. **企业上下云**：在企业上云下云过程中要进行大量的数据迁移及校验工作，可能存在字符集原因导致个别数据出现乱码或其他情况，在迁移结束后进行完整的数据校验就很有必要了。
-4. **异构迁移**：例如从Oracle迁移到MySQL等异构数据库迁移场景中，通常存在字符集不同、数据类型不同等多种复杂情况，也需要在迁移结束后进行完整的数据校验。
-5. **定期数据校验**：在多节点高可用架构中，为了保证主节点出现异常后能安心切换，需要确保各节点间的数据一致性，通常要定期执行数据校验工作。
-6. **MySQL版本升级时迁移数据**：在MySQL版本升级时（例如从5.6升级到8.0），需要将低版本中的数据迁移到高版本。
-7. **MariaDB迁移到MySQL 8.0/8.4**：在 `MariaDB 10.x+ -> MySQL 8.0/8.4` 的迁移场景中，当前支持全部四种 `checkObject` 模式（`data`/`struct`/`routine`/`trigger`）的校验与修复。
-8. **MariaDB实例间升级校验**：在 `MariaDB -> MariaDB` 的同序列或升级迁移场景中，当前支持 `data`、`struct`、`routine`、`trigger` 四种模式；支持升级方向，不支持 downgrade。
+1. **MySQL 主从复制 / 高可用一致性校验**：当主从复制中断、延迟过大或节点异常恢复后，可使用 **gt-checksum** 快速校验源端与目标端数据差异，并按需生成修复 SQL 或执行在线修复。
+2. **MySQL MGR / 多节点组复制一致性校验**：在 MGR 节点异常退出、重新加入或切换前，可选择一个节点作为基准，对其他节点执行数据一致性校验，降低直接重建节点的时间成本。
+3. **企业上云、下云及跨机房迁移验收**：在数据迁移完成后，可对数据、表结构、存储程序、触发器等对象进行一致性校验，发现字符集、排序规则、数据类型或对象定义差异；需要加密链路时可配置源端和目标端 SSL 连接。
+4. **MySQL-family 跨版本升级迁移**：适用于 MySQL/GreatSQL/Percona 等同版本主线或升级方向的数据校验与对象校验，例如 `5.6 -> 5.7`、`5.7 -> 8.0`、`8.0 -> 8.4` 等场景，支持 `data`、`struct`、`routine`、`trigger` 四种 `checkObject` 模式。
+5. **Oracle -> MySQL 8.0/8.4 异构迁移**：支持数据校验与表结构校验，可处理常见 Oracle 与 MySQL 数据类型、字符、数值精度、主键、外键等差异；当前 `routine` / `trigger` 模式暂不支持 Oracle -> MySQL 场景。
+6. **MariaDB -> MySQL 8.0/8.4 迁移**：适用于 `MariaDB 10.x+ -> MySQL 8.0/8.4`，支持 `data`、`struct`、`routine`、`trigger` 四种模式；其中结构校验覆盖安全子集，并支持通过 `dTypeMappingFile` 自定义数据类型映射规则。
+7. **MariaDB 实例间升级校验**：适用于 MariaDB 同系列或升级方向迁移，支持 `data`、`struct`、`routine`、`trigger` 四种模式；支持的系列包括 `10.0`、`10.1`、`10.2`、`10.3`、`10.4`、`10.5`、`10.6`、`10.11`、`11.4`、`11.5`、`12.3`，不支持 downgrade。
+8. **长时间大表校验与可审计修复**：对于大表或长时间运行任务，可启用断点续传避免异常退出后从头开始；在数据修复场景下可生成反向回滚 SQL，便于修复前审计和修复后快速回退；结构修复场景下可按需使用 `truncateBeforeAlter` 辅助目标端数据可丢弃的大表结构调整。
 
 ## 版本策略
 
@@ -152,10 +152,10 @@ Total execution time: 0.11s
 
 > 开始执行数据校验前，要先在源和目标数据库创建相应的专属账号并授权。更多详情见手册中的 [**数据库授权**](./gt-checksum-manual.md#数据库授权) 章节。
 
-每次校验结束后，当前目录下还会自动生成结果 CSV 文件（默认开启），例如：`gt-checksum-result-20260323195530.csv`。使用 Excel 或命令行可直接查看完整校验结果：
+每次校验结束后，默认会在 `result/` 目录下自动生成结果 CSV 文件（默认开启），例如：`result/gt-checksum-result-20260323195530.csv`。如果配置了 `resultFile`，则以配置路径为准。使用 Excel 或命令行可直接查看完整校验结果：
 
 ```bash
-$ cat gt-checksum-result-20260323195530.csv
+$ cat result/gt-checksum-result-20260323195530.csv
 
 RunID,CheckTime,CheckObject,Schema,Table,ObjectName,ObjectType,IndexColumn,Rows,Diffs,Datafix,Fixed,Mapping,Definer,Columns
 20260323195530,2026-03-23 19:55:31,data,sbtest,sbtest2,sbtest2,table,id,4999,yes,file,,,,
@@ -221,6 +221,10 @@ $ ./repairDB ./rollsql
 | `splitInsertOnDupKey` | multi-values INSERT 重复键自动拆分重试开关（ON/OFF，默认 ON；OFF 时整条语句失败） | `OFF` |
 | `resultFile` | 自定义 CSV 报告输出路径 | `/tmp/repair-report.csv` |
 | `resume` | 断点续传开关（OFF/ON/ASK，默认 OFF） | `ON` |
+| `dstSslCa` | 目标端 CA 证书文件路径 | `/path/to/ca.pem` |
+| `dstSslCert` | 目标端客户端证书文件路径 | `/path/to/client-cert.pem` |
+| `dstSslKey` | 目标端客户端密钥文件路径 | `/path/to/client-key.pem` |
+| `dstSslMode` | 目标端 SSL 模式（`DISABLED/PREFERRED/REQUIRED/VERIFY_CA/VERIFY_IDENTITY`，默认 `PREFERRED`） | `REQUIRED` |
 
 ### CSV 执行报告
 
@@ -245,7 +249,7 @@ CSV 文件带有 UTF-8 BOM，可直接用 Excel/WPS 打开。报告写入失败�
 先编译：
 
 ```bash
-go build -o oracle_random_data_load oracle_random_data_load.go
+go build -o oracle_random_data_load ./cmd/oracle_random_data_load
 ```
 
 最小示例（写入 1000 行）：
@@ -272,7 +276,7 @@ go build -o oracle_random_data_load oracle_random_data_load.go
   -log-file ./oracle_random_data_load.log
 ```
 
-更多参数与完整案例见手册中的 [**oracle_random_data_load 工具使用说明**](./gt-checksum-manual.md) 章节。
+更多参数与完整案例见手册中的 [**oracle_random_data_load 工具使用说明**](./gt-checksum-manual.md#oracle_random_data_load-工具使用说明) 章节。
 
 ## 手册
 
