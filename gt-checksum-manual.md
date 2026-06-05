@@ -2,7 +2,7 @@
 
 ## 关于gt-checksum
 
-**gt-checksum** 是GreatSQL社区开源的数据库校验及修复工具，支持 MySQL-family（MySQL/Percona/GreatSQL/MariaDB等）、Oracle 等主流数据库。
+**gt-checksum** 是 GreatSQL 社区开源的数据库校验及修复工具，支持 MySQL-family（MySQL/Percona/GreatSQL/MariaDB 等）、Oracle 等主流数据库。当前版本支持数据、表结构、存储程序、触发器等对象的差异校验与修复 SQL 生成，并提供断点续传、反向回滚 SQL、自定义数据类型映射、SSL 加密连接、CSV 结果导出等能力，适用于迁移验收、升级校验、主从/组复制一致性检查和定期巡检等场景。
 
 ## 用法
 
@@ -208,7 +208,7 @@ gt-checksum: tables option 'sbtest.t*' uses unsupported wildcard '*'; use '%' in
 ### `checkObject=data` 的前置条件
 
 1. 源端与目标端 `srcDSN`、`dstDSN` 中的 `charset` 参数必须一致；如果两端字符集不一致，程序会在启动阶段直接退出，避免出现数据校验结果失真或修复后乱码的问题。
-2. 当源端为 `MariaDB` 时，仅支持 `MariaDB 10.x+ -> MySQL 8.0/8.4` 的数据校验/修复路径；其他 `MariaDB` 组合仍会在启动阶段直接拒绝执行。
+2. 当源端为 `MariaDB` 时，数据校验/修复当前支持 `MariaDB 10.x+ -> MySQL 8.0/8.4`，以及 `MariaDB -> MariaDB` 同系列或升级方向（支持系列见上方兼容矩阵）；不支持 downgrade、`MariaDB -> MySQL 8.0` 以下版本、`MySQL -> MariaDB`，以及不在支持列表内的 MariaDB 系列。
 3. 当数据校验前发现源端/目标端表存在性不一致或表结构不一致时，程序不会继续做该表的数据比对，而是保留结果并将 `Diffs` 标记为 `DDL-yes`。如果需要进一步修复表结构，请改用 `checkObject=struct`。
 4. **连接池容量**：`data` 模式下，程序内部同时运行 `queryTableDataSeparate`（checksum 比较）与 `AbnormalDataDispos`（差异处理）两条并发 pipeline，各自最多占用 `parallelThds` 个连接，单侧峰值约为 `parallelThds*2 + 2`。程序自动按 `parallelThds*2 + 4`（最低 8）设置单侧连接池下限，请确保数据库 `max_connections` 足以承载 `(parallelThds*2 + 4) * 2`（源端+目标端）个连接。`struct`/`routine`/`trigger` 模式单侧固定为 3 个连接，与 `parallelThds` 无关。
 
@@ -388,7 +388,7 @@ bash scripts/regression-test-columns.sh \
 
 1. `MySQL -> MySQL`
    - 已覆盖普通列、默认值、`charset/collation`、`PRIMARY KEY`、`UNIQUE`、普通索引（含前缀索引）、前缀索引、函数索引、虚拟列/生成列（STORED/VIRTUAL Generated Columns）、外键、`CHECK` 风险输出；
-   - 已内置 `utf8 -> utf8mb3`、整数显示宽度、`ZEROFILL`、`ROW_FORMAT` 默认漂移、默认 `utf8mb4` 排序规则漂移等归一化规则；
+   - 已内置 `utf8 -> utf8mb3`、整数显示宽度、`ZEROFILL`、`ROW_FORMAT` 默认漂移、默认 `utf8mb4` 排序规则漂移、`tinyint(1)` ↔ `bit(1)` 等价映射等归一化规则；
    - `CHECK`、高风险外键不会自动执行高风险 DDL，而是保留为 `warn-only` 或 advisory 信息；
    - 外键引用的 schema/table 名在归一化时保留原大小写，适配 Linux 上 `lower_case_table_names=0` 的 MySQL 部署，不把 `Users` 与 `users` 静默视为等价（Oracle→MySQL 场景仍为大小写不敏感）；
    - 当列宽度收窄（如 `VARCHAR(200)` → `VARCHAR(100)`）时，程序会自动检查目标端是否存在超宽数据行；若存在则输出 advisory SQL，不自动执行可能导致数据截断的 ALTER 操作；
@@ -414,8 +414,8 @@ bash scripts/regression-test-columns.sh \
      | `CHAR(n)` | `CHAR(n)` | |
      | `NCHAR(n)` | `CHAR(n)` | |
      | `NVARCHAR2(n)` | `VARCHAR(n)` | |
-     | `NUMBER(p,s)` | `DECIMAL(p,s)` | |
-     | `NUMBER(p)` | `TINYINT` / `SMALLINT` / `INT` / `BIGINT` | 按精度自动选择 |
+     | `NUMBER(p,s)`（`s > 0`） | `DECIMAL(p,s)` | |
+     | `NUMBER(p)` / `NUMBER(p,0)` | `TINYINT` / `SMALLINT` / `INT` / `BIGINT` | 按精度自动选择；整数精度边界包含 `NUMBER(19,0)`，可映射为 `BIGINT` |
      | `DATE` | `DATETIME` | |
      | `TIMESTAMP(n)` | `DATETIME(n)` | |
      | `FLOAT` | `DOUBLE` | |
@@ -557,8 +557,8 @@ v4.0.0 新增 SSL 加密连接支持，源端和目标端可独立配置。所�
 | `DISABLED` | 禁用 SSL，不加密连接 |
 | `PREFERRED` | 优先使用 SSL，服务端不支持时回退到非加密连接（默认值） |
 | `REQUIRED` | 必须使用 SSL 加密，但不验证证书 |
-| `VERIFY_CA` | 验证 CA 证书链，需要设置 `sslCa` 参数 |
-| `VERIFY_IDENTITY` | 验证 CA 证书和服务端身份（主机名），需要设置 `sslCa` 参数 |
+| `VERIFY_CA` | 验证 CA 证书链，源端需要设置 `srcSslCa`，目标端需要设置 `dstSslCa` |
+| `VERIFY_IDENTITY` | 验证 CA 证书和服务端身份（主机名），源端需要设置 `srcSslCa`，目标端需要设置 `dstSslCa` |
 
 **使用示例**：
 
@@ -582,8 +582,8 @@ dstSslMode = VERIFY_CA
 
 **注意事项**：
 1. SSL 参数仅对 MySQL-family 数据源生效，Oracle 数据源不支持此配置。
-2. 设置 `VERIFY_CA` 或 `VERIFY_IDENTITY` 模式时，必须提供 `sslCa` 参数。
-3. 使用客户端证书认证时，`sslCert` 和 `sslKey` 必须同时配置。
+2. 设置 `VERIFY_CA` 或 `VERIFY_IDENTITY` 模式时，必须提供对应端的 CA 参数：源端使用 `srcSslCa`，目标端使用 `dstSslCa`。
+3. 使用客户端证书认证时，对应端的证书和密钥必须同时配置：源端使用 `srcSslCert/srcSslKey`，目标端使用 `dstSslCert/dstSslKey`。
 4. 所有证书文件必须存在且可读，否则启动时报错。
 
 ### 回滚SQL参数
@@ -1009,7 +1009,7 @@ resume=ASK
 
 ## 配置参数详解
 
-**gt-checksum** 支持命令行参数与配置文件方式运行。大多数参数通过配置文件指定；部分高频参数支持 CLI 覆盖（优先级高于配置文件），包括 `--showActualRows`、`--resultExport`、`--resultFile`、`--terminalResultMode`。
+**gt-checksum** 支持命令行参数与配置文件方式运行。大多数参数通过配置文件指定；部分高频参数支持 CLI 覆盖（优先级高于配置文件），包括 `--showActualRows`、`--resultExport`、`--resultFile`、`--terminalResultMode`；`--preview-dtype-mapping` 用于预览数据类型映射规则表后退出。
 
 配置文件中所有参数的详解可参考模板文件 [gc-sample.conf](./gc-sample.conf)。
 
@@ -1029,6 +1029,8 @@ resume=ASK
 - `--resultFile`。类型：**string**。作用：覆盖配置文件中的 `resultFile` 参数，指定 CSV 输出文件路径。
 
 - `--terminalResultMode`。类型：**string**，可选值：`all` / `abnormal`。作用：覆盖配置文件中的 `terminalResultMode` 参数，控制终端结果显示模式。
+
+- `--preview-dtype-mapping`。作用：预览最终数据类型映射规则表后退出，便于调试 `dTypeMappingFile` 自定义规则或确认内置映射规则。
 
 - `--help / -h`。作用：查看帮助内容。
 
@@ -1289,7 +1291,7 @@ CSV 文件使用 UTF-8 BOM 编码，可直接用 Excel 或 WPS 打开，无需�
 
 ### 执行流程
 
-1. 读取配置文件或命令行参数（命令行参数只能指定 fixsql 所在目录，不支持指定其他参数）；
+1. 读取配置文件、CLI flags 或位置参数；位置参数可指定待执行 SQL 目录（普通 `fixsql` 或 `rollsql`），`-conf`、`--result-file`、`--dry-run`、`-f/--force` 等 flags 用于覆盖对应行为；
 2. 扫描指定目录下的所有 `.sql` 文件（可为普通 `fixsql` 目录，也可为 `rollsql` 回滚目录），并按对象类型分为六个阶段（DELETE / TABLE / VIEW / ROUTINE / TRIGGER / UNKNOWN）；
 3. 若启用 `resume`，读取 `<fixFileDir>/.repairDB-progress.json`，跳过已经成功执行的 SQL 文件；
 4. 打印各阶段文件数量汇总；若存在 UNKNOWN 文件，额外打印 Warn 日志；
@@ -1561,14 +1563,14 @@ result=PARTIAL_SUCCESS continue_on_error=true
 
 截止当前版本，已知存在以下几个约束/问题。
 
-- 当存在触发器时，因为触发器的作用，可能导致在修复完一个表后，触发其他表被改变，从而看起来像是修复后仍不一致的情况。这种情况下，需要先临时删除触发器进行修复，完成后在重新创建触发器。
+- 当存在触发器时，因为触发器的作用，可能导致在修复完一个表后，触发其他表被改变，从而看起来像是修复后仍不一致的情况。这种情况下，需要先临时删除触发器进行修复，完成后再重新创建触发器。
 
 - 当表校验结果仅存在partition定义不一致时，报告Diffs=yes，但生成的fixSQL中的SQL语句是被注释的，不会被repairDB执行，需要DBA手动调整修复，避免误操作导致数据丢失。在 Oracle→MySQL 场景下，分区比对行为有所不同：仅做存在性比对并输出 advisory 告警，不生成任何分区修复 SQL，原因是 Oracle 与 MySQL 的分区语法差异过大，不适合自动转换；DBA 需根据 advisory 输出手动在目标端重建分区定义。
   - **v3.0.0 增强**：当为无主键分区表添加 `my_row_id` 时（`requirePK=ON`），程序会自动提取分区列并生成包含分区列的主键定义，确保修复 SQL 符合 MySQL 分区表主键约束（分区表主键必须包含分区列）。
 
 - 为了安全起见，当设置 `checkObject=data` 之外的其他值时，即便同时设置 `datafix=table`，程序也不会直接在线完成修复，而是强制导出 fix SQL 文件，生成后再由 DBA 审查并手动执行。
 
-- 当设置 `checkObject=trigger` 或 `routine` 时，如果连接数据库的账号没有相应的权限而无法读取到元数据，会导致检查结果不完整。当前版本在 charset 元数据查询失败时会输出 `Warn` 级别日志，但仍需先授予相应权限才能确保结果准确。
+- 当设置 `checkObject=trigger` 或 `routine` 时，MySQL/MariaDB 侧会尽量通过权限预检提前发现例程或触发器定义不可见问题；但如果账号缺少对象定义、charset 元数据或 Oracle 元数据访问权限，仍可能导致结果不完整或只能输出 `Warn` 级别提示。执行前建议按权限矩阵授予相应元数据读取权限，确保结果准确。
 
 - 当 `checkObject=trigger` 或 `routine` 生成的 fixSQL 中包含 `DROP + CREATE PROCEDURE/FUNCTION/TRIGGER` 时，目标库必须预先存在源端定义中的 `DEFINER` 账号及权限，否则执行会失败。这是环境约束，不是程序实现错误。建议在执行 `repairDB` 前，先对 fixSQL 中的 `DEFINER` 做一次人工检查。
 
