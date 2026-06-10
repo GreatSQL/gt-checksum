@@ -56,6 +56,8 @@ RUN_ID="columns-$(date +%Y%m%d-%H%M%S)"
 ARTIFACTS_DIR="${ROOT_DIR}/test-artifacts/${RUN_ID}"
 GT_CHECKSUM="${ROOT_DIR}/gt-checksum"
 REPAIR_DB="${ROOT_DIR}/repairDB"
+GT_DSN_CRYPT="${ROOT_DIR}/gt-dsn-crypt"
+DB_PASS_ENC=""
 
 SRC_FIXTURE="${ROOT_DIR}/testcase/MySQL-columns-source.sql"
 DST_FIXTURE="${ROOT_DIR}/testcase/MySQL-columns-target.sql"
@@ -168,6 +170,10 @@ check_prerequisites() {
             log_error "repairDB 二进制不存在: $REPAIR_DB"
             ok=false
         fi
+        if [[ ! -x "$GT_DSN_CRYPT" ]]; then
+            log_error "gt-dsn-crypt 二进制不存在: $GT_DSN_CRYPT"
+            ok=false
+        fi
     fi
 
     if [[ ! -f "$SRC_FIXTURE" ]]; then
@@ -200,8 +206,26 @@ build_binaries() {
     log_info "  编译 repairDB..."
     CGO_ENABLED=0 go build -o repairDB ./cmd/repairDB
 
-    chmod +x gt-checksum repairDB
+    log_info "  编译 gt-dsn-crypt..."
+    CGO_ENABLED=0 go build -o gt-dsn-crypt ./cmd/gt-dsn-crypt
+
+    chmod +x gt-checksum repairDB gt-dsn-crypt
     log_info "  编译完成"
+}
+
+prepare_dsn_encryption() {
+    if [[ -z "${GT_CHECKSUM_DSN_KEY:-}" ]]; then
+        GT_CHECKSUM_DSN_KEY="$(${GT_DSN_CRYPT} gen-key)"
+        export GT_CHECKSUM_DSN_KEY
+    else
+        export GT_CHECKSUM_DSN_KEY
+    fi
+
+    DB_PASS_ENC="$(${GT_DSN_CRYPT} encrypt --password "${DB_PASS}")"
+    if [[ -z "$DB_PASS_ENC" ]]; then
+        log_error "生成 DSN password 密文失败"
+        exit 1
+    fi
 }
 
 # ============================================================
@@ -287,8 +311,8 @@ generate_checksum_config() {
     fi
 
     cat > "${case_dir}/gt-checksum.conf" <<EOF
-srcDSN=mysql|${DB_USER}:${DB_PASS}@tcp(${DB_HOST}:${src_port})/information_schema?charset=utf8mb4
-dstDSN=mysql|${DB_USER}:${DB_PASS}@tcp(${DB_HOST}:${dst_port})/information_schema?charset=utf8mb4
+srcDSN=mysql|${DB_USER}:${DB_PASS_ENC}@tcp(${DB_HOST}:${src_port})/information_schema?charset=utf8mb4
+dstDSN=mysql|${DB_USER}:${DB_PASS_ENC}@tcp(${DB_HOST}:${dst_port})/information_schema?charset=utf8mb4
 tables=${tables}
 checkNoIndexTable=${check_no_index}
 caseSensitiveObjectName=yes
@@ -330,8 +354,8 @@ generate_oracle_error_config() {
     fi
 
     cat > "${case_dir}/gt-checksum.conf" <<EOF
-srcDSN=oracle|gt_checksum/gt_checksum@127.0.0.1:1521/orcl
-dstDSN=mysql|${DB_USER}:${DB_PASS}@tcp(${DB_HOST}:${dst_port})/information_schema?charset=utf8mb4
+srcDSN=oracle|gt_checksum/${DB_PASS_ENC}@127.0.0.1:1521/orcl
+dstDSN=mysql|${DB_USER}:${DB_PASS_ENC}@tcp(${DB_HOST}:${dst_port})/information_schema?charset=utf8mb4
 tables=${DB_SCHEMA}.col_data
 checkNoIndexTable=no
 caseSensitiveObjectName=yes
@@ -357,7 +381,7 @@ generate_repairdb_config() {
     local case_dir="$2"
 
     cat > "${case_dir}/repairDB.conf" <<EOF
-dstDSN=mysql|${DB_USER}:${DB_PASS}@tcp(${DB_HOST}:${dst_port})/information_schema?charset=utf8mb4
+dstDSN=mysql|${DB_USER}:${DB_PASS_ENC}@tcp(${DB_HOST}:${dst_port})/information_schema?charset=utf8mb4
 parallelThds=4
 fixFileDir=${case_dir}/fixsql
 EOF
@@ -912,6 +936,7 @@ main() {
 
     check_prerequisites
     build_binaries
+    prepare_dsn_encryption
     check_connectivity
     init_databases
 

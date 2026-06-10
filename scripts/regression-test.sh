@@ -73,6 +73,8 @@ RUN_ID="regression-$(date +%Y%m%d-%H%M%S)"
 ARTIFACTS_DIR="${ROOT_DIR}/test-artifacts/${RUN_ID}"
 GT_CHECKSUM="${ROOT_DIR}/gt-checksum"
 REPAIR_DB="${ROOT_DIR}/repairDB"
+GT_DSN_CRYPT="${ROOT_DIR}/gt-dsn-crypt"
+DB_PASS_ENC=""
 
 # 测试数据
 SRC_FIXTURE="${ROOT_DIR}/testcase/MySQL-source.sql"
@@ -276,6 +278,10 @@ check_prerequisites() {
             log_error "repairDB 二进制不存在: $REPAIR_DB"
             ok=false
         fi
+        if [[ ! -x "$GT_DSN_CRYPT" ]]; then
+            log_error "gt-dsn-crypt 二进制不存在: $GT_DSN_CRYPT"
+            ok=false
+        fi
     fi
 
     if [[ ! -f "$SRC_FIXTURE" ]]; then
@@ -351,11 +357,29 @@ build_binaries() {
     log_info "  编译 repairDB..."
     CGO_ENABLED=0 go build -o repairDB ./cmd/repairDB
 
+    log_info "  编译 gt-dsn-crypt..."
+    CGO_ENABLED=0 go build -o gt-dsn-crypt ./cmd/gt-dsn-crypt
+
     log_info "  运行 repairDB 单元测试..."
     CGO_ENABLED=0 go test -count=1 ./cmd/repairDB
 
-    chmod +x gt-checksum repairDB
+    chmod +x gt-checksum repairDB gt-dsn-crypt
     log_info "  编译完成"
+}
+
+prepare_dsn_encryption() {
+    if [[ -z "${GT_CHECKSUM_DSN_KEY:-}" ]]; then
+        GT_CHECKSUM_DSN_KEY="$(${GT_DSN_CRYPT} gen-key)"
+        export GT_CHECKSUM_DSN_KEY
+    else
+        export GT_CHECKSUM_DSN_KEY
+    fi
+
+    DB_PASS_ENC="$(${GT_DSN_CRYPT} encrypt --password "${DB_PASS}")"
+    if [[ -z "$DB_PASS_ENC" ]]; then
+        log_error "生成 DSN password 密文失败"
+        exit 1
+    fi
 }
 
 # ============================================================
@@ -483,8 +507,8 @@ generate_gt_checksum_config() {
     fi
 
     cat > "${case_dir}/gt-checksum.conf" <<EOF
-srcDSN=mysql|${DB_USER}:${DB_PASS}@tcp(${DB_HOST}:${src_port})/information_schema?charset=utf8mb4
-dstDSN=mysql|${DB_USER}:${DB_PASS}@tcp(${DB_HOST}:${dst_port})/information_schema?charset=utf8mb4
+srcDSN=mysql|${DB_USER}:${DB_PASS_ENC}@tcp(${DB_HOST}:${src_port})/information_schema?charset=utf8mb4
+dstDSN=mysql|${DB_USER}:${DB_PASS_ENC}@tcp(${DB_HOST}:${dst_port})/information_schema?charset=utf8mb4
 tables=${DB_SCHEMA}.*
 checkNoIndexTable=yes
 caseSensitiveObjectName=yes
@@ -506,7 +530,7 @@ generate_repairdb_config() {
     local dst_port="$1" case_dir="$2"
 
     cat > "${case_dir}/repairDB.conf" <<EOF
-dstDSN=mysql|${DB_USER}:${DB_PASS}@tcp(${DB_HOST}:${dst_port})/information_schema?charset=utf8mb4
+dstDSN=mysql|${DB_USER}:${DB_PASS_ENC}@tcp(${DB_HOST}:${dst_port})/information_schema?charset=utf8mb4
 parallelThds=4
 fixFileDir=${case_dir}/fixsql
 EOF
@@ -551,8 +575,8 @@ generate_v4_gt_checksum_config() {
     local gen_roll="${6:-OFF}" roll_dir="${7:-}" result_file="${8:-}"
 
     cat > "${case_dir}/gt-checksum.conf" <<EOF
-srcDSN=mysql|${DB_USER}:${DB_PASS}@tcp(${DB_HOST}:${src_port})/information_schema?charset=utf8mb4
-dstDSN=mysql|${DB_USER}:${DB_PASS}@tcp(${DB_HOST}:${dst_port})/information_schema?charset=utf8mb4
+srcDSN=mysql|${DB_USER}:${DB_PASS_ENC}@tcp(${DB_HOST}:${src_port})/information_schema?charset=utf8mb4
+dstDSN=mysql|${DB_USER}:${DB_PASS_ENC}@tcp(${DB_HOST}:${dst_port})/information_schema?charset=utf8mb4
 tables=${DB_SCHEMA}.*
 checkNoIndexTable=yes
 caseSensitiveObjectName=yes
@@ -582,7 +606,7 @@ generate_v4_repairdb_config() {
     local dst_port="$1" conf_file="$2" fix_dir="$3" split_mode="${4:-ON}" resume="${5:-OFF}"
 
     cat > "$conf_file" <<EOF
-dstDSN=mysql|${DB_USER}:${DB_PASS}@tcp(${DB_HOST}:${dst_port})/information_schema?charset=utf8mb4
+dstDSN=mysql|${DB_USER}:${DB_PASS_ENC}@tcp(${DB_HOST}:${dst_port})/information_schema?charset=utf8mb4
 parallelThds=4
 fixFileDir=${fix_dir}
 logbin=ON
@@ -1341,6 +1365,7 @@ main() {
     # 编译与连通性检查（dry-run 仅打印矩阵，不构建、不连接数据库）
     if [[ "$DRY_RUN" != "true" ]]; then
         build_binaries
+        prepare_dsn_encryption
         check_connectivity
     fi
 
