@@ -22,6 +22,7 @@ MySQL DBA 经常使用 **pt-table-checksum** 和 **pt-table-sync** 进行数据�
 - **[功能新增]** 新增反向回滚SQL生成能力，通过 `genRollSQL/maxRollRowNum/rollFileDir` 等参数控制，在 `checkObject=data` 且 `datafix=file/table` 时可为修复SQL自动生成对应的回滚语句；`datafix=table` 在线修复也会同步写出 rollback SQL，后续可使用 `repairDB ./rollsql` 快速回退。
 - **[功能新增]** 新增 `truncateBeforeAlter` 结构修复辅助参数；该参数可在 `checkObject=struct` 的 base table 首个 `ALTER TABLE` 前生成 `TRUNCATE TABLE`，默认关闭，仅适合目标端数据可丢弃场景。
 - **[功能新增]** 新增 SSL 加密连接支持，源端和目标端可独立配置 SSL 参数，支持五种模式（`DISABLED/PREFERRED/REQUIRED/VERIFY_CA/VERIFY_IDENTITY`）。
+- **[功能新增]** `srcDSN` / `dstDSN` 中的 password 必须使用 `ENC[...]` 密文；新增独立工具 `gt-dsn-crypt` 生成 32 字节 base64 key 与 AES-256-GCM 密文，启动时通过 `--key` 或 `GT_CHECKSUM_DSN_KEY` 提供 key，所有 DSN 日志统一脱敏。
 - **[功能优化]** 完善权限预检与修复安全策略：区分源端/目标端角色，支持通配/映射规则压缩检查；指定库表不可见或匹配为空时提示检查权限并给出 `SHOW GRANTS` / `GRANT SELECT` 建议，目标端表不可见时先提示权限不足；非 `data` 对象即使配置 `datafix=table` 也会强制导出 fix SQL，不直接在线修改目标对象。
 - **[功能优化]** 优化 COLLATE 修复逻辑，当存在 `dTypeMapping` 规则覆盖时自动生成列级 MODIFY COLUMN SQL，而非表级 CONVERT TO SQL。
 - **[性能优化]** 断点续传模式下，行数统计（估算值和精确 COUNT(*)）写入进度文件缓存，续传时直接读取，避免重复扫描大表；源端和目标端行数改为并行查询，减少等待时间。
@@ -152,6 +153,26 @@ Total execution time: 0.11s
 
 > 开始执行数据校验前，要先在源和目标数据库创建相应的专属账号并授权。更多详情见手册中的 [**数据库授权**](./gt-checksum-manual.md#数据库授权) 章节。
 
+### 连接串密码加密
+
+v4.0.0 起，配置文件中的 `srcDSN` / `dstDSN` password 不再允许明文，必须先使用 `gt-dsn-crypt` 生成 `ENC[...]` 密文，并在启动时提供 key：
+
+```bash
+KEY=$(gt-dsn-crypt gen-key)
+printf '%s' '数据库密码' > ./password.txt
+GT_CHECKSUM_DSN_KEY="$KEY" gt-dsn-crypt encrypt --password-file ./password.txt
+GT_CHECKSUM_DSN_KEY="$KEY" gt-checksum -c ./gc.conf
+```
+
+配置示例：
+
+```ini
+srcDSN=mysql|checksum:ENC[v1:aes256gcm:default:...:...]@tcp(src-host:3306)/information_schema?charset=utf8mb4
+dstDSN=mysql|checksum:ENC[v1:aes256gcm:default:...:...]@tcp(dst-host:3306)/information_schema?charset=utf8mb4
+```
+
+`--key` 优先级高于 `GT_CHECKSUM_DSN_KEY`，`repairDB` 也支持相同的 `--key` / 环境变量方式；密钥文件不受支持。错误日志和 debug 日志会自动脱敏 DSN，避免解密后的 password 再次泄露。
+
 每次校验结束后，默认会在 `result/` 目录下自动生成结果 CSV 文件（默认开启），例如：`result/gt-checksum-result-20260323195530.csv`。如果配置了 `resultFile`，则以配置路径为准。使用 Excel 或命令行可直接查看完整校验结果：
 
 ```bash
@@ -209,12 +230,13 @@ $ ./repairDB ./rollsql
 | `-f` / `--force` | 跳过交互式确认，直接执行修复 |
 | `--dry-run` | 仅展示预执行统计报告，不执行实际修复 |
 | `--result-file` | 自定义 CSV 报告输出路径（默认 `result/repairDB-result-<timestamp>.csv`） |
+| `--key` | base64 编码 32 字节 key，用于解密 `dstDSN` 中的 `ENC[...]` password；优先级高于 `GT_CHECKSUM_DSN_KEY` |
 
 ### repairDB 配置文件参数
 
 | 参数 | 说明 | 示例 |
 |---|---|---|
-| `dstDSN` | 目标数据库连接串 | `mysql|user:pass@tcp(host:3306)/db` |
+| `dstDSN` | 目标数据库连接串，password 必须为 `ENC[...]` | `mysql|user:ENC[...]@tcp(host:3306)/db` |
 | `parallelThds` | 并发执行线程数（默认 4） | `8` |
 | `fixFileDir` | 修复 SQL 文件目录（默认 `./fixsql`） | `/data/fixsql` |
 | `logbin` | sql_log_bin 开关（ON/OFF，默认 ON） | `OFF` |

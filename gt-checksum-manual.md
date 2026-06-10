@@ -88,6 +88,59 @@ $ gt-checksum -c ./gc.conf
 5. `tables` 使用 `db.*`、`db.t%`、`srcdb.*:dstdb.*` 等通配或映射规则时，权限预检会保留原始 `tables` 规则，并按源端/目标端角色压缩为合适的 schema/table 粒度检查目标。
 6. 若源端元数据查询为空，或源端仍能看到其他库表但 `tables=db.*` / `tables=db.t%` 指定对象匹配结果为空，日志会提示检查 `tables` 配置、对象是否存在以及源端 `SELECT` 权限，并给出 `SHOW GRANTS FOR CURRENT_USER()`、`SHOW GRANTS FOR '<user>'@'<host>'` 检查建议和 `GRANT SELECT ON ...` 授权示例；若目标端表元数据不可见且目标账号缺少必要权限，程序会拒绝将其当作缺表处理，终端提示 `Insufficient access permission to target table`。
 
+## 连接串密码加密
+
+v4.0.0 起，`srcDSN` / `dstDSN` 的 password 片段必须使用 `ENC[...]` 密文，明文 password 会在启动阶段 fail-fast，且错误信息不会输出原始 password。密文只加密 password，不加密 host、port、库名、charset、SSL 参数等排障信息。
+
+### 密钥来源
+
+- `--key`：命令行参数，优先级最高，`gt-checksum`、`repairDB`、`gt-dsn-crypt` 均支持。
+- `GT_CHECKSUM_DSN_KEY`：未指定 `--key` 时读取该环境变量。
+
+key 必须是 base64 编码后的 32 字节随机值；不提供固定默认 key，也不支持密钥文件或从配置文件读取 key。
+
+### gt-dsn-crypt 工具
+
+```bash
+# 生成 32 字节随机 key
+KEY=$(gt-dsn-crypt gen-key)
+
+# 推荐：从文件读取 password，避免进入 shell history
+printf '%s' '数据库密码' > ./password.txt
+GT_CHECKSUM_DSN_KEY="$KEY" gt-dsn-crypt encrypt --password-file ./password.txt
+
+# 解密校验
+GT_CHECKSUM_DSN_KEY="$KEY" gt-dsn-crypt decrypt --ciphertext 'ENC[v1:aes256gcm:default:...:...]'
+```
+
+也可以使用 `gt-dsn-crypt encrypt --password '数据库密码'`，但该方式可能被 shell history 记录，生产环境不推荐。
+
+### 配置示例
+
+```ini
+# MySQL-family
+srcDSN=mysql|checksum:ENC[v1:aes256gcm:default:...:...]@tcp(src-host:3306)/information_schema?charset=utf8mb4
+dstDSN=mysql|checksum:ENC[v1:aes256gcm:default:...:...]@tcp(dst-host:3306)/information_schema?charset=utf8mb4
+
+# Oracle legacy
+srcDSN=oracle|scott/ENC[v1:aes256gcm:default:...:...]@ora-host:1521/orclpdb1
+
+# Oracle godror key-value
+srcDSN=oracle|user="scott" password="ENC[v1:aes256gcm:default:...:...]" connectString="ora-host:1521/orclpdb1"
+```
+
+启动示例：
+
+```bash
+GT_CHECKSUM_DSN_KEY="$KEY" gt-checksum -c ./gc.conf
+GT_CHECKSUM_DSN_KEY="$KEY" repairDB -conf ./gc.conf ./fixsql
+# 或使用 --key 覆盖环境变量
+gt-checksum -c ./gc.conf --key "$KEY"
+repairDB -conf ./gc.conf --key "$KEY" ./fixsql
+```
+
+`repairDB` 只读取并解密 `dstDSN`。所有 DSN 日志输出都会脱敏为 `******`，不会完整输出明文 password 或密文。
+
 ## 快速使用案例
 
 拷贝或重命名模板文件*gc-sample.conf*为*gc.conf*，主要修改`srcDSN`,`dstDSN`,`tables`,`ignoreTables`等几个参数后，执行如下命令进行数据校验：
@@ -292,8 +345,8 @@ fixsql/columns-advisory.testdb.orders.sql
 #### 使用示例
 
 ```ini
-srcDSN = mysql|checksum:Checksum@3306@tcp(src-host:3306)/information_schema?charset=utf8mb4
-dstDSN = mysql|checksum:Checksum@3306@tcp(dst-host:3307)/information_schema?charset=utf8mb4
+srcDSN = mysql|checksum:ENC[...]@tcp(src-host:3306)/information_schema?charset=utf8mb4
+dstDSN = mysql|checksum:ENC[...]@tcp(dst-host:3307)/information_schema?charset=utf8mb4
 tables = "testdb.orders:archive.orders_archive"
 checkObject = data
 datafix = file
@@ -454,8 +507,8 @@ bash scripts/regression-test-columns.sh \
 以下示例对 `appdb.v_order_summary` 视图进行 MySQL→MySQL 结构一致性校验：
 
 ```ini
-srcDSN = mysql|checksum:Checksum@3306@tcp(src-host:3306)/information_schema?charset=utf8mb4
-dstDSN = mysql|checksum:Checksum@3306@tcp(dst-host:3307)/information_schema?charset=utf8mb4
+srcDSN = mysql|checksum:ENC[...]@tcp(src-host:3306)/information_schema?charset=utf8mb4
+dstDSN = mysql|checksum:ENC[...]@tcp(dst-host:3307)/information_schema?charset=utf8mb4
 tables = appdb.v_order_summary
 checkObject = struct
 datafix = file
@@ -730,8 +783,8 @@ gt-checksum -c gc.conf --preview-dtype-mapping
 以下示例表示执行 `MySQL 5.7 -> MySQL 8.0` 的数据校验，并要求两端统一使用 `utf8mb4`：
 
 ```ini
-srcDSN = mysql|checksum:Checksum@3306@tcp(src-mysql57-host:3405)/information_schema?charset=utf8mb4
-dstDSN = mysql|checksum:Checksum@3306@tcp(dst-mysql80-host:3406)/information_schema?charset=utf8mb4
+srcDSN = mysql|checksum:ENC[...]@tcp(src-mysql57-host:3405)/information_schema?charset=utf8mb4
+dstDSN = mysql|checksum:ENC[...]@tcp(dst-mysql80-host:3406)/information_schema?charset=utf8mb4
 tables = gt_checksum.*
 checkObject = data
 datafix = file
@@ -740,8 +793,8 @@ datafix = file
 以下示例表示执行 `MySQL 5.7 -> MySQL 8.0` 的表结构校验与修复 SQL 生成：
 
 ```ini
-srcDSN = mysql|checksum:Checksum@3306@tcp(src-mysql57-host:3405)/information_schema?charset=utf8mb4
-dstDSN = mysql|checksum:Checksum@3306@tcp(dst-mysql80-host:3406)/information_schema?charset=utf8mb4
+srcDSN = mysql|checksum:ENC[...]@tcp(src-mysql57-host:3405)/information_schema?charset=utf8mb4
+dstDSN = mysql|checksum:ENC[...]@tcp(dst-mysql80-host:3406)/information_schema?charset=utf8mb4
 tables = gt_phase1_mysql57.*
 checkObject = struct
 datafix = file
@@ -751,8 +804,8 @@ fixFileDir = ./fixsql-struct-mysql57-to80
 以下示例表示执行 `MariaDB 10.6 -> MariaDB 10.11` 的数据校验：
 
 ```ini
-srcDSN = mysql|checksum:Checksum@3306@tcp(src-mariadb106-host:3408)/information_schema?charset=utf8mb4
-dstDSN = mysql|checksum:Checksum@3306@tcp(dst-mariadb1011-host:3409)/information_schema?charset=utf8mb4
+srcDSN = mysql|checksum:ENC[...]@tcp(src-mariadb106-host:3408)/information_schema?charset=utf8mb4
+dstDSN = mysql|checksum:ENC[...]@tcp(dst-mariadb1011-host:3409)/information_schema?charset=utf8mb4
 tables = mydb.*
 checkObject = data
 datafix = file
@@ -761,8 +814,8 @@ datafix = file
 以下示例表示执行 `MariaDB 10.6 -> MariaDB 10.11` 的表结构校验与 fix SQL 生成（含隐藏索引 `IGNORED` 适配）：
 
 ```ini
-srcDSN = mysql|checksum:Checksum@3306@tcp(src-mariadb106-host:3408)/information_schema?charset=utf8mb4
-dstDSN = mysql|checksum:Checksum@3306@tcp(dst-mariadb1011-host:3409)/information_schema?charset=utf8mb4
+srcDSN = mysql|checksum:ENC[...]@tcp(src-mariadb106-host:3408)/information_schema?charset=utf8mb4
+dstDSN = mysql|checksum:ENC[...]@tcp(dst-mariadb1011-host:3409)/information_schema?charset=utf8mb4
 tables = mydb.*
 checkObject = struct
 datafix = file
@@ -776,8 +829,8 @@ fixFileDir = ./fixsql-struct-mariadb106-to1011
 以下示例表示执行 `MariaDB 10.5 -> MySQL 8.0` 的安全子集表结构校验与 fix SQL 生成，并将 `JSON` alias 降级为 `LONGTEXT`：
 
 ```ini
-srcDSN = mysql|checksum:Checksum@3306@tcp(src-mariadb105-host:3407)/information_schema?charset=utf8mb4
-dstDSN = mysql|checksum:Checksum@3306@tcp(dst-mysql80-host:3406)/information_schema?charset=utf8mb4
+srcDSN = mysql|checksum:ENC[...]@tcp(src-mariadb105-host:3407)/information_schema?charset=utf8mb4
+dstDSN = mysql|checksum:ENC[...]@tcp(dst-mysql80-host:3406)/information_schema?charset=utf8mb4
 tables = gt_phase1_mariadb105.*
 checkObject = struct
 datafix = file
@@ -1166,6 +1219,7 @@ $ ./repairDB
 | `--dry-run` | 预演模式，仅展示统计报告而不执行实际修复操作 |
 | `-conf` | 指定配置文件路径，默认为 `gc.conf` |
 | `--result-file` | 自定义 CSV 报告输出路径，默认为 `result/repairDB-result-<timestamp>.csv` |
+| `--key` | base64 编码 32 字节 key，用于解密 `dstDSN` 中的 `ENC[...]` password；优先级高于 `GT_CHECKSUM_DSN_KEY` |
 
 示例：
 
@@ -1277,7 +1331,7 @@ CSV 文件使用 UTF-8 BOM 编码，可直接用 Excel 或 WPS 打开，无需�
 
 | 参数名 | 类型 | 默认值 | 说明 |
 |-------|------|-------|------|
-| dstDSN | string | 无 | 目标数据库连接字符串，格式为 `mysql|user:password@tcp(host:port)/db?params` |
+| dstDSN | string | 无 | 目标数据库连接字符串，password 必须为 `ENC[...]`，格式为 `mysql|user:ENC[...]@tcp(host:port)/db?params` |
 | parallelThds | int | 4 | 并行执行SQL文件的线程数 |
 | fixFileDir | string | fixsql | 存放待执行 SQL 文件的目录；执行 rollback 时可通过位置参数指定 `./rollsql` 覆盖该目录 |
 | logbin | string | ON | 控制修复时是否写入 binlog；`OFF` 时每条连接执行 `SET sql_log_bin=0`，需要 SUPER 或 SESSION_VARIABLES_ADMIN 权限 |
@@ -1291,7 +1345,7 @@ CSV 文件使用 UTF-8 BOM 编码，可直接用 Excel 或 WPS 打开，无需�
 
 ### 执行流程
 
-1. 读取配置文件、CLI flags 或位置参数；位置参数可指定待执行 SQL 目录（普通 `fixsql` 或 `rollsql`），`-conf`、`--result-file`、`--dry-run`、`-f/--force` 等 flags 用于覆盖对应行为；
+1. 读取配置文件、CLI flags 或位置参数；位置参数可指定待执行 SQL 目录（普通 `fixsql` 或 `rollsql`），`-conf`、`--key`、`--result-file`、`--dry-run`、`-f/--force` 等 flags 用于覆盖对应行为；
 2. 扫描指定目录下的所有 `.sql` 文件（可为普通 `fixsql` 目录，也可为 `rollsql` 回滚目录），并按对象类型分为六个阶段（DELETE / TABLE / VIEW / ROUTINE / TRIGGER / UNKNOWN）；
 3. 若启用 `resume`，读取 `<fixFileDir>/.repairDB-progress.json`，跳过已经成功执行的 SQL 文件；
 4. 打印各阶段文件数量汇总；若存在 UNKNOWN 文件，额外打印 Warn 日志；
@@ -1349,7 +1403,7 @@ CSV 文件使用 UTF-8 BOM 编码，可直接用 Excel 或 WPS 打开，无需�
 $ ./repairDB ./myfixsql
 
 2026/01/29 10:00:00 Configuration information:
-2026/01/29 10:00:00   DstDSN: mysql|checksum:Checksum@3306@tcp(127.0.0.1:3306)/sbtest?charset=utf8mb4
+2026/01/29 10:00:00   DstDSN: mysql|checksum:******@tcp(127.0.0.1:3306)/sbtest?charset=utf8mb4
 2026/01/29 10:00:00   ParallelThds: 4
 2026/01/29 10:00:00   FixFileDir: ./myfixsql
 2026/01/29 10:00:00   LogFile: repairDB.log

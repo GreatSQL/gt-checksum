@@ -1,4 +1,7 @@
 ## 4.0.0
+- [功能新增]: `srcDSN` / `dstDSN` 的 password 必须使用 `ENC[...]` 密文，明文 password 启动即 fail-fast；key 通过 `--key` 或 `GT_CHECKSUM_DSN_KEY` 提供，不提供固定默认 key，且不支持密钥文件。
+- [功能新增]: 新增独立工具 `gt-dsn-crypt`，支持 `gen-key`、`encrypt`、`decrypt`，用于生成 32 字节 base64 key、生成 AES-256-GCM password 密文与解密校验。
+- [功能优化]: gt-checksum、repairDB、MySQL/Oracle 连接池日志统一脱敏 DSN，避免解密后的运行时 JDBC 泄露 password 或完整密文。
 - [功能新增]: gt-checksum 新增 `truncateBeforeAlter` 参数（ON/OFF，默认 OFF），仅支持 `checkObject=struct`；开启后会在 base table 修复 SQL 的首个可执行 `ALTER TABLE` 前生成一次 `TRUNCATE TABLE`，并尽量把已读取的源端 `AUTO_INCREMENT` 值合并到后续 `ALTER` 中恢复序列，用于目标端数据可丢弃的大表结构修复场景。
 - [功能新增]: 新增断点续传（break-resume）功能，支持 gt-checksum 数据校验和 repairDB 在异常退出后从上次中断位置继续执行，避免重复校验或修复已完成的表/文件。
 - [功能新增]: gt-checksum 新增 `resume` 参数（OFF/ON/ASK），控制断点续传行为。OFF=不续传（默认），ON=自动续传，ASK=启动时询问用户。进度文件保存在 `result` 目录下，文件名为 `gt-checksum-progress-<日期>.json`，记录最近一次进度写入的 `end_time`；若断点超过 1 小时，续传前会提示用户确认。
