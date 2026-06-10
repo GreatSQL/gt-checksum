@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/base64"
 	"fmt"
+	"gt-checksum/connstr"
 	"os"
 	"path/filepath"
 	"sort"
@@ -21,6 +23,69 @@ func writeRepairDBConfigForTest(t *testing.T, body string) string {
 		t.Fatalf("failed to write config file: %v", err)
 	}
 	return confFile
+}
+
+func repairDBTestKey(t *testing.T) []byte {
+	t.Helper()
+	key := make([]byte, connstr.KeySize)
+	for i := range key {
+		key[i] = byte(i + 1)
+	}
+	t.Setenv(connstr.EnvKeyName, base64.StdEncoding.EncodeToString(key))
+	return key
+}
+
+func repairDBEncryptedPassword(t *testing.T, password string) string {
+	t.Helper()
+	ciphertext, err := connstr.EncryptPassword(password, repairDBTestKey(t), "default")
+	if err != nil {
+		t.Fatalf("EncryptPassword() error = %v", err)
+	}
+	return ciphertext
+}
+
+func TestParseDSNUsesSplitN(t *testing.T) {
+	dsn := "mysql|user:ENC[v1:aes256gcm:default:nonce:cipher|text]@tcp(127.0.0.1:3306)/db"
+	want := "user:ENC[v1:aes256gcm:default:nonce:cipher|text]@tcp(127.0.0.1:3306)/db"
+	if got := parseDSN(dsn); got != want {
+		t.Fatalf("parseDSN() = %q, want %q", got, want)
+	}
+}
+
+func TestResolveRepairDBDSNPassword(t *testing.T) {
+	ciphertext := repairDBEncryptedPassword(t, "secret-pass")
+	dsn := "user:" + ciphertext + "@tcp(127.0.0.1:3306)/db?charset=utf8mb4"
+	resolved, err := resolveRepairDBDSNPassword(dsn, repairDBTestKey(t), nil)
+	if err != nil {
+		t.Fatalf("resolveRepairDBDSNPassword() error = %v", err)
+	}
+	want := "user:secret-pass@tcp(127.0.0.1:3306)/db?charset=utf8mb4"
+	if resolved != want {
+		t.Fatalf("resolved = %q, want %q", resolved, want)
+	}
+}
+
+func TestResolveRepairDBDSNPasswordRejectsPlaintext(t *testing.T) {
+	_, err := resolveRepairDBDSNPassword("user:plain@tcp(127.0.0.1:3306)/db", repairDBTestKey(t), nil)
+	if err == nil || !strings.Contains(err.Error(), connstr.ErrPlaintextPassword.Error()) {
+		t.Fatalf("resolveRepairDBDSNPassword() error = %v, want plaintext rejection", err)
+	}
+}
+
+func TestResolveRepairDBRuntimeDSNRejectsPlaintextBeforeNoopPaths(t *testing.T) {
+	old := config
+	t.Cleanup(func() { config = old })
+	config = Config{DstDSN: "mysql|user:plain@tcp(127.0.0.1:3306)/db"}
+
+	_, err := resolveRepairDBRuntimeDSN(cryptTestKeyForRepairDB(t))
+	if err == nil || !strings.Contains(err.Error(), connstr.ErrPlaintextPassword.Error()) {
+		t.Fatalf("resolveRepairDBRuntimeDSN() error = %v, want plaintext rejection", err)
+	}
+}
+
+func cryptTestKeyForRepairDB(t *testing.T) string {
+	t.Helper()
+	return base64.StdEncoding.EncodeToString(repairDBTestKey(t))
 }
 
 func TestParseConfigSplitInsertOnDupKeyDefaultOn(t *testing.T) {

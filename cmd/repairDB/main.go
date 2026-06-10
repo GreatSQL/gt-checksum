@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"gt-checksum/connstr"
 	"gt-checksum/progress"
 	"io"
 	"log"
@@ -70,6 +72,7 @@ func run() (err error) {
 	forceLong := flag.Bool("force", false, "Force execution without confirmation")
 	dryRun := flag.Bool("dry-run", false, "Dry run mode: show statistics only")
 	resultFile := flag.String("result-file", "", "Custom output path for CSV report (default: result/repairDB-result-<timestamp>.csv)")
+	dsnKey := flag.String("key", "", "Base64 encoded 32-byte key for decrypting ENC[...] dstDSN password; overrides GT_CHECKSUM_DSN_KEY")
 	flag.Parse()
 
 	ctx, stopSignals := setupRepairSignalContext()
@@ -94,6 +97,11 @@ func run() (err error) {
 		if config.FixFileDir == "" {
 			return fmt.Errorf("no fixFileDir specified in command line or config file")
 		}
+	}
+
+	dsn, err := resolveRepairDBRuntimeDSN(*dsnKey)
+	if err != nil {
+		return err
 	}
 
 	if _, err := os.Stat(config.FixFileDir); os.IsNotExist(err) {
@@ -161,7 +169,7 @@ func run() (err error) {
 		logBinStr = "OFF"
 	}
 	log.Printf("Configuration information:")
-	log.Printf("  DstDSN: %s\n", config.DstDSN)
+	log.Printf("  DstDSN: %s\n", connstr.RedactFullDSN(config.DstDSN))
 	log.Printf("  ParallelThds: %d\n", config.ParallelThds)
 	log.Printf("  FixFileDir: %s\n", config.FixFileDir)
 	log.Printf("  LogBin: %s\n", logBinStr)
@@ -289,7 +297,6 @@ func run() (err error) {
 	}
 
 	// SSL configuration
-	dsn := parseDSN(config.DstDSN)
 	hasSSL := config.SslMode != "" || config.SslCa != "" || config.SslCert != "" || config.SslKey != ""
 	if hasSSL {
 		sslMode := config.SslMode
@@ -354,6 +361,22 @@ func run() (err error) {
 	log.Printf("All SQL files execution completed, total time taken: %s\n", formattedTime)
 	log.Printf("repairDB executed successfully\n")
 	return nil
+}
+
+func resolveRepairDBRuntimeDSN(dsnKey string) (string, error) {
+	key, keyErr := connstr.LoadKey(dsnKey)
+	return resolveRepairDBDSNPassword(parseDSN(config.DstDSN), key, keyErr)
+}
+
+func resolveRepairDBDSNPassword(rawDSN string, key []byte, keyErr error) (string, error) {
+	resolved, err := connstr.ResolveDSNPassword("mysql", rawDSN, key, true)
+	if err != nil {
+		if keyErr != nil && !errors.Is(err, connstr.ErrPlaintextPassword) && !errors.Is(err, connstr.ErrMissingPassword) {
+			err = keyErr
+		}
+		return "", fmt.Errorf("invalid dstDSN password: %w", err)
+	}
+	return resolved, nil
 }
 
 // writeCSVIfPossible writes the CSV report and logs a warning on failure.

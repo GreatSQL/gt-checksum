@@ -116,11 +116,11 @@ func parseConfig(confFile string) error {
 
 // parseDSN extracts the raw DSN from the "mysql|..." prefixed format
 func parseDSN(dsn string) string {
-	parts := strings.Split(dsn, "|")
+	parts := strings.SplitN(dsn, "|", 2)
 	if len(parts) != 2 {
-		return dsn
+		return strings.TrimSpace(dsn)
 	}
-	return parts[1]
+	return strings.TrimSpace(parts[1])
 }
 
 // setupSSLConfig configures TLS for repairDB and returns the tls parameter value for DSN
