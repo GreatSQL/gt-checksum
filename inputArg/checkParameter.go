@@ -2,6 +2,7 @@ package inputArg
 
 import (
 	"fmt"
+	"gt-checksum/connstr"
 	"gt-checksum/dbExec"
 	"gt-checksum/global"
 	"os"
@@ -190,7 +191,7 @@ func (rc *ConfigParameter) checkPar() {
 	vlog = fmt.Sprintf("(%d) [%s] read and check if the options are correct", rc.LogThreadSeq, Event)
 	global.Wlog.Info(vlog)
 
-	vlog = fmt.Sprintf("(%d) [%s] srcDSN is: {%s}", rc.LogThreadSeq, Event, rc.SecondaryL.DsnsV.SrcJdbc)
+	vlog = fmt.Sprintf("(%d) [%s] srcDSN is: {%s}", rc.LogThreadSeq, Event, connstr.RedactDSN(rc.SecondaryL.DsnsV.SrcDrive, rc.SecondaryL.DsnsV.SrcJdbc))
 	global.Wlog.Debug(vlog)
 	srcDB, err := tmpDbc.OpenDB()
 	if err != nil {
@@ -205,7 +206,7 @@ func (rc *ConfigParameter) checkPar() {
 
 	tmpDbc.DBDevice = rc.SecondaryL.DsnsV.DestDrive
 	tmpDbc.JDBC = rc.SecondaryL.DsnsV.DestJdbc
-	vlog = fmt.Sprintf("(%d) [%s] dstDSN is: {%s}", rc.LogThreadSeq, Event, rc.SecondaryL.DsnsV.DestJdbc)
+	vlog = fmt.Sprintf("(%d) [%s] dstDSN is: {%s}", rc.LogThreadSeq, Event, connstr.RedactDSN(rc.SecondaryL.DsnsV.DestDrive, rc.SecondaryL.DsnsV.DestJdbc))
 	global.Wlog.Debug(vlog)
 	dstDB, err := tmpDbc.OpenDB()
 	if err != nil {

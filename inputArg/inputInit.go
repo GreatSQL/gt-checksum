@@ -139,6 +139,7 @@ type ConfigParameter struct {
 	CliResultExport       string
 	CliResultFile         string
 	CliTerminalResultMode string
+	CliDSNKey             string
 	// ColumnPlan is populated during startup from SchemaV.Columns.
 	// nil means full-table compare mode (columns parameter not set).
 	ColumnPlan *TableColumnPlan

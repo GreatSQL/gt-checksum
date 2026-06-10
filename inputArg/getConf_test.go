@@ -11,8 +11,8 @@ func TestGetConfig_StructDatafixTableReadsFixFileDir(t *testing.T) {
 	fixDir := workDir + "/custom-fixsql"
 	configPath := workDir + "/gc.conf"
 	config := strings.Join([]string{
-		"srcDSN=mysql|user:pass@tcp(127.0.0.1:3306)/information_schema?charset=utf8mb4",
-		"dstDSN=mysql|user:pass@tcp(127.0.0.1:3307)/information_schema?charset=utf8mb4",
+		"srcDSN=" + testEncryptedMySQLDSN(t, "127.0.0.1:3306"),
+		"dstDSN=" + testEncryptedMySQLDSN(t, "127.0.0.1:3307"),
 		"tables=gt_checksum.*",
 		"checkObject=struct",
 		"datafix=table",
@@ -38,8 +38,8 @@ func TestGetConfig_StructDatafixTableUsesDefaultFixFileDir(t *testing.T) {
 	workDir := t.TempDir()
 	configPath := workDir + "/gc.conf"
 	config := strings.Join([]string{
-		"srcDSN=mysql|user:pass@tcp(127.0.0.1:3306)/information_schema?charset=utf8mb4",
-		"dstDSN=mysql|user:pass@tcp(127.0.0.1:3307)/information_schema?charset=utf8mb4",
+		"srcDSN=" + testEncryptedMySQLDSN(t, "127.0.0.1:3306"),
+		"dstDSN=" + testEncryptedMySQLDSN(t, "127.0.0.1:3307"),
 		"tables=gt_checksum.*",
 		"checkObject=struct",
 		"datafix=table",
@@ -78,8 +78,8 @@ func TestGetConfig_DataDatafixTableGenRollSQLPreparesRollFileDir(t *testing.T) {
 	rollDir := workDir + "/custom-rollsql"
 	configPath := workDir + "/gc.conf"
 	config := strings.Join([]string{
-		"srcDSN=mysql|user:pass@tcp(127.0.0.1:3306)/information_schema?charset=utf8mb4",
-		"dstDSN=mysql|user:pass@tcp(127.0.0.1:3307)/information_schema?charset=utf8mb4",
+		"srcDSN=" + testEncryptedMySQLDSN(t, "127.0.0.1:3306"),
+		"dstDSN=" + testEncryptedMySQLDSN(t, "127.0.0.1:3307"),
 		"tables=gt_checksum.*",
 		"checkObject=data",
 		"datafix=table",
@@ -107,8 +107,8 @@ func TestGetConfig_DataDatafixTableGenRollSQLOffSkipsRollFileDir(t *testing.T) {
 	rollDir := workDir + "/custom-rollsql"
 	configPath := workDir + "/gc.conf"
 	config := strings.Join([]string{
-		"srcDSN=mysql|user:pass@tcp(127.0.0.1:3306)/information_schema?charset=utf8mb4",
-		"dstDSN=mysql|user:pass@tcp(127.0.0.1:3307)/information_schema?charset=utf8mb4",
+		"srcDSN=" + testEncryptedMySQLDSN(t, "127.0.0.1:3306"),
+		"dstDSN=" + testEncryptedMySQLDSN(t, "127.0.0.1:3307"),
 		"tables=gt_checksum.*",
 		"checkObject=data",
 		"datafix=table",
@@ -137,8 +137,8 @@ func TestGetConfig_StructDatafixTableGenRollSQLSkipsRollFileDir(t *testing.T) {
 	rollDir := workDir + "/custom-rollsql"
 	configPath := workDir + "/gc.conf"
 	config := strings.Join([]string{
-		"srcDSN=mysql|user:pass@tcp(127.0.0.1:3306)/information_schema?charset=utf8mb4",
-		"dstDSN=mysql|user:pass@tcp(127.0.0.1:3307)/information_schema?charset=utf8mb4",
+		"srcDSN=" + testEncryptedMySQLDSN(t, "127.0.0.1:3306"),
+		"dstDSN=" + testEncryptedMySQLDSN(t, "127.0.0.1:3307"),
 		"tables=gt_checksum.*",
 		"checkObject=struct",
 		"datafix=table",
@@ -168,8 +168,8 @@ func TestGetConfig_DataDatafixFileGenRollSQLStillPreparesRollFileDir(t *testing.
 	rollDir := workDir + "/custom-rollsql"
 	configPath := workDir + "/gc.conf"
 	config := strings.Join([]string{
-		"srcDSN=mysql|user:pass@tcp(127.0.0.1:3306)/information_schema?charset=utf8mb4",
-		"dstDSN=mysql|user:pass@tcp(127.0.0.1:3307)/information_schema?charset=utf8mb4",
+		"srcDSN=" + testEncryptedMySQLDSN(t, "127.0.0.1:3306"),
+		"dstDSN=" + testEncryptedMySQLDSN(t, "127.0.0.1:3307"),
 		"tables=gt_checksum.*",
 		"checkObject=data",
 		"datafix=file",
@@ -211,8 +211,8 @@ func TestGetConfig_TruncateBeforeAlterDefaultAndNormalization(t *testing.T) {
 			workDir := t.TempDir()
 			configPath := workDir + "/gc.conf"
 			lines := []string{
-				"srcDSN=mysql|user:pass@tcp(127.0.0.1:3306)/information_schema?charset=utf8mb4",
-				"dstDSN=mysql|user:pass@tcp(127.0.0.1:3307)/information_schema?charset=utf8mb4",
+				"srcDSN=" + testEncryptedMySQLDSN(t, "127.0.0.1:3306"),
+				"dstDSN=" + testEncryptedMySQLDSN(t, "127.0.0.1:3307"),
 				"tables=gt_checksum.*",
 				"checkObject=data",
 				"datafix=table",

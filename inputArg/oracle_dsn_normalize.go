@@ -2,6 +2,7 @@ package inputArg
 
 import (
 	"fmt"
+	"gt-checksum/connstr"
 	"net/url"
 	"sort"
 	"strings"
@@ -18,7 +19,7 @@ func normalizeOracleJDBC(raw string) (string, error) {
 	}
 
 	lower := strings.ToLower(jdbc)
-	if strings.Contains(lower, "connectstring=") && strings.Contains(lower, "user=") {
+	if connstr.IsOracleKeyValueDSN(jdbc) {
 		return jdbc, nil
 	}
 	if strings.HasPrefix(lower, "oracle://") {
@@ -27,7 +28,7 @@ func normalizeOracleJDBC(raw string) (string, error) {
 
 	at := strings.LastIndex(jdbc, "@")
 	if at <= 0 || at == len(jdbc)-1 {
-		return "", fmt.Errorf("invalid Oracle DSN %q: expected format user/password@host:port/service_name[?k=v]", raw)
+		return "", fmt.Errorf("invalid Oracle DSN: expected format user/password@host:port/service_name[?k=v]")
 	}
 
 	cred := jdbc[:at]
@@ -35,7 +36,7 @@ func normalizeOracleJDBC(raw string) (string, error) {
 
 	slash := strings.Index(cred, "/")
 	if slash <= 0 || slash == len(cred)-1 {
-		return "", fmt.Errorf("invalid Oracle DSN credentials %q: expected user/password", cred)
+		return "", fmt.Errorf("invalid Oracle DSN credentials: expected user/password")
 	}
 
 	userRaw := cred[:slash]
@@ -46,7 +47,7 @@ func normalizeOracleJDBC(raw string) (string, error) {
 	}
 	pass, err := url.PathUnescape(passRaw)
 	if err != nil {
-		return "", fmt.Errorf("invalid Oracle DSN password %q: %w", passRaw, err)
+		return "", fmt.Errorf("invalid Oracle DSN password: invalid escaped value: %w", err)
 	}
 
 	connectString := connectAndQuery

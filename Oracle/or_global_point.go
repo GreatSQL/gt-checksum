@@ -3,6 +3,7 @@ package oracle
 import (
 	"database/sql"
 	"fmt"
+	"gt-checksum/connstr"
 	"gt-checksum/global"
 	"time"
 )
@@ -45,6 +46,7 @@ func (or *GlobalCS) sessionRR(logThreadSeq int) ([]*sql.DB, error) {
 	)
 	vlog = fmt.Sprintf("(%d) Oracle DB init database conn Pool ...", logThreadSeq)
 	global.Wlog.Debug(vlog)
+	redactedJDBC := connstr.RedactDSN(or.Drive, or.Jdbc)
 	for i := 1; i <= or.ConnPoolMin; i++ {
 		db1, err := sql.Open(or.Drive, or.Jdbc)
 		if err != nil {
@@ -53,7 +55,7 @@ func (or *GlobalCS) sessionRR(logThreadSeq int) ([]*sql.DB, error) {
 			return nil, err
 		}
 		if err = db1.Ping(); err != nil {
-			vlog = fmt.Sprintf("(%d) Oracle DB database connection fail. conn jdbc is {%s} Error Info is {%s}.", logThreadSeq, or.Jdbc, err)
+			vlog = fmt.Sprintf("(%d) Oracle DB database connection fail. conn jdbc is {%s} Error Info is {%s}.", logThreadSeq, redactedJDBC, err)
 			global.Wlog.Error(vlog)
 			return nil, err
 		}
@@ -65,7 +67,7 @@ func (or *GlobalCS) sessionRR(logThreadSeq int) ([]*sql.DB, error) {
 		global.Wlog.Debug(vlog)
 		tx, err2 := db1.Begin()
 		if err2 != nil {
-			vlog = fmt.Sprintf("(%d) Oracle DB database create session connection fail. conn jdbc is {%s} Error Info is {%s}.", logThreadSeq, or.Jdbc, err)
+			vlog = fmt.Sprintf("(%d) Oracle DB database create session connection fail. conn jdbc is {%s} Error Info is {%s}.", logThreadSeq, redactedJDBC, err)
 			global.Wlog.Error(vlog)
 		}
 

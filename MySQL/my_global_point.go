@@ -3,6 +3,7 @@ package mysql
 import (
 	"database/sql"
 	"fmt"
+	"gt-checksum/connstr"
 	"gt-checksum/global"
 	"time"
 )
@@ -57,6 +58,7 @@ func (my *GlobalCS) sessionRR(logThreadSeq int) ([]*sql.DB, error) {
 
 	vlog = fmt.Sprintf("(%d) Initializing MySQL connection pool", logThreadSeq)
 	global.Wlog.Debug(vlog)
+	redactedJDBC := connstr.RedactDSN(my.Drive, my.Jdbc)
 	for i := 1; i <= my.ConnPoolMin; i++ {
 		db1, err := sql.Open(my.Drive, my.Jdbc)
 		if err != nil {
@@ -65,7 +67,7 @@ func (my *GlobalCS) sessionRR(logThreadSeq int) ([]*sql.DB, error) {
 			return nil, err
 		}
 		if err = db1.Ping(); err != nil {
-			vlog = fmt.Sprintf("(%d) MySQL connection failed (JDBC: %s): %v", logThreadSeq, my.Jdbc, err)
+			vlog = fmt.Sprintf("(%d) MySQL connection failed (JDBC: %s): %v", logThreadSeq, redactedJDBC, err)
 			global.Wlog.Error(vlog)
 			return nil, err
 		}
@@ -77,7 +79,7 @@ func (my *GlobalCS) sessionRR(logThreadSeq int) ([]*sql.DB, error) {
 		//global.Wlog.Debug(vlog)
 		tx, err2 := db1.Begin()
 		if err2 != nil {
-			vlog = fmt.Sprintf("(%d) Failed to create MySQL session (JDBC: %s): %v", logThreadSeq, my.Jdbc, err)
+			vlog = fmt.Sprintf("(%d) Failed to create MySQL session (JDBC: %s): %v", logThreadSeq, redactedJDBC, err)
 			global.Wlog.Error(vlog)
 			return nil, err
 		}

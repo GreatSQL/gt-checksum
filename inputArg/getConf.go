@@ -1,7 +1,9 @@
 package inputArg
 
 import (
+	"errors"
 	"fmt"
+	"gt-checksum/connstr"
 	"os"
 	"strconv"
 	"strings"
@@ -72,40 +74,28 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 		return strings.TrimSpace(key.String())
 	}
 
+	key, keyErr := connstr.LoadKey(rc.CliDSNKey)
+
 	//Source Destination connection 获取jdbc连接信息
 	srcDSNValue := getLastConfigValue("srcDSN")
-	rc.SecondaryL.DsnsV.SrcDSN = srcDSNValue
-	if strings.Contains(rc.SecondaryL.DsnsV.SrcDSN, "|") {
-		parts := strings.SplitN(rc.SecondaryL.DsnsV.SrcDSN, "|", 2)
-		rc.SecondaryL.DsnsV.SrcDrive = strings.TrimSpace(parts[0])
-		rc.SecondaryL.DsnsV.SrcJdbc = strings.TrimSpace(parts[1])
-		if strings.EqualFold(rc.SecondaryL.DsnsV.SrcDrive, "oracle") {
-			normalized, normErr := normalizeOracleJDBC(rc.SecondaryL.DsnsV.SrcJdbc)
-			rc.getErr("invalid srcDSN Oracle format", normErr)
-			rc.SecondaryL.DsnsV.SrcJdbc = normalized
-			rc.SecondaryL.DsnsV.SrcDSN = fmt.Sprintf("%s|%s", rc.SecondaryL.DsnsV.SrcDrive, normalized)
-		}
-	} else {
-		rc.SecondaryL.DsnsV.SrcDrive = "mysql" // 默认使用mysql驱动
-		rc.SecondaryL.DsnsV.SrcJdbc = rc.SecondaryL.DsnsV.SrcDSN
+	rc.SecondaryL.DsnsV.SrcDrive, rc.SecondaryL.DsnsV.SrcJdbc = splitConfiguredDSN(srcDSNValue)
+	rc.SecondaryL.DsnsV.SrcJdbc = rc.resolveConfiguredDSNPassword("srcDSN", rc.SecondaryL.DsnsV.SrcDrive, rc.SecondaryL.DsnsV.SrcJdbc, key, keyErr)
+	if strings.EqualFold(rc.SecondaryL.DsnsV.SrcDrive, "oracle") {
+		normalized, normErr := normalizeOracleJDBC(rc.SecondaryL.DsnsV.SrcJdbc)
+		rc.getErr("invalid srcDSN Oracle format", normErr)
+		rc.SecondaryL.DsnsV.SrcJdbc = normalized
 	}
+	rc.SecondaryL.DsnsV.SrcDSN = fmt.Sprintf("%s|%s", rc.SecondaryL.DsnsV.SrcDrive, rc.SecondaryL.DsnsV.SrcJdbc)
 
 	dstDSNValue := getLastConfigValue("dstDSN")
-	rc.SecondaryL.DsnsV.DstDSN = dstDSNValue
-	if strings.Contains(rc.SecondaryL.DsnsV.DstDSN, "|") {
-		parts := strings.SplitN(rc.SecondaryL.DsnsV.DstDSN, "|", 2)
-		rc.SecondaryL.DsnsV.DestDrive = strings.TrimSpace(parts[0])
-		rc.SecondaryL.DsnsV.DestJdbc = strings.TrimSpace(parts[1])
-		if strings.EqualFold(rc.SecondaryL.DsnsV.DestDrive, "oracle") {
-			normalized, normErr := normalizeOracleJDBC(rc.SecondaryL.DsnsV.DestJdbc)
-			rc.getErr("invalid dstDSN Oracle format", normErr)
-			rc.SecondaryL.DsnsV.DestJdbc = normalized
-			rc.SecondaryL.DsnsV.DstDSN = fmt.Sprintf("%s|%s", rc.SecondaryL.DsnsV.DestDrive, normalized)
-		}
-	} else {
-		rc.SecondaryL.DsnsV.DestDrive = "mysql" // 默认使用mysql驱动
-		rc.SecondaryL.DsnsV.DestJdbc = rc.SecondaryL.DsnsV.DstDSN
+	rc.SecondaryL.DsnsV.DestDrive, rc.SecondaryL.DsnsV.DestJdbc = splitConfiguredDSN(dstDSNValue)
+	rc.SecondaryL.DsnsV.DestJdbc = rc.resolveConfiguredDSNPassword("dstDSN", rc.SecondaryL.DsnsV.DestDrive, rc.SecondaryL.DsnsV.DestJdbc, key, keyErr)
+	if strings.EqualFold(rc.SecondaryL.DsnsV.DestDrive, "oracle") {
+		normalized, normErr := normalizeOracleJDBC(rc.SecondaryL.DsnsV.DestJdbc)
+		rc.getErr("invalid dstDSN Oracle format", normErr)
+		rc.SecondaryL.DsnsV.DestJdbc = normalized
 	}
+	rc.SecondaryL.DsnsV.DstDSN = fmt.Sprintf("%s|%s", rc.SecondaryL.DsnsV.DestDrive, rc.SecondaryL.DsnsV.DestJdbc)
 
 	// SSL 参数读取
 	srcSslCa := getLastConfigValue("srcSslCa")
@@ -660,6 +650,26 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 			os.Exit(1)
 		}
 	}
+}
+
+func splitConfiguredDSN(raw string) (string, string) {
+	trimmed := strings.TrimSpace(raw)
+	if strings.Contains(trimmed, "|") {
+		parts := strings.SplitN(trimmed, "|", 2)
+		return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+	}
+	return "mysql", trimmed
+}
+
+func (rc *ConfigParameter) resolveConfiguredDSNPassword(label, driver, jdbc string, key []byte, keyErr error) string {
+	resolved, err := connstr.ResolveDSNPassword(driver, jdbc, key, true)
+	if err != nil {
+		if keyErr != nil && !errors.Is(err, connstr.ErrPlaintextPassword) && !errors.Is(err, connstr.ErrMissingPassword) {
+			err = keyErr
+		}
+		rc.getErr(fmt.Sprintf("invalid %s password", label), err)
+	}
+	return resolved
 }
 
 /*

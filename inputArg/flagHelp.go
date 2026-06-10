@@ -52,6 +52,12 @@ func (rc *ConfigParameter) cliHelp() {
 			Value:       "",                                                           //默认值
 			Destination: &rc.Config,                                                   //赋值
 		},
+		cli.StringFlag{
+			Name:        "key",
+			Usage:       "Base64 encoded 32-byte key for decrypting ENC[...] DSN passwords; overrides GT_CHECKSUM_DSN_KEY",
+			Value:       "",
+			Destination: &rc.CliDSNKey,
+		},
 		cli.IntFlag{
 			Name:        "fixTrxSize",
 			Usage:       "Override fixTrxSize (MB) from system parameter, e.g. --fixTrxSize 8",
