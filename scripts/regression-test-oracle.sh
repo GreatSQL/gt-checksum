@@ -66,6 +66,9 @@ RUN_ID="regression-oracle-$(date +%Y%m%d-%H%M%S)"
 ARTIFACTS_DIR="${ROOT_DIR}/test-artifacts/${RUN_ID}"
 GT_CHECKSUM="${ROOT_DIR}/gt-checksum"
 REPAIR_DB="${ROOT_DIR}/repairDB"
+GT_DSN_CRYPT="${ROOT_DIR}/gt-dsn-crypt"
+SRC_DSN_ENC=""
+DB_PASS_ENC=""
 
 ORACLE_FIXTURE="${ROOT_DIR}/testcase/Oracle.sql"
 DST_FIXTURE="${ROOT_DIR}/testcase/MySQL-target.sql"
@@ -225,8 +228,9 @@ check_prerequisites() {
     fi
 
     if [[ "$SKIP_BUILD" == "true" ]]; then
-        [[ -x "$GT_CHECKSUM" ]] || { log_error "gt-checksum 二进制不存在: $GT_CHECKSUM"; ok=false; }
-        [[ -x "$REPAIR_DB"   ]] || { log_error "repairDB 二进制不存在: $REPAIR_DB"; ok=false; }
+        [[ -x "$GT_CHECKSUM"  ]] || { log_error "gt-checksum 二进制不存在: $GT_CHECKSUM"; ok=false; }
+        [[ -x "$REPAIR_DB"    ]] || { log_error "repairDB 二进制不存在: $REPAIR_DB"; ok=false; }
+        [[ -x "$GT_DSN_CRYPT" ]] || { log_error "gt-dsn-crypt 二进制不存在: $GT_DSN_CRYPT"; ok=false; }
     else
         if ! command -v go &>/dev/null; then
             log_error "未找到 go 命令，无法编译（可使用 --skip-build 跳过编译）"; ok=false
@@ -299,8 +303,70 @@ build_binaries() {
         log_error "repairDB 编译失败，详见 ${ARTIFACTS_DIR}/build.log"; exit 1
     fi
 
-    chmod +x gt-checksum repairDB
+    log_info "  编译 gt-dsn-crypt ..."
+    if ! CGO_ENABLED=0 go build -o gt-dsn-crypt ./cmd/gt-dsn-crypt 2>&1 | tee -a "${ARTIFACTS_DIR}/build.log"; then
+        log_error "gt-dsn-crypt 编译失败，详见 ${ARTIFACTS_DIR}/build.log"; exit 1
+    fi
+
+    chmod +x gt-checksum repairDB gt-dsn-crypt
     log_info "  编译完成"
+}
+
+encrypt_password_if_needed() {
+    local password="$1"
+    if [[ "$password" == ENC\[*\] ]]; then
+        printf '%s\n' "$password"
+        return 0
+    fi
+    "${GT_DSN_CRYPT}" encrypt --password "$password"
+}
+
+encrypt_oracle_dsn_password() {
+    local dsn="$1"
+    local driver jdbc credentials connect user password encrypted
+
+    driver="${dsn%%|*}"
+    jdbc="${dsn#*|}"
+    if [[ "$driver" == "$dsn" || "${driver,,}" != "oracle" ]]; then
+        log_error "Oracle 源 DSN 必须使用 oracle|user/password@connectString 格式"
+        return 1
+    fi
+
+    credentials="${jdbc%@*}"
+    connect="${jdbc##*@}"
+    if [[ "$credentials" == "$jdbc" || -z "$credentials" || -z "$connect" ]]; then
+        log_error "Oracle 源 DSN 格式非法，期望 oracle|user/password@connectString"
+        return 1
+    fi
+
+    user="${credentials%%/*}"
+    password="${credentials#*/}"
+    if [[ "$user" == "$credentials" || -z "$user" || -z "$password" ]]; then
+        log_error "Oracle 源 DSN 缺少用户名或密码"
+        return 1
+    fi
+
+    encrypted="$(encrypt_password_if_needed "$password")" || return 1
+    printf '%s|%s/%s@%s\n' "$driver" "$user" "$encrypted" "$connect"
+}
+
+prepare_dsn_encryption() {
+    if [[ -z "${GT_CHECKSUM_DSN_KEY:-}" ]]; then
+        GT_CHECKSUM_DSN_KEY="$(${GT_DSN_CRYPT} gen-key)"
+        export GT_CHECKSUM_DSN_KEY
+    else
+        export GT_CHECKSUM_DSN_KEY
+    fi
+
+    SRC_DSN_ENC="$(encrypt_oracle_dsn_password "$SRC_DSN")" || {
+        log_error "生成 Oracle srcDSN password 密文失败"
+        exit 1
+    }
+
+    DB_PASS_ENC="$(encrypt_password_if_needed "$DB_PASS")" || {
+        log_error "生成 MySQL dstDSN password 密文失败"
+        exit 1
+    }
 }
 
 # ============================================================
@@ -382,8 +448,8 @@ generate_gt_checksum_config() {
     fi
 
     cat > "${case_dir}/gt-checksum.conf" <<EOF
-srcDSN=${SRC_DSN}
-dstDSN=mysql|${DB_USER}:${DB_PASS}@tcp(${DB_HOST}:${dst_port})/information_schema?charset=utf8mb4
+srcDSN=${SRC_DSN_ENC}
+dstDSN=mysql|${DB_USER}:${DB_PASS_ENC}@tcp(${DB_HOST}:${dst_port})/information_schema?charset=utf8mb4
 tables=${SRC_SCHEMA}.*
 checkNoIndexTable=yes
 caseSensitiveObjectName=yes
@@ -405,7 +471,7 @@ generate_repairdb_config() {
     local dst_port="$1" case_dir="$2"
 
     cat > "${case_dir}/repairDB.conf" <<EOF
-dstDSN=mysql|${DB_USER}:${DB_PASS}@tcp(${DB_HOST}:${dst_port})/information_schema?charset=utf8mb4
+dstDSN=mysql|${DB_USER}:${DB_PASS_ENC}@tcp(${DB_HOST}:${dst_port})/information_schema?charset=utf8mb4
 parallelThds=4
 fixFileDir=${case_dir}/fixsql
 EOF
@@ -727,7 +793,7 @@ generate_report() {
         echo " gt-checksum Oracle→MySQL Regression Test Report"
         echo " Run ID:    ${RUN_ID}"
         echo " Date:      $(date '+%Y-%m-%d %H:%M:%S')"
-        echo " Src DSN:   ${SRC_DSN}"
+        echo " Src DSN:   ${SRC_DSN_ENC}"
         echo " Src Schema:${SRC_SCHEMA}"
         echo " MySQL Host:${DB_HOST}"
         echo " Timeout:   ${CASE_TIMEOUT}s per case"
@@ -777,8 +843,8 @@ run_oracle_scenario_case() {
     fi
 
     cat > "${case_dir}/gt-checksum.conf" <<EOF
-srcDSN=${SRC_DSN}
-dstDSN=mysql|${DB_USER}:${DB_PASS}@tcp(${DB_HOST}:${dst_port})/information_schema?charset=utf8mb4
+srcDSN=${SRC_DSN_ENC}
+dstDSN=mysql|${DB_USER}:${DB_PASS_ENC}@tcp(${DB_HOST}:${dst_port})/information_schema?charset=utf8mb4
 tables=${tables}
 checkNoIndexTable=yes
 caseSensitiveObjectName=${case_sensitive}
@@ -910,9 +976,13 @@ main() {
     log_info "=================================================================="
 
     check_prerequisites
-    build_binaries
 
-    [[ "$DRY_RUN" != "true" ]] && check_connectivity
+    # dry-run 仅打印矩阵，不构建、不连接数据库，也不生成临时 DSN key。
+    if [[ "$DRY_RUN" != "true" ]]; then
+        build_binaries
+        prepare_dsn_encryption
+        check_connectivity
+    fi
 
     local -a test_matrix=()
     while IFS= read -r line; do
