@@ -361,13 +361,14 @@ func (stcls *schemaTable) preloadOraclePartitionedTables(db *sql.DB, drive strin
 }
 
 // cachedPartitions 统一从缓存读取 Partitions()，未命中则回源并写回缓存。
-// key 使用 drive|schema|table 组合，drive 已隐含 src/dst 方向。
+// key 使用 db指针|drive|schema|table 组合，用 db 指针地址区分源/目的连接，
+// 避免 MySQL→MySQL 同库同表名场景下缓存碰撞导致漏报分区差异。
 func (stcls *schemaTable) cachedPartitions(db *sql.DB, drive, schema, table string, logThreadSeq int64) (map[string]string, error) {
 	if stcls == nil || db == nil {
 		tc := dbExec.TableColumnNameStruct{Schema: schema, Table: table, Drive: drive}
 		return tc.Query().Partitions(db, logThreadSeq)
 	}
-	key := drive + "|" + schema + "|" + table
+	key := fmt.Sprintf("%p|%s|%s|%s", db, drive, schema, table)
 	if stcls.partitionsCache != nil {
 		if cached, ok := stcls.partitionsCache[key]; ok {
 			return cached, nil

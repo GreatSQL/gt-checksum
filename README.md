@@ -2,7 +2,7 @@
 [![](https://img.shields.io/badge/GreatSQL-论坛-brightgreen.svg)](https://greatsql.cn/forum.php)
 [![](https://img.shields.io/badge/GreatSQL-博客-brightgreen.svg)](https://greatsql.cn/home.php?mod=space&uid=10&do=blog&view=me&from=space)
 [![](https://img.shields.io/badge/License-Apache_v2.0-blue.svg)](https://gitee.com/GreatSQL/gt-checksum/blob/master/LICENSE)
-[![](https://img.shields.io/badge/release-4.0.0-blue.svg)](https://gitee.com/GreatSQL/gt-checksum/releases)
+[![](https://img.shields.io/badge/release-4.0.1-blue.svg)](https://gitee.com/GreatSQL/gt-checksum/releases)
 
 # gt-checksum
 **gt-checksum** 是GreatSQL社区开源的数据库校验及修复工具，支持 MySQL-family（MySQL/Percona/GreatSQL/MariaDB等）、Oracle 等主流数据库。
@@ -15,21 +15,8 @@ MySQL DBA 经常使用 **pt-table-checksum** 和 **pt-table-sync** 进行数据�
 
 当前版本进一步增强了长任务可恢复性与修复可审计能力，支持断点续传、反向回滚 SQL、自定义数据类型映射、SSL 加密连接、CSV 结果导出以及结构修复辅助参数等能力，适合用于迁移验收、升级校验、主从/组复制一致性检查和定期巡检等场景。
 
-## v4.0.0 关键变化
-
-- **[功能新增]** 新增断点续传能力，`gt-checksum` 数据校验和 `repairDB` 可通过 `resume=ON/ASK` 在异常退出后继续执行；`gt-checksum` 会校验旧断点和多个 running 进度文件，`repairDB` 中断时会等待已开始文件完成，避免续传重放半执行文件。
-- **[功能新增]** 新增 `dTypeMappingFile` 参数，支持用户自定义数据类型映射规则（YAML/JSON），覆盖 `oracle_to_mysql`、`mysql_upgrade`、`mariadb_to_mysql` 三种迁移场景，支持 `schema/table/column` 级别精细化控制；可通过 `--preview-dtype-mapping` 预览最终映射规则表后退出，便于调试。
-- **[功能新增]** 新增反向回滚SQL生成能力，通过 `genRollSQL/maxRollRowNum/rollFileDir` 等参数控制，在 `checkObject=data` 且 `datafix=file/table` 时可为修复SQL自动生成对应的回滚语句；`datafix=table` 在线修复也会同步写出 rollback SQL，后续可使用 `repairDB ./rollsql` 快速回退。
-- **[功能新增]** 新增 `truncateBeforeAlter` 结构修复辅助参数；该参数可在 `checkObject=struct` 的 base table 首个 `ALTER TABLE` 前生成 `TRUNCATE TABLE`，默认关闭，仅适合目标端数据可丢弃场景。
-- **[功能新增]** 新增 SSL 加密连接支持，源端和目标端可独立配置 SSL 参数，支持五种模式（`DISABLED/PREFERRED/REQUIRED/VERIFY_CA/VERIFY_IDENTITY`）。
-- **[功能新增]** `srcDSN` / `dstDSN` 中的 password 必须使用 `ENC[...]` 密文；新增独立工具 `gt-dsn-crypt` 生成 32 字节 base64 key 与 AES-256-GCM 密文，启动时通过 `--key` 或 `GT_CHECKSUM_DSN_KEY` 提供 key，所有 DSN 日志统一脱敏。
-- **[功能优化]** 完善权限预检与修复安全策略：区分源端/目标端角色，支持通配/映射规则压缩检查；指定库表不可见或匹配为空时提示检查权限并给出 `SHOW GRANTS` / `GRANT SELECT` 建议，目标端表不可见时先提示权限不足；非 `data` 对象即使配置 `datafix=table` 也会强制导出 fix SQL，不直接在线修改目标对象。
-- **[功能优化]** 优化 COLLATE 修复逻辑，当存在 `dTypeMapping` 规则覆盖时自动生成列级 MODIFY COLUMN SQL，而非表级 CONVERT TO SQL。
-- **[性能优化]** 断点续传模式下，行数统计（估算值和精确 COUNT(*)）写入进度文件缓存，续传时直接读取，避免重复扫描大表；源端和目标端行数改为并行查询，减少等待时间。
-- **[性能优化]** 优化数据校验行数统计流程，源端和目标端行数改为并行查询；同时改进无主键表 DELETE 修复逻辑，避免 NULL 值导致的语句生成错误。
-- **[问题修复]** 修复无索引表在 `datafix=table` 下未在线执行 `DELETE`/`INSERT` 的问题，避免再次校验仍持续报差异；同时在线修复按 `DELETE → INSERT/UPDATE` 顺序执行，降低同批差异主键或唯一键重复冲突风险。
-- **[问题修复]** 修复 `repairDB` 执行 multi-values INSERT 遇到 `Duplicate entry` 时整条语句失败的问题；`repairDB` 受 `splitInsertOnDupKey` 控制，`gt-checksum` 在线修复路径也会在 MySQL 重复键时自动拆分重试并记录 `[DUPKEY-SPLIT]`，当前无独立开关。
-- **[问题修复]** 修复类型映射与修复 SQL 输出问题，包括 Oracle `NUMBER(19,0)` 阈值、`tinyint(1)` ↔ `bit(1)` 等价映射、数值列字面量以及日志初始化前 panic。
+## v4.0.1 关键变化
+- **[问题修复]** 修复 MySQL→MySQL 同库同表名场景下分区缓存碰撞导致漏报分区差异的问题。
 
 更多详细变化详见 [CHANGELOG](./CHANGELOG.md)。
 
@@ -59,19 +46,6 @@ gt-checksum 采用**滚动发布**策略，官方仅维护最新发布版本。
 **不修复的情形：**
 - 对应功能已在新版本中移除或重构
 - 问题属于性能、兼容性或行为变更类
-
-## Roadmap
-
-1. ~~支持修复回滚；~~ ✅ 已实现（v4.0.0）
-1. ~~支持自定义数据类型映射；~~ ✅ 已实现（v4.0.0）
-1. ~~支持修复时临时中断后继续执行；~~ ✅ 已实现（v4.0.0）
-1. ~~支持 SSL 连接；~~ ✅ 已实现（v4.0.0）
-1. ~~在checkObject=struct模式下，对表执行ALTER前先TRUNCATE清空数据；~~ ✅ 已实现（v4.0.0，默认关闭，参数 `truncateBeforeAlter=ON`）
-1. 支持守护进程方式运行，实时监控数据变化；
-1. 支持全量+增量校验；
-1. 其他。
-
-[更多产品建议和需求欢迎提交 issue](https://gitee.com/GreatSQL/gt-checksum/issues)。
 
 ## 下载
 
@@ -103,7 +77,7 @@ gt-checksum is reading configuration files
 
 ```bash
 $  gt-checksum -v
-gt-checksum version 4.0.0
+gt-checksum version 4.0.1
 ```
 
 - 查看使用帮助
