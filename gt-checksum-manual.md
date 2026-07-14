@@ -1621,6 +1621,7 @@ result=PARTIAL_SUCCESS continue_on_error=true
 
 - 当表校验结果仅存在partition定义不一致时，报告Diffs=yes，但生成的fixSQL中的SQL语句是被注释的，不会被repairDB执行，需要DBA手动调整修复，避免误操作导致数据丢失。在 Oracle→MySQL 场景下，分区比对行为有所不同：仅做存在性比对并输出 advisory 告警，不生成任何分区修复 SQL，原因是 Oracle 与 MySQL 的分区语法差异过大，不适合自动转换；DBA 需根据 advisory 输出手动在目标端重建分区定义。
   - **v3.0.0 增强**：当为无主键分区表添加 `my_row_id` 时（`requirePK=ON`），程序会自动提取分区列并生成包含分区列的主键定义，确保修复 SQL 符合 MySQL 分区表主键约束（分区表主键必须包含分区列）。
+  - **v4.0.1 增强**：MySQL→MySQL 场景下，分区修复逻辑改为集合差分算法（按分区名比对），支持非连续分区差异（如删除中部分区、滚动窗口平移等）。当目标端存在 MAXVALUE 分区且源端新增分区时，自动生成 REORGANIZE PARTITION 语句，将新分区插入 MAXVALUE 之前。分区比较时自动剥离跨版本的 ENGINE= 注解差异，TO_DAYS() 分区边界自动转换为可读日期。需注意：两端分区方法（RANGE/LIST/HASH）和表达式必须一致，否则不会生成修复 SQL。
 
 - 为了安全起见，当设置 `checkObject=data` 之外的其他值时，即便同时设置 `datafix=table`，程序也不会直接在线完成修复，而是强制导出 fix SQL 文件，生成后再由 DBA 审查并手动执行。
 
