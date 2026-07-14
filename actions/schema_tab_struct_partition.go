@@ -7,11 +7,24 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"gt-checksum/dbExec"
 	"gt-checksum/global"
 	"gt-checksum/schemacompat"
 )
+
+// stripPartitionEngineAnnotations removes per-partition ENGINE=<engine> trailing
+// annotations from SHOW CREATE TABLE output. These vary across MySQL/MariaDB
+// versions or forks (e.g. "ENGINE = InnoDB" vs "ENGINE=INNODB") and do not
+// affect partition structure semantics.
+func stripPartitionEngineAnnotations(value string) string {
+	// Match ENGINE= or ENGINE = followed by the engine name, possibly at end of
+	// a partition definition line (before comma, closing paren, or end of string).
+	// Use (?i) for case-insensitive matching of "ENGINE" and engine names.
+	re := regexp.MustCompile(`(?i)\s*ENGINE\s*=\s*\w+\s*`)
+	return re.ReplaceAllString(value, "")
+}
 
 func normalizePartitionCompareText(value string) string {
 	normalized := strings.TrimSpace(value)
@@ -34,6 +47,10 @@ func normalizePartitionFullDefinition(value string) string {
 		// noise and should not affect semantic comparison.
 		normalized = strings.TrimSpace(matches[1])
 	}
+	// Strip per-partition ENGINE=<engine> trailing annotations that vary across
+	// MySQL/MariaDB versions or forks (e.g. "ENGINE = InnoDB" vs "ENGINE=INNODB").
+	// These are storage-engine metadata noise and do not affect partition semantics.
+	normalized = stripPartitionEngineAnnotations(normalized)
 	return normalizePartitionCompareText(normalized)
 }
 
@@ -83,30 +100,6 @@ func partitionRowsReportedEmpty(meta partitionMetadata) bool {
 	return value == 0
 }
 
-func partitionsShareLeadingLayout(sourceParts, destParts []partitionMetadata) bool {
-	sharedCount := len(sourceParts)
-	if len(destParts) < sharedCount {
-		sharedCount = len(destParts)
-	}
-	for idx := 0; idx < sharedCount; idx++ {
-		sourceMeta := sourceParts[idx]
-		destMeta := destParts[idx]
-		if !strings.EqualFold(sourceMeta.Name, destMeta.Name) {
-			return false
-		}
-		if normalizePartitionCompareText(sourceMeta.Method) != normalizePartitionCompareText(destMeta.Method) {
-			return false
-		}
-		if normalizePartitionCompareText(sourceMeta.Expression) != normalizePartitionCompareText(destMeta.Expression) {
-			return false
-		}
-		if normalizePartitionCompareText(sourceMeta.Description) != normalizePartitionCompareText(destMeta.Description) {
-			return false
-		}
-	}
-	return true
-}
-
 func buildPartitionValidationQuery(schemaName, tableName, partitionName string) string {
 	return fmt.Sprintf("SELECT COUNT(*) FROM `%s`.`%s` PARTITION (`%s`);", schemaName, tableName, partitionName)
 }
@@ -120,11 +113,35 @@ func buildDropPartitionAdvisoryLines(schemaName, tableName string, partitions []
 	}
 	for _, partition := range partitions {
 		lines = append(lines, "-- 请在确认该分区不存在任何数据后再执行此操作")
+		lines = append(lines, fmt.Sprintf("-- 注意: TABLE_ROWS 是 InnoDB 估算值，可能不准确，请务必用 SELECT COUNT(*) 核实"))
 		lines = append(lines, fmt.Sprintf("-- %s", buildPartitionValidationQuery(schemaName, tableName, partition.Name)))
 		lines = append(lines, fmt.Sprintf("-- ALTER TABLE `%s`.`%s` DROP PARTITION `%s`;", schemaName, tableName, partition.Name))
 	}
 	lines = append(lines, fmt.Sprintf("-- gt-checksum advisory end: %s.%s partition repair", schemaName, tableName))
 	return lines
+}
+
+// toDaysToReadableDate attempts to convert a TO_DAYS() integer value back to a
+// human-readable date string. Returns empty string if the value is not a valid
+// TO_DAYS result (valid range: 1-3652424, corresponding to year 0000-9999).
+//
+// MySQL TO_DAYS() reference points:
+//   - TO_DAYS('0000-01-01') = 1
+//   - TO_DAYS('2024-01-01') = 739251
+//   - TO_DAYS('2024-02-01') = 739282
+func toDaysToReadableDate(daysStr string) string {
+	days, err := strconv.Atoi(strings.TrimSpace(daysStr))
+	if err != nil || days < 1 || days > 3652424 {
+		return ""
+	}
+	// Use a known reference point to calculate the date:
+	// TO_DAYS('2024-01-01') = 739251
+	refDays := 739251
+	refDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	// Calculate offset from reference
+	offset := days - refDays
+	t := refDate.AddDate(0, 0, offset)
+	return t.Format("2006-01-02")
 }
 
 func formatPartitionDescriptionForAdd(meta partitionMetadata) (string, bool) {
@@ -141,6 +158,15 @@ func formatPartitionDescriptionForAdd(meta partitionMetadata) (string, bool) {
 				return "(MAXVALUE)", true
 			}
 			return "MAXVALUE", true
+		}
+		// For TO_DAYS partitions, try to convert integer boundary to readable date
+		if strings.Contains(method, "TO_DAYS") {
+			// Description might be a plain integer like "739282"
+			if readableDate := toDaysToReadableDate(description); readableDate != "" {
+				return fmt.Sprintf("(TO_DAYS('%s'))", readableDate), true
+			}
+			// Description might already be in TO_DAYS('YYYY-MM-DD') format
+			// or might be wrapped in parentheses
 		}
 		if strings.HasPrefix(description, "(") && strings.HasSuffix(description, ")") {
 			return description, true
@@ -189,6 +215,54 @@ func buildAddPartitionSQL(schemaName, tableName string, partitions []partitionMe
 	}
 }
 
+// partitionMethodCompatible checks whether source and dest partitions use the
+// same partition method and expression. If these differ, automatic repair is
+// not possible.
+func partitionMethodCompatible(sourceEntries, destEntries []partitionMetadata) bool {
+	if len(sourceEntries) == 0 || len(destEntries) == 0 {
+		return false
+	}
+	// Compare method and expression from the first entry (they should be
+	// identical across all entries for the same table).
+	srcMethod := normalizePartitionCompareText(sourceEntries[0].Method)
+	dstMethod := normalizePartitionCompareText(destEntries[0].Method)
+	if srcMethod != dstMethod {
+		return false
+	}
+	srcExpr := normalizePartitionCompareText(sourceEntries[0].Expression)
+	dstExpr := normalizePartitionCompareText(destEntries[0].Expression)
+	return srcExpr == dstExpr
+}
+
+// buildReorganizePartitionSQL generates a REORGANIZE PARTITION statement that
+// splits a MAXVALUE partition into new partitions while preserving the MAXVALUE
+// partition at the end.
+func buildReorganizePartitionSQL(schemaName, tableName string, maxPart partitionMetadata, newParts []partitionMetadata) (string, error) {
+	if len(newParts) == 0 {
+		return "", fmt.Errorf("no new partitions specified for REORGANIZE")
+	}
+	// Sort new partitions by ordinal to maintain logical order
+	sort.Slice(newParts, func(i, j int) bool {
+		return newParts[i].Ordinal < newParts[j].Ordinal
+	})
+	clauses := make([]string, 0, len(newParts)+1)
+	for _, part := range newParts {
+		clause, ok := buildAddPartitionClause(part)
+		if !ok {
+			return "", fmt.Errorf("cannot format partition %s for REORGANIZE", part.Name)
+		}
+		clauses = append(clauses, clause)
+	}
+	// Add the MAXVALUE partition at the end
+	maxClause, ok := buildAddPartitionClause(maxPart)
+	if !ok {
+		return "", fmt.Errorf("cannot format MAXVALUE partition %s for REORGANIZE", maxPart.Name)
+	}
+	clauses = append(clauses, maxClause)
+	return fmt.Sprintf("ALTER TABLE `%s`.`%s` REORGANIZE PARTITION `%s` INTO (%s);",
+		schemaName, tableName, maxPart.Name, strings.Join(clauses, ", ")), nil
+}
+
 func buildPartitionRepairSQLs(sourceSchema, sourceTable, destSchema, destTable string, sourcePartitions, destPartitions map[string]string) ([]string, []string, bool, string) {
 	sourceTableKey := fmt.Sprintf("%s.%s", sourceSchema, sourceTable)
 	destTableKey := fmt.Sprintf("%s.%s", destSchema, destTable)
@@ -198,29 +272,99 @@ func buildPartitionRepairSQLs(sourceSchema, sourceTable, destSchema, destTable s
 	if len(sourceEntries) == 0 || len(destEntries) == 0 {
 		return nil, nil, false, "partition metadata is incomplete"
 	}
-	if !partitionsShareLeadingLayout(sourceEntries, destEntries) {
-		return nil, nil, false, "shared partition prefix is not semantically identical"
+
+	// Check partition method compatibility (RANGE/LIST/HASH and expression must match)
+	if !partitionMethodCompatible(sourceEntries, destEntries) {
+		return nil, nil, false, "partition method or expression differs"
 	}
 
-	switch {
-	case len(sourceEntries) < len(destEntries):
-		extraDestPartitions := destEntries[len(sourceEntries):]
-		for _, partition := range extraDestPartitions {
+	// Build name→metadata maps for set-based comparison
+	sourceMap := make(map[string]partitionMetadata, len(sourceEntries))
+	for _, entry := range sourceEntries {
+		sourceMap[strings.ToUpper(entry.Name)] = entry
+	}
+	destMap := make(map[string]partitionMetadata, len(destEntries))
+	for _, entry := range destEntries {
+		destMap[strings.ToUpper(entry.Name)] = entry
+	}
+
+	// Identify partitions to drop (in dest but not in source) and add (in source but not in dest)
+	var toDrop []partitionMetadata
+	var toAdd []partitionMetadata
+
+	for name, entry := range destMap {
+		if _, exists := sourceMap[name]; !exists {
+			toDrop = append(toDrop, entry)
+		}
+	}
+	for name, entry := range sourceMap {
+		if _, exists := destMap[name]; !exists {
+			toAdd = append(toAdd, entry)
+		}
+	}
+
+	// If no differences found, partitions are consistent
+	if len(toDrop) == 0 && len(toAdd) == 0 {
+		return nil, nil, true, "partition sets are identical after name-based comparison"
+	}
+
+	// Sort for deterministic output
+	sort.Slice(toDrop, func(i, j int) bool { return toDrop[i].Ordinal < toDrop[j].Ordinal })
+	sort.Slice(toAdd, func(i, j int) bool { return toAdd[i].Ordinal < toAdd[j].Ordinal })
+
+	// Check for MAXVALUE partition in dest (need REORGANIZE for inserts before MAXVALUE)
+	var maxPart *partitionMetadata
+	for _, entry := range destEntries {
+		if strings.EqualFold(strings.TrimSpace(entry.Description), "MAXVALUE") {
+			maxPart = &entry
+			break
+		}
+	}
+
+	var execRepairSQLs []string
+	var advisoryRepairSQLs []string
+
+	// Handle partitions to drop (dest has, source doesn't)
+	if len(toDrop) > 0 {
+		allEmpty := true
+		for _, partition := range toDrop {
 			if !partitionRowsReportedEmpty(partition) {
-				return nil, nil, false, fmt.Sprintf("extra target partition %s is not reported empty", partition.Name)
+				allEmpty = false
+				break
 			}
 		}
-		return nil, buildDropPartitionAdvisoryLines(destSchema, destTable, extraDestPartitions), true, "extra empty tail partitions detected on target"
-	case len(sourceEntries) > len(destEntries):
-		missingDestPartitions := sourceEntries[len(destEntries):]
-		addSQL := buildAddPartitionSQL(destSchema, destTable, missingDestPartitions)
-		if len(addSQL) == 0 {
-			return nil, nil, false, "tail partitions require an unsupported ADD PARTITION shape"
+		if allEmpty {
+			// All extra partitions are empty - generate advisory DROP
+			advisoryRepairSQLs = append(advisoryRepairSQLs, buildDropPartitionAdvisoryLines(destSchema, destTable, toDrop)...)
+		} else {
+			// Some partitions have data - warn but still provide advisory
+			advisoryRepairSQLs = append(advisoryRepairSQLs,
+				fmt.Sprintf("-- WARNING: Some extra partitions may contain data (TABLE_ROWS is an estimate for InnoDB). Please verify with SELECT COUNT(*) before dropping."))
+			advisoryRepairSQLs = append(advisoryRepairSQLs, buildDropPartitionAdvisoryLines(destSchema, destTable, toDrop)...)
 		}
-		return addSQL, nil, true, "missing tail partitions detected on target"
-	default:
-		return nil, nil, false, "partition counts are identical but definitions still differ"
 	}
+
+	// Handle partitions to add (source has, dest doesn't)
+	if len(toAdd) > 0 {
+		if maxPart != nil {
+			// MAXVALUE partition exists - use REORGANIZE to insert before it
+			reorganizeSQL, err := buildReorganizePartitionSQL(destSchema, destTable, *maxPart, toAdd)
+			if err != nil {
+				return nil, nil, false, fmt.Sprintf("cannot generate REORGANIZE PARTITION: %v", err)
+			}
+			execRepairSQLs = append(execRepairSQLs, reorganizeSQL)
+		} else {
+			// No MAXVALUE - use simple ADD PARTITION
+			addSQL := buildAddPartitionSQL(destSchema, destTable, toAdd)
+			if len(addSQL) == 0 {
+				return nil, nil, false, "cannot generate ADD PARTITION SQL for missing partitions"
+			}
+			execRepairSQLs = append(execRepairSQLs, addSQL...)
+		}
+	}
+
+	reason := fmt.Sprintf("detected %d partitions to drop and %d partitions to add", len(toDrop), len(toAdd))
+	return execRepairSQLs, advisoryRepairSQLs, true, reason
 }
 
 func classifyPartitionRepairDiffState(execRepairSQLs, advisoryRepairSQLs []string, handled bool) string {
