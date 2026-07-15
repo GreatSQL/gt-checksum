@@ -60,11 +60,17 @@ func recordToCSVRow(r ResultRecord) []string {
 // ResolveResultFilePath returns the absolute or relative file path for the CSV output.
 // If m.SecondaryL.RulesV.ResultFile is non-empty it is returned as-is; otherwise the
 // default naming convention result/gt-checksum-result-<RunID>.csv is applied.
+// ResolveResultFilePath returns the output path for the gt-checksum CSV result.
+//
+//	resultFile not set / "result" / "." → result/gt-checksum-result-<RunID>.csv
+//	resultFile=./dir/res.csv           → ./dir/res.csv  (user-specified path, used as-is)
+//	resultFile=my.csv                  → my.csv          (user-specified path, used as-is)
 func ResolveResultFilePath(m *inputArg.ConfigParameter) string {
-	if v := strings.TrimSpace(m.SecondaryL.RulesV.ResultFile); v != "" {
-		return v
+	v := strings.TrimSpace(m.SecondaryL.RulesV.ResultFile)
+	if v == "" || v == "result" || v == "." {
+		return fmt.Sprintf("result/gt-checksum-result-%s.csv", m.RunID)
 	}
-	return fmt.Sprintf("result/gt-checksum-result-%s.csv", m.RunID)
+	return v
 }
 
 // WriteCSVResults writes records to path as a UTF-8 BOM CSV file using the fixed

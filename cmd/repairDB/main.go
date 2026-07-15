@@ -381,17 +381,21 @@ func resolveRepairDBDSNPassword(rawDSN string, key []byte, keyErr error) (string
 
 // writeCSVIfPossible writes the CSV report and logs a warning on failure.
 // It does not return an error because CSV writing is non-fatal.
+//
+// Path resolution:
+//   - CLI --result-file: used as-is (direct path override)
+//   - config resultFile: extract basedir, generate repairDB-result-<ts>.csv in that dir
+//   - neither set: result/repairDB-result-<ts>.csv
 func writeCSVIfPossible(results []FileExecResult, totalTime time.Duration, cliResultFile string) {
 	if len(results) == 0 {
 		return
 	}
 	var resultPath string
 	if cliResultFile != "" {
-		resultPath = resolveRepairResultFilePath(cliResultFile)
-	} else if config.ResultFile != "" {
-		resultPath = resolveRepairResultFilePath(config.ResultFile)
+		// CLI flag is a direct path override, use as-is.
+		resultPath = cliResultFile
 	} else {
-		resultPath = resolveRepairResultFilePath("")
+		resultPath = resolveRepairResultFilePath(config.ResultFile)
 	}
 	if err := writeRepairCSVReport(results, totalTime, resultPath); err != nil {
 		log.Printf("[WARN] Failed to write CSV report: %v\n", err)

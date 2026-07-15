@@ -325,12 +325,25 @@ func TestResolveRepairResultFilePath_Default(t *testing.T) {
 	}
 }
 
-// TestResolveRepairResultFilePath_Custom verifies custom path is used.
+// TestResolveRepairResultFilePath_Custom verifies basedir extraction from resultFile.
 func TestResolveRepairResultFilePath_Custom(t *testing.T) {
-	custom := "/tmp/my-report.csv"
-	path := resolveRepairResultFilePath(custom)
-	if path != custom {
-		t.Errorf("custom path should be used as-is, got: %s", path)
+	// With a custom path containing a directory, repairDB extracts basedir
+	// and generates its own filename there.
+	path := resolveRepairResultFilePath("/tmp/my-report.csv")
+	if !strings.HasPrefix(path, "/tmp/repairDB-result-") {
+		t.Errorf("expected /tmp/repairDB-result-*, got: %s", path)
+	}
+	if !strings.HasSuffix(path, ".csv") {
+		t.Errorf("expected .csv suffix, got: %s", path)
+	}
+
+	// Bare filename → current directory.
+	path2 := resolveRepairResultFilePath("my-report.csv")
+	if strings.Contains(path2, "/") {
+		t.Errorf("bare filename should produce path in current directory, got: %s", path2)
+	}
+	if !strings.HasPrefix(path2, "repairDB-result-") {
+		t.Errorf("expected repairDB-result-*, got: %s", path2)
 	}
 }
 

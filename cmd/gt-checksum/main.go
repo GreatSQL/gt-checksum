@@ -85,6 +85,14 @@ func askStaleChecksumProgressResume(p *progress.ChecksumProgress) (bool, bool, e
 	return true, resume, err
 }
 
+// checksumProgressResultDir returns the directory for progress files, derived
+// from the shared resultFile parameter.  Logic mirrors repairDB's resolveResultDir
+// so both programs agree on the output directory.
+//
+//	resultFile not set / "result" / "." → result
+//	resultFile=./xx.csv                → .
+//	resultFile=./dir/res.csv           → ./dir
+//	resultFile=dir/                    → dir
 func checksumProgressResultDir(resultFile string) string {
 	resultFile = strings.TrimSpace(resultFile)
 	if resultFile == "" {
@@ -95,20 +103,24 @@ func checksumProgressResultDir(resultFile string) string {
 	if cleaned == "." {
 		return "result"
 	}
+	// Trailing separator means explicit directory.
 	if strings.HasSuffix(resultFile, string(os.PathSeparator)) || strings.HasSuffix(resultFile, "/") {
 		return cleaned
 	}
+	// "result" (the default value) is a directory name.
 	if cleaned == "result" {
 		return cleaned
 	}
+	// Existing directory on disk.
 	if info, err := os.Stat(cleaned); err == nil && info.IsDir() {
 		return cleaned
 	}
-
+	// Has a directory component (e.g. "./output/res.csv" → "./output").
 	if dir := filepath.Dir(cleaned); dir != "." && dir != "" {
 		return dir
 	}
-	return "result"
+	// Bare filename with no directory (e.g. "my.csv") → current directory.
+	return "."
 }
 
 func main() {

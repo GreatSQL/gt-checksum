@@ -23,7 +23,8 @@ func TestChecksumProgressResultDir(t *testing.T) {
 		{name: "existing directory", resultFile: existingResultDir, want: existingResultDir},
 		{name: "trailing separator directory", resultFile: existingResultDir + string(os.PathSeparator), want: existingResultDir},
 		{name: "explicit csv file", resultFile: filepath.Join(tmpDir, "out", "result.csv"), want: filepath.Join(tmpDir, "out")},
-		{name: "bare csv filename keeps default progress directory", resultFile: "result.csv", want: "result"},
+		{name: "bare csv filename uses current directory", resultFile: "result.csv", want: "."},
+		{name: "dot-slash csv file uses current directory", resultFile: "./result.csv", want: "."},
 	}
 
 	for _, tc := range cases {

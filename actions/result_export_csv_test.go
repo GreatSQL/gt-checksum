@@ -107,6 +107,20 @@ func TestResolveResultFilePath_explicitPath(t *testing.T) {
 	}
 }
 
+func TestResolveResultFilePath_defaultResultDir(t *testing.T) {
+	m := &inputArg.ConfigParameter{}
+	m.RunID = "20260323120000"
+	// "result" is the default config value; should be treated as a directory, not a filename.
+	for _, v := range []string{"result", "result", "."} {
+		m.SecondaryL.RulesV.ResultFile = v
+		path := ResolveResultFilePath(m)
+		want := "result/gt-checksum-result-20260323120000.csv"
+		if path != want {
+			t.Errorf("ResultFile=%q: got %q, want %q", v, path, want)
+		}
+	}
+}
+
 func TestResolveResultFilePath_trimSpace(t *testing.T) {
 	m := &inputArg.ConfigParameter{}
 	m.RunID = "20260323120000"

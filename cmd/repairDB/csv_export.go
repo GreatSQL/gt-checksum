@@ -63,13 +63,52 @@ func formatDuration(d time.Duration) string {
 }
 
 // resolveRepairResultFilePath returns the output path for the repairDB CSV report.
-// If customPath is non-empty it is used as-is; otherwise the default naming
-// convention result/repairDB-result-<timestamp>.csv is applied.
-func resolveRepairResultFilePath(customPath string) string {
-	if v := strings.TrimSpace(customPath); v != "" {
-		return v
+// It derives the directory from the shared resultFile parameter (used by gt-checksum):
+//   - resultFile not set / "result" / "." → result/repairDB-result-<timestamp>.csv
+//   - resultFile=./xx.csv                → ./repairDB-result-<timestamp>.csv
+//   - resultFile=./dir/res.csv           → ./dir/repairDB-result-<timestamp>.csv
+//
+// The generated filename never collides with the gt-checksum result file.
+func resolveRepairResultFilePath(resultFileValue string) string {
+	ts := time.Now().Format("20060102-150405")
+	filename := fmt.Sprintf("repairDB-result-%s.csv", ts)
+
+	dir := resolveResultDir(resultFileValue)
+	if dir == "" || dir == "." {
+		return filename
 	}
-	return fmt.Sprintf("result/repairDB-result-%s.csv", time.Now().Format("20060102-150405"))
+	return filepath.Join(dir, filename)
+}
+
+// resolveResultDir extracts the output directory from the resultFile parameter.
+// Mirrors the logic in gt-checksum's checksumProgressResultDir.
+func resolveResultDir(resultFileValue string) string {
+	v := strings.TrimSpace(resultFileValue)
+	if v == "" {
+		return "result"
+	}
+	cleaned := filepath.Clean(v)
+	if cleaned == "." {
+		return "result"
+	}
+	// Trailing separator means explicit directory.
+	if strings.HasSuffix(v, string(os.PathSeparator)) || strings.HasSuffix(v, "/") {
+		return cleaned
+	}
+	// "result" (the default value) is a directory name.
+	if cleaned == "result" {
+		return cleaned
+	}
+	// Existing directory on disk.
+	if info, err := os.Stat(cleaned); err == nil && info.IsDir() {
+		return cleaned
+	}
+	// Has a directory component (e.g. "./output/res.csv" → "./output").
+	if dir := filepath.Dir(cleaned); dir != "." && dir != "" {
+		return dir
+	}
+	// Bare filename with no directory (e.g. "my.csv") → current directory.
+	return "."
 }
 
 // buildExecSummary aggregates results into an ExecSummary.
