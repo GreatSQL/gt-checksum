@@ -19,6 +19,7 @@ MySQL DBA 经常使用 **pt-table-checksum** 和 **pt-table-sync** 进行数据�
 - **[功能优化]** 分区修复改为集合差分算法，支持非连续分区差异（删除中部分区、滚动窗口平移等场景）。
 - **[功能优化]** 目标端存在 MAXVALUE 分区时，自动生成 REORGANIZE PARTITION 替代 ADD PARTITION。
 - **[功能优化]** 分区比较时自动剥离 ENGINE= 注解，TO_DAYS() 边界值自动转为可读日期。
+- **[功能优化]** 统一 `resultFile` 参数行为：gt-checksum、repairDB、断点续传三者共用同一参数，repairDB 和断点续传文件自动提取 basedir 生成到同目录，避免文件名冲突。
 - **[问题修复]** 修复 MySQL→MySQL 同库同表名场景下分区缓存碰撞导致漏报分区差异的问题。
 
 更多详细变化详见 [CHANGELOG](./CHANGELOG.md)。

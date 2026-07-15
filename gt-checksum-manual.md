@@ -1370,7 +1370,7 @@ gt_phase1_mariadb105 t_mariadb_feature_pack      struct       warn-only  file
 | 参数 | 引入版本 | 默认值 | 可选值 | 说明 |
 |------|---------|--------|--------|------|
 | `resultExport` | v1.3.0 | `csv` | `OFF` / `csv` | 是否导出 CSV；`OFF` 时不生成文件 |
-| `resultFile` | v1.3.0 | `result` | 任意路径字符串 | 自定义导出路径；未设置时自动生成 `result/gt-checksum-result-<RunID>.csv` |
+| `resultFile` | v1.3.0 | 空（等价于 `result`） | 任意路径字符串 | gt-checksum、repairDB、断点续传三者共用的结果路径参数。空值、`result`、`.` 三者等价，均使用 `result/` 目录。gt-checksum 直接使用该路径生成 CSV；repairDB 和断点续传文件提取 basedir 后在同目录下生成各自文件，避免覆盖 |
 | `terminalResultMode` | v1.3.0 | `all` | `all` / `abnormal` | 终端显示模式；`abnormal` 只显示差异行，不影响 CSV 内容 |
 
 以上参数均支持 CLI 覆盖，高于配置文件：
@@ -1424,7 +1424,7 @@ Result exported to: result/gt-checksum-result-20260323195530.csv
 
 > **注意**：
 > - `resultExport=OFF` 时不生成 CSV 文件，行为与 v1.2.x 一致。
-> - `resultFile` 未配置时默认输出到 `result/` 目录；指定自定义路径时，如果父目录不存在会自动创建（v1.3.0 起）。
+> - `resultFile` 未配置时（或设置为 `result`、`.`）默认输出到 `result/` 目录；指定自定义路径时，如果父目录不存在会自动创建（v1.3.0 起）。repairDB 和断点续传文件会提取 `resultFile` 的 basedir，在同目录下生成各自文件，避免与 gt-checksum CSV 报告文件名冲突。
 > - CSV 导出失败（如无写权限）时只输出 Warning，不影响校验主流程的退出码。
 
 ## 断点续传
@@ -1437,7 +1437,7 @@ v4.0.0 新增断点续传能力，用于数据校验或修复过程异常退出�
 |------|---------|--------|--------|------|
 | `resume` | v4.0.0 | `OFF` | `OFF` / `ON` / `ASK` | 控制是否启用断点续传。`OFF`：每次从头执行；`ON`：发现未完成进度文件时自动续传；`ASK`：启动时提示用户选择是否续传 |
 
-进度文件默认保存在 `result/` 目录下，文件名格式为 `gt-checksum-progress-<RunID>.json`。如果配置了带目录的 `resultFile` 文件路径，则进度文件会保存在该文件所在目录；若只配置普通文件名，则仍使用 `result/` 目录。每次进度写入都会刷新 `end_time`，任务正常结束后进度文件状态会标记为 `completed`；异常退出时保留 `running` 状态，下次 `resume=ON/ASK` 会识别并使用。若 `end_time` 距当前超过 1 小时，续传前会提示用户确认，避免使用过早前的校验进度导致结果不可信。若同一结果目录存在多个 `status=running` 的进度文件，程序会输出候选列表并退出，需要先清理无关进度文件后再重试。
+进度文件保存在 `resultFile` 参数的 basedir 目录下（空值、`result`、`.` 均对应 `result/` 目录），文件名格式为 `gt-checksum-progress-<RunID>.json`。例如 `resultFile=./output/res.csv` 时，进度文件保存在 `./output/` 目录下。每次进度写入都会刷新 `end_time`，任务正常结束后进度文件状态会标记为 `completed`；异常退出时保留 `running` 状态，下次 `resume=ON/ASK` 会识别并使用。若 `end_time` 距当前超过 1 小时，续传前会提示用户确认，避免使用过早前的校验进度导致结果不可信。若同一结果目录存在多个 `status=running` 的进度文件，程序会输出候选列表并退出，需要先清理无关进度文件后再重试。
 
 进度文件中还会缓存每张表的估算行数（来自元数据查询）和精确行数（来自 `COUNT(*)` 扫描），续传时直接读取缓存，无需重新查询数据库，可显著减少大表场景下的续传启动时间。
 
