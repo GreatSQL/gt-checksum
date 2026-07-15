@@ -134,21 +134,70 @@ Total execution time: 0.11s
 
 只需 `srcDSN`、`dstDSN`、`tables` 三个参数即可启动校验，通过 `checkObject` 切换校验对象类型：
 
+**data 模式**（默认）：校验表数据差异，生成修复 SQL 文件。
+
 ```ini
-; data 模式（默认）：校验表数据差异
 checkObject=data
+```
 
-; struct 模式：校验表结构（列、索引、分区、外键等）差异
+执行后输出示例：
+
+```text
+Checksum Results Overview
+Schema  Table  IndexColumn  CheckObject  Rows        Diffs  Datafix
+mydb    t1     id           data         1000,1000   yes    file
+```
+
+**struct 模式**：校验表结构（列、索引、分区、外键等）差异，生成结构修复 SQL。`checkObject=struct` 还支持 MySQL→MySQL 场景下的 **VIEW（视图）** 校验，自动识别视图对象并比对定义，差异时以 advisory 块形式输出修复建议。
+
+```ini
 checkObject=struct
+```
 
-; routine 模式：校验存储过程和函数定义差异
+执行后输出示例：
+
+```text
+Checksum Results Overview
+Schema  Table  ObjectType  CheckObject  Diffs  Datafix
+mydb    t1     table       struct       yes    file
+mydb    t2     table       struct       no     no
+```
+
+**routine 模式**：校验存储过程和函数定义差异（含 charset 元数据三维度比对）。
+
+```ini
 checkObject=routine
+```
 
-; trigger 模式：校验触发器定义差异
+执行后输出示例：
+
+```text
+Checksum Results Overview
+Schema  RoutineName  CheckObject  Diffs  Datafix
+mydb    MYADD        routine      yes    file
+mydb    P1           routine      no     no
+```
+
+**trigger 模式**：校验触发器定义差异（含 charset 元数据三维度比对）。
+
+```ini
 checkObject=trigger
 ```
 
-> `data` 模式会生成修复 SQL 文件或执行在线修复（取决于 `datafix` 参数）；`struct`、`routine`、`trigger` 模式即使设置 `datafix=table`，也会强制导出 fix SQL 文件供 DBA 审查后再手动执行。更多配置和输出示例见 [**快速使用案例**](./gt-checksum-manual.md#快速使用案例)。
+执行后输出示例：
+
+```text
+Checksum Results Overview
+Schema  TriggerName    CheckObject  Diffs  Datafix
+mydb    trg_after_ins  trigger      yes    file
+mydb    trg_before_upd trigger      no     no
+```
+
+> **说明**：
+> - `data` 模式会根据 `datafix` 参数生成修复 SQL 文件（`file`）或执行在线修复（`table`）。
+> - `struct`、`routine`、`trigger` 模式即使设置 `datafix=table`，也会强制导出 fix SQL 文件供 DBA 审查后再手动执行。
+> - `routine` / `trigger` 生成的 fixSQL 通常包含 `DROP + CREATE` 语句，执行前需确认目标库中 `DEFINER` 账号与权限满足要求。
+> - 更多配置和输出示例见 [**快速使用案例**](./gt-checksum-manual.md#快速使用案例)。
 
 ### 连接串密码加密
 

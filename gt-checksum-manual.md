@@ -4,6 +4,372 @@
 
 **gt-checksum** 是 GreatSQL 社区开源的数据库校验及修复工具，支持 MySQL-family（MySQL/Percona/GreatSQL/MariaDB 等）、Oracle 等主流数据库。当前版本支持数据、表结构、存储程序、触发器等对象的差异校验与修复 SQL 生成，并提供断点续传、反向回滚 SQL、自定义数据类型映射、SSL 加密连接、CSV 结果导出等能力，适用于迁移验收、升级校验、主从/组复制一致性检查和定期巡检等场景。
 
+### 整体架构
+
+下图展示了 gt-checksum 的工作流程和数据流向：
+
+```mermaid
+flowchart TB
+    subgraph "输入"
+        A[配置文件 gc.conf]
+        B[命令行参数]
+    end
+
+    subgraph "gt-checksum 核心"
+        C{校验对象类型}
+        D[data 数据校验]
+        E[struct 结构校验]
+        F[routine 存储程序校验]
+        G[trigger 触发器校验]
+    end
+
+    subgraph "数据库连接"
+        H[源端 MySQL/Oracle]
+        I[目标端 MySQL/Oracle]
+    end
+
+    subgraph "输出"
+        J[终端结果]
+        K[CSV 结果文件]
+        L[修复 SQL 文件]
+        M[回滚 SQL 文件]
+    end
+
+    subgraph "修复工具"
+        N[repairDB]
+        O[修复 SQL 执行]
+        P[回滚 SQL 执行]
+    end
+
+    A --> C
+    B --> C
+    C --> D
+    C --> E
+    C --> F
+    C --> G
+    D --> H
+    D --> I
+    E --> H
+    E --> I
+    F --> H
+    F --> I
+    G --> H
+    G --> I
+    D --> J
+    D --> K
+    D --> L
+    D --> M
+    E --> J
+    E --> K
+    E --> L
+    F --> J
+    F --> K
+    F --> L
+    G --> J
+    G --> K
+    G --> L
+    L --> N
+    M --> N
+    N --> O
+    N --> P
+    O --> I
+    P --> I
+```
+
+### 四种校验模式数据流
+
+```mermaid
+flowchart LR
+    subgraph "data 模式"
+        A1[源端表数据] --> B1[分片查询]
+        B1 --> C1[MD5/CRC 比对]
+        C1 --> D1{差异?}
+        D1 -->|是| E1[生成修复 SQL]
+        D1 -->|否| F1[记录结果]
+        E1 --> G1[修复 SQL 文件]
+        E1 --> H1[回滚 SQL 文件]
+    end
+
+    subgraph "struct 模式"
+        A2[源端表结构] --> B2[元数据查询]
+        B2 --> C2[列/索引/分区比对]
+        C2 --> D2{差异?}
+        D2 -->|是| E2[生成 ALTER/CREATE SQL]
+        D2 -->|否| F2[记录结果]
+        E2 --> G2[结构修复 SQL]
+    end
+
+    subgraph "routine 模式"
+        A3[源端存储程序] --> B3[定义查询]
+        B3 --> C3[文本归一化比对]
+        C3 --> D3{差异?}
+        D3 -->|是| E3[生成 DROP+CREATE SQL]
+        D3 -->|否| F3[记录结果]
+        E3 --> G3[存储程序修复 SQL]
+    end
+
+    subgraph "trigger 模式"
+        A4[源端触发器] --> B4[定义查询]
+        B4 --> C4[文本归一化比对]
+        C4 --> D4{差异?}
+        D4 -->|是| E4[生成 DROP+CREATE SQL]
+        D4 -->|否| F4[记录结果]
+        E4 --> G4[触发器修复 SQL]
+    end
+```
+
+### 断点续传流程
+
+```mermaid
+flowchart TB
+    A[启动 gt-checksum] --> B{resume 参数?}
+    B -->|OFF| C[从头执行]
+    B -->|ON| D[检查进度文件]
+    B -->|ASK| E[提示用户选择]
+
+    D --> F{进度文件存在?}
+    F -->|否| C
+    F -->|是| G{状态?}
+
+    G -->|completed| C
+    G -->|running| H[加载进度]
+    G -->|stale| I[提示确认]
+
+    E -->|续传| H
+    E -->|从头| C
+
+    H --> J[跳过已完成表]
+    J --> K[继续校验]
+
+    C --> K
+    I --> K
+
+    K --> L[校验完成]
+    L --> M[更新进度文件]
+```
+
+## 快速开始
+
+本节帮助新用户快速完成第一次数据校验。
+
+### 前置条件
+
+- 两个可访问的 GreatSQL/MySQL 实例（源端和目标端）
+- gt-checksum 二进制文件（[下载地址](https://gitee.com/GreatSQL/gt-checksum/releases)）
+
+### 步骤 1：生成加密密码
+
+```bash
+# 生成密钥
+KEY=$(gt-dsn-crypt gen-key)
+
+# 加密源端密码
+SRC_PASS=$(gt-dsn-crypt encrypt --password '源端密码' --key "$KEY")
+
+# 加密目标端密码
+DST_PASS=$(gt-dsn-crypt encrypt --password '目标端密码' --key "$KEY")
+
+# 保存密钥（后续使用）
+echo "$KEY" > .dsn_key
+```
+
+### 步骤 2：创建最小配置文件
+
+创建 `gc.conf` 文件，只需 3 个参数：
+
+```ini
+srcDSN = mysql|user:${SRC_PASS}@tcp(源端IP:3306)/information_schema?charset=utf8mb4
+dstDSN = mysql|user:${DST_PASS}@tcp(目标端IP:3306)/information_schema?charset=utf8mb4
+tables = 要校验的库名.*
+```
+
+### 步骤 3：执行校验
+
+```bash
+# 设置密钥环境变量
+export GT_CHECKSUM_DSN_KEY=$(cat .dsn_key)
+
+# 执行校验
+gt-checksum -c ./gc.conf
+```
+
+### 步骤 4：查看结果
+
+校验完成后会显示类似输出：
+
+```text
+Checksum Results Overview
+Schema  Table   IndexColumn  CheckObject  Rows         Diffs  Datafix
+mydb    users   id           data         1000,1000    no     file
+mydb    orders  id           data         5000,5000    yes    file
+```
+
+- `Diffs=no`：数据一致
+- `Diffs=yes`：存在差异，修复 SQL 已生成到 `fixsql/` 目录
+
+### 步骤 5：修复差异（可选）
+
+```bash
+# 查看修复 SQL 文件
+ls fixsql/
+
+# 执行修复
+repairDB fixsql
+```
+
+> **提示**：更多配置选项请参考后续章节。最小配置仅需 `srcDSN`、`dstDSN`、`tables` 三个参数。
+
+---
+
+## 升级指南
+
+本节帮助用户从旧版本升级到 v4.x+，了解版本变更和升级注意事项。
+
+### 从 v3.x 升级到 v4.x+
+
+#### 必须变更项
+
+**1. 密码加密格式（必须）**
+
+v4.0.0 起，`srcDSN`/`dstDSN` 的 password 参数必须使用 `ENC[...]` 密文，使用明文 password 会在启动阶段报错退出。
+
+**升级步骤**：
+```bash
+# 1. 生成密钥
+KEY=$(gt-dsn-crypt gen-key)
+
+# 2. 加密密码
+SRC_PASS=$(gt-dsn-crypt encrypt --password '源端密码' --key "$KEY")
+DST_PASS=$(gt-dsn-crypt encrypt --password '目标端密码' --key "$KEY")
+
+# 3. 更新配置文件
+# 旧格式：
+# srcDSN = mysql|user:password@tcp(host:3306)/db
+# 新格式：
+# srcDSN = mysql|user:ENC[v1:aes256gcm:...:...]@tcp(host:3306)/db
+
+# 4. 保存密钥
+echo "$KEY" > .dsn_key
+export GT_CHECKSUM_DSN_KEY=$(cat .dsn_key)
+```
+
+**2. 权限检查更严格**
+
+v4.0.0 增强了权限预检机制，可能需要补充以下权限：
+
+```sql
+-- MySQL 8.0+ 源端（如果之前未授权）
+GRANT SESSION_VARIABLES_ADMIN ON *.* TO 'checksum'@'%';
+
+-- MySQL 8.0+ 目标端（datafix=table）
+GRANT SESSION_VARIABLES_ADMIN ON *.* TO 'checksum'@'%';
+GRANT SELECT, INSERT, DELETE ON mydb.* TO 'checksum'@'%';
+```
+
+#### 新增功能（可选启用）
+
+**1. 断点续传**
+```ini
+resume = ON  # 或 ASK
+```
+
+**2. 回滚 SQL 生成**
+```ini
+genRollSQL = ON
+rollFileDir = ./rollsql
+```
+
+**3. SSL 加密连接**
+```ini
+srcSslMode = REQUIRED
+dstSslMode = REQUIRED
+```
+
+**4. 自定义数据类型映射**
+```ini
+dTypeMappingFile = ./dtype-mapping.yaml
+```
+
+### 从 v2.x 升级到 v4.x+
+
+除了上述变更外，还需注意：
+
+#### v3.0.0 新增功能
+
+**1. CSV 结果导出**
+```ini
+resultExport = csv
+resultFile = result
+terminalResultMode = all  # 或 abnormal
+```
+
+**2. repairDB 增强**
+- 六阶段调度模型（DELETE→TABLE→VIEW→ROUTINE→TRIGGER→UNKNOWN）
+- 锁文件机制（`.repairDB.lock`）
+- CSV 执行报告
+
+**3. 结构迁移增强**
+- `truncateBeforeAlter` 参数
+- `requirePK` 参数
+- `mariaDBJSONTargetType` 参数
+
+### 从 v1.x 升级到 v4.x+
+
+除了上述变更外，还需注意：
+
+#### v2.0.0 新增功能
+
+**1. repairDB 预执行报告**
+- 执行前自动显示统计信息
+- 支持 `--dry-run` 预演模式
+- 支持 `-f` 强制执行模式
+
+**2. 命令行参数增强**
+```bash
+# 新增参数
+--result-file /tmp/report.csv
+--dry-run
+-f / --force
+```
+
+### 升级检查清单
+
+在升级前，请确认以下事项：
+
+- [ ] 备份现有配置文件
+- [ ] 下载新版本二进制文件
+- [ ] 准备好加密密钥（`gt-dsn-crypt gen-key`）
+- [ ] 更新配置文件中的密码格式（`ENC[...]`）
+- [ ] 检查并补充缺失的数据库权限
+- [ ] 在测试环境验证新版本功能
+- [ ] 确认修复 SQL 文件命名规则（v4.0.0 有变更）
+
+### 回滚方案
+
+如果升级后遇到问题，可以回滚到旧版本：
+
+1. 恢复旧版本二进制文件
+2. 恢复旧版本配置文件（明文密码）
+3. 删除新增的进度文件（`result/gt-checksum-progress-*.json`）
+4. 重新执行校验
+
+> **注意**：v4.0.0 生成的 `ENC[...]` 密文配置文件无法被旧版本识别，必须恢复明文密码配置。
+
+### 版本兼容性矩阵
+
+| 功能 | v1.x | v2.x | v3.x | v4.0.0+ |
+|------|------|------|------|---------|
+| 明文密码 | ✓ | ✓ | ✓ | ✗ |
+| ENC 密码 | ✗ | ✗ | ✗ | ✓ |
+| CSV 导出 | ✗ | ✗ | ✓ | ✓ |
+| 断点续传 | ✗ | ✗ | ✗ | ✓ |
+| 回滚 SQL | ✗ | ✗ | ✗ | ✓ |
+| SSL 连接 | ✗ | ✗ | ✗ | ✓ |
+| 六阶段调度 | ✗ | ✗ | ✓ | ✓ |
+| 锁文件机制 | ✗ | ✗ | ✓ | ✓ |
+
+---
+
 ## 用法
 
 指定完整配置文件方式运行
@@ -311,16 +677,25 @@ gt-checksum: tables option 'sbtest.t*' uses unsupported wildcard '*'; use '%' in
 
 1. 只支持 `checkObject=data`，其他模式下设置 `columns` 会在启动阶段直接报错。
 2. 只支持 `MySQL-family -> MySQL-family`，当前不支持任一端为 `Oracle` 的 columns 模式。
-3. 只支持“有主键或唯一键”的表；无索引表无法可靠做行级配对，会被直接跳过并标记为 `DDL-yes`。
+   - **不支持 Oracle 的原因**：
+     - Oracle 的数据类型映射复杂度高（如 `NUMBER` 可映射为多种 MySQL 整数类型）
+     - Oracle 的 `CHAR`/`VARCHAR2` 类型对尾部空格的处理与 MySQL 不同
+     - Oracle 的 `DATE` 类型包含时间部分，MySQL 的 `DATE` 仅包含日期
+     - 跨数据库的列映射需要额外的类型转换逻辑，增加了数据比对的复杂性
+   - **Oracle 场景的替代方案**：
+     - 使用 `checkObject=data` 全列校验模式，先确认整体数据一致性
+     - 对于 Oracle→MySQL 迁移，建议先完成数据迁移，再在 MySQL 端使用 `columns` 模式进行子集校验
+     - 如果只需要校验部分列，可以在 Oracle 端创建视图，只暴露需要校验的列，然后对视图进行全列校验
+3. 只支持”有主键或唯一键”的表；无索引表无法可靠做行级配对，会被直接跳过并标记为 `DDL-yes`。
 4. `columns` 一次只对应一张逻辑表。简单语法要求 `tables` 中恰好只有一对明确的表；完整语法允许 `tables` 里存在多条规则，但 `columns` 中所有列映射必须都属于同一对源表和目标表。
 5. `extraRowsSyncToSource=ON` 只能和 `columns` 一起使用，且要求 `datafix` 不是 `no`。
 
 #### 参数说明
 
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `columns` | 空 | 指定要比较的列；支持简单列名列表和完整列映射两种写法 |
-| `extraRowsSyncToSource` | `OFF` | 仅在 `columns` 模式下生效；控制 target-only 行是否自动生成 `DELETE` |
+| 参数 | 引入版本 | 默认值 | 说明 |
+|------|---------|--------|------|
+| `columns` | v4.0.0 | 空 | 指定要比较的列；支持简单列名列表和完整列映射两种写法 |
+| `extraRowsSyncToSource` | v4.0.0 | `OFF` | 仅在 `columns` 模式下生效；控制 target-only 行是否自动生成 `DELETE` |
 
 #### `columns` 写法
 
@@ -609,29 +984,29 @@ SET character_set_client = DEFAULT;
 
 ### 结构迁移专项参数
 
-| 参数名 | 可选值 | 默认值 | 说明 |
-|---|---|---|---|
-| `mariaDBJSONTargetType` | `JSON` / `LONGTEXT` / `TEXT` | `JSON` | 控制 `MariaDB JSON` alias 在 `MariaDB -> MySQL 8.0/8.4` 结构迁移时的目标列类型。`JSON` 语义最接近；`LONGTEXT` 适合作为兼容性保底；`TEXT` 当前已实现但未纳入发布级实库基线。 |
-| `dTypeMappingFile` | 文件路径 | 空 | 用户自定义数据类型映射规则文件路径，支持 YAML（`.yaml`/`.yml`）或 JSON（`.json`）格式。不设置则使用内置默认映射规则。规则采用 first-match 语义：文件中先定义的规则优先生效。支持三种迁移场景：`oracle_to_mysql` / `mysql_upgrade` / `mariadb_to_mysql`。详见下方 [dTypeMapping 数据类型映射规则](#dtype-mapping-数据类型映射规则) 章节。 |
-| `datafix` | `file` / `table` | `file` | `checkObject=struct` 场景建议固定为 `file`；若配置为 `table`，当前版本也会强制导出 fix SQL 文件供 DBA 审查，不直接在线修改目标对象。 |
-| `fixFileDir` | 目录路径 | `fixsql` | 修复 SQL 输出目录；在 `datafix=file` 以及 `checkObject!=data && datafix=table` 的强制导出场景生效，每个对象按 `type.schema.object.sql` 命名。 |
-| `truncateBeforeAlter` | `ON` / `OFF` | `OFF` | 仅在 `checkObject=struct` 模式下生效。`ON` 时，对 base table 修复 SQL 中每张表的首个可执行 `ALTER TABLE` 前生成一次 `TRUNCATE TABLE <同一表表达式>`；不作用于 `CREATE TABLE`、`DROP TABLE`、VIEW、ROUTINE、TRIGGER 或注释/advisory SQL。程序会尽量把已读取的源端 `AUTO_INCREMENT` 值合并到后续 `ALTER` 中恢复序列。开启后执行 fix SQL 会清空目标表数据，需确认目标端数据可丢弃；执行账号还需具备 `TRUNCATE TABLE` 所需权限（MySQL/MariaDB 通常为 `DROP`）。 |
-| `requirePK` | `ON` / `OFF` | `OFF` | 仅在 `checkObject=struct` 模式下生效。`ON` 时为无主键表自动添加 `my_row_id` 隐藏列（需同时满足：无主键、无 NOT NULL 唯一索引、目标端未启用 `sql_generate_invisible_primary_key`）。适用于 MySQL 单机实例迁移到 MGR 环境的场景。 |
+| 参数名 | 引入版本 | 可选值 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `mariaDBJSONTargetType` | v3.0.0 | `JSON` / `LONGTEXT` / `TEXT` | `JSON` | 控制 `MariaDB JSON` alias 在 `MariaDB -> MySQL 8.0/8.4` 结构迁移时的目标列类型。`JSON` 语义最接近；`LONGTEXT` 适合作为兼容性保底；`TEXT` 当前已实现但未纳入发布级实库基线。 |
+| `dTypeMappingFile` | v4.0.0 | 文件路径 | 空 | 用户自定义数据类型映射规则文件路径，支持 YAML（`.yaml`/`.yml`）或 JSON（`.json`）格式。不设置则使用内置默认映射规则。规则采用 first-match 语义：文件中先定义的规则优先生效。支持三种迁移场景：`oracle_to_mysql` / `mysql_upgrade` / `mariadb_to_mysql`。详见下方 [dTypeMapping 数据类型映射规则](#dtype-mapping-数据类型映射规则) 章节。 |
+| `datafix` | v1.0.0 | `file` / `table` | `file` | `checkObject=struct` 场景建议固定为 `file`；若配置为 `table`，当前版本也会强制导出 fix SQL 文件供 DBA 审查，不直接在线修改目标对象。 |
+| `fixFileDir` | v1.0.0 | 目录路径 | `fixsql` | 修复 SQL 输出目录；在 `datafix=file` 以及 `checkObject!=data && datafix=table` 的强制导出场景生效，每个对象按 `type.schema.object.sql` 命名。 |
+| `truncateBeforeAlter` | v3.0.0 | `ON` / `OFF` | `OFF` | 仅在 `checkObject=struct` 模式下生效。`ON` 时，对 base table 修复 SQL 中每张表的首个可执行 `ALTER TABLE` 前生成一次 `TRUNCATE TABLE <同一表表达式>`；不作用于 `CREATE TABLE`、`DROP TABLE`、VIEW、ROUTINE、TRIGGER 或注释/advisory SQL。程序会尽量把已读取的源端 `AUTO_INCREMENT` 值合并到后续 `ALTER` 中恢复序列。开启后执行 fix SQL 会清空目标表数据，需确认目标端数据可丢弃；执行账号还需具备 `TRUNCATE TABLE` 所需权限（MySQL/MariaDB 通常为 `DROP`）。 |
+| `requirePK` | v3.0.0 | `ON` / `OFF` | `OFF` | 仅在 `checkObject=struct` 模式下生效。`ON` 时为无主键表自动添加 `my_row_id` 隐藏列（需同时满足：无主键、无 NOT NULL 唯一索引、目标端未启用 `sql_generate_invisible_primary_key`）。适用于 MySQL 单机实例迁移到 MGR 环境的场景。 |
 
 ### SSL 连接参数
 
 v4.0.0 新增 SSL 加密连接支持，源端和目标端可独立配置。所有 SSL 参数均为可选，未配置时行为与之前版本完全一致（向后兼容）。
 
-| 参数名 | 可选值 | 默认值 | 说明 |
-|---|---|---|---|
-| `srcSslCa` | 文件路径 | 空 | 源端 CA 证书文件路径 |
-| `srcSslCert` | 文件路径 | 空 | 源端客户端证书文件路径 |
-| `srcSslKey` | 文件路径 | 空 | 源端客户端密钥文件路径 |
-| `srcSslMode` | `DISABLED` / `PREFERRED` / `REQUIRED` / `VERIFY_CA` / `VERIFY_IDENTITY` | `PREFERRED` | 源端 SSL 模式 |
-| `dstSslCa` | 文件路径 | 空 | 目标端 CA 证书文件路径 |
-| `dstSslCert` | 文件路径 | 空 | 目标端客户端证书文件路径 |
-| `dstSslKey` | 文件路径 | 空 | 目标端客户端密钥文件路径 |
-| `dstSslMode` | `DISABLED` / `PREFERRED` / `REQUIRED` / `VERIFY_CA` / `VERIFY_IDENTITY` | `PREFERRED` | 目标端 SSL 模式 |
+| 参数名 | 引入版本 | 可选值 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `srcSslCa` | v4.0.0 | 文件路径 | 空 | 源端 CA 证书文件路径 |
+| `srcSslCert` | v4.0.0 | 文件路径 | 空 | 源端客户端证书文件路径 |
+| `srcSslKey` | v4.0.0 | 文件路径 | 空 | 源端客户端密钥文件路径 |
+| `srcSslMode` | v4.0.0 | `DISABLED` / `PREFERRED` / `REQUIRED` / `VERIFY_CA` / `VERIFY_IDENTITY` | `PREFERRED` | 源端 SSL 模式 |
+| `dstSslCa` | v4.0.0 | 文件路径 | 空 | 目标端 CA 证书文件路径 |
+| `dstSslCert` | v4.0.0 | 文件路径 | 空 | 目标端客户端证书文件路径 |
+| `dstSslKey` | v4.0.0 | 文件路径 | 空 | 目标端客户端密钥文件路径 |
+| `dstSslMode` | v4.0.0 | `DISABLED` / `PREFERRED` / `REQUIRED` / `VERIFY_CA` / `VERIFY_IDENTITY` | `PREFERRED` | 目标端 SSL 模式 |
 
 **SSL 模式说明**：
 
@@ -673,11 +1048,11 @@ dstSslMode = VERIFY_CA
 
 v4.0.0 新增反向回滚SQL生成功能。当 `checkObject=data` 且 `datafix=file/table` 时，可在生成修复SQL文件或在线修复目标端的同时，自动生成对应的反向回滚SQL，便于修复操作出错时快速回退。
 
-| 参数名 | 可选值 | 默认值 | 说明 |
-|---|---|---|---|
-| `genRollSQL` | `ON` / `OFF` / 自定义表名 | `OFF` | 是否生成反向回滚SQL。`ON`：对所有表生成；`OFF`：不生成（默认）；自定义：指定目标端表名（支持逗号分隔多个，支持 `%` 通配符），例如 `genRollSQL="gt_checksum.test1, gt_checksum.test%"` |
-| `maxRollRowNum` | 正整数 | `10000` | 单表待修复行数超过该值时不生成回滚SQL，避免大表回滚文件过大。特殊情况：校验开始前目标端整表为空时，始终生成 `TRUNCATE TABLE` 回滚SQL（忽略本参数） |
-| `rollFileDir` | 目录路径 | `rollsql` | 回滚SQL文件存储目录，仅在 `checkObject=data`、`datafix=file/table` 且 `genRollSQL` 非 `OFF` 时生效 |
+| 参数名 | 引入版本 | 可选值 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `genRollSQL` | v4.0.0 | `ON` / `OFF` / 自定义表名 | `OFF` | 是否生成反向回滚SQL。`ON`：对所有表生成；`OFF`：不生成（默认）；自定义：指定目标端表名（支持逗号分隔多个，支持 `%` 通配符），例如 `genRollSQL="gt_checksum.test1, gt_checksum.test%"` |
+| `maxRollRowNum` | v4.0.0 | 正整数 | `10000` | 单表待修复行数超过该值时不生成回滚SQL，避免大表回滚文件过大。特殊情况：校验开始前目标端整表为空时，始终生成 `TRUNCATE TABLE` 回滚SQL（忽略本参数） |
+| `rollFileDir` | v4.0.0 | 目录路径 | `rollsql` | 回滚SQL文件存储目录，仅在 `checkObject=data`、`datafix=file/table` 且 `genRollSQL` 非 `OFF` 时生效 |
 
 **回滚SQL生成规则**：
 
@@ -992,11 +1367,11 @@ gt_phase1_mariadb105 t_mariadb_feature_pack      struct       warn-only  file
 
 ### 结果导出相关参数
 
-| 参数 | 默认值 | 可选值 | 说明 |
-|------|--------|--------|------|
-| `resultExport` | `csv` | `OFF` / `csv` | 是否导出 CSV；`OFF` 时不生成文件 |
-| `resultFile` | `result` | 任意路径字符串 | 自定义导出路径；未设置时自动生成 `result/gt-checksum-result-<RunID>.csv` |
-| `terminalResultMode` | `all` | `all` / `abnormal` | 终端显示模式；`abnormal` 只显示差异行，不影响 CSV 内容 |
+| 参数 | 引入版本 | 默认值 | 可选值 | 说明 |
+|------|---------|--------|--------|------|
+| `resultExport` | v1.3.0 | `csv` | `OFF` / `csv` | 是否导出 CSV；`OFF` 时不生成文件 |
+| `resultFile` | v1.3.0 | `result` | 任意路径字符串 | 自定义导出路径；未设置时自动生成 `result/gt-checksum-result-<RunID>.csv` |
+| `terminalResultMode` | v1.3.0 | `all` | `all` / `abnormal` | 终端显示模式；`abnormal` 只显示差异行，不影响 CSV 内容 |
 
 以上参数均支持 CLI 覆盖，高于配置文件：
 
@@ -1058,9 +1433,9 @@ v4.0.0 新增断点续传能力，用于数据校验或修复过程异常退出�
 
 ### gt-checksum 断点续传参数
 
-| 参数 | 默认值 | 可选值 | 说明 |
-|------|--------|--------|------|
-| `resume` | `OFF` | `OFF` / `ON` / `ASK` | 控制是否启用断点续传。`OFF`：每次从头执行；`ON`：发现未完成进度文件时自动续传；`ASK`：启动时提示用户选择是否续传 |
+| 参数 | 引入版本 | 默认值 | 可选值 | 说明 |
+|------|---------|--------|--------|------|
+| `resume` | v4.0.0 | `OFF` | `OFF` / `ON` / `ASK` | 控制是否启用断点续传。`OFF`：每次从头执行；`ON`：发现未完成进度文件时自动续传；`ASK`：启动时提示用户选择是否续传 |
 
 进度文件默认保存在 `result/` 目录下，文件名格式为 `gt-checksum-progress-<RunID>.json`。如果配置了带目录的 `resultFile` 文件路径，则进度文件会保存在该文件所在目录；若只配置普通文件名，则仍使用 `result/` 目录。每次进度写入都会刷新 `end_time`，任务正常结束后进度文件状态会标记为 `completed`；异常退出时保留 `running` 状态，下次 `resume=ON/ASK` 会识别并使用。若 `end_time` 距当前超过 1 小时，续传前会提示用户确认，避免使用过早前的校验进度导致结果不可信。若同一结果目录存在多个 `status=running` 的进度文件，程序会输出候选列表并退出，需要先清理无关进度文件后再重试。
 
@@ -1095,6 +1470,89 @@ resume=ASK
 **gt-checksum** 支持命令行参数与配置文件方式运行。大多数参数通过配置文件指定；部分高频参数支持 CLI 覆盖（优先级高于配置文件），包括 `--showActualRows`、`--resultExport`、`--resultFile`、`--terminalResultMode`；`--preview-dtype-mapping` 用于预览数据类型映射规则表后退出。
 
 配置文件中所有参数的详解可参考模板文件 [gc-sample.conf](./gc-sample.conf)。
+
+### 参数分组总览
+
+为便于查阅，以下按功能模块对配置参数进行分组：
+
+#### 连接参数
+
+| 参数名 | 引入版本 | 默认值 | 说明 |
+|--------|---------|--------|------|
+| `srcDSN` | v1.0.0 | 无 | 源端数据库连接字符串 |
+| `dstDSN` | v1.0.0 | 无 | 目标端数据库连接字符串 |
+| `srcSslCa` | v4.0.0 | 空 | 源端 CA 证书文件路径 |
+| `srcSslCert` | v4.0.0 | 空 | 源端客户端证书文件路径 |
+| `srcSslKey` | v4.0.0 | 空 | 源端客户端密钥文件路径 |
+| `srcSslMode` | v4.0.0 | `PREFERRED` | 源端 SSL 模式 |
+| `dstSslCa` | v4.0.0 | 空 | 目标端 CA 证书文件路径 |
+| `dstSslCert` | v4.0.0 | 空 | 目标端客户端证书文件路径 |
+| `dstSslKey` | v4.0.0 | 空 | 目标端客户端密钥文件路径 |
+| `dstSslMode` | v4.0.0 | `PREFERRED` | 目标端 SSL 模式 |
+
+#### 校验参数
+
+| 参数名 | 引入版本 | 默认值 | 说明 |
+|--------|---------|--------|------|
+| `checkObject` | v1.0.0 | `data` | 校验对象类型：`data`/`struct`/`routine`/`trigger` |
+| `tables` | v1.0.0 | 无 | 待校验的表或对象列表 |
+| `ignoreTables` | v1.0.0 | 空 | 忽略的表列表 |
+| `columns` | v4.0.0 | 空 | 只校验部分列（仅 `data` 模式） |
+| `extraRowsSyncToSource` | v4.0.0 | `OFF` | target-only 行是否生成 DELETE（仅 `columns` 模式） |
+| `showActualRows` | v1.0.0 | `OFF` | 是否显示实际差异行 |
+
+#### 修复参数
+
+| 参数名 | 引入版本 | 默认值 | 说明 |
+|--------|---------|--------|------|
+| `datafix` | v1.0.0 | `file` | 修复方式：`file`（生成文件）/`table`（在线修复） |
+| `fixFileDir` | v1.0.0 | `fixsql` | 修复 SQL 输出目录 |
+| `genRollSQL` | v4.0.0 | `OFF` | 是否生成回滚 SQL |
+| `maxRollRowNum` | v4.0.0 | `10000` | 生成回滚 SQL 的最大行数阈值 |
+| `rollFileDir` | v4.0.0 | `rollsql` | 回滚 SQL 文件存储目录 |
+| `truncateBeforeAlter` | v3.0.0 | `OFF` | 结构修复前是否 TRUNCATE 表 |
+| `requirePK` | v3.0.0 | `OFF` | 是否为无主键表添加隐藏主键 |
+
+#### 结构迁移参数
+
+| 参数名 | 引入版本 | 默认值 | 说明 |
+|--------|---------|--------|------|
+| `mariaDBJSONTargetType` | v3.0.0 | `JSON` | MariaDB JSON 目标类型 |
+| `dTypeMappingFile` | v4.0.0 | 空 | 自定义数据类型映射规则文件 |
+
+#### 性能参数
+
+| 参数名 | 引入版本 | 默认值 | 说明 |
+|--------|---------|--------|------|
+| `parallelThds` | v1.0.0 | 4 | 并行线程数 |
+| `logbin` | v1.0.0 | `ON` | 是否写入 binlog（修复时） |
+| `splitInsertOnDupKey` | v3.0.0 | `ON` | 重复键时是否拆分 INSERT 重试 |
+
+#### 输出参数
+
+| 参数名 | 引入版本 | 默认值 | 说明 |
+|--------|---------|--------|------|
+| `resultExport` | v1.3.0 | `csv` | 结果导出格式 |
+| `resultFile` | v1.3.0 | `result` | 结果文件路径 |
+| `terminalResultMode` | v1.3.0 | `all` | 终端显示模式 |
+| `debug` | v1.0.0 | `OFF` | 调试日志开关 |
+
+#### 断点续传参数
+
+| 参数名 | 引入版本 | 默认值 | 说明 |
+|--------|---------|--------|------|
+| `resume` | v4.0.0 | `OFF` | 断点续传开关 |
+
+### 参数优先级
+
+参数优先级从高到低：
+
+1. **命令行参数**（如 `--resultExport OFF`）
+2. **环境变量**（如 `GT_CHECKSUM_DSN_KEY`）
+3. **配置文件**（`gc.conf`）
+4. **默认值**
+
+> **提示**：命令行参数会覆盖配置文件中的同名参数，适用于临时调整配置而无需修改文件。
 
 **gt-checksum** 命令行参数选项详细解释如下。
 
@@ -1193,6 +1651,71 @@ repairDB 根据 SQL 文件的命名前缀自动识别对象类型，并按以下
 **重复键拆分重试**：TABLE 阶段执行 `INSERT ... VALUES (...),(...),...` 时，如果整条语句因 `Duplicate entry` 失败，repairDB 会记录 SQL 文件路径、执行单元和行号范围，并仅在内存中拆分成多条单行 INSERT 重试。单行 INSERT 仍重复时计入 INSERT 失败并继续执行后续行；若遇到非重复键错误，则保持原有失败行为并中断当前文件。该过程只写入日志，不会覆盖或生成新的修复 SQL 文件。
 
 **每阶段独立连接池**：各阶段分别打开并关闭数据库连接池，防止 `FOREIGN_KEY_CHECKS`、`UNIQUE_CHECKS` 等 session 变量通过连接复用在阶段间泄漏。
+
+### 修复 SQL 文件命名规范
+
+gt-checksum 和 repairDB 使用统一的文件命名规则来识别对象类型和执行阶段。
+
+#### 修复 SQL 文件命名规则
+
+| 文件类型 | 命名格式 | 示例 | 说明 |
+|---------|---------|------|------|
+| 数据修复（INSERT/UPDATE） | `table.<schema>.<table>-<seq>.sql` | `table.sbtest.sbtest1-1.sql` | 数据差异修复文件 |
+| 数据删除（DELETE） | `table.<schema>.<table>-DELETE-<seq>.sql` | `table.sbtest.sbtest1-DELETE-1.sql` | 目标端多余数据删除文件 |
+| 结构修复 | `table.<schema>.<table>.sql` | `table.sbtest.sbtest1.sql` | 表结构修复（ALTER/CREATE） |
+| 视图修复 | `view.<schema>.<view>-<seq>.sql` | `view.sbtest.v_order-1.sql` | 视图定义修复文件 |
+| 存储过程修复 | `routine.<schema>.<name>-<seq>.sql` | `routine.sbtest.proc1-1.sql` | 存储过程/函数修复文件 |
+| 触发器修复 | `trigger.<schema>.<name>-<seq>.sql` | `trigger.sbtest.trg1-1.sql` | 触发器修复文件 |
+| 回滚 SQL | `table.<schema>.<table>.rollback-<TYPE>-<seq>.sql` | `table.sbtest.sbtest1.rollback-INSERT-1.sql` | 反向回滚 SQL 文件 |
+
+#### 命名格式说明
+
+- **schema**：数据库名称
+- **table/view/name**：对象名称
+- **seq**：序号，用于分片或分批生成的文件（从 1 开始）
+- **TYPE**：回滚 SQL 类型（`INSERT`/`DELETE`/`TRUNCATE`）
+
+#### repairDB 阶段识别规则
+
+repairDB 根据文件名前缀自动识别执行阶段：
+
+| 文件名前缀 | 执行阶段 | 排序方式 | 说明 |
+|-----------|---------|---------|------|
+| 包含 `-DELETE-` | DELETE | 稳定排序 | 优先执行删除操作 |
+| `table.` 开头 | TABLE | 随机 shuffle | 打散锁热点 |
+| `view.` 开头 | VIEW | 稳定排序 | 视图依赖 TABLE |
+| `routine.` 开头 | ROUTINE | 稳定排序 | 存储程序 |
+| `trigger.` 开头 | TRIGGER | 稳定排序 | 触发器依赖基表 |
+| 其他 | UNKNOWN | 稳定排序 | 兼容手工 SQL 文件 |
+
+#### 文件目录结构
+
+典型的修复 SQL 文件目录结构：
+
+```
+fixsql/
+├── table.sbtest.sbtest1-DELETE-1.sql    # DELETE 阶段
+├── table.sbtest.sbtest1-1.sql           # TABLE 阶段
+├── table.sbtest.sbtest2-DELETE-1.sql    # DELETE 阶段
+├── table.sbtest.sbtest2-1.sql           # TABLE 阶段
+├── view.sbtest.v_order-1.sql            # VIEW 阶段
+├── routine.sbtest.proc1-1.sql           # ROUTINE 阶段
+└── trigger.sbtest.trg1-1.sql            # TRIGGER 阶段
+
+rollsql/
+├── table.sbtest.sbtest1.rollback-INSERT-1.sql    # 回滚 INSERT
+├── table.sbtest.sbtest1.rollback-DELETE-1.sql    # 回滚 DELETE
+└── table.sbtest.sbtest1.rollback-TRUNCATE-1.sql  # 回滚 TRUNCATE
+```
+
+#### 注意事项
+
+1. **文件名大小写**：文件名中的 schema 和对象名保持原始大小写，不做转换
+2. **特殊字符**：对象名中的特殊字符（如下划线、点号）保留原样
+3. **序号连续性**：序号从 1 开始，按分片顺序递增
+4. **文件编码**：所有 SQL 文件使用 UTF-8 编码
+5. **事务边界**：每个文件包含一个或多个 `BEGIN ... COMMIT` 事务块
+6. **session preamble**：每个文件开头包含统一的 session 变量设置（`SET NAMES`、`SET FOREIGN_KEY_CHECKS=0` 等）
 
 ### 编译方法
 
@@ -1359,19 +1882,19 @@ CSV 文件使用 UTF-8 BOM 编码，可直接用 Excel 或 WPS 打开，无需�
 
 **repairDB** 工具使用的配置文件与 **gt-checksum** 工具相同，主要关注以下几个参数：
 
-| 参数名 | 类型 | 默认值 | 说明 |
-|-------|------|-------|------|
-| dstDSN | string | 无 | 目标数据库连接字符串，password 必须为 `ENC[...]`，格式为 `mysql|user:ENC[...]@tcp(host:port)/db?params` |
-| parallelThds | int | 4 | 并行执行SQL文件的线程数 |
-| fixFileDir | string | fixsql | 存放待执行 SQL 文件的目录；执行 rollback 时可通过位置参数指定 `./rollsql` 覆盖该目录 |
-| logbin | string | ON | 控制修复时是否写入 binlog；`OFF` 时每条连接执行 `SET sql_log_bin=0`，需要 SUPER 或 SESSION_VARIABLES_ADMIN 权限 |
-| splitInsertOnDupKey | string | ON | 控制 multi-values INSERT 遇到 `Duplicate entry` 时是否自动拆分为单行 INSERT 重试；`OFF` 时保留整条语句失败 |
-| resultFile | string | 空 | 自定义 CSV 报告输出路径；留空时自动使用默认路径格式 `result/repairDB-result-<timestamp>.csv`；命令行参数 `--result-file` 优先级高于此配置项 |
-| resume | string | OFF | 断点续传开关：`OFF` 不续传，`ON` 自动续传，`ASK` 启动时询问；进度文件保存为 `<fixFileDir>/.repairDB-progress.json` |
-| dstSslCa | string | 空 | 目标端 CA 证书文件路径（v4.0.0 新增） |
-| dstSslCert | string | 空 | 目标端客户端证书文件路径（v4.0.0 新增） |
-| dstSslKey | string | 空 | 目标端客户端密钥文件路径（v4.0.0 新增） |
-| dstSslMode | string | PREFERRED | 目标端 SSL 模式：`DISABLED`/`PREFERRED`/`REQUIRED`/`VERIFY_CA`/`VERIFY_IDENTITY`（v4.0.0 新增） |
+| 参数名 | 引入版本 | 类型 | 默认值 | 说明 |
+|-------|---------|------|-------|------|
+| dstDSN | v1.0.0 | string | 无 | 目标数据库连接字符串，password 必须为 `ENC[...]`，格式为 `mysql|user:ENC[...]@tcp(host:port)/db?params` |
+| parallelThds | v1.0.0 | int | 4 | 并行执行SQL文件的线程数 |
+| fixFileDir | v1.0.0 | string | fixsql | 存放待执行 SQL 文件的目录；执行 rollback 时可通过位置参数指定 `./rollsql` 覆盖该目录 |
+| logbin | v1.0.0 | string | ON | 控制修复时是否写入 binlog；`OFF` 时每条连接执行 `SET sql_log_bin=0`，需要 SUPER 或 SESSION_VARIABLES_ADMIN 权限 |
+| splitInsertOnDupKey | v3.0.0 | string | ON | 控制 multi-values INSERT 遇到 `Duplicate entry` 时是否自动拆分为单行 INSERT 重试；`OFF` 时保留整条语句失败 |
+| resultFile | v3.0.0 | string | 空 | 自定义 CSV 报告输出路径；留空时自动使用默认路径格式 `result/repairDB-result-<timestamp>.csv`；命令行参数 `--result-file` 优先级高于此配置项 |
+| resume | v4.0.0 | string | OFF | 断点续传开关：`OFF` 不续传，`ON` 自动续传，`ASK` 启动时询问；进度文件保存为 `<fixFileDir>/.repairDB-progress.json` |
+| dstSslCa | v4.0.0 | string | 空 | 目标端 CA 证书文件路径 |
+| dstSslCert | v4.0.0 | string | 空 | 目标端客户端证书文件路径 |
+| dstSslKey | v4.0.0 | string | 空 | 目标端客户端密钥文件路径 |
+| dstSslMode | v4.0.0 | string | PREFERRED | 目标端 SSL 模式：`DISABLED`/`PREFERRED`/`REQUIRED`/`VERIFY_CA`/`VERIFY_IDENTITY` |
 
 ### 执行流程
 
@@ -1666,6 +2189,395 @@ result=PARTIAL_SUCCESS continue_on_error=true
 - 对 MyISAM、MEMORY 等不支持 MVCC 的引擎，在源端或目标端存在并发写入时，数据校验结果的一致性无法保证（这些引擎无法提供一致性快照）；若相关表处于只读或静态状态，校验可正常执行。
 
 - 在 Oracle→MySQL `struct` 模式下，以下 Oracle 类型的映射存在不可逆的语义损失，程序会输出 `WarnOnly` 级别提示但不阻止比对，DBA 应在执行 fix SQL 前人工确认：`TIMESTAMP WITH [LOCAL] TIME ZONE` 映射为 MySQL `datetime`，时区信息将丢失；`INTERVAL YEAR TO MONTH` 和 `INTERVAL DAY TO SECOND` 映射为 `varchar(30)`，仅保留字符串形式，区间计算语义完全丧失。建议在迁移完成后，对含上述类型的列进行业务层验证。
+
+## 常见问题 (FAQ)
+
+### Q1：连接超时怎么处理？
+
+**现象**：启动后报 `dial tcp: i/o timeout` 或 `connection refused`。
+
+**解决方法**：
+1. 检查网络连通性：`telnet <host> <port>`
+2. 检查防火墙规则是否放行数据库端口
+3. 检查 DSN 中的 host/port 是否正确
+4. 如果使用 SSL，确认证书文件路径和权限正确
+
+### Q2：校验结果不一致，但数据看起来一样？
+
+**可能原因**：
+1. **字符集差异**：源端和目标端的 `charset` 参数不一致，程序会在启动阶段直接退出
+2. **排序规则差异**：如 `utf8mb4_general_ci` vs `utf8mb4_0900_ai_ci`，字符串比较结果可能不同
+3. **尾部空格处理**：Oracle `CHAR` 类型会自动填充空格，MySQL `VARCHAR` 不会
+4. **浮点精度**：`FLOAT`/`DOUBLE` 在不同平台的精度表现可能不同
+
+**解决方法**：
+- 检查日志中的 `Extra=[...]`、`Missing=[...]` 信息
+- 使用 `--showActualRows ON` 查看实际差异行
+- 确认两端字符集和排序规则配置一致
+
+### Q3：如何只校验部分表？
+
+**方法 1：指定具体表名**
+```ini
+tables = mydb.t1, mydb.t2, mydb.t3
+```
+
+**方法 2：使用通配符**
+```ini
+tables = mydb.t%    # 校验 mydb 库下所有 t 开头的表
+tables = mydb.*     # 校验 mydb 库下所有表
+```
+
+**方法 3：排除特定表**
+```ini
+tables = mydb.*
+ignoreTables = mydb.tmp_*, mydb.test_*
+```
+
+### Q4：修复 SQL 执行失败怎么办？
+
+**常见失败原因及处理**：
+
+| 错误 | 原因 | 处理方法 |
+|------|------|---------|
+| `Duplicate entry` | 主键冲突 | 使用 repairDB 执行（自动拆分重试） |
+| `Lock wait timeout` | 锁等待超时 | 降低 `parallelThds` 或在低峰期执行 |
+| `Deadlock` | 死锁冲突 | repairDB 会自动重试 3 次 |
+| `DEFINER` 错误 | 目标库缺少 DEFINER 账号 | 先创建账号并授权，再执行修复 |
+
+### Q5：如何校验分区表？
+
+**MySQL→MySQL 场景**：
+- 分区定义差异会标记为 `Diffs=yes`
+- 修复 SQL 会被注释（需 DBA 手动调整）
+- v4.0.1 支持非连续分区差异的 REORGANIZE PARTITION 语句
+
+**Oracle→MySQL 场景**：
+- 仅做存在性比对，输出 advisory 告警
+- 不生成分区修复 SQL（语法差异过大）
+
+### Q6：触发器导致修复后仍不一致怎么办？
+
+**原因**：触发器在修复过程中自动修改了其他表的数据。
+
+**解决方法**：
+1. 临时禁用触发器：`ALTER TABLE ... DISABLE TRIGGER ...`
+2. 执行修复
+3. 重新启用触发器：`ALTER TABLE ... ENABLE TRIGGER ...`
+
+### Q7：断点续传文件损坏怎么办？
+
+**现象**：启动时报 `multiple running progress files found`。
+
+**解决方法**：
+1. 查看 `result/` 目录下的进度文件
+2. 删除不需要的进度文件：`rm result/gt-checksum-progress-*.json`
+3. 重新执行校验
+
+### Q8：如何查看校验进度？
+
+**实时查看**：
+- 终端输出会显示当前正在校验的表
+- 日志文件（`gt-checksum.log`）包含详细进度信息
+
+**完成后查看**：
+- CSV 结果文件包含所有表的校验结果
+- 使用 `--terminalResultMode abnormal` 只显示有差异的表
+
+### Q9：大表校验很慢怎么优化？
+
+**优化建议**：
+1. 增加 `parallelThds` 参数值（建议不超过 CPU 核心数的 2 倍）
+2. 确保源端和目标端有足够的连接数：`(parallelThds*2 + 4) * 2`
+3. 在低峰期执行，减少业务影响
+4. 考虑使用 `columns` 参数只校验关键列
+
+### Q10：如何生成回滚 SQL？
+
+**配置方法**：
+```ini
+checkObject = data
+datafix = file
+genRollSQL = ON
+rollFileDir = ./rollsql
+```
+
+**执行回滚**：
+```bash
+repairDB ./rollsql
+```
+
+---
+
+## 故障排查指南
+
+### 权限不足
+
+**错误信息**：`Missing required global privileges` 或 `Insufficient access permission`
+
+**排查步骤**：
+1. 打开 debug 日志：在配置文件中设置 `debug = ON`
+2. 查看日志中的权限检查结果
+3. 根据日志提示执行 `SHOW GRANTS FOR CURRENT_USER()`
+4. 按权限矩阵补充缺失的权限
+
+**快速授权模板**：
+```sql
+-- MySQL 8.0+ 源端
+GRANT SESSION_VARIABLES_ADMIN ON *.* TO 'checksum'@'%';
+GRANT SELECT ON mydb.* TO 'checksum'@'%';
+
+-- MySQL 8.0+ 目标端（datafix=table）
+GRANT SESSION_VARIABLES_ADMIN ON *.* TO 'checksum'@'%';
+GRANT SELECT, INSERT, DELETE ON mydb.* TO 'checksum'@'%';
+```
+
+### 连接失败
+
+**错误信息**：`dial tcp: connect: connection refused` 或 `too many connections`
+
+**排查步骤**：
+1. 检查数据库服务是否运行：`systemctl status mysqld`
+2. 检查 `max_connections` 设置：`SHOW VARIABLES LIKE 'max_connections';`
+3. 检查当前连接数：`SHOW STATUS LIKE 'Threads_connected';`
+4. 降低 `parallelThds` 或增加 `max_connections`
+
+### 修复 SQL 执行失败
+
+**错误信息**：`Error 1213: Deadlock found` 或 `Error 1062: Duplicate entry`
+
+**排查步骤**：
+1. 检查 `repairDB.log` 中的详细错误信息
+2. 如果是死锁，repairDB 会自动重试 3 次
+3. 如果是重复键，repairDB 会拆分为单行 INSERT 重试
+4. 如果仍然失败，手动处理对应的 SQL 文件
+
+**手动处理重复键**：
+```sql
+-- 查看冲突行
+SELECT * FROM mydb.t1 WHERE id = 123;
+
+-- 决定保留哪条数据
+-- 删除冲突行后重新执行修复 SQL
+```
+
+### 字符集不匹配
+
+**错误信息**：`charset mismatch between source and target`
+
+**排查步骤**：
+1. 检查源端字符集：`SHOW VARIABLES LIKE 'character_set%';`
+2. 检查目标端字符集：`SHOW VARIABLES LIKE 'character_set%';`
+3. 确保 DSN 中的 `charset` 参数一致
+4. 如果使用 SSL，确认证书文件路径正确
+
+### 修复 SQL 文件乱码
+
+**现象**：修复 SQL 文件中的中文显示为乱码
+
+**解决方法**：
+1. 确认终端编码设置：`echo $LANG`
+2. 使用支持 UTF-8 的终端工具
+3. 检查 DSN 中的 `charset=utf8mb4` 参数
+
+### 断点续传不生效
+
+**现象**：设置 `resume=ON` 后仍然从头开始校验
+
+**排查步骤**：
+1. 检查 `result/` 目录下是否存在进度文件
+2. 检查进度文件状态是否为 `running`
+3. 检查进度文件的 `end_time` 是否超过 1 小时
+4. 如果进度文件损坏，删除后重新执行
+
+### Oracle 连接失败
+
+**错误信息**：`ORA-12547: TNS:lost contact` 或 `godror: cannot connect`
+
+**排查步骤**：
+1. 检查 Oracle Client 是否安装：`echo $LD_LIBRARY_PATH`
+2. 检查 `tnsnames.ora` 配置是否正确
+3. 检查 Oracle 监听器是否运行：`lsnrctl status`
+4. 测试连接：`sqlplus user/password@tns_name`
+
+### 大表校验超时
+
+**现象**：校验过程中报 `context deadline exceeded`
+
+**解决方法**：
+1. 增加连接超时参数（如果支持）
+2. 降低 `parallelThds` 减少数据库负载
+3. 在低峰期执行校验
+4. 考虑分批校验（使用 `tables` 参数指定部分表）
+
+---
+
+## 性能调优指南
+
+本节提供 gt-checksum 在不同场景下的性能优化建议。
+
+### parallelThds 参数推荐值
+
+`parallelThds` 控制数据校验和修复的并行线程数，是影响性能的关键参数。
+
+**推荐配置表**：
+
+| 场景 | parallelThds | 说明 |
+|------|-------------|------|
+| 小型库（<100 表） | 4 | 默认值即可，无需调整 |
+| 中型库（100-1000 表） | 8-16 | 根据 CPU 核心数和数据库负载调整 |
+| 大型库（>1000 表） | 16-32 | 需关注数据库负载，建议先测试 |
+| 高并发 OLTP 系统 | 4-8 | 降低并行度，减少对业务的影响 |
+| 低峰期批量校验 | 32-64 | 可适当提高并行度，加快校验速度 |
+
+**计算公式**：
+```
+推荐值 = min(CPU核心数 * 2, 数据库max_connections / 4)
+```
+
+### 连接池配置建议
+
+gt-checksum 的连接池使用策略：
+
+**data 模式**：
+- 单侧峰值连接数：`parallelThds * 2 + 2`
+- 程序自动设置下限：`parallelThds * 2 + 4`（最低 8）
+- 两侧总连接数：`(parallelThds * 2 + 4) * 2`
+
+**struct/routine/trigger 模式**：
+- 单侧固定 3 个连接
+- 与 `parallelThds` 无关
+
+**数据库配置建议**：
+```sql
+-- 查看当前最大连接数
+SHOW VARIABLES LIKE 'max_connections';
+
+-- 建议设置
+SET GLOBAL max_connections = 500;  -- 根据实际需求调整
+```
+
+### 大表校验优化策略
+
+对于超大表（>1 亿行），建议采用以下策略：
+
+**1. 分区表校验**
+```ini
+-- 按分区校验（如果支持）
+tables = mydb.large_table
+```
+
+**2. 列子集校验**
+```ini
+-- 只校验关键列
+tables = mydb.large_table
+columns = "id,amount,status"
+```
+
+**3. 低峰期执行**
+- 选择业务低峰期执行
+- 监控数据库 CPU、IO、锁等待等指标
+
+**4. 调整批次大小**
+- 默认批次大小适合大多数场景
+- 超大表可考虑减小批次大小，减少单次事务锁定范围
+
+### 内存使用估算
+
+gt-checksum 的内存使用主要取决于：
+
+1. **并行线程数**：每个线程维护自己的连接和缓冲区
+2. **表数量**：元数据缓存占用
+3. **差异行数**：修复 SQL 生成时的内存占用
+
+**估算公式**：
+```
+内存 ≈ 50MB + (parallelThds * 10MB) + (差异行数 * 1KB)
+```
+
+**优化建议**：
+- 如果内存紧张，降低 `parallelThds`
+- 对于差异很大的表，考虑使用 `datafix=file` 而非 `datafix=table`
+- 定期清理 `fixsql/` 和 `rollsql/` 目录
+
+### 网络延迟优化
+
+当源端和目标端网络延迟较高时：
+
+**1. 减少往返次数**
+- 增加批次大小（如果支持）
+- 使用 `columns` 减少传输数据量
+
+**2. 使用压缩连接**
+```ini
+srcDSN = mysql|user:pass@tcp(host:3306)/db?charset=utf8mb4&compress=true
+dstDSN = mysql|user:pass@tcp(host:3306)/db?charset=utf8mb4&compress=true
+```
+
+**3. 就近部署**
+- 将 gt-checksum 部署在与数据库同一机房
+- 减少网络延迟对校验速度的影响
+
+### 并发写入场景优化
+
+当源端或目标端存在业务写入时：
+
+**1. 降低并行度**
+```ini
+parallelThds = 4  # 减少锁争用
+```
+
+**2. 使用一致性快照**
+- InnoDB 自动使用 MVCC 快照
+- MyISAM/MEMORY 引擎无法保证一致性
+
+**3. 避开写入高峰**
+- 选择业务低峰期执行
+- 监控 `SHOW ENGINE INNODB STATUS` 中的锁信息
+
+### 修复执行性能优化
+
+使用 repairDB 执行修复 SQL 时：
+
+**1. 调整并行度**
+```bash
+# 根据数据库负载调整
+repairDB -conf gc.conf  # parallelThds 在配置文件中设置
+```
+
+**2. 禁用 binlog（如果允许）**
+```ini
+logbin = OFF  # 减少 IO，需要 SUPER 权限
+```
+
+**3. 调整 InnoDB 参数**
+```sql
+-- 临时调整（修复完成后恢复）
+SET GLOBAL innodb_flush_log_at_trx_commit = 2;
+SET GLOBAL sync_binlog = 0;
+```
+
+**4. 分阶段修复**
+- 先修复 DELETE（清理旧数据）
+- 再修复 INSERT/UPDATE（插入新数据）
+- repairDB 自动按此顺序执行
+
+### 监控与调优循环
+
+**性能监控指标**：
+1. 校验速度：行/秒
+2. 修复速度：语句/秒
+3. 数据库负载：CPU、IO、锁等待
+4. 网络带宽使用
+
+**调优循环**：
+1. 基准测试：使用默认配置执行
+2. 识别瓶颈：查看日志中的耗时统计
+3. 调整参数：根据瓶颈调整对应参数
+4. 验证效果：重新执行并对比性能
+5. 重复优化：直到达到满意效果
+
+---
 
 ## 问题反馈
 
