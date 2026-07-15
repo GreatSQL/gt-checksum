@@ -143,39 +143,91 @@ repairDB -conf ./gc.conf --key "$KEY" ./fixsql
 
 ## 快速使用案例
 
-拷贝或重命名模板文件*gc-sample.conf*为*gc.conf*，主要修改`srcDSN`,`dstDSN`,`tables`,`ignoreTables`等几个参数后，执行如下命令进行数据校验：
+拷贝或重命名模板文件*gc-sample.conf*为*gc.conf*，主要修改`srcDSN`,`dstDSN`,`tables`,`ignoreTables`等几个参数后，通过`checkObject`参数切换校验对象类型（`data`/`struct`/`routine`/`trigger`），执行如下命令进行校验：
 
 ```bash
 $ gt-checksum -f ./gc.conf
-
-Initializing gt-checksum
-Reading configuration files
-Opening log files
-Checking configuration options
-gt-checksum: Starting table checks
-gt-checksum: Collecting table column information
-gt-checksum: Collecting table index information
-gt-checksum: Establishing database connections
-gt-checksum: Generating data checksum plan
-
-gt-checksum: Starting index checksum for table sbtest.sbtest2
-[██████████████████████████████████████████████████]100%  Processing:     100/100    Elapsed: 0.06s
-table sbtest.t2 checksum completed
-gt-checksum: Table sbtest.sbtest2 checksum completed
-
-Checksum Results Overview
-Schema  Table   IndexColumn     CheckObject     Rows            Diffs   Datafix
-sbtest  sbtest2 id              data            4999,4999       yes     file
-
-Performance Metrics:
-  Initialization: 0.00s
-  Metadata collection: 0.00s
-  Connection setup: 0.02s
-  Data checksum: 0.06s
-  Additional operations: 0.02s
-  Miscellaneous: 0.01s
-Total execution time: 0.11s
 ```
+
+### 极简配置示例
+
+只需 `srcDSN`、`dstDSN`、`tables` 三个参数即可启动校验，其余参数均使用默认值：
+
+```ini
+srcDSN=mysql|checksum:ENC[...]@tcp(src-host:3306)/information_schema?charset=utf8mb4
+dstDSN=mysql|checksum:ENC[...]@tcp(dst-host:3307)/information_schema?charset=utf8mb4
+tables=mydb.t1
+```
+
+通过 `checkObject` 切换校验对象类型，以下为四种模式的配置与输出示例：
+
+**data 模式**（默认）：校验表数据差异，生成修复 SQL 文件。
+
+```ini
+checkObject=data
+```
+
+执行后输出示例：
+
+```text
+Checksum Results Overview
+Schema  Table  IndexColumn  CheckObject  Rows        Diffs  Datafix
+mydb    t1     id           data         1000,1000   yes    file
+```
+
+**struct 模式**：校验表结构（列、索引、分区、外键等）差异，生成结构修复 SQL。
+
+```ini
+checkObject=struct
+```
+
+执行后输出示例：
+
+```text
+Checksum Results Overview
+Schema  Table  ObjectType  CheckObject  Diffs  Datafix
+mydb    t1     table       struct       yes    file
+mydb    t2     table       struct       no     no
+```
+
+**routine 模式**：校验存储过程和函数定义差异（含 charset 元数据三维度比对）。
+
+```ini
+checkObject=routine
+```
+
+执行后输出示例：
+
+```text
+Checksum Results Overview
+Schema  RoutineName  CheckObject  Diffs  Datafix
+mydb    MYADD        routine      yes    file
+mydb    P1           routine      no     no
+mydb    GETAGESTR    routine      yes    file
+```
+
+**trigger 模式**：校验触发器定义差异（含 charset 元数据三维度比对）。
+
+```ini
+checkObject=trigger
+```
+
+执行后输出示例：
+
+```text
+Checksum Results Overview
+Schema  TriggerName    CheckObject  Diffs  Datafix
+mydb    trg_after_ins  trigger      yes    file
+mydb    trg_before_upd trigger      no     no
+```
+
+> **说明**：
+> - `data` 模式会根据 `datafix` 参数生成修复 SQL 文件（`file`）或执行在线修复（`table`）。
+> - `struct`、`routine`、`trigger` 模式即使设置 `datafix=table`，也会强制导出 fix SQL 文件供 DBA 审查后再手动执行。
+> - `tables=mydb.*` 表示校验 `mydb` 库下所有对象；也可以指定具体对象名，如 `tables=mydb.t1`。
+> - `routine` / `trigger` 生成的 fixSQL 通常包含 `DROP + CREATE PROCEDURE/FUNCTION/TRIGGER` 语句，执行前需确认目标库中 `DEFINER` 账号与权限满足要求。建议先在 fixSQL 中检查 `DEFINER=` 子句，确认目标库对应账号已存在且具备相应权限；若源端与目标端账号体系不同，先由 DBA 完成账号和授权准备，再执行 `repairDB`。
+
+### 映射规则校验示例
 
 如果参数 `tables` 设置了映射规则，例如 `tables=db1.*:db2.*,sbtest.sbtest2`，则校验结果如下：
 
@@ -183,37 +235,15 @@ Total execution time: 0.11s
 ... 此处忽略前面的内容
 ...
 Checksum Results Overview
-Schema  Table                           IndexColumn     CheckObject     Rows            Diffs   Datafix Mapping
-db1     test2                           NULL            data            0,0             no      file    Schema: db1.test2:db2.test2
-db1     indext                          id              data            0,0             no      file    Schema: db1.indext:db2.indext
-db1     tb_emp6                         id              data            0,0             no      file    Schema: db1.tb_emp6:db2.tb_emp6
-sbtest  sbtest2                         id              data            4999,4999       yes     file    -
-db1     testbin                         NULL            data            1,1             no      file    Schema: db1.testbin:db2.testbin
+Schema  Table                           IndexColumn     CheckObject  Rows        Diffs  Datafix Mapping
+db1     test2                           NULL            data         0,0         no     file    Schema: db1.test2:db2.test2
+db1     indext                          id              data         0,0         no     file    Schema: db1.indext:db2.indext
+db1     tb_emp6                         id              data         0,0         no     file    Schema: db1.tb_emp6:db2.tb_emp6
+sbtest  sbtest2                         id              data         4999,4999   yes    file    -
+db1     testbin                         NULL            data         1,1         no     file    Schema: db1.testbin:db2.testbin
 ```
 
 输出结果中，除了 **sbtest.sbtest2** 这个表所在行中 **Mapping** 列的值为 **-** 外，其他表的 **Mapping** 列都会显示成 **Schema: 源端库.源端表:目标库.目标表** 的形式，例如 **Schema: db1.test2:db2.test2**，表示该表在源端和目标端的实际映射关系。
-
-如果参数 `checkObject` 设置为 **routine** 或 **trigger**，则会输出对应对象的差异结果；在 MySQL -> MySQL 场景下，当前版本也支持生成对应的 fixSQL，但这类 fixSQL 通常包含 `DROP + CREATE PROCEDURE/FUNCTION/TRIGGER` 语句，因此执行前需要额外关注目标库中的 `DEFINER` 账号与权限是否满足要求，例如：
-
-```bash
-...
-Checksum Results Overview
-Schema  RoutineName     CheckObject     DIFFS   Datafix
-sbtest  MYADD           Procedure       yes     no
-sbtest  P1              Procedure       no      no
-sbtest  GETAGESTR       Function        yes     no
-sbtest  F1              Function        no      no
-...
-```
-
-虽然在 Diffs 列中可以看到部分存储程序存在差异，但对这类对象的修复不能只关注定义文本本身，还必须同时关注执行环境。尤其是当生成的 fixSQL 中包含 `DROP + CREATE PROCEDURE/FUNCTION/TRIGGER` 时，目标库必须预先存在源端定义中的 `DEFINER` 账号，并且该账号具备相应对象权限，否则执行 fixSQL 时会失败。这是运行环境约束，不是程序实现错误。
-
-建议在执行这类 fixSQL 前，先做以下前置校验：
-
-1. 在生成的 fixSQL 中检查是否存在 `DEFINER=` 子句；
-2. 在目标库中确认对应账号已经存在；
-3. 确认该账号具备创建/修改对应 `PROCEDURE`、`FUNCTION`、`TRIGGER` 所需权限；
-4. 若源端与目标端账号体系不同，先由 DBA 完成账号和授权准备，再执行 `repairDB`。
 
 ## MySQL / MariaDB 跨版本兼容说明
 

@@ -130,6 +130,26 @@ Total execution time: 0.11s
 
 > 开始执行数据校验前，要先在源和目标数据库创建相应的专属账号并授权。更多详情见手册中的 [**数据库授权**](./gt-checksum-manual.md#数据库授权) 章节。
 
+- 极简配置下分别运行四种校验模式
+
+只需 `srcDSN`、`dstDSN`、`tables` 三个参数即可启动校验，通过 `checkObject` 切换校验对象类型：
+
+```ini
+; data 模式（默认）：校验表数据差异
+checkObject=data
+
+; struct 模式：校验表结构（列、索引、分区、外键等）差异
+checkObject=struct
+
+; routine 模式：校验存储过程和函数定义差异
+checkObject=routine
+
+; trigger 模式：校验触发器定义差异
+checkObject=trigger
+```
+
+> `data` 模式会生成修复 SQL 文件或执行在线修复（取决于 `datafix` 参数）；`struct`、`routine`、`trigger` 模式即使设置 `datafix=table`，也会强制导出 fix SQL 文件供 DBA 审查后再手动执行。更多配置和输出示例见 [**快速使用案例**](./gt-checksum-manual.md#快速使用案例)。
+
 ### 连接串密码加密
 
 v4.0.0 起，配置文件中的 `srcDSN` / `dstDSN` password 不再允许明文，必须先使用 `gt-dsn-crypt` 生成 `ENC[...]` 密文，并在启动时提供 key：
