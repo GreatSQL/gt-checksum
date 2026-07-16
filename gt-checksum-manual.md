@@ -1525,6 +1525,7 @@ resume=ASK
 | 参数名 | 引入版本 | 默认值 | 说明 |
 |--------|---------|--------|------|
 | `parallelThds` | v1.0.0 | 4 | 并行线程数 |
+| `hashAlgorithm` | v4.0.2 | `xxhash64` | 数据校验哈希算法：`xxhash64`（性能约为 MD5 的 15-25 倍）或 `md5`（向后兼容旧版本） |
 | `logbin` | v1.0.0 | `ON` | 是否写入 binlog（修复时） |
 | `splitInsertOnDupKey` | v3.0.0 | `ON` | 重复键时是否拆分 INSERT 重试 |
 
@@ -2434,6 +2435,33 @@ SELECT * FROM mydb.t1 WHERE id = 123;
 ```
 推荐值 = min(CPU核心数 * 2, 数据库max_connections / 4)
 ```
+
+### hashAlgorithm 参数说明
+
+`hashAlgorithm` 控制数据校验使用的哈希算法，是 v4.0.2 新增的性能优化参数。
+
+**可选值**：
+- `xxhash64`（默认）：使用 XXHash64 算法，性能约为 MD5 的 15-25 倍，推荐生产环境使用
+- `md5`：使用 MD5 算法，向后兼容旧版本行为，仅在需要与旧版本校验结果对比时使用
+
+**使用场景**：
+- **默认推荐**：使用 `xxhash64`，可显著提升大数据量校验性能
+- **向后兼容**：设置 `hashAlgorithm=md5` 可保持与 v4.0.1 及更早版本相同的校验结果
+- **混合环境**：若需对比新旧版本校验结果，应统一使用 `md5` 算法
+
+**配置示例**：
+```ini
+# 使用高性能 XXHash64 算法（默认，推荐）
+hashAlgorithm=xxhash64
+
+# 使用 MD5 算法（向后兼容旧版本）
+hashAlgorithm=md5
+```
+
+**注意事项**：
+- 切换哈希算法后，与历史校验结果不兼容
+- 该参数同时适用于全量数据校验（`checkObject=data`）和增量数据比对场景
+- Oracle 数据源同样适用，与 MySQL 使用相同的哈希算法
 
 ### 连接池配置建议
 
