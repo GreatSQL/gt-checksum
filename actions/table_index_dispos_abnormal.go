@@ -205,7 +205,7 @@ func (sp *SchedulePlan) AbnormalDataDispos(diffQueryData chanDiffDataS, cc chanF
 						}
 					}
 
-					if aa.CheckMd5(stt) != aa.CheckMd5(dtt) {
+					if aa.CheckHash(stt) != aa.CheckHash(dtt) {
 						vlog = fmt.Sprintf("(%d) Data checksum mismatch for %s.%s, need to find specific differences", logThreadSeq, c1.Schema, c1.Table)
 						global.Wlog.Debug(vlog)
 						waitForMemoryBudget(0.92)

@@ -2,7 +2,7 @@
 #
 # 本Dockerfile适用于Docker 17.05及以上版本，如果你的Docker版本较低，请先升级你的Docker
 # 如果是podman则最后可能无法正常运行，因为podman不支持-o选项，可以试着改用buildah(4.x以上)实现，例如
-# DOCKER_BUILDKIT=1 buildah build-using-dockerfile -t greatsql/gt-checksum:2.0.1 -f Dockerfile .
+# DOCKER_BUILDKIT=1 buildah build-using-dockerfile -t greatsql/gt-checksum:4.0.2 -f Dockerfile .
 #
 
 FROM golang:latest AS builder
@@ -31,4 +31,4 @@ ARG VERSION
 
 COPY --from=builder /go/release/gt-checksum-${VERSION} ./gt-checksum-${VERSION}
 
-# DOCKER_BUILDKIT=1 docker build --build-arg VERSION=v2.0.1 -f Dockerfile -o ./ .
+# DOCKER_BUILDKIT=1 docker build --build-arg VERSION=v4.0.2 -f Dockerfile -o ./ .

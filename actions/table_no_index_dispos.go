@@ -700,9 +700,9 @@ func (sp *SchedulePlan) QueryDataCheckSum(stt, dtt string, md5chan chan<- map[st
 		}
 	}
 
-	if aa.CheckMd5(stt) != aa.CheckMd5(dtt) {
+	if aa.CheckHash(stt) != aa.CheckHash(dtt) {
 		displayTableName := sp.getDisplayTableName()
-		vlog = fmt.Sprintf("(%d) MD5 checksum mismatch in round %d for table without index %s", logThreadSeq, chunkSeq, displayTableName)
+		vlog = fmt.Sprintf("(%d) Data checksum mismatch in round %d for table without index %s", logThreadSeq, chunkSeq, displayTableName)
 		global.Wlog.Debug(vlog)
 
 		// rollback SQL：只有在校验开始前已确认目标端整表为空时，才生成 TRUNCATE 回滚。
@@ -924,7 +924,7 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 				<-noIndexC
 			}()
 			displayTableName := sp.getDisplayTableName()
-			vlog = fmt.Sprintf("(%d) Starting MD5 checksum round %d for table without index %s", logThreadSeq, Cycles, displayTableName)
+			vlog = fmt.Sprintf("(%d) Starting data checksum round %d for table without index %s", logThreadSeq, Cycles, displayTableName)
 			global.Wlog.Debug(vlog)
 			stt, dtt, err = sp.QueryTableData(chunkBeginSeq, Cycles, chanrowCount, int64(logThreadSeq))
 			if err != nil {
@@ -949,7 +949,7 @@ func (sp *SchedulePlan) SingleTableCheckProcessing(chanrowCount int, logThreadSe
 				}
 			}
 			displayTableName = sp.getDisplayTableName()
-			vlog = fmt.Sprintf("(%d) Completed MD5 checksum round %d for table without index %s", logThreadSeq, Cycles, displayTableName)
+			vlog = fmt.Sprintf("(%d) Completed data checksum round %d for table without index %s", logThreadSeq, Cycles, displayTableName)
 			global.Wlog.Debug(vlog)
 		}(Cycles, beginSeq)
 		beginSeq = beginSeq + uint64(chanrowCount)

@@ -61,6 +61,10 @@ var Wlog *log.Logger
 // CurrentCheckObject stores the normalized checkObject for the current run.
 var CurrentCheckObject string
 
+// HashAlgorithm stores the hash algorithm to use for data checksum.
+// Values: "xxhash64" (default) or "md5"
+var HashAlgorithm string = "xxhash64"
+
 // DroppedTables 存储已经被标记为需要删除的表的列表
 // 格式为 "schema.table"
 var DroppedTables []string

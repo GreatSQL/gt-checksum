@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	dbExec "gt-checksum/MySQL"
+	"gt-checksum/global"
 	"strings"
+
+	"github.com/cespare/xxhash/v2"
 )
 
 // 增量数据校验结构
@@ -99,7 +102,7 @@ func (idds IncDataDisposStruct) Aa(fullDataCompletionStatus chan struct{}, cqMq 
 			if err != nil {
 				fmt.Println(err)
 			}
-			if md5.Sum(str) == md5.Sum(dtr) {
+			if compareHash(str, dtr) {
 				strxEvent = make(map[string][]string, 1)
 				dtrxEvent = make(map[string][]string, 1)
 				str, dtr = []byte{}, []byte{}
@@ -140,7 +143,7 @@ func (idds IncDataDisposStruct) Aa(fullDataCompletionStatus chan struct{}, cqMq 
 			if err != nil {
 				fmt.Println(err)
 			}
-			if md5.Sum(str) == md5.Sum(dtr) {
+			if compareHash(str, dtr) {
 				strxEvent = make(map[string][]string, 1)
 				dtrxEvent = make(map[string][]string, 1)
 				str, dtr = []byte{}, []byte{}
@@ -182,6 +185,14 @@ func (idds IncDataDisposStruct) Aa(fullDataCompletionStatus chan struct{}, cqMq 
 		}
 	}
 }
+// compareHash compares two byte slices using the configured hash algorithm.
+func compareHash(a, b []byte) bool {
+	if global.HashAlgorithm == "md5" {
+		return md5.Sum(a) == md5.Sum(b)
+	}
+	return xxhash.Sum64(a) == xxhash.Sum64(b)
+}
+
 func IncDataDisops(sdbdrive, ddbdrive, sjdbcUrl, djdbcurl string, sgs, dgs map[string]string, tableList []string) *IncDataDisposStruct {
 	checkTableMap := make(map[string]int, len(tableList))
 	for i := range tableList {

@@ -9,12 +9,15 @@ import (
 	"gt-checksum/dbExec"
 	"gt-checksum/global"
 	"gt-checksum/utils"
+	"hash"
 	"io"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/cespare/xxhash/v2"
 )
 
 const querySQLChunkSeqKey = "__gt_checksum_chunk_seq"
@@ -283,7 +286,7 @@ func (sp *SchedulePlan) queryTableData(selectSql chanMap, diffQueryData chanDiff
 					}
 					vlog = fmt.Sprintf("(%d) Checking block data consistency for %s.%s", logThreadSeq, sp.sourceSchema, sp.table)
 					global.Wlog.Debug(vlog)
-					if aa.CheckMd5(stt) != aa.CheckMd5(dtt) {
+					if aa.CheckHash(stt) != aa.CheckHash(dtt) {
 						vlog = fmt.Sprintf("(%d) Data inconsistency found in %s.%s - Query: %s", logThreadSeq, sp.schema, sp.table, c1)
 						global.Wlog.Debug(vlog)
 						differencesData.Table = sp.table
@@ -631,7 +634,7 @@ func queryRowsChecksumBySQL(db *sql.DB, query string, drive string, logThreadSeq
 		if err := rows.Scan(valuePtrs...); err != nil {
 			return "", err
 		}
-		rowHasher := md5.New()
+		rowHasher := newHasher()
 		for i := 0; i < len(columns); i++ {
 			if i > 0 {
 				_, _ = io.WriteString(rowHasher, colSep)
@@ -654,7 +657,7 @@ func queryRowsChecksumBySQL(db *sql.DB, query string, drive string, logThreadSeq
 		keys = append(keys, digest)
 	}
 	sort.Strings(keys)
-	finalHasher := md5.New()
+	finalHasher := newHasher()
 	for i, digest := range keys {
 		if i > 0 {
 			_, _ = io.WriteString(finalHasher, rowSep)
@@ -677,6 +680,14 @@ func normalizeChecksumValue(val interface{}, driver string) string {
 	}
 }
 
+// newHasher returns a hash.Hash based on the global HashAlgorithm setting.
+func newHasher() hash.Hash {
+	if global.HashAlgorithm == "md5" {
+		return md5.New()
+	}
+	return xxhash.New()
+}
+
 func hashRowsIgnoringOrder(rows []string) string {
 	if len(rows) == 0 {
 		return ""
@@ -690,7 +701,7 @@ func hashRowsIgnoringOrder(rows []string) string {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	h := md5.New()
+	h := newHasher()
 	for i, key := range keys {
 		if i > 0 {
 			_, _ = io.WriteString(h, "/*go actions rowData*/")

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"gt-checksum/connstr"
+	"gt-checksum/global"
 	"os"
 	"strconv"
 	"strings"
@@ -453,6 +454,18 @@ func (rc *ConfigParameter) secondaryLevelParameterCheck() {
 		fmt.Printf("Warning: Invalid resume value '%s', using default value 'OFF'\n", resumeValue)
 		rc.SecondaryL.RulesV.Resume = "OFF"
 	}
+
+	// hashAlgorithm 参数：哈希算法选择
+	hashAlgorithmValue := strings.ToLower(strings.TrimSpace(getLastConfigValue("hashAlgorithm")))
+	if hashAlgorithmValue == "" {
+		hashAlgorithmValue = "xxhash64"
+	}
+	if hashAlgorithmValue != "xxhash64" && hashAlgorithmValue != "md5" {
+		fmt.Printf("Warning: Invalid hashAlgorithm value '%s', using default 'xxhash64'\n", hashAlgorithmValue)
+		hashAlgorithmValue = "xxhash64"
+	}
+	rc.SecondaryL.RulesV.HashAlgorithm = hashAlgorithmValue
+	global.HashAlgorithm = hashAlgorithmValue
 
 	//Repair 获取相关参数
 	fixTrxNumValue := getLastConfigValue("fixTrxNum")

@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"os"
 
+	"github.com/cespare/xxhash/v2"
 	"gt-checksum/global"
 )
 
@@ -29,6 +30,25 @@ func (csts CheckSumTypeStruct) CheckSha1(data string) string {
 	t := sha1.New()
 	io.WriteString(t, data)
 	return fmt.Sprintf("%x", t.Sum(nil))
+}
+
+/*
+对字符串进行XXHash64哈希
+*/
+func (csts CheckSumTypeStruct) CheckXXHash64(data string) string {
+	h := xxhash.New()
+	io.WriteString(h, data)
+	return fmt.Sprintf("%016x", h.Sum64())
+}
+
+/*
+对字符串进行哈希（根据全局配置选择算法）
+*/
+func (csts CheckSumTypeStruct) CheckHash(data string) string {
+	if global.HashAlgorithm == "md5" {
+		return csts.CheckMd5(data)
+	}
+	return csts.CheckXXHash64(data)
 }
 
 func (csts CheckSumTypeStruct) Arrcmap(src, dest []string) []string {

@@ -79,6 +79,10 @@ type RulesS struct {
 	// ON  = auto-resume from last checkpoint
 	// ASK = prompt user at startup
 	Resume string // OFF | ON | ASK
+	// HashAlgorithm controls which hash algorithm to use for data checksum.
+	// xxhash64 = use XXHash64 algorithm (default, ~15-25x faster than MD5)
+	// md5      = use MD5 algorithm (backward compatible with older versions)
+	HashAlgorithm string // xxhash64 | md5
 }
 
 type LogS struct {

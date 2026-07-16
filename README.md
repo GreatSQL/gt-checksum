@@ -2,7 +2,7 @@
 [![](https://img.shields.io/badge/GreatSQL-论坛-brightgreen.svg)](https://greatsql.cn/forum.php)
 [![](https://img.shields.io/badge/GreatSQL-博客-brightgreen.svg)](https://greatsql.cn/home.php?mod=space&uid=10&do=blog&view=me&from=space)
 [![](https://img.shields.io/badge/License-Apache_v2.0-blue.svg)](https://gitee.com/GreatSQL/gt-checksum/blob/master/LICENSE)
-[![](https://img.shields.io/badge/release-4.0.1-blue.svg)](https://gitee.com/GreatSQL/gt-checksum/releases)
+[![](https://img.shields.io/badge/release-4.0.2-blue.svg)](https://gitee.com/GreatSQL/gt-checksum/releases)
 
 # gt-checksum
 **gt-checksum** 是GreatSQL社区开源的数据库校验及修复工具，支持 MySQL-family（MySQL/Percona/GreatSQL/MariaDB等）、Oracle 等主流数据库。
@@ -15,12 +15,7 @@ MySQL DBA 经常使用 **pt-table-checksum** 和 **pt-table-sync** 进行数据�
 
 当前版本进一步增强了长任务可恢复性与修复可审计能力，支持断点续传、反向回滚 SQL、自定义数据类型映射、SSL 加密连接、CSV 结果导出以及结构修复辅助参数等能力，适合用于迁移验收、升级校验、主从/组复制一致性检查和定期巡检等场景。
 
-## v4.0.1 关键变化
-- **[功能优化]** 分区修复改为集合差分算法，支持非连续分区差异（删除中部分区、滚动窗口平移等场景）。
-- **[功能优化]** 目标端存在 MAXVALUE 分区时，自动生成 REORGANIZE PARTITION 替代 ADD PARTITION。
-- **[功能优化]** 分区比较时自动剥离 ENGINE= 注解，TO_DAYS() 边界值自动转为可读日期。
-- **[功能优化]** 统一 `resultFile` 参数行为：gt-checksum、repairDB、断点续传三者共用同一参数，repairDB 和断点续传文件自动提取 basedir 生成到同目录，避免文件名冲突。
-- **[问题修复]** 修复 MySQL→MySQL 同库同表名场景下分区缓存碰撞导致漏报分区差异的问题。
+## v4.0.2 关键变化
 
 更多详细变化详见 [CHANGELOG](./CHANGELOG.md)。
 
@@ -81,7 +76,7 @@ gt-checksum is reading configuration files
 
 ```bash
 $  gt-checksum -v
-gt-checksum version 4.0.1
+gt-checksum version 4.0.2
 ```
 
 - 查看使用帮助
