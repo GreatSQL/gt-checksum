@@ -19,6 +19,7 @@ MySQL DBA 经常使用 **pt-table-checksum** 和 **pt-table-sync** 进行数据�
 
 - **[功能新增]** 新增 `hashAlgorithm` 参数，支持选择 `xxhash64`（默认）或 `md5` 哈希算法
 - **[性能优化]** 引入 XXHash64 算法，数据校验性能提升约 15-25 倍
+- **[问题修复]** 修复 table 模式下多行 INSERT 修复 SQL 写入文件后读回错乱的问题
 - **[测试完善]** 新增 checksum 模块单元测试
 
 更多详细变化详见 [CHANGELOG](./CHANGELOG.md)。
