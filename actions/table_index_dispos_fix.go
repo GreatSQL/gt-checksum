@@ -50,11 +50,53 @@ func (s *tableModeSQLStage) stageSQLs(sqls []string) error {
 		if strings.TrimSpace(sql) == "" {
 			continue
 		}
-		if _, err := s.writer.WriteString(sql + "\n"); err != nil {
+		// stage 文件后续由 processSQLStageFile 按「一行=一条 SQL」逐行读回，
+		// 而 OptimizeInsertSqls 生成的多行 INSERT（每个 value 独占一行）会破坏该契约。
+		// 写入前把语句内的格式化换行压平为单行，保证一条 SQL 独占一行。
+		if _, err := s.writer.WriteString(flattenSQLToSingleLine(sql) + "\n"); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// flattenSQLToSingleLine 将一条 SQL 语句中位于字符串字面量之外的换行（\r、\n）
+// 替换为空格，使其占据单行。字符串字面量（单引号内，遵循 MySQL 反斜杠转义）内部的
+// 原始换行字节保持不变，避免破坏 TEXT 等字段的真实数据。
+func flattenSQLToSingleLine(sql string) string {
+	if !strings.ContainsAny(sql, "\n\r") {
+		return sql
+	}
+	var b strings.Builder
+	b.Grow(len(sql))
+	inSingleQuote := false
+	escaped := false
+	for i := 0; i < len(sql); i++ {
+		c := sql[i]
+		if inSingleQuote {
+			b.WriteByte(c)
+			if escaped {
+				escaped = false
+				continue
+			}
+			if c == '\\' {
+				escaped = true
+			} else if c == '\'' {
+				inSingleQuote = false
+			}
+			continue
+		}
+		switch c {
+		case '\'':
+			inSingleQuote = true
+			b.WriteByte(c)
+		case '\n', '\r':
+			b.WriteByte(' ')
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
 }
 
 func (s *tableModeSQLStage) stage(batch []fixSQLItem, sqls []string) error {
