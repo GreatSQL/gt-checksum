@@ -42,6 +42,25 @@ func TestSplitMultiValueInsert_Basic(t *testing.T) {
 	assertSplitInsertSQLs(t, got, want)
 }
 
+// TestSplitMultiValueInsert_MultiLineFormat 验证 OptimizeInsertSqls 生成的
+// 每个 value 独占一行的可读性格式，仍能被 splitter 正确拆分（换行视为空白）。
+func TestSplitMultiValueInsert_MultiLineFormat(t *testing.T) {
+	stmt := "INSERT INTO `db`.`t`(`id`, `name`) VALUES\n(1,'a'),\n(2,'b'),\n(3,'c');"
+	got, ok, err := splitMultiValueInsert(stmt)
+	if err != nil {
+		t.Fatalf("splitMultiValueInsert returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected INSERT to be split")
+	}
+	want := []string{
+		"INSERT INTO `db`.`t`(`id`, `name`) VALUES (1,'a');",
+		"INSERT INTO `db`.`t`(`id`, `name`) VALUES (2,'b');",
+		"INSERT INTO `db`.`t`(`id`, `name`) VALUES (3,'c');",
+	}
+	assertSplitInsertSQLs(t, got, want)
+}
+
 func TestSplitMultiValueInsert_NoColumns(t *testing.T) {
 	stmt := "INSERT INTO `db`.`t` VALUES (1,'a'),(2,'b');"
 	got, ok, err := splitMultiValueInsert(stmt)

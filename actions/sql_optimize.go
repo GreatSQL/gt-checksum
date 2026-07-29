@@ -230,6 +230,23 @@ func OptimizeInsertSqls(sqls []string, maxSqlSize int, fixTrxNum int) []string {
 		baseSql := fmt.Sprintf("INSERT INTO `%s`.`%s`(%s) VALUES ", group.schema, group.table, group.columns)
 		baseLength := len(baseSql)
 
+		// flushBatch 生成一条 multi-value INSERT。为提升可读性，多个 value 时每个 value 单独占一行：
+		//   INSERT INTO `t`(...) VALUES
+		//   (1,'mysql'),
+		//   (2,'oracle');
+		// 单个 value 时保持紧凑的单行格式。
+		flushBatch := func(batch []string) {
+			if len(batch) == 0 {
+				return
+			}
+			if len(batch) == 1 {
+				optimizedSqls = append(optimizedSqls, fmt.Sprintf("%s%s;", baseSql, batch[0]))
+				return
+			}
+			// baseSql 末尾带一个空格，去掉后换行，使每个 value 独占一行
+			optimizedSqls = append(optimizedSqls, fmt.Sprintf("%s\n%s;", strings.TrimSuffix(baseSql, " "), strings.Join(batch, ",\n")))
+		}
+
 		var currentBatchValues []string
 		currentLength := baseLength
 
@@ -240,9 +257,7 @@ func OptimizeInsertSqls(sqls []string, maxSqlSize int, fixTrxNum int) []string {
 			}
 
 			if len(currentBatchValues) >= fixTrxNum || (currentLength+valLen+2) > maxSqlSize {
-				if len(currentBatchValues) > 0 {
-					optimizedSqls = append(optimizedSqls, fmt.Sprintf("%s%s;", baseSql, strings.Join(currentBatchValues, ", ")))
-				}
+				flushBatch(currentBatchValues)
 				currentBatchValues = []string{fmt.Sprintf("(%s)", val)}
 				currentLength = baseLength + len(val) + 2
 			} else {
@@ -251,9 +266,7 @@ func OptimizeInsertSqls(sqls []string, maxSqlSize int, fixTrxNum int) []string {
 			}
 		}
 
-		if len(currentBatchValues) > 0 {
-			optimizedSqls = append(optimizedSqls, fmt.Sprintf("%s%s;", baseSql, strings.Join(currentBatchValues, ", ")))
-		}
+		flushBatch(currentBatchValues)
 	}
 
 	return optimizedSqls

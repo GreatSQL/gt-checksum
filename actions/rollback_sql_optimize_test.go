@@ -128,7 +128,7 @@ func TestOptimizeInsertSqlsForRollback(t *testing.T) {
 			},
 			maxSqlSize: 4 * 1024 * 1024,
 			fixTrxNum:  1000,
-			want:       []string{"INSERT INTO `gt_checksum`.`test3`(`id`, `name`) VALUES (2, 'test1'), (3, 'test2'), (4, 'test3');"},
+			want:       []string{"INSERT INTO `gt_checksum`.`test3`(`id`, `name`) VALUES\n(2, 'test1'),\n(3, 'test2'),\n(4, 'test3');"},
 		},
 		{
 			name: "multiple inserts same table different columns",
@@ -167,8 +167,8 @@ func TestOptimizeInsertSqlsForRollback(t *testing.T) {
 			maxSqlSize: 4 * 1024 * 1024,
 			fixTrxNum:  2,
 			want: []string{
-				"INSERT INTO `gt_checksum`.`test3`(`id`, `name`) VALUES (2, 'test1'), (3, 'test2');",
-				"INSERT INTO `gt_checksum`.`test3`(`id`, `name`) VALUES (4, 'test3'), (5, 'test4');",
+				"INSERT INTO `gt_checksum`.`test3`(`id`, `name`) VALUES\n(2, 'test1'),\n(3, 'test2');",
+				"INSERT INTO `gt_checksum`.`test3`(`id`, `name`) VALUES\n(4, 'test3'),\n(5, 'test4');",
 			},
 		},
 	}
@@ -215,7 +215,7 @@ func TestOptimizeSqlStatementsForRollback(t *testing.T) {
 			insertSqlSize: 4 * 1024 * 1024,
 			want: []string{
 				"DELETE FROM `gt_checksum`.`test3` WHERE `id` IN (2,3);",
-				"INSERT INTO `gt_checksum`.`test3`(`id`, `name`) VALUES (4, 'test4'), (5, 'test5');",
+				"INSERT INTO `gt_checksum`.`test3`(`id`, `name`) VALUES\n(4, 'test4'),\n(5, 'test5');",
 			},
 		},
 		{
@@ -233,7 +233,7 @@ func TestOptimizeSqlStatementsForRollback(t *testing.T) {
 			want: []string{
 				"DELETE FROM `gt_checksum`.`test3` WHERE `id` = 2;",
 				"DELETE FROM `gt_checksum`.`test3` WHERE `id` = 3;",
-				"INSERT INTO `gt_checksum`.`test3`(`id`, `name`) VALUES (4, 'test4'), (5, 'test5');",
+				"INSERT INTO `gt_checksum`.`test3`(`id`, `name`) VALUES\n(4, 'test4'),\n(5, 'test5');",
 			},
 		},
 		{
@@ -263,7 +263,7 @@ func TestOptimizeSqlStatementsForRollback(t *testing.T) {
 			deleteSqlSize: 4 * 1024 * 1024,
 			insertSqlSize: 4 * 1024 * 1024,
 			want: []string{
-				"INSERT INTO `gt_checksum`.`test3`(`id`, `name`) VALUES (2, 'test2'), (3, 'test3'), (4, 'test4');",
+				"INSERT INTO `gt_checksum`.`test3`(`id`, `name`) VALUES\n(2, 'test2'),\n(3, 'test3'),\n(4, 'test4');",
 			},
 		},
 	}
