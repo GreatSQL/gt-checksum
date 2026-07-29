@@ -398,14 +398,24 @@ func splitSQLStatementsWithLocation(content string) []sqlStatement {
 	currentStartLine := 1
 	lines := strings.Split(content, "\n")
 
+	// flushBlock 对当前累积的块整体调用一次解析。与「每追加一行就重扫整个 buffer」
+	// 的旧实现相比，这里仅在 DELIMITER 指令切换处和文件末尾各调用一次，
+	// 把单条跨多行语句的解析成本从 O(K²) 降为 O(K)（K 为该语句占用的行数）。
+	// extractStatementsByDelimiterWithLocation 是关于 (content, delimiter, baseLine)
+	// 的纯函数，对整块调用一次与对其递增前缀逐行调用产出的语句边界、rest 及行号完全一致。
+	flushBlock := func() {
+		ready, rest, restStartLine := extractStatementsByDelimiterWithLocation(currentStmt.String(), delimiter, currentStartLine)
+		statements = append(statements, ready...)
+		currentStmt.Reset()
+		currentStmt.WriteString(rest)
+		currentStartLine = restStartLine
+	}
+
 	for i, line := range lines {
 		lineNo := i + 1
 		if newDelimiter, ok := parseDelimiterDirective(line); ok {
-			ready, rest, restStartLine := extractStatementsByDelimiterWithLocation(currentStmt.String(), delimiter, currentStartLine)
-			statements = append(statements, ready...)
-			currentStmt.Reset()
-			currentStmt.WriteString(rest)
-			currentStartLine = restStartLine
+			// 用旧 delimiter 处理已累积的块，再切换到新 delimiter。
+			flushBlock()
 			delimiter = newDelimiter
 			continue
 		}
@@ -417,15 +427,11 @@ func splitSQLStatementsWithLocation(content string) []sqlStatement {
 		if i < len(lines)-1 {
 			currentStmt.WriteString("\n")
 		}
-
-		ready, rest, restStartLine := extractStatementsByDelimiterWithLocation(currentStmt.String(), delimiter, currentStartLine)
-		if len(ready) > 0 {
-			statements = append(statements, ready...)
-			currentStmt.Reset()
-			currentStmt.WriteString(rest)
-			currentStartLine = restStartLine
-		}
 	}
+
+	// 文件末尾：对最后一个块整体解析一次，取出所有以 delimiter 结尾的语句，
+	// 剩余的 rest 交给下方逻辑作为「未被 delimiter 终结的尾部语句」处理。
+	flushBlock()
 
 	lastRaw := currentStmt.String()
 	lastRest, restOffset := trimLeadingSQLWhitespaceAndCommentsWithOffset(lastRaw)
